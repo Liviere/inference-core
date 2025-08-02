@@ -65,3 +65,12 @@ Then edit the `.env` file with your specific settings.
 | `CORS_METHODS`    | Allowed HTTP methods (comma-separated or \*)                     | \*                                                                 | No       |
 | `CORS_ORIGINS`    | Allowed origins (comma-separated or \*)                          | \*                                                                 | No       |
 | `CORS_HEADERS`    | Allowed headers (comma-separated or \*)                          | \*                                                                 | No       |
+
+## Logging
+
+The application is configured to log information to both the console and a rotating file.
+
+- **Console Logging**: Provides real-time output during development.
+- **File Logging**: Logs are saved in JSON format to the `logs/app.log` file. The log file is rotated daily, and backups are kept for 30 days.
+
+This setup is handled by the configuration in `app/core/logging_config.py`.

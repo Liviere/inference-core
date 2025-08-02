@@ -166,3 +166,6 @@ reports/performance/*.xml
 
 # LLM Config
 llm_config.yaml
+
+# Logs
+logs/

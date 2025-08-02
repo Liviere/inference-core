@@ -8,6 +8,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .api.v1.routes import health
 from .core.config import get_settings
+from .core.logging_config import setup_logging
 
 ###################################
 #            Functions            #
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
     Handles startup and shutdown events for the FastAPI application.
     """
     # Startup
+    setup_logging()
     logging.info("🚀 Starting up FastAPI application...")
 
     yield
