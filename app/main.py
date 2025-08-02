@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .api.v1.routes import health
 from .core.config import get_settings
@@ -48,8 +50,11 @@ def create_application() -> FastAPI:
         openapi_url="/openapi.json" if settings.is_development else None,
     )
 
+    # Add middleware
+    setup_middleware(app, settings)
+
     ###################################
-    #            Routes               #
+    #             Routes              #
     ###################################
 
     # Configure API routers explicitly
@@ -92,6 +97,33 @@ def setup_routers(app: FastAPI) -> None:
     # Future: Add other API versions here
     # api_v2 = APIRouter(prefix="/api/v2")
     # app.include_router(api_v2)
+
+
+def setup_middleware(app: FastAPI, settings) -> None:
+    """
+    Setup application middleware
+
+    Args:
+        app: FastAPI application
+        settings: Application settings
+    """
+    # CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=settings.cors_methods,
+        allow_headers=settings.cors_headers,
+    )
+
+    # Trusted host middleware for production
+    if settings.is_production:
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=(
+                settings.cors_origins if settings.cors_origins != ["*"] else ["*"]
+            ),
+        )
 
 
 # Create app instance

@@ -62,3 +62,6 @@ Then edit the `.env` file with your specific settings.
 | `DEBUG`           | Debug mode                                                       | `True`                                                             | No       |
 | `HOST`            | Server host                                                      | "0.0.0.0"                                                          | No       |
 | `PORT`            | Server port                                                      | 8000                                                               | No       |
+| `CORS_METHODS`    | Allowed HTTP methods (comma-separated or \*)                     | \*                                                                 | No       |
+| `CORS_ORIGINS`    | Allowed origins (comma-separated or \*)                          | \*                                                                 | No       |
+| `CORS_HEADERS`    | Allowed headers (comma-separated or \*)                          | \*                                                                 | No       |
