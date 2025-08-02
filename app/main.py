@@ -22,10 +22,46 @@ async def lifespan(app: FastAPI):
 
     Handles startup and shutdown events for the FastAPI application.
     """
+
+    settings = get_settings()
+
     # Startup
     setup_logging()
     logging.info("🚀 Starting up FastAPI application...")
 
+    if settings.is_development:
+        logging.info("Running in development mode")
+        if settings.debug:
+            logging.debug("Debug mode is enabled")
+
+    elif settings.is_production:
+        logging.info("Running in production mode")
+
+        if settings.sentry_dsn:
+            import sentry_sdk
+
+            sentry_sdk.init(
+                dsn=settings.sentry_dsn,
+                # Set traces_sample_rate to capture performance traces
+                # Adjust this value in production based on your traffic volume
+                traces_sample_rate=settings.sentry_traces_sample_rate,
+                # Set profiles_sample_rate to profile a subset of transactions
+                profiles_sample_rate=settings.sentry_profiles_sample_rate,
+                # Set environment to distinguish between different stages
+                environment=settings.environment,
+                # Set release to track deployments
+                release=settings.app_version,
+                # Send default PII (personally identifiable information)
+                # Be careful with this in production - consider data privacy requirements
+                send_default_pii=True,
+                # Enable auto session tracking
+                auto_session_tracking=True,
+                # Attach stack traces to all messages
+                attach_stacktrace=True,
+            )
+            logging.info(f"Sentry initialized for environment: {settings.environment}")
+        else:
+            logging.warning("Sentry DSN not configured for production environment")
     yield
     # Shutdown
     logging.info("🛑 Shutting down FastAPI application...")

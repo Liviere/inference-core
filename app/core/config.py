@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Any, List
+from typing import Any, List, Optional
 
 from pydantic import Field, field_validator
 from pydantic.fields import FieldInfo
@@ -112,6 +112,23 @@ class Settings(BaseSettings):
     )
     cors_origins: List[str] = Field(
         default=["*"], env="CORS_ORIGINS", description="CORS allowed origins"
+    )
+
+    ###################################
+    #           MONITORING            #
+    ###################################
+    sentry_dsn: Optional[str] = Field(
+        default=None, env="SENTRY_DSN", description="Sentry DSN for error monitoring"
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=1.0,
+        env="SENTRY_TRACES_SAMPLE_RATE",
+        description="Sentry traces sample rate (0.0 to 1.0)",
+    )
+    sentry_profiles_sample_rate: float = Field(
+        default=1.0,
+        env="SENTRY_PROFILES_SAMPLE_RATE",
+        description="Sentry profiles sample rate (0.0 to 1.0)",
     )
 
     ###################################
