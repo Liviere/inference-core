@@ -17,12 +17,26 @@ Make sure you have it installed before proceeding.
 poetry install
 ```
 
-### Run the application
+### Development
+
+To start the development server, run:
 
 ```bash
-cd app
+poetry run fastapi dev
+```
+
+### Serve the application
+
+```bash
 poetry run fastapi run
 ```
+
+## API Endpoints (v1)
+
+### Health Check
+
+- `GET /api/v1/health/` - Overall application health check
+- `GET /api/v1/health/ping - Simple ping endpoint for basic health checking
 
 ## Configuration
 

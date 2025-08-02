@@ -2,8 +2,9 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
+from .api.v1.routes import health
 from .core.config import get_settings
 
 ###################################
@@ -51,6 +52,9 @@ def create_application() -> FastAPI:
     #            Routes               #
     ###################################
 
+    # Configure API routers explicitly
+    setup_routers(app)
+
     # Add root endpoint
     @app.get("/", tags=["Root"])
     async def root() -> Dict[str, Any]:
@@ -67,6 +71,27 @@ def create_application() -> FastAPI:
         }
 
     return app
+
+
+def setup_routers(app: FastAPI) -> None:
+    """
+    Setup all application routers explicitly
+
+    Args:
+        app: FastAPI application
+    """
+    # Create API v1 router
+    api_v1 = APIRouter(prefix="/api/v1")
+
+    # Include all v1 endpoints with explicit configuration
+    api_v1.include_router(health.router)
+
+    # Include main API router
+    app.include_router(api_v1)
+
+    # Future: Add other API versions here
+    # api_v2 = APIRouter(prefix="/api/v2")
+    # app.include_router(api_v2)
 
 
 # Create app instance
