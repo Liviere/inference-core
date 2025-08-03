@@ -115,6 +115,45 @@ class Settings(BaseSettings):
     )
 
     ###################################
+    #           DATABASE              #
+    ###################################
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./app.db",
+        env="DATABASE_URL",
+        description="Database connection URL",
+    )
+    database_echo: bool = Field(
+        default=False,
+        env="DATABASE_ECHO",
+        description="Echo SQL queries (development only)",
+    )
+    database_pool_size: int = Field(
+        default=20,
+        env="DATABASE_POOL_SIZE",
+        description="Database connection pool size",
+    )
+    database_max_overflow: int = Field(
+        default=30,
+        env="DATABASE_MAX_OVERFLOW",
+        description="Maximum database connection overflow",
+    )
+    database_pool_timeout: int = Field(
+        default=30,
+        env="DATABASE_POOL_TIMEOUT",
+        description="Pool connection timeout in seconds",
+    )
+    database_pool_recycle: int = Field(
+        default=3600,
+        env="DATABASE_POOL_RECYCLE",
+        description="Connection recycle time in seconds",
+    )
+    database_mysql_charset: str = Field(
+        default="utf8mb4",
+        env="DATABASE_MYSQL_CHARSET",
+        description="MySQL character set",
+    )
+
+    ###################################
     #           MONITORING            #
     ###################################
     sentry_dsn: Optional[str] = Field(
@@ -142,6 +181,27 @@ class Settings(BaseSettings):
             raise ValueError(f"Environment must be one of: {allowed_envs}")
         return v
 
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, v: str) -> str:
+        """Validate and enhance database URL"""
+        if not v:
+            raise ValueError("Database URL cannot be empty")
+
+        # Ensure async drivers are used
+        url_mappings = {
+            "postgresql://": "postgresql+asyncpg://",
+            "mysql://": "mysql+aiomysql://",
+            "sqlite:///": "sqlite+aiosqlite:///",
+        }
+
+        for old_prefix, new_prefix in url_mappings.items():
+            if v.startswith(old_prefix):
+                v = v.replace(old_prefix, new_prefix, 1)
+                break
+
+        return v
+
     ###################################
     #           PROPERTIES            #
     ###################################
@@ -156,6 +216,60 @@ class Settings(BaseSettings):
     @property
     def is_testing(self) -> bool:
         return self.environment == "testing"
+
+    @property
+    def is_sqlite(self) -> bool:
+        return "sqlite" in self.database_url.lower()
+
+    @property
+    def is_mysql(self) -> bool:
+        return "mysql" in self.database_url.lower()
+
+    @property
+    def is_postgresql(self) -> bool:
+        return "postgresql" in self.database_url.lower()
+
+    @property
+    def database_type(self) -> str:
+        if self.is_sqlite:
+            return "sqlite"
+        elif self.is_mysql:
+            return "mysql"
+        elif self.is_postgresql:
+            return "postgresql"
+        else:
+            return "unknown"
+
+    def get_database_engine_args(self) -> dict:
+        """Get database engine arguments based on database type"""
+        base_args = {
+            "echo": self.database_echo,
+        }
+
+        # SQLite doesn't support pooling
+        if self.is_sqlite:
+            base_args.update({"connect_args": {"check_same_thread": False}})
+        else:
+            # PostgreSQL and MySQL pooling settings
+            base_args.update(
+                {
+                    "pool_size": self.database_pool_size,
+                    "max_overflow": self.database_max_overflow,
+                    "pool_timeout": self.database_pool_timeout,
+                    "pool_recycle": self.database_pool_recycle,
+                    "pool_pre_ping": True,  # Validate connections
+                }
+            )
+
+            # MySQL specific settings
+            if self.is_mysql:
+                base_args["connect_args"] = {
+                    "charset": self.database_mysql_charset,
+                    "use_unicode": True,
+                    "autocommit": False,
+                }
+
+        return base_args
 
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=False, extra="ignore"

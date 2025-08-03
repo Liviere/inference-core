@@ -52,6 +52,23 @@ cp .env.example .env
 
 Then edit the `.env` file with your specific settings.
 
+## Database Configuration
+
+The application can be configured to use different databases through the `DATABASE_URL` environment variable.
+The application automatically uses the appropriate asynchronous database driver (`asyncpg` for PostgreSQL, `aiomysql` for MySQL, `aiosqlite` for SQLite) based on the `DATABASE_URL`.
+
+### SQLite (Default)
+
+For local development, the application uses SQLite by default. The database will be created in a file named `app.db` in the project root.
+
+### PostgreSQL (Recommended for Production)
+
+For production environments, PostgreSQL is recommended.
+
+### MySQL
+
+You can also use MySQL.
+
 ## Monitoring with Sentry
 
 This application includes [Sentry](https://sentry.io/) integration for error monitoring and performance tracking. Sentry helps you:
@@ -96,6 +113,13 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `SENTRY_DSN`                  | Sentry Data Source Name for error monitoring                     | None                                                               | No       |
 | `SENTRY_TRACES_SAMPLE_RATE`   | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                                | No       |
 | `SENTRY_PROFILES_SAMPLE_RATE` | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                                | No       |
+| `DATABASE_URL`                | Database connection URL                                          | `sqlite+aiosqlite:///./app.db`                                     | No       |
+| `DATABASE_ECHO`               | Echo SQL queries (development only)                              | `False`                                                            | No       |
+| `DATABASE_POOL_SIZE`          | Database connection pool size                                    | `20`                                                               | No       |
+| `DATABASE_MAX_OVERFLOW`       | Maximum database connection overflow                             | `30`                                                               | No       |
+| `DATABASE_POOL_TIMEOUT`       | Pool connection timeout in seconds                               | `30`                                                               | No       |
+| `DATABASE_POOL_RECYCLE`       | Connection recycle time in seconds                               | `3600`                                                             | No       |
+| `DATABASE_MYSQL_CHARSET`      | MySQL character set                                              | `utf8mb4`                                                          | No       |
 
 ## Features
 

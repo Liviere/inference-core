@@ -9,6 +9,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from .api.v1.routes import health
 from .core.config import get_settings
 from .core.logging_config import setup_logging
+from .database.sql.connection import close_database, create_tables
 
 ###################################
 #            Functions            #
@@ -62,9 +63,24 @@ async def lifespan(app: FastAPI):
             logging.info(f"Sentry initialized for environment: {settings.environment}")
         else:
             logging.warning("Sentry DSN not configured for production environment")
+
+    # Create database tables
+    try:
+        await create_tables()
+        logging.info("✅ Database tables created successfully")
+    except Exception as e:
+        logging.error(f"❌ Failed to create database tables: {e}")
+        raise
+
     yield
     # Shutdown
     logging.info("🛑 Shutting down FastAPI application...")
+
+    try:
+        await close_database()
+        logging.info("✅ Database connections closed successfully")
+    except Exception as e:
+        logging.error(f"❌ Failed to close database connections: {e}")
 
 
 def create_application() -> FastAPI:

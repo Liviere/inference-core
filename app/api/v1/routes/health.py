@@ -6,12 +6,15 @@ system status, and diagnostic information.
 """
 
 from datetime import UTC, datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.dependecies import get_db
+from app.database.sql.connection import db_manager
 
 router = APIRouter(prefix="/health", tags=["Health Check"])
 
@@ -19,6 +22,12 @@ router = APIRouter(prefix="/health", tags=["Health Check"])
 ###################################
 #             Schemas            #
 ###################################
+class StatusResponse(BaseModel):
+    """Generic status response schema"""
+
+    status: str = Field(..., description="Current status")
+    details: Optional[Dict[str, Any]] = Field(None, description="Status details")
+    last_updated: str = Field(..., description="Last status update timestamp")
 
 
 class HealthCheckResponse(BaseModel):
@@ -48,10 +57,17 @@ async def health_check(settings=Depends(get_settings)) -> HealthCheckResponse:
     """
     timestamp = str(datetime.now(UTC).isoformat())
 
+    # Check database health
+    db_healthy = await db_manager.health_check()
+
     # Placeholder for service health checks
-    overall_status = "healthy" if all([]) else "unhealthy"
+    overall_status = "healthy" if all([db_healthy]) else "unhealthy"
 
     components = {
+        "database": {
+            "status": "healthy" if db_healthy else "unhealthy",
+            "checked_at": timestamp,
+        },
         "application": {
             "status": "healthy",
             "version": settings.app_version,
@@ -65,6 +81,26 @@ async def health_check(settings=Depends(get_settings)) -> HealthCheckResponse:
         version=settings.app_version,
         timestamp=timestamp,
         components=components,
+    )
+
+
+@router.get("/database", response_model=StatusResponse)
+async def database_health(db: AsyncSession = Depends(get_db)) -> StatusResponse:
+    """
+    Database-specific health check
+
+    Args:
+        db: Database session
+
+    Returns:
+        Database health status
+    """
+    db_info = await db_manager.get_database_info()
+
+    return StatusResponse(
+        status=db_info["status"],
+        details=db_info,
+        last_updated=str(datetime.now(UTC).isoformat()),
     )
 
 
