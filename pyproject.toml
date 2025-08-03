@@ -17,10 +17,16 @@ dependencies = [
     "sqlalchemy (>=2.0.42,<3.0.0)",
     "aiomysql (>=0.2.0,<0.3.0)",
     "cryptography (>=45.0.5,<46.0.0)",
+    "aiosqlite (>=0.21.0,<0.22.0)",
+    "asyncpg (>=0.30.0,<0.31.0)",
 ]
 
 [tool.poetry]
 package-mode = false
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+pytest-asyncio = "^1.1.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

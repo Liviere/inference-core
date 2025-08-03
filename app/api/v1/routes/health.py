@@ -45,7 +45,9 @@ class HealthCheckResponse(BaseModel):
 
 
 @router.get("/", response_model=HealthCheckResponse)
-async def health_check(settings=Depends(get_settings)) -> HealthCheckResponse:
+async def health_check(
+    settings=Depends(get_settings), db_session=Depends(get_db)
+) -> HealthCheckResponse:
     """
     Overall application health check
 
@@ -58,7 +60,7 @@ async def health_check(settings=Depends(get_settings)) -> HealthCheckResponse:
     timestamp = str(datetime.now(UTC).isoformat())
 
     # Check database health
-    db_healthy = await db_manager.health_check()
+    db_healthy = await db_manager.health_check(db_session)
 
     # Placeholder for service health checks
     overall_status = "healthy" if all([db_healthy]) else "unhealthy"
@@ -85,7 +87,7 @@ async def health_check(settings=Depends(get_settings)) -> HealthCheckResponse:
 
 
 @router.get("/database", response_model=StatusResponse)
-async def database_health(db: AsyncSession = Depends(get_db)) -> StatusResponse:
+async def database_health(db_session: AsyncSession = Depends(get_db)) -> StatusResponse:
     """
     Database-specific health check
 
@@ -95,7 +97,7 @@ async def database_health(db: AsyncSession = Depends(get_db)) -> StatusResponse:
     Returns:
         Database health status
     """
-    db_info = await db_manager.get_database_info()
+    db_info = await db_manager.get_database_info(db_session)
 
     return StatusResponse(
         status=db_info["status"],

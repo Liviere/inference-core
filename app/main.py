@@ -29,11 +29,14 @@ async def lifespan(app: FastAPI):
     # Startup
     setup_logging()
     logging.info("🚀 Starting up FastAPI application...")
+    if settings.debug:
+        logging.debug("Debug mode is enabled")
 
     if settings.is_development:
         logging.info("Running in development mode")
-        if settings.debug:
-            logging.debug("Debug mode is enabled")
+
+    elif settings.is_testing:
+        logging.info("Running in testing mode")
 
     elif settings.is_production:
         logging.info("Running in production mode")
@@ -65,22 +68,24 @@ async def lifespan(app: FastAPI):
             logging.warning("Sentry DSN not configured for production environment")
 
     # Create database tables
-    try:
-        await create_tables()
-        logging.info("✅ Database tables created successfully")
-    except Exception as e:
-        logging.error(f"❌ Failed to create database tables: {e}")
-        raise
+    if not settings.is_testing:
+        try:
+            await create_tables()
+            logging.info("✅ Database tables created successfully")
+        except Exception as e:
+            logging.error(f"❌ Failed to create database tables: {e}")
+            raise
 
     yield
     # Shutdown
     logging.info("🛑 Shutting down FastAPI application...")
 
-    try:
-        await close_database()
-        logging.info("✅ Database connections closed successfully")
-    except Exception as e:
-        logging.error(f"❌ Failed to close database connections: {e}")
+    if not settings.is_testing:
+        try:
+            await close_database()
+            logging.info("✅ Database connections closed successfully")
+        except Exception as e:
+            logging.error(f"❌ Failed to close database connections: {e}")
 
 
 def create_application() -> FastAPI:

@@ -33,11 +33,18 @@ poetry run fastapi dev
 poetry run fastapi run
 ```
 
+## Testing
+
+The project includes a test suite with fixtures for database testing and API integration testing.
+
+For comprehensive testing documentation, environment setup, and troubleshooting, see [app/tests/README.md](app/tests/README.md).
+
 ## API Endpoints (v1)
 
 ### Health Check
 
 - `GET /api/v1/health/` - Overall application health check
+- `GET /api/v1/health/database` - Check database connection health
 - `GET /api/v1/health/ping - Simple ping endpoint for basic health checking
 
 ## Configuration

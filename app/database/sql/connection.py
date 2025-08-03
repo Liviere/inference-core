@@ -37,7 +37,7 @@ _engine = None
 _async_session_maker = None
 
 
-def create_database_engine():
+def create_database_engine(database_url: str = None) -> Engine:
     """
     Create database engine with proper configuration
 
@@ -51,7 +51,7 @@ def create_database_engine():
     engine_kwargs["future"] = True
 
     # Create engine
-    engine = create_async_engine(settings.database_url, **engine_kwargs)
+    engine = create_async_engine(database_url or settings.database_url, **engine_kwargs)
 
     # Database-specific event listeners
     if settings.is_sqlite:
@@ -78,7 +78,7 @@ def create_database_engine():
     return engine
 
 
-def get_engine():
+def get_engine(database_url: str = None) -> Engine:
     """
     Get or create database engine
 
@@ -87,7 +87,7 @@ def get_engine():
     """
     global _engine
     if _engine is None:
-        _engine = create_database_engine()
+        _engine = create_database_engine(database_url)
     return _engine
 
 
@@ -109,6 +109,26 @@ def get_session_maker():
             autocommit=False,
         )
     return _async_session_maker
+
+
+def get_non_singleton_session_maker(
+    database_url: str = None, engine: Engine = None
+) -> async_sessionmaker:
+    """
+    Get a new session maker instance
+
+    Returns:
+        Async session maker
+    """
+    if engine is None:
+        engine = create_database_engine(database_url)
+    return async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+        autocommit=False,
+    )
 
 
 @asynccontextmanager
@@ -190,7 +210,7 @@ class DatabaseManager:
             raise
 
     @staticmethod
-    async def health_check() -> bool:
+    async def health_check(session=None) -> bool:
         """
         Check database health
 
@@ -198,15 +218,16 @@ class DatabaseManager:
             True if database is healthy
         """
         try:
-            async with get_async_session() as session:
-                result = await session.execute(text("SELECT 1"))
-                return result.scalar() == 1
+            if session is None:
+                session = await get_async_session()
+            result = await session.execute(text("SELECT 1"))
+            return result.scalar() == 1
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             return False
 
     @staticmethod
-    async def get_database_info() -> dict:
+    async def get_database_info(session=None) -> dict:
         """
         Get database information
 
@@ -214,7 +235,7 @@ class DatabaseManager:
             Database info dictionary
         """
         settings = get_settings()
-        health = await DatabaseManager.health_check()
+        health = await DatabaseManager.health_check(session)
 
         return {
             "url": settings.database_url.split("://")[0] + "://***",  # Hide credentials
