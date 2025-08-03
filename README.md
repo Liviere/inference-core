@@ -33,6 +33,39 @@ poetry run fastapi dev
 poetry run fastapi run
 ```
 
+## Docker Deployment
+
+This application includes Docker support for containerized deployment with both MySQL and PostgreSQL database options.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+
+### Quick Start with Docker
+
+1. **Copy environment configuration:**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit the `.env` file** with your specific settings (database credentials, etc.)
+
+3. **Start the application with MySQL:**
+
+   ```bash
+   docker-compose --profile mysql --profile production up -d
+   ```
+
+   Or with PostgreSQL:
+
+   ```bash
+   docker-compose --profile postgres --profile production up -d
+   ```
+
+4. **Access the application** at `http://localhost:{PORT}` (default is 8000).
+
 ## Testing
 
 The project includes a test suite with fixtures for database testing and API integration testing.
@@ -104,29 +137,35 @@ For production environments, consider adjusting the sample rates to reduce overh
 
 ### Environment Variables
 
-| Variable                      | Description                                                      | Default                                                            | Required |
-| ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | -------- |
-| `APP_NAME`                    | Application name                                                 | "Backend Template API"                                             | No       |
-| `APP_TITLE`                   | Application title                                                | "Backend Template API"                                             | No       |
-| `APP_DESCRIPTION`             | Application description                                          | "A production-ready FastAPI backend template with LLM integration" | No       |
-| `APP_VERSION`                 | Application version                                              | "0.1.0"                                                            | No       |
-| `ENVIRONMENT`                 | Application environment (development/staging/production/testing) | "development"                                                      | No       |
-| `DEBUG`                       | Debug mode                                                       | `True`                                                             | No       |
-| `HOST`                        | Server host                                                      | "0.0.0.0"                                                          | No       |
-| `PORT`                        | Server port                                                      | 8000                                                               | No       |
-| `CORS_METHODS`                | Allowed HTTP methods (comma-separated or \*)                     | \*                                                                 | No       |
-| `CORS_ORIGINS`                | Allowed origins (comma-separated or \*)                          | \*                                                                 | No       |
-| `CORS_HEADERS`                | Allowed headers (comma-separated or \*)                          | \*                                                                 | No       |
-| `SENTRY_DSN`                  | Sentry Data Source Name for error monitoring                     | None                                                               | No       |
-| `SENTRY_TRACES_SAMPLE_RATE`   | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                                | No       |
-| `SENTRY_PROFILES_SAMPLE_RATE` | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                                | No       |
-| `DATABASE_URL`                | Database connection URL                                          | `sqlite+aiosqlite:///./app.db`                                     | No       |
-| `DATABASE_ECHO`               | Echo SQL queries (development only)                              | `False`                                                            | No       |
-| `DATABASE_POOL_SIZE`          | Database connection pool size                                    | `20`                                                               | No       |
-| `DATABASE_MAX_OVERFLOW`       | Maximum database connection overflow                             | `30`                                                               | No       |
-| `DATABASE_POOL_TIMEOUT`       | Pool connection timeout in seconds                               | `30`                                                               | No       |
-| `DATABASE_POOL_RECYCLE`       | Connection recycle time in seconds                               | `3600`                                                             | No       |
-| `DATABASE_MYSQL_CHARSET`      | MySQL character set                                              | `utf8mb4`                                                          | No       |
+| Variable                      | Description                                                      | Default                                                            | Used in     |
+| ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | ----------- |
+| `APP_NAME`                    | Application name                                                 | "Backend Template API"                                             | API, Docker |
+| `APP_TITLE`                   | Application title                                                | "Backend Template API"                                             | API         |
+| `APP_DESCRIPTION`             | Application description                                          | "A production-ready FastAPI backend template with LLM integration" | API         |
+| `APP_VERSION`                 | Application version                                              | "0.1.0"                                                            | API         |
+| `ENVIRONMENT`                 | Application environment (development/staging/production/testing) | "development"                                                      | API, Docker |
+| `DEBUG`                       | Debug mode                                                       | `True`                                                             | API         |
+| `HOST`                        | Server host                                                      | "0.0.0.0"                                                          | API, Docker |
+| `PORT`                        | Server port                                                      | 8000                                                               | API, Docker |
+| `CORS_METHODS`                | Allowed HTTP methods (comma-separated or \*)                     | \*                                                                 | API         |
+| `CORS_ORIGINS`                | Allowed origins (comma-separated or \*)                          | \*                                                                 | API         |
+| `CORS_HEADERS`                | Allowed headers (comma-separated or \*)                          | \*                                                                 | API         |
+| `SENTRY_DSN`                  | Sentry Data Source Name for error monitoring                     | None                                                               | API         |
+| `SENTRY_TRACES_SAMPLE_RATE`   | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                                | API         |
+| `SENTRY_PROFILES_SAMPLE_RATE` | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                                | API         |
+| `DATABASE_URL`                | Database connection URL                                          | `sqlite+aiosqlite:///./app.db`                                     | API         |
+| `DATABASE_ECHO`               | Echo SQL queries (development only)                              | `False`                                                            | API         |
+| `DATABASE_POOL_SIZE`          | Database connection pool size                                    | `20`                                                               | API         |
+| `DATABASE_MAX_OVERFLOW`       | Maximum database connection overflow                             | `30`                                                               | API         |
+| `DATABASE_POOL_TIMEOUT`       | Pool connection timeout in seconds                               | `30`                                                               | API         |
+| `DATABASE_POOL_RECYCLE`       | Connection recycle time in seconds                               | `3600`                                                             | API         |
+| `DATABASE_MYSQL_CHARSET`      | MySQL character set                                              | `utf8mb4`                                                          | API, Docker |
+| `DATABASE_MYSQL_COLLATION`    | MySQL collation                                                  | `utf8mb4_unicode_ci`                                               | Docker      |
+| `DATABASE_NAME`               | Database name                                                    | `app_db`                                                           | Docker      |
+| `DATABASE_USER`               | Database user                                                    | `db_user`                                                          | Docker      |
+| `DATABASE_PASSWORD`           | Database password                                                | `your_password`                                                    | Docker      |
+| `DATABASE_ROOT_PASSWORD`      | Database root password (MySQL only)                              | `your_root_password`                                               | Docker      |
+| `DATABASE_PORT`               | Database port                                                    | `3306` (MySQL) / `5432` (PostgreSQL)                               | Docker      |
 
 ## Features
 
