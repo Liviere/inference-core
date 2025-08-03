@@ -20,7 +20,9 @@ class CommonQueryParams:
         self,
         q: Optional[str] = Query(None, description="Search query"),
         sort_by: Optional[str] = Query(None, description="Sort field"),
-        sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
+        sort_order: str = Query(
+            "asc", pattern="^(asc|desc)$", description="Sort order"
+        ),
         include_deleted: bool = Query(False, description="Include deleted items"),
     ):
         self.q = q

@@ -2,12 +2,12 @@ import logging
 import sys
 from logging.config import dictConfig
 
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter as BaseJsonFormatter
 
 from .config import get_settings
 
 
-class JsonFormatter(jsonlogger.JsonFormatter):
+class JsonFormatter(BaseJsonFormatter):
     def add_fields(self, log_record, record, message_dict):
         super(JsonFormatter, self).add_fields(log_record, record, message_dict)
         if not log_record.get("timestamp"):
