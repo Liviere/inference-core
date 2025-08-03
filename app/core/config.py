@@ -80,76 +80,60 @@ class Settings(BaseSettings):
     #     APPLICATION SETTINGS        #
     ###################################
     app_name: str = Field(
-        default="Backend Template API", env="APP_NAME", description="Application name"
+        default="Backend Template API", description="Application name"
     )
     app_title: str = Field(
-        default="Backend Template API", env="APP_TITLE", description="Application title"
+        default="Backend Template API", description="Application title"
     )
     app_description: str = Field(
         default="A production-ready FastAPI backend template with LLM integration",
-        env="APP_DESCRIPTION",
         description="Application description",
     )
-    app_version: str = Field(
-        default="0.1.0", env="APP_VERSION", description="Application version"
-    )
+    app_version: str = Field(default="0.1.0", description="Application version")
     environment: str = Field(
-        default="development", env="ENVIRONMENT", description="Application environment"
+        default="development", description="Application environment"
     )
-    debug: bool = Field(default=True, env="DEBUG", description="Debug mode")
-    host: str = Field(default="0.0.0.0", env="HOST", description="Server host")
-    port: int = Field(default=8000, env="PORT", description="Server port")
+    debug: bool = Field(default=True, description="Debug mode")
+    host: str = Field(default="0.0.0.0", description="Server host")
+    port: int = Field(default=8000, description="Server port")
 
     ###################################
     #           CORS SETTINGS         #
     ###################################
 
-    cors_methods: List[str] = Field(
-        default=["*"], env="CORS_METHODS", description="CORS allowed methods"
-    )
-    cors_headers: List[str] = Field(
-        default=["*"], env="CORS_HEADERS", description="CORS allowed headers"
-    )
-    cors_origins: List[str] = Field(
-        default=["*"], env="CORS_ORIGINS", description="CORS allowed origins"
-    )
+    cors_methods: List[str] = Field(default=["*"], description="CORS allowed methods")
+    cors_headers: List[str] = Field(default=["*"], description="CORS allowed headers")
+    cors_origins: List[str] = Field(default=["*"], description="CORS allowed origins")
 
     ###################################
     #           DATABASE              #
     ###################################
     database_url: str = Field(
         default="sqlite+aiosqlite:///./app.db",
-        env="DATABASE_URL",
         description="Database connection URL",
     )
     database_echo: bool = Field(
         default=False,
-        env="DATABASE_ECHO",
         description="Echo SQL queries (development only)",
     )
     database_pool_size: int = Field(
         default=20,
-        env="DATABASE_POOL_SIZE",
         description="Database connection pool size",
     )
     database_max_overflow: int = Field(
         default=30,
-        env="DATABASE_MAX_OVERFLOW",
         description="Maximum database connection overflow",
     )
     database_pool_timeout: int = Field(
         default=30,
-        env="DATABASE_POOL_TIMEOUT",
         description="Pool connection timeout in seconds",
     )
     database_pool_recycle: int = Field(
         default=3600,
-        env="DATABASE_POOL_RECYCLE",
         description="Connection recycle time in seconds",
     )
     database_mysql_charset: str = Field(
         default="utf8mb4",
-        env="DATABASE_MYSQL_CHARSET",
         description="MySQL character set",
     )
 
@@ -157,16 +141,14 @@ class Settings(BaseSettings):
     #           MONITORING            #
     ###################################
     sentry_dsn: Optional[str] = Field(
-        default=None, env="SENTRY_DSN", description="Sentry DSN for error monitoring"
+        default=None, description="Sentry DSN for error monitoring"
     )
     sentry_traces_sample_rate: float = Field(
         default=1.0,
-        env="SENTRY_TRACES_SAMPLE_RATE",
         description="Sentry traces sample rate (0.0 to 1.0)",
     )
     sentry_profiles_sample_rate: float = Field(
         default=1.0,
-        env="SENTRY_PROFILES_SAMPLE_RATE",
         description="Sentry profiles sample rate (0.0 to 1.0)",
     )
 
