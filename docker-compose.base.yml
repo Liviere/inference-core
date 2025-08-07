@@ -1,0 +1,39 @@
+name: ${APP_NAME:-backend-template}
+
+services:
+  # FastAPI Application
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: ${APP_NAME:-backend-template}-api
+    restart: unless-stopped
+    command:
+      [
+        'fastapi',
+        'run',
+        '--port',
+        '${PORT:-8000}',
+        '--host',
+        '${HOST:-0.0.0.0}',
+      ]
+    ports:
+      - '${PORT:-8000}:${PORT:-8000}'
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      APP_NAME: ${APP_NAME:-backend-template}
+      APP_DESCRIPTION: ${APP_DESCRIPTION:-FastAPI Application}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+    networks:
+      - app-network
+    volumes:
+      - app_logs:/app/logs
+
+networks:
+  app-network:
+    driver: bridge
+    name: ${APP_NAME:-backend-template}-network
+
+volumes:
+  app_logs:
+    driver: local

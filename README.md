@@ -35,42 +35,15 @@ poetry run fastapi run
 
 ## Docker Deployment
 
-This application includes Docker support for containerized deployment with both MySQL and PostgreSQL database options.
+This application includes Docker support for containerized deployment with SQLite, MySQL, and PostgreSQL database options. The Docker configuration is organized in the `docker/` directory with separate compose files for each database type.
 
-### Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose](https://docs.docker.com/compose/install/)
-
-### Quick Start with Docker
-
-1. **Copy environment configuration:**
-
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Edit the `.env` file** with your specific settings (database credentials, etc.)
-
-3. **Start the application with MySQL:**
-
-   ```bash
-   docker-compose --profile mysql --profile production up -d
-   ```
-
-   Or with PostgreSQL:
-
-   ```bash
-   docker-compose --profile postgres --profile production up -d
-   ```
-
-4. **Access the application** at `http://localhost:{PORT}` (default is 8000).
+For detailed instructions on how to deploy the application using Docker, see [docker/README.md](docker/README.md).
 
 ## Testing
 
 The project includes a test suite with fixtures for database testing and API integration testing.
 
-For comprehensive testing documentation, environment setup, and troubleshooting, see [app/tests/README.md](app/tests/README.md).
+For comprehensive testing documentation, environment setup, and troubleshooting, see [tests/README.md](tests/README.md).
 
 ## API Endpoints (v1)
 

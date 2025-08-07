@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any, List, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import (
@@ -108,10 +108,40 @@ class Settings(BaseSettings):
     ###################################
     #           DATABASE              #
     ###################################
-    database_url: str = Field(
-        default="sqlite+aiosqlite:///./app.db",
-        description="Database connection URL",
+    # database_url: str = Field(
+    #     default="sqlite+aiosqlite:///./app.db",
+    #     description="Database connection URL",
+    # )
+
+    database_service: str = Field(
+        default="sqlite+aiosqlite",
+        description="Database service type (sqlite, postgresql, mysql)",
     )
+
+    database_host: str = Field(
+        default="localhost",
+        description="Database host",
+    )
+
+    database_port: int = Field(
+        default=5432,
+        description="Database port",
+    )
+
+    database_name: str = Field(
+        default="app_db",
+        description="Database name",
+    )
+
+    database_user: Optional[str] = Field(
+        default="db_user",
+        description="Database user",
+    )
+    database_password: Optional[str] = Field(
+        default="db_password",
+        description="Database password",
+    )
+
     database_echo: bool = Field(
         default=False,
         description="Echo SQL queries (development only)",
@@ -136,6 +166,22 @@ class Settings(BaseSettings):
         default="utf8mb4",
         description="MySQL character set",
     )
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./app.db",
+        description="Database connection URL",
+    )
+
+    @model_validator(mode="after")
+    def set_database_url(self) -> "Settings":
+        """Construct database URL based on service type and other parameters"""
+        if self.database_service == "sqlite+aiosqlite":
+            self.database_url = f"{self.database_service}:///./app.db"
+        else:
+            self.database_url = (
+                f"{self.database_service}://{self.database_user}:{self.database_password}"
+                f"@{self.database_host}:{self.database_port}/{self.database_name}"
+            )
+        return self
 
     ###################################
     #           MONITORING            #
@@ -165,7 +211,7 @@ class Settings(BaseSettings):
 
     @field_validator("database_url")
     @classmethod
-    def validate_database_url(cls, v: str) -> str:
+    def validate_database_url(cls, v: str, values: dict) -> str:
         """Validate and enhance database URL"""
         if not v:
             raise ValueError("Database URL cannot be empty")
