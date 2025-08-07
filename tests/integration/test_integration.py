@@ -47,9 +47,9 @@ async def test_create_tables(async_session_with_engine, test_settings):
             )
         )
 
-    elif test_settings.is_postgres:
+    elif test_settings.is_postgresql:
         result = await async_session.execute(
-            text("SELECT table_name FROM pg_tables WHERE schemaname = 'public'")
+            text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
         )
 
     row = result.fetchone()
@@ -77,10 +77,10 @@ async def test_drop_tables(async_session_with_engine, test_settings):
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'users'"
             )
         )
-    elif test_settings.is_postgres:
+    elif test_settings.is_postgresql:
         result = await async_session.execute(
             text(
-                "SELECT table_name FROM pg_tables WHERE schemaname = 'public' AND table_name = 'users'"
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users'"
             )
         )
     row = result.fetchone()
