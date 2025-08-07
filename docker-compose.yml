@@ -16,11 +16,8 @@ services:
     ports:
       - '${PORT:-8000}:${PORT:-8000}'
     environment:
-      DATABASE_URL: mysql+aiomysql://${DATABASE_USER:-db_user}:${DATABASE_PASSWORD:-your_password}@mysql:3306/${DATABASE_NAME:-app_db}
+      DATABASE_URL: ${DATABASE_URL}
       ENVIRONMENT: ${ENVIRONMENT:-production}
-    depends_on:
-      mysql:
-        condition: service_healthy
     networks:
       - app-network
     volumes:
@@ -68,7 +65,11 @@ services:
     profiles: ['postgres']
 
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER}']
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${DATABASE_USER:-db_user} -d ${DATABASE_NAME:-app_db}',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
