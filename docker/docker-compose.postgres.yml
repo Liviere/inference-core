@@ -9,6 +9,16 @@ services:
       DATABASE_USER: ${DATABASE_USER:-db_user}
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:-db_password}
 
+  # Celery Worker
+  celery-worker:
+    environment:
+      DATABASE_SERVICE: postgresql+asyncpg
+      DATABASE_HOST: postgres
+      DATABASE_PORT: ${DATABASE_PORT:-5432}
+      DATABASE_NAME: ${DATABASE_NAME:-app_db}
+      DATABASE_USER: ${DATABASE_USER:-db_user}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-db_password}
+
   postgres:
     image: postgres:17
     container_name: ${APP_NAME:-backend-template}-postgres

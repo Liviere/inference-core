@@ -9,6 +9,16 @@ services:
       DATABASE_USER: ${DATABASE_USER:-db_user}
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:-db_password}
 
+  # Celery Worker
+  celery-worker:
+    environment:
+      DATABASE_SERVICE: ${DATABASE_SERVICE:-mysql+aiomysql}
+      DATABASE_HOST: mysql
+      DATABASE_PORT: ${DATABASE_PORT:-3306}
+      DATABASE_NAME: ${DATABASE_NAME:-app_db}
+      DATABASE_USER: ${DATABASE_USER:-db_user}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-db_password}
+
   # MySQL Database
   mysql:
     image: mysql:8.0

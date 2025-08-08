@@ -1,5 +1,5 @@
 """
-Test configuration and fixtures for Story Teller API tests.
+Test configuration and fixtures for API tests.
 
 This module provides common fixtures and configuration for all tests,
 including database setup, test client, and Celery testing utilities.
