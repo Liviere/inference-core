@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.celery.task_service import TaskService, get_task_service
 from app.core.config import get_settings
 from app.core.dependecies import get_db
 from app.database.sql.connection import db_manager
@@ -46,7 +47,9 @@ class HealthCheckResponse(BaseModel):
 
 @router.get("/", response_model=HealthCheckResponse)
 async def health_check(
-    settings=Depends(get_settings), db_session=Depends(get_db)
+    settings=Depends(get_settings),
+    db_session=Depends(get_db),
+    task_service: TaskService = Depends(get_task_service),
 ) -> HealthCheckResponse:
     """
     Overall application health check
@@ -62,8 +65,37 @@ async def health_check(
     # Check database health
     db_healthy = await db_manager.health_check(db_session)
 
-    # Placeholder for service health checks
+    # Placeholder for service health checks (overall based on critical deps only)
     overall_status = "healthy" if all([db_healthy]) else "unhealthy"
+
+    # Tasks/Celery health (non-critical for overall status here)
+    try:
+        worker_stats = task_service.get_worker_stats()
+        ping_responses = worker_stats.get("ping") or {}
+        active_workers = (
+            len([w for w in ping_responses.values() if w.get("ok") == "pong"])
+            if isinstance(ping_responses, dict)
+            else 0
+        )
+        tasks_status = (
+            "healthy"
+            if active_workers > 0
+            else ("degraded" if ping_responses else "unavailable")
+        )
+        tasks_component = {
+            "status": tasks_status,
+            "active_workers": active_workers,
+            "celery_available": bool(ping_responses),
+            "checked_at": timestamp,
+        }
+    except Exception as e:
+        tasks_component = {
+            "status": "unavailable",
+            "active_workers": 0,
+            "celery_available": False,
+            "message": f"Task service error: {str(e)}",
+            "checked_at": timestamp,
+        }
 
     components = {
         "database": {
@@ -76,6 +108,7 @@ async def health_check(
             "environment": settings.environment,
             "checked_at": timestamp,
         },
+        "tasks": tasks_component,
     }
 
     return HealthCheckResponse(
