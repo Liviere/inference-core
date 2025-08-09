@@ -10,13 +10,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.celery.task_service import TaskService, get_task_service
 from app.schemas.tasks_responses import (
     ActiveTasksResponse,
     TaskCancelResponse,
     TaskStatusResponse,
     WorkerStatsResponse,
 )
+from app.services.task_service import TaskService, get_task_service
 
 logger = logging.getLogger(__name__)
 

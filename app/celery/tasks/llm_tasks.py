@@ -7,12 +7,13 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from app.celery.celery_main import celery_app
-from app.llm.llm_service import get_llm_service
+from app.services.llm_service import get_llm_service
 
 
 @celery_app.task(name="llm.explain")
 def task_llm_explain(**kwargs) -> Dict[str, Any]:
     """Celery task: Generate explanation using LLMService"""
+
     async def _run() -> Dict[str, Any]:
         service = get_llm_service()
         question: str = kwargs.get("question", "")

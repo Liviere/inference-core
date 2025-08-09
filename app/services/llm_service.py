@@ -11,9 +11,9 @@ from typing import Any, Dict, Optional, cast
 
 from pydantic import BaseModel
 
-from .chains import create_conversation_chain, create_explanation_chain
-from .config import llm_config
-from .models import get_model_factory
+from app.llm.chains import create_conversation_chain, create_explanation_chain
+from app.llm.config import llm_config
+from app.llm.models import get_model_factory
 
 logger = logging.getLogger(__name__)
 

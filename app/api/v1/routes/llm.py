@@ -11,9 +11,9 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.celery.task_service import TaskService, get_task_service
-from app.llm.llm_service import LLMResponse, get_llm_service
 from app.schemas.tasks_responses import TaskResponse
+from app.services.llm_service import get_llm_service
+from app.services.task_service import TaskService, get_task_service
 
 logger = logging.getLogger(__name__)
 

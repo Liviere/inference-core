@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from celery.result import AsyncResult
 
-from .celery_main import celery_app
+from app.celery.celery_main import celery_app
 
 
 class TaskService:

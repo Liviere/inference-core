@@ -34,7 +34,7 @@ def test_task_llm_explain_basic(monkeypatch):
     """Explain task returns structured payload with answer and metadata."""
 
     # Patch the chain factory inside llm_service module namespace
-    import app.llm.llm_service as llm_svc
+    import app.services.llm_service as llm_svc
 
     def _fake_create_explanation_chain(model_name: Optional[str] = None, **kwargs: Any):
         return _FakeExplanationChain(model_name=model_name, **kwargs)
@@ -67,7 +67,7 @@ def test_task_llm_explain_basic(monkeypatch):
 def test_task_llm_conversation_with_session_id(monkeypatch):
     """Conversation task echoes reply and preserves provided session_id."""
 
-    import app.llm.llm_service as llm_svc
+    import app.services.llm_service as llm_svc
 
     def _fake_create_conversation_chain(
         model_name: Optional[str] = None, **kwargs: Any
@@ -107,7 +107,7 @@ def test_task_llm_conversation_with_session_id(monkeypatch):
 def test_task_llm_conversation_autogenerates_session_id(monkeypatch):
     """Conversation task fills session_id when not provided."""
 
-    import app.llm.llm_service as llm_svc
+    import app.services.llm_service as llm_svc
 
     def _fake_create_conversation_chain(
         model_name: Optional[str] = None, **kwargs: Any

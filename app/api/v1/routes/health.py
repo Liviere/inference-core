@@ -12,10 +12,10 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.celery.task_service import TaskService, get_task_service
 from app.core.config import get_settings
 from app.core.dependecies import get_db
 from app.database.sql.connection import db_manager
+from app.services.task_service import TaskService, get_task_service
 
 router = APIRouter(prefix="/health", tags=["Health Check"])
 

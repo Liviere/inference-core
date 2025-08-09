@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 import pytest
 
 from app.celery.celery_main import celery_app
-from app.celery.task_service import TaskService
+from app.services.task_service import TaskService
 
 # Local in-memory store for eager results keyed by task_id
 _EAGER_RESULTS: Dict[str, Any] = {}
@@ -70,7 +70,7 @@ def celery_eager():
 async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
     # Stub chain factories in llm_service
     import app.celery.tasks.llm_tasks as llm_tasks
-    import app.llm.llm_service as llm_svc
+    import app.services.llm_service as llm_svc
 
     monkeypatch.setattr(
         llm_svc,
@@ -164,7 +164,7 @@ async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
 @pytest.mark.asyncio
 async def test_e2e_conversation_task(async_test_client, monkeypatch, celery_eager):
     import app.celery.tasks.llm_tasks as llm_tasks
-    import app.llm.llm_service as llm_svc
+    import app.services.llm_service as llm_svc
 
     monkeypatch.setattr(
         llm_svc,
