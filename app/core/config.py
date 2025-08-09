@@ -233,6 +233,22 @@ class Settings(BaseSettings):
     ###################################
     #           PROPERTIES            #
     ###################################
+    # Security / Auth
+    secret_key: str = Field(
+        default="change-me-in-production",
+        description="Secret key for JWT signing",
+    )
+    algorithm: str = Field(default="HS256", description="JWT signing algorithm")
+    access_token_expire_minutes: int = Field(
+        default=30, description="Access token expiration in minutes"
+    )
+    refresh_token_expire_days: int = Field(
+        default=7, description="Refresh token expiration in days"
+    )
+
+    ###################################
+    #           PROPERTIES            #
+    ###################################
     @property
     def is_development(self) -> bool:
         return self.environment == "development"
