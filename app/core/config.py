@@ -247,6 +247,17 @@ class Settings(BaseSettings):
     )
 
     ###################################
+    #              REDIS              #
+    ###################################
+    redis_url: str = Field(
+        default="redis://localhost:6379/10",
+        description="Redis connection URL for sessions/locks",
+    )
+    redis_refresh_prefix: str = Field(
+        default="auth:refresh:", description="Key prefix for refresh sessions"
+    )
+
+    ###################################
     #           PROPERTIES            #
     ###################################
     @property

@@ -5,7 +5,7 @@ Handles JWT tokens, password hashing, and authentication dependencies.
 """
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
@@ -79,13 +79,20 @@ class SecurityManager:
         to_encode = data.copy()
 
         if expires_delta:
-            expire = datetime.utcnow() + expires_delta
+            expire = datetime.now(UTC) + expires_delta
         else:
-            expire = datetime.utcnow() + timedelta(
+            expire = datetime.now(UTC) + timedelta(
                 minutes=self.settings.access_token_expire_minutes
             )
 
-        to_encode.update({"exp": expire})
+        # mark as access token and include random jti for potential future denylist
+        to_encode.update(
+            {
+                "exp": expire,
+                "type": "access",
+                "jti": secrets.token_urlsafe(16),
+            }
+        )
         encoded_jwt = jwt.encode(
             to_encode, self.settings.secret_key, algorithm=self.settings.algorithm
         )
@@ -102,10 +109,17 @@ class SecurityManager:
             JWT refresh token string
         """
         to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(
+        expire = datetime.now(UTC) + timedelta(
             days=self.settings.refresh_token_expire_days
         )
-        to_encode.update({"exp": expire, "type": "refresh"})
+        # add type and jti for tracking in Redis
+        to_encode.update(
+            {
+                "exp": expire,
+                "type": "refresh",
+                "jti": secrets.token_urlsafe(24),
+            }
+        )
 
         encoded_jwt = jwt.encode(
             to_encode, self.settings.secret_key, algorithm=self.settings.algorithm
@@ -126,6 +140,9 @@ class SecurityManager:
             payload = jwt.decode(
                 token, self.settings.secret_key, algorithms=[self.settings.algorithm]
             )
+            # Enforce access tokens only for auth-protected dependencies
+            if payload.get("type") != "access":
+                return None
             user_id: str = payload.get("sub")
             if user_id is None:
                 return None
@@ -147,11 +164,13 @@ class SecurityManager:
             Password reset token
         """
         delta = timedelta(hours=1)  # Reset token expires in 1 hour
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         expires = now + delta
-        exp = expires.timestamp()
+        # Use integer numeric dates for compatibility
+        exp = int(expires.timestamp())
+        nbf = int(now.timestamp())
         encoded_jwt = jwt.encode(
-            {"exp": exp, "nbf": now, "sub": email, "type": "reset"},
+            {"exp": exp, "nbf": nbf, "sub": email, "type": "reset"},
             self.settings.secret_key,
             algorithm=self.settings.algorithm,
         )

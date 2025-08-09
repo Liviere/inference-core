@@ -61,6 +61,30 @@ This project also includes an API dedicated to working with LLM models. For deta
 - `GET /api/v1/health/database` - Check database connection health
 - `GET /api/v1/health/ping` - Simple ping endpoint for basic health checking
 
+### Authentication (JWT)
+
+Built-in authentication supports JWT access tokens and stateful refresh tokens stored in Redis for rotation and logout.
+
+- Auth flow
+
+  - `POST /api/v1/auth/register` — create account
+  - `POST /api/v1/auth/login` — returns `access_token` and `refresh_token`
+  - `POST /api/v1/auth/refresh` — exchange refresh for new tokens (rotates refresh)
+  - `POST /api/v1/auth/logout` — revoke provided refresh token (best-effort)
+
+- User endpoints
+  - `GET /api/v1/auth/me` — current profile (requires access token)
+  - `PUT /api/v1/auth/me` — update profile (requires access token)
+  - `POST /api/v1/auth/change-password` — change password (requires access token)
+  - `POST /api/v1/auth/forgot-password` — request reset (always returns success)
+  - `POST /api/v1/auth/reset-password` — set new password with reset token
+
+Notes
+
+- Access tokens are short-lived and must include type `access`.
+- Refresh tokens are stored/validated in Redis and rotated on `/auth/refresh`.
+- On `/auth/logout`, the provided refresh token is revoked in Redis when available.
+
 ## Configuration
 
 The application uses environment variables for configuration. You can set them directly or create a `.env` file in the project root.
@@ -149,6 +173,12 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `DATABASE_PORT`               | Database port                                                    | `3306` (MySQL) / `5432` (PostgreSQL)                               | Docker              |
 | `DATABASE_HOST`               | Database host                                                    | `localhost` (or service name in Docker)                            | API, Docker         |
 | `DATABASE_SERVICE`            | Database backend/driver (async)                                  | `sqlite+aiosqlite`                                                 | API, Docker         |
+| `SECRET_KEY`                  | Secret used to sign JWT tokens                                   | `change-me-in-production`                                          | Auth                |
+| `ALGORITHM`                   | JWT signing algorithm                                            | `HS256`                                                            | Auth                |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (minutes)                                  | `30`                                                               | Auth                |
+| `REFRESH_TOKEN_EXPIRE_DAYS`   | Refresh token lifetime (days)                                    | `7`                                                                | Auth                |
+| `REDIS_URL`                   | Redis URL for app sessions/locks (refresh sessions)              | `redis://localhost:6379/10`                                        | API/Auth            |
+| `REDIS_REFRESH_PREFIX`        | Key prefix for refresh sessions                                  | `auth:refresh:`                                                    | Auth                |
 | `CELERY_BROKER_URL`           | Celery broker URL                                                | `redis://localhost:6379/0`                                         | API, Celery, Docker |
 | `CELERY_RESULT_BACKEND`       | Celery result backend URL                                        | `redis://localhost:6379/1`                                         | Celery, Docker      |
 | `DEBUG_CELERY`                | Enable debugpy for Celery worker (1 to enable)                   | `0`                                                                | Celery, Docker      |

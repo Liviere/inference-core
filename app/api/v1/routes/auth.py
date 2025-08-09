@@ -9,11 +9,12 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer
+from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.dependecies import get_current_active_user, get_db
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, create_refresh_token, verify_password
 from app.schemas.auth import (
     LoginRequest,
     PasswordChange,
@@ -21,11 +22,13 @@ from app.schemas.auth import (
     PasswordResetRequest,
     RegisterRequest,
     Token,
+    TokenRefresh,
     UserProfile,
     UserProfileUpdate,
 )
 from app.schemas.common import SuccessResponse
 from app.services.auth_service import AuthService
+from app.services.refresh_session_store import RefreshSessionStore
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
@@ -118,12 +121,22 @@ async def login(login_data: LoginRequest, db: AsyncSession = Depends(get_db)) ->
         data={"sub": str(user.id)}, expires_delta=access_token_expires
     )
 
-    # Create refresh token
-    refresh_token_expires = timedelta(days=settings.refresh_token_expire_days)
-    refresh_token = create_access_token(
-        data={"sub": str(user.id), "type": "refresh"},
-        expires_delta=refresh_token_expires,
-    )
+    # Create refresh token and register session in Redis
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    try:
+        payload = jwt.decode(
+            refresh_token,
+            settings.secret_key,
+            algorithms=[settings.algorithm],
+        )
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if jti and exp:
+            store = RefreshSessionStore()
+            await store.add(jti=jti, user_id=str(user.id), exp=int(exp))
+    except Exception:
+        # If Redis unavailable, we still return tokens (session-less fallback)
+        pass
 
     return Token(
         access_token=access_token, refresh_token=refresh_token, token_type="bearer"
@@ -279,21 +292,83 @@ async def reset_password(
     )
 
 
+@router.post("/refresh", response_model=Token)
+async def refresh_tokens(
+    payload: TokenRefresh,
+) -> Token:
+    """
+    Exchange a refresh token for a new access token and rotated refresh token.
+    """
+    settings = get_settings()
+    store = RefreshSessionStore()
+    # Decode and validate that session exists
+    try:
+        decoded = jwt.decode(
+            payload.refresh_token,
+            settings.secret_key,
+            algorithms=[settings.algorithm],
+        )
+        if decoded.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token type"
+            )
+        jti = decoded.get("jti")
+        sub = decoded.get("sub")
+        if not jti or not sub:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Malformed refresh token",
+            )
+        if not await store.exists(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked"
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
+
+    # Rotate: revoke old, issue new refresh, store session
+    await store.revoke(jti)
+    access_token = create_access_token(data={"sub": str(sub)})
+    new_refresh = create_refresh_token(data={"sub": str(sub)})
+    try:
+        decoded_new = jwt.decode(
+            new_refresh, settings.secret_key, algorithms=[settings.algorithm]
+        )
+        new_jti = decoded_new.get("jti")
+        new_exp = decoded_new.get("exp")
+        if new_jti and new_exp:
+            await store.add(jti=new_jti, user_id=str(sub), exp=int(new_exp))
+    except Exception:
+        pass
+
+    return Token(
+        access_token=access_token, refresh_token=new_refresh, token_type="bearer"
+    )
+
+
 @router.post("/logout", response_model=SuccessResponse)
-async def logout(
-    current_user: dict = Depends(get_current_active_user),
-) -> SuccessResponse:
+async def logout(payload: TokenRefresh) -> SuccessResponse:
     """
     Logout current user
-
-    Args:
-        current_user: Current authenticated user
 
     Returns:
         Success response
     """
-    # In a real implementation, you might want to blacklist the token
-    # or store logout information
+    settings = get_settings()
+    store = RefreshSessionStore()
+    # Best-effort revoke of provided refresh token
+    try:
+        decoded = jwt.decode(
+            payload.refresh_token, settings.secret_key, algorithms=[settings.algorithm]
+        )
+        if decoded.get("type") == "refresh" and decoded.get("jti"):
+            await store.revoke(decoded["jti"])
+    except Exception:
+        pass
 
     return SuccessResponse(
         success=True,

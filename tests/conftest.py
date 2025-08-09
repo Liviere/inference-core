@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependecies import get_db
 from app.database.sql.connection import (
+    Base,
     create_database_engine,
     get_non_singleton_session_maker,
 )
@@ -64,6 +65,9 @@ async def async_test_client() -> AsyncGenerator[AsyncClient, None]:
     """Create an async test client with a temporary database."""
     # Create engine and session maker
     engine = create_database_engine()
+    # Ensure tables exist for endpoints that interact with DB
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     session_maker = get_non_singleton_session_maker(engine=engine)
 
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -86,4 +90,11 @@ async def async_test_client() -> AsyncGenerator[AsyncClient, None]:
     finally:
         # Clean up dependency overrides and dispose engine
         app.dependency_overrides.clear()
+        # Drop tables after tests to keep environment clean
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+        except Exception:
+            # Best-effort cleanup; ignore if DB not reachable
+            pass
         await engine.dispose()
