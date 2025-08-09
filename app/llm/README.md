@@ -6,9 +6,9 @@ This module provides a dedicated API and service layer for working with Large La
 
 - `prompts.py`: Prompt templates for various tasks (e.g., explain, conversation)
 - `chains.py`: LangChain chains (includes multi-turn conversation with message history)
-- `llm_service.py`: High-level service interface for LLM operations
 - `models.py`: Model factory (OpenAI and OpenAI-compatible providers)
 - `config.py`: Loads `llm_config.yaml` with providers/models/tasks mapping
+- `../services/llm_service.py`: High-level service interface for LLM operations
 
 ## Features
 
