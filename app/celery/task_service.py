@@ -93,6 +93,16 @@ class TaskService:
             "registered": inspect.registered(),
         }
 
+    def explain_async(self, **kwargs) -> str:
+        """Submit explenation task"""
+        task = self.celery_app.send_task("llm.explain", kwargs=kwargs)
+        return task.id
+
+    def conversation_async(self, **kwargs) -> str:
+        """Submit conversation task (one turn)"""
+        task = self.celery_app.send_task("llm.conversation", kwargs=kwargs)
+        return task.id
+
 
 # Global task service instance
 task_service = TaskService()

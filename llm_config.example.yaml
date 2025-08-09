@@ -1,0 +1,110 @@
+# LLM Configuration
+# This file defines available models, providers, and task assignments
+
+# Model Providers Configuration
+providers:
+  openai:
+    name: 'OpenAI'
+    api_key_env: 'OPENAI_API_KEY'
+    base_url: 'https://api.openai.com/v1'
+    requires_api_key: true
+    openai_compatible: true
+
+  custom_openai_compatible:
+    name: 'Custom OpenAI Compatible'
+    api_key_env: 'CUSTOM_LLM_API_KEY'
+    base_url: 'https://api.custom-llm.com/v1'
+    requires_api_key: true
+    openai_compatible: true
+
+# Available Models Configuration
+models:
+  # OpenAI Models
+  gpt-5:
+    provider: 'openai'
+    display_name: 'GPT-5'
+    description: 'Most capable model for complex tasks'
+    max_tokens: 8192
+    temperature: 0.7
+
+  gpt-5-mini:
+    provider: 'openai'
+    display_name: 'GPT-5 Mini'
+    description: 'Affordable and intelligent small model'
+    max_tokens: 8192
+    temperature: 0.7
+
+  gpt-5-nano:
+    provider: 'openai'
+    display_name: 'GPT-5 Nano'
+    description: 'Fast and efficient for most tasks'
+    max_tokens: 4096
+    temperature: 0.7
+
+  # Custom OpenAI Compatible Models
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8:
+    provider: 'custom_openai_compatible'
+    display_name: 'Llama 4 Maverick'
+    description: 'Llama 4 Maverick, hosted on Custom OpenAI Compatible'
+    max_tokens: 8192
+    temperature: 0.7
+
+  deepseek-ai/DeepSeek-R1-0528:
+    provider: 'custom_openai_compatible'
+    display_name: 'DeepSeek R1 0528'
+    description: 'DeepSeek R1 0528, hosted on Custom OpenAI Compatible'
+    max_tokens: 8192
+    temperature: 0.7
+    default_timeout: 300
+
+  deepseek-ai/DeepSeek-V3-0324:
+    provider: 'custom_openai_compatible'
+    display_name: 'DeepSeek V3 0324'
+    description: 'DeepSeek V3 0324, hosted on Custom OpenAI Compatible'
+    max_tokens: 8192
+    temperature: 0.7
+
+# Task Model Assignments
+tasks:
+  explain:
+    primary: 'gpt-5-mini'
+    fallback: ['deepseek-ai/DeepSeek-V3-0324']
+    testing: ['gpt-5-nano']
+    description: 'Models suitable for explanations'
+
+  conversation:
+    primary: 'gpt-5-mini'
+    fallback: ['deepseek-ai/DeepSeek-V3-0324']
+    testing: ['gpt-5-nano']
+    description: 'Models optimized for multi-turn chat'
+
+# General Settings
+settings:
+  enable_caching: true
+  cache_ttl_seconds: 3600
+  max_concurrent_requests: 5
+  enable_monitoring: true
+  default_timeout: 60
+  retry_attempts: 3
+  retry_delay: 1.0
+
+  # Rate limiting
+  rate_limit_requests_per_minute: 60
+  rate_limit_tokens_per_minute: 90000
+
+  # Safety settings
+  max_prompt_length: 64000
+  max_response_length: 4096
+  content_filter_enabled: true
+
+  # Testing settings
+  testing:
+    enable_integration_tests: true
+    test_timeout: 30
+    mock_responses_by_default: true
+    skip_slow_models: true
+
+  # Environment variable overrides
+  env_overrides:
+    explain: 'LLM_EXPLAIN_MODEL'
+    conversation: 'LLM_CONVERSATION_MODEL'

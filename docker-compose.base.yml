@@ -41,7 +41,7 @@ services:
     command: >
       sh -c "poetry run celery -A app.celery.celery_main:celery_app worker 
              --loglevel=info 
-             --queues=default
+             --queues=default,llm_tasks
              --hostname=worker@%h 
              --max-tasks-per-child=100 
              --time-limit=300 

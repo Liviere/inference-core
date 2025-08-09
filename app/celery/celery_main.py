@@ -20,12 +20,10 @@ def create_celery_app() -> Celery:
     celery_app.config_from_object(CeleryConfig)
 
     # Auto-discover tasks
-    # TODO LATER: Define task modules
-    celery_app.autodiscover_tasks([])
+    celery_app.autodiscover_tasks(["app.celery.tasks"])
 
-    # Task discovery for testing
-    # TODO LATER: Define task modules for testing
-    celery_app.conf.update(include=[])
+    # Explicitly include tasks modules (useful for testing/packaging)
+    celery_app.conf.update(include=["app.celery.tasks.llm_tasks"])
 
     return celery_app
 

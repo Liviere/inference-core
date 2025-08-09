@@ -41,12 +41,14 @@ class CeleryConfig:
     result_persistent = True
 
     # Queue configuration with priority
-    # TODO LATER: Define queues and routing
-    task_routes = {}
+    task_routes = {
+        "app.celery.tasks.llm_tasks.*": {"queue": "llm_tasks"},
+    }
 
     task_default_queue = "default"
     task_queues = [
         Queue("default", Exchange("default"), routing_key="default"),
+        Queue("llm_tasks", Exchange("llm_tasks"), routing_key="llm_tasks"),
     ]
 
     # Monitoring

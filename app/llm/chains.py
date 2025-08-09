@@ -1,0 +1,149 @@
+"""
+LangChain Chains for Story Processing
+
+Contains predefined chains for common story-related tasks.
+Each chain combines prompts with models for specific functionality.
+"""
+
+import logging
+from typing import Dict, Optional
+
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables.history import RunnableWithMessageHistory
+
+from .models import get_model_factory
+from .prompts import AVAILABLE_PROMPTS, get_chat_prompt_template
+
+logger = logging.getLogger(__name__)
+
+
+class BaseChain:
+    """Base class for processing chains"""
+
+    def __init__(self, model_name: Optional[str] = None, **model_params):
+        self.model_factory = get_model_factory()
+        self.model_name = model_name
+        self.model_params = model_params
+        self._chain = None
+
+    def _get_model(self, task: str) -> BaseChatModel:
+        """Get model for the chain"""
+        if self.model_name:
+            model = self.model_factory.create_model(
+                self.model_name, **self.model_params
+            )
+        else:
+            params = self.model_params
+            model = self.model_factory.get_model_for_task(task, **params)
+            self.model_name = model.model_name
+            t = 1
+
+        if not model:
+            raise ValueError(f"Could not create model for task: {task}")
+        return model
+
+    async def arun(self, **kwargs) -> str:
+        """Run the chain asynchronously"""
+        if not self._chain:
+            raise NotImplementedError("Chain not implemented")
+
+        try:
+            result = await self._chain.ainvoke(kwargs)
+            return result
+        except Exception as e:
+            logger.error(f"Chain execution failed: {str(e)}")
+            raise
+
+
+# Chain implementations for specific tasks
+## Explanation Chain
+class ExplanationChain(BaseChain):
+    """Chain for explaining concepts"""
+
+    def __init__(self, model_name: Optional[str] = None, **model_params):
+        super().__init__(model_name, **model_params)
+        self._build_chain()
+
+    def _build_chain(self):
+        """Build the explanation chain"""
+        model = self._get_model("explain")
+        prompt = AVAILABLE_PROMPTS["explain"]
+
+        self._chain = prompt | model | StrOutputParser()
+
+    async def generate_story(
+        self,
+        question: str,
+    ) -> str:
+        """Generate a answer to a question"""
+        return await self.arun(
+            question=question,
+        )
+
+
+def create_explanation_chain(
+    model_name: Optional[str] = None, **model_params
+) -> ExplanationChain:
+    """Create an explenation chain instance"""
+    return ExplanationChain(model_name, **model_params)
+
+
+## Conversation Chain
+class ConversationChain(BaseChain):
+    """Chain for multi-turn conversation using session-based history"""
+
+    # Simple in-memory store; in production swap to persistent history (Redis/SQL/etc.)
+    _histories: Dict[str, InMemoryChatMessageHistory] = {}
+
+    def __init__(self, model_name: Optional[str] = None, **model_params):
+        super().__init__(model_name, **model_params)
+        self._build_chain()
+
+    @classmethod
+    def _get_session_history(cls, session_id: str) -> InMemoryChatMessageHistory:
+        history = cls._histories.get(session_id)
+        if history is None:
+            history = InMemoryChatMessageHistory()
+            cls._histories[session_id] = history
+        return history
+
+    def _build_chain(self):
+        """Build the conversation chain with message history support"""
+        model = self._get_model("conversation")
+        prompt = get_chat_prompt_template("conversation")
+
+        # Base LCEL chain
+        base_chain = prompt | model | StrOutputParser()
+
+        # Wrap with message history per LangChain best practices
+        self._chain = RunnableWithMessageHistory(
+            base_chain,
+            self._get_session_history,
+            input_messages_key="user_input",
+            history_messages_key="history",
+        )
+
+    async def chat(self, session_id: str, user_input: str) -> str:
+        """Send a user message within a session and get assistant reply"""
+        if not self._chain:
+            raise NotImplementedError("Conversation chain not initialized")
+
+        try:
+            # Pass session_id via config.configurable per RunnableWithMessageHistory contract
+            result = await self._chain.ainvoke(
+                {"user_input": user_input},
+                config={"configurable": {"session_id": session_id}},
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Conversation execution failed: {str(e)}")
+            raise
+
+
+def create_conversation_chain(
+    model_name: Optional[str] = None, **model_params
+) -> ConversationChain:
+    """Create a conversation chain instance"""
+    return ConversationChain(model_name, **model_params)

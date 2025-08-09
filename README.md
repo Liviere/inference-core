@@ -1,6 +1,6 @@
 # backend-template
 
-A ready-to-use API template based on FastAPI.
+A production-ready FastAPI backend template with Celery-powered background tasks and first-class LLM integration.
 
 ## Requirements
 
@@ -52,6 +52,8 @@ The project includes a test suite with fixtures for database testing and API int
 For comprehensive testing documentation, environment setup, and troubleshooting, see [tests/README.md](tests/README.md).
 
 ## API Endpoints (v1)
+
+This project also includes an API dedicated to working with LLM models. For details on LLM endpoints, configuration, and usage, see [app/llm/README.md](app/llm/README.md).
 
 ### Health Check
 
@@ -152,6 +154,11 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `DEBUG_CELERY`                | Enable debugpy for Celery worker (1 to enable)                   | `0`                                                                | Celery, Docker      |
 | `REDIS_PORT`                  | Redis port (used for both host and container)                    | `6379`                                                             | Docker              |
 | `FLOWER_PORT`                 | Flower port (used for both host and container)                   | `5555`                                                             | Docker              |
+| `OPENAI_API_KEY`              | API key for OpenAI provider                                      | None                                                               | LLM                 |
+| `CUSTOM_LLM_API_KEY`          | API key for custom OpenAI-compatible provider                    | None                                                               | LLM                 |
+| `DEEPINFRA_API_KEY`           | API key for DeepInfra provider                                   | None                                                               | LLM                 |
+| `LLM_EXPLAIN_MODEL`           | Override model for the 'explain' task                            | None                                                               | LLM                 |
+| `LLM_CONVERSATION_MODEL`      | Override model for the 'conversation' task                       | None                                                               | LLM                 |
 
 ## Features
 

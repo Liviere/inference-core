@@ -6,7 +6,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
-from .api.v1.routes import health, tasks
+from .api.v1.routes import health, llm, tasks
 from .core.config import get_settings
 from .core.logging_config import setup_logging
 from .database.sql.connection import close_database, create_tables
@@ -150,6 +150,7 @@ def setup_routers(app: FastAPI) -> None:
     # Include all v1 endpoints with explicit configuration
     api_v1.include_router(health.router)
     api_v1.include_router(tasks.router)
+    api_v1.include_router(llm.router)
 
     # Include main API router
     app.include_router(api_v1)
