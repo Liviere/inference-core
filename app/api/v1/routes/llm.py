@@ -17,7 +17,7 @@ from app.schemas.tasks_responses import TaskResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/llm", tags=["LLM"])
+router = APIRouter(prefix="/llm", tags=["LLM"])
 
 
 class BaseLLMRequest(BaseModel):

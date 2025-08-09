@@ -20,7 +20,7 @@ from app.schemas.tasks_responses import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/tasks", tags=["Task Management"])
+router = APIRouter(prefix="/tasks", tags=["Task Management"])
 
 
 @router.get("/{task_id}/status", response_model=TaskStatusResponse)
