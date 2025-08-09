@@ -5,5 +5,5 @@ if __name__ == "__main__":
 
     from app.main import app
 
-    APP_PORT = int(os.getenv("PORT", "8080"))
+    APP_PORT = int(os.getenv("PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=APP_PORT)

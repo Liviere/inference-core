@@ -1,0 +1,37 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run FastAPI Server",
+			"type": "shell",
+			"command": "poetry run fastapi run",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run FastAPI Development Server (Poetry)",
+			"type": "shell",
+			"command": "poetry run fastapi dev",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Worker",
+			"type": "shell",
+			"command": "poetry run celery -A app.celery.celery_main:celery_app worker --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Worker (DEBUG)",
+			"type": "shell",
+			"command": "export DEBUG_CELERY=1 && poetry run celery -A app.celery.celery_main:celery_app worker --concurrency=1 --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}
