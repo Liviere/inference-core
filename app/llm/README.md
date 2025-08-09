@@ -15,7 +15,7 @@ This module provides a dedicated API and service layer for working with Large La
 - Explain task: generates explanations for questions
 - Conversation task: multi-turn chat with session-based message history
 - RunnableWithMessageHistory pattern for robust conversation state
-- In-memory chat history by default (can be swapped for Redis/DB history backends)
+- SQL-backed chat history by default using SQLChatMessageHistory (can be swapped for Redis/other DB backends)
 
 ## Configuration
 
@@ -46,6 +46,7 @@ Refer to the app-level API router under `app/api/v1/routes/llm.py` for the exact
 
 ## Notes
 
-- Default conversation memory is in-memory and per-process; use a persistent message history for horizontal scaling.
+- Conversation memory is persisted in your configured SQL database via SQLChatMessageHistory (persists across processes).
+- If you use Postgres/MySQL, ensure the sync DB drivers are installed (psycopg for Postgres, PyMySQL for MySQL); these are included in pyproject.toml.
 - Ensure the appropriate provider API keys are configured in your environment.
 - For local development, use the example configuration files and `.env.example` as a starting point.

@@ -5,13 +5,16 @@ Contains predefined chains for common story-related tasks.
 Each chain combines prompts with models for specific functionality.
 """
 
+import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Optional
 
-from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables.history import RunnableWithMessageHistory
+
+from app.core.config import get_settings
 
 from .models import get_model_factory
 from .prompts import AVAILABLE_PROMPTS, get_chat_prompt_template
@@ -94,33 +97,41 @@ def create_explanation_chain(
 class ConversationChain(BaseChain):
     """Chain for multi-turn conversation using session-based history"""
 
-    # Simple in-memory store; in production swap to persistent history (Redis/SQL/etc.)
-    _histories: Dict[str, InMemoryChatMessageHistory] = {}
-
     def __init__(self, model_name: Optional[str] = None, **model_params):
         super().__init__(model_name, **model_params)
         self._build_chain()
 
-    @classmethod
-    def _get_session_history(cls, session_id: str) -> InMemoryChatMessageHistory:
-        history = cls._histories.get(session_id)
-        if history is None:
-            history = InMemoryChatMessageHistory()
-            cls._histories[session_id] = history
-        return history
+    @staticmethod
+    def _sync_connection_string() -> str:
+        """Return a sync SQLAlchemy connection string for SQLChatMessageHistory.
+
+        Map async drivers to their sync counterparts for sync-mode history.
+        """
+        settings = get_settings()
+        url = settings.database_url
+        if "+aiosqlite" in url:
+            return url.replace("+aiosqlite", "")
+        if "+asyncpg" in url:
+            return url.replace("+asyncpg", "+psycopg")
+        if "+aiomysql" in url:
+            return url.replace("+aiomysql", "+pymysql")
+        return url
 
     def _build_chain(self):
         """Build the conversation chain with message history support"""
         model = self._get_model("conversation")
         prompt = get_chat_prompt_template("conversation")
 
-        # Base LCEL chain
-        base_chain = prompt | model | StrOutputParser()
+        # Base LCEL chain (keep model output as AIMessage for history updates)
+        base_chain = prompt | model
 
         # Wrap with message history per LangChain best practices
         self._chain = RunnableWithMessageHistory(
             base_chain,
-            self._get_session_history,
+            lambda session_id: SQLChatMessageHistory(
+                session_id=session_id,
+                connection_string=self._sync_connection_string(),
+            ),
             input_messages_key="user_input",
             history_messages_key="history",
         )
@@ -132,11 +143,14 @@ class ConversationChain(BaseChain):
 
         try:
             # Pass session_id via config.configurable per RunnableWithMessageHistory contract
-            result = await self._chain.ainvoke(
+            # Use sync invoke in a worker thread to match SQLChatMessageHistory sync mode
+            result = await asyncio.to_thread(
+                self._chain.invoke,
                 {"user_input": user_input},
                 config={"configurable": {"session_id": session_id}},
             )
-            return result
+            # If we didn't parse to str, result is usually an AIMessage
+            return getattr(result, "content", str(result))
         except Exception as e:
             logger.error(f"Conversation execution failed: {str(e)}")
             raise
