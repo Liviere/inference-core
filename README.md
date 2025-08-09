@@ -155,10 +155,13 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `REDIS_PORT`                  | Redis port (used for both host and container)                    | `6379`                                                             | Docker              |
 | `FLOWER_PORT`                 | Flower port (used for both host and container)                   | `5555`                                                             | Docker              |
 | `OPENAI_API_KEY`              | API key for OpenAI provider                                      | None                                                               | LLM                 |
-| `CUSTOM_LLM_API_KEY`          | API key for custom OpenAI-compatible provider                    | None                                                               | LLM                 |
-| `DEEPINFRA_API_KEY`           | API key for DeepInfra provider                                   | None                                                               | LLM                 |
 | `LLM_EXPLAIN_MODEL`           | Override model for the 'explain' task                            | None                                                               | LLM                 |
 | `LLM_CONVERSATION_MODEL`      | Override model for the 'conversation' task                       | None                                                               | LLM                 |
+| `LLM_ENABLE_CACHING`          | Enable in-process LLM response caching (fallback mode)           | `true`                                                             | LLM                 |
+| `LLM_CACHE_TTL`               | Cache TTL in seconds (fallback mode)                             | `3600`                                                             | LLM                 |
+| `LLM_MAX_CONCURRENT`          | Max concurrent LLM requests (fallback mode)                      | `5`                                                                | LLM                 |
+| `LLM_ENABLE_MONITORING`       | Enable basic LLM monitoring hooks (fallback mode)                | `true`                                                             | LLM                 |
+| `RUN_LLM_REAL_TESTS`          | Opt-in to run real-chain tests hitting providers in CI/local     | `0`                                                                | Tests               |
 
 ## Features
 
