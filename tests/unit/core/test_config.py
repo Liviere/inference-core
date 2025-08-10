@@ -6,11 +6,12 @@ database URL construction, and configuration properties.
 """
 
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings, ListParsingEnvSource, ListParsingDotEnvSource
+from app.core.config import ListParsingDotEnvSource, ListParsingEnvSource, Settings
 
 
 class TestListParsingEnvSource:
@@ -20,7 +21,7 @@ class TestListParsingEnvSource:
         """Test that '*' remains as single item list"""
         source = ListParsingEnvSource(Settings)
         field = None  # Mock field
-        
+
         result = source.prepare_field_value("cors_origins", field, "*", False)
         assert result == ["*"]
 
@@ -28,7 +29,7 @@ class TestListParsingEnvSource:
         """Test comma-separated string parsing"""
         source = ListParsingEnvSource(Settings)
         field = None
-        
+
         result = source.prepare_field_value("cors_origins", field, "a,b,c", False)
         assert result == ["a", "b", "c"]
 
@@ -36,7 +37,7 @@ class TestListParsingEnvSource:
         """Test parsing with quotes and extra spaces"""
         source = ListParsingEnvSource(Settings)
         field = None
-        
+
         result = source.prepare_field_value("cors_origins", field, '"a, b , c"', False)
         assert result == ["a", "b", "c"]
 
@@ -44,7 +45,7 @@ class TestListParsingEnvSource:
         """Test non-CORS fields pass through unchanged"""
         source = ListParsingEnvSource(Settings)
         field = None
-        
+
         result = source.prepare_field_value("other_field", field, "value", False)
         assert result == "value"
 
@@ -57,20 +58,27 @@ class TestListParsingDotEnvSource:
         env_source = ListParsingEnvSource(Settings)
         dotenv_source = ListParsingDotEnvSource(Settings)
         field = None
-        
+
         test_values = ["*", "a,b,c", '"a, b , c"']
         for value in test_values:
-            env_result = env_source.prepare_field_value("cors_origins", field, value, False)
-            dotenv_result = dotenv_source.prepare_field_value("cors_origins", field, value, False)
+            env_result = env_source.prepare_field_value(
+                "cors_origins", field, value, False
+            )
+            dotenv_result = dotenv_source.prepare_field_value(
+                "cors_origins", field, value, False
+            )
             assert env_result == dotenv_result
 
 
 class TestSettings:
     """Test Settings class and its validation logic"""
 
-    def test_default_settings(self):
+    @patch.dict(os.environ, {}, clear=True)
+    def test_default_settings(self, monkeypatch, tmp_path):
         """Test default settings are valid"""
-        settings = Settings()
+        # Ensure no project .env is discovered by moving to a temp dir
+        monkeypatch.chdir(tmp_path)
+        settings = Settings(_env_file=None)
         assert settings.app_name == "Backend Template API"
         assert settings.environment == "development"
         assert settings.debug is True
@@ -96,7 +104,7 @@ class TestSettings:
         # Override database_service to prevent model validator from overwriting
         settings = Settings(
             database_service="postgresql+asyncpg",
-            database_url="postgresql://user:pass@host:5432/db"
+            database_url="postgresql://user:pass@host:5432/db",
         )
         # The field validator should enhance the URL
         assert "postgresql+asyncpg" in settings.database_url
@@ -105,15 +113,14 @@ class TestSettings:
         """Test MySQL URL is enhanced with aiomysql driver"""
         settings = Settings(
             database_service="mysql+aiomysql",
-            database_url="mysql://user:pass@host:3306/db"
+            database_url="mysql://user:pass@host:3306/db",
         )
         assert "mysql+aiomysql" in settings.database_url
 
     def test_database_url_validation_sqlite(self):
-        """Test SQLite URL is enhanced with aiosqlite driver"""  
+        """Test SQLite URL is enhanced with aiosqlite driver"""
         settings = Settings(
-            database_service="sqlite+aiosqlite",
-            database_url="sqlite:///./test.db"
+            database_service="sqlite+aiosqlite", database_url="sqlite:///./test.db"
         )
         assert "sqlite+aiosqlite" in settings.database_url
 
@@ -135,7 +142,7 @@ class TestSettings:
             database_port=5432,
             database_name="testdb",
             database_user="testuser",
-            database_password="testpass"
+            database_password="testpass",
         )
         expected = "postgresql+asyncpg://testuser:testpass@localhost:5432/testdb"
         assert settings.database_url == expected
@@ -148,7 +155,7 @@ class TestSettings:
             database_port=3306,
             database_name="testdb",
             database_user="testuser",
-            database_password="testpass"
+            database_password="testpass",
         )
         expected = "mysql+aiomysql://testuser:testpass@localhost:3306/testdb"
         assert settings.database_url == expected
@@ -188,7 +195,7 @@ class TestSettings:
             database_host="host",
             database_name="db",
             database_user="user",
-            database_password="pass"
+            database_password="pass",
         )
         assert mysql_settings.is_sqlite is False
         assert mysql_settings.is_mysql is True
@@ -198,10 +205,10 @@ class TestSettings:
         # Test PostgreSQL
         pg_settings = Settings(
             database_service="postgresql+asyncpg",
-            database_host="host", 
+            database_host="host",
             database_name="db",
             database_user="user",
-            database_password="pass"
+            database_password="pass",
         )
         assert pg_settings.is_sqlite is False
         assert pg_settings.is_mysql is False
@@ -212,7 +219,7 @@ class TestSettings:
         """Test database engine args for SQLite"""
         settings = Settings(database_service="sqlite+aiosqlite", database_echo=True)
         args = settings.get_database_engine_args()
-        
+
         assert args["echo"] is True
         assert "connect_args" in args
         assert args["connect_args"]["check_same_thread"] is False
@@ -224,7 +231,7 @@ class TestSettings:
         settings = Settings(
             database_service="mysql+aiomysql",
             database_host="host",
-            database_name="db", 
+            database_name="db",
             database_user="user",
             database_password="pass",
             database_echo=False,
@@ -232,10 +239,10 @@ class TestSettings:
             database_max_overflow=20,
             database_pool_timeout=60,
             database_pool_recycle=7200,
-            database_mysql_charset="utf8mb4"
+            database_mysql_charset="utf8mb4",
         )
         args = settings.get_database_engine_args()
-        
+
         assert args["echo"] is False
         assert args["pool_size"] == 10
         assert args["max_overflow"] == 20
@@ -253,14 +260,14 @@ class TestSettings:
             database_service="postgresql+asyncpg",
             database_host="host",
             database_name="db",
-            database_user="user", 
+            database_user="user",
             database_password="pass",
             database_echo=True,
             database_pool_size=15,
-            database_max_overflow=25
+            database_max_overflow=25,
         )
         args = settings.get_database_engine_args()
-        
+
         assert args["echo"] is True
         assert args["pool_size"] == 15
         assert args["max_overflow"] == 25
@@ -273,13 +280,16 @@ class TestSettings:
         """Test CORS origins are parsed from environment variables"""
         # Clear the LRU cache if get_settings is cached
         from app.core.config import get_settings
+
         get_settings.cache_clear()
-        
+
         settings = Settings()
         # Note: Due to custom sources, this might not work as expected in unit tests
         # This tests the parsing logic itself
         source = ListParsingEnvSource(Settings)
-        result = source.prepare_field_value("cors_origins", None, "https://app.com,https://api.com", False)
+        result = source.prepare_field_value(
+            "cors_origins", None, "https://app.com,https://api.com", False
+        )
         assert result == ["https://app.com", "https://api.com"]
 
     def test_settings_with_testing_environment(self):
