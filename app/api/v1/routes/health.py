@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.dependecies import get_db
 from app.database.sql.connection import db_manager
+from app.services.llm_service import LLMService, get_llm_service
 from app.services.task_service import TaskService, get_task_service
 
 router = APIRouter(prefix="/health", tags=["Health Check"])
@@ -50,6 +51,7 @@ async def health_check(
     settings=Depends(get_settings),
     db_session=Depends(get_db),
     task_service: TaskService = Depends(get_task_service),
+    llm_service: LLMService = Depends(get_llm_service),
 ) -> HealthCheckResponse:
     """
     Overall application health check
@@ -64,9 +66,6 @@ async def health_check(
 
     # Check database health
     db_healthy = await db_manager.health_check(db_session)
-
-    # Placeholder for service health checks (overall based on critical deps only)
-    overall_status = "healthy" if all([db_healthy]) else "unhealthy"
 
     # Tasks/Celery health (non-critical for overall status here)
     try:
@@ -97,6 +96,40 @@ async def health_check(
             "checked_at": timestamp,
         }
 
+    # LLM health (non-critical for overall status here)
+    try:
+        models = llm_service.get_available_models()
+        available_count = sum(1 for available in models.values() if available)
+        total_count = len(models)
+        llm_status = "healthy" if available_count > 0 else "degraded"
+        llm_component = {
+            "status": llm_status,
+            "available_models": available_count,
+            "total_models": total_count,
+            "models": models,
+            "checked_at": timestamp,
+        }
+    except Exception as e:
+        llm_component = {
+            "status": "unhealthy",
+            "error": str(e),
+            "available_models": 0,
+            "total_models": 0,
+            "checked_at": timestamp,
+        }
+
+    # Compute overall status with DB and LLM as critical
+    if not db_healthy:
+        overall_status = "unhealthy"
+    else:
+        llm_status_value = llm_component.get("status")
+        if llm_status_value == "unhealthy":
+            overall_status = "unhealthy"
+        elif llm_status_value == "degraded":
+            overall_status = "degraded"
+        else:
+            overall_status = "healthy"
+
     components = {
         "database": {
             "status": "healthy" if db_healthy else "unhealthy",
@@ -109,6 +142,7 @@ async def health_check(
             "checked_at": timestamp,
         },
         "tasks": tasks_component,
+        "llm": llm_component,
     }
 
     return HealthCheckResponse(
