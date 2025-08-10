@@ -9,15 +9,17 @@ FastAPI backend template with Celery background tasks, JWT authentication, LLM i
 ### Bootstrap, Build, and Test the Repository
 
 **Prerequisites:**
+
 - Python 3.12+ (verified working with Python 3.12.3)
 - Poetry for dependency management (install via pip if not available)
 
 **Setup Commands (validated and timed):**
+
 ```bash
 # Install Poetry if not available
 pip install poetry
 
-# Copy configuration files  
+# Copy configuration files
 cp .env.example .env
 cp llm_config.example.yaml llm_config.yaml
 
@@ -29,25 +31,29 @@ poetry run pytest
 ```
 
 **Expected Test Results:**
-- 21 tests total: 17 pass, 2 fail (UUID-related issues in auth tests), 2 skip (LLM real tests)
-- Test failures are non-critical and do not affect application functionality
-- Core functionality (API, database, authentication) works correctly
+
+- 206 tests total: 204 pass, 2 skip (LLM real tests)
+- No failures in the default local setup (SQLite or running Postgres). Skips are for optional real LLM tests.
+- Core functionality (API, database, authentication, Celery orchestration) works correctly
 
 ### Run the Application
 
 **Development Mode:**
+
 ```bash
 # Start development server with auto-reload
 poetry run fastapi dev --host 0.0.0.0 --port 8000
 ```
 
 **Production Mode:**
-```bash  
+
+```bash
 # Start production server
 poetry run fastapi run --host 0.0.0.0 --port 8000
 ```
 
 **Application URLs:**
+
 - API: http://localhost:8000
 - Health Check: http://localhost:8000/api/v1/health/
 - API Documentation: http://localhost:8000/docs (development mode only)
@@ -55,19 +61,22 @@ poetry run fastapi run --host 0.0.0.0 --port 8000
 ### Celery Background Tasks
 
 **Start Redis (required for Celery):**
+
 ```bash
 # Using Docker (recommended)
 docker run -d --name redis-test -p 6379:6379 redis:7-alpine
 ```
 
 **Start Celery Worker:**
+
 ```bash
 # In a separate terminal
 poetry run celery -A app.celery.celery_main:celery_app worker --loglevel=info --queues=default
 ```
 
 **Start Flower Monitoring (optional):**
-```bash  
+
+```bash
 # Monitor Celery tasks at http://localhost:5555
 poetry run celery -A app.celery.celery_main:celery_app flower --port=5555
 ```
@@ -77,30 +86,55 @@ poetry run celery -A app.celery.celery_main:celery_app flower --port=5555
 ### Always Test Core Functionality After Changes
 
 **Health Check Validation:**
+
 ```bash
 curl http://localhost:8000/api/v1/health/
 # Should return healthy status for database, application, and tasks (if Redis running)
 ```
 
 **Authentication Flow Validation:**
+
 ```bash
 # Register user
 curl -X POST http://localhost:8000/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username": "testuser", "email": "test@example.com", "password": "SecurePass123!"}'
 
-# Login and get tokens  
+# Login and get tokens
 curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "testuser", "password": "SecurePass123!"}'
 ```
 
 **ALWAYS manually validate any new code by:**
+
 1. Starting the application (`poetry run fastapi dev`)
 2. Testing API endpoints with curl or browser
 3. Verifying authentication flows work
 4. If modifying Celery tasks, ensure Redis is running and test task execution
 5. Running the test suite to catch regressions
+
+### Test Suite Quick Reference
+
+- Run everything:
+  - `poetry run pytest`
+- Only unit tests (fast, isolated):
+  - `poetry run pytest tests/unit`
+- Only integration tests:
+  - `poetry run pytest -m integration`
+- Real-chain LLM tests (opt-in; require API keys):
+  - `RUN_LLM_REAL_TESTS=1 poetry run pytest tests/integration/test_llm_tasks_real.py -q -m integration`
+
+### Unit Tests Coverage Snapshot
+
+- Core: settings parsing/validation, JWT/token helpers, logging, Redis client
+- Database: async engine/session creation, event listeners, health info masking
+- Services: AuthService, TaskService (Celery interactions mocked), RefreshSessionStore, LLMService (mocked chains/models)
+
+### Runtime Services for Integration Tests
+
+- Database: SQLite works out of the box. If using PostgreSQL/MySQL, ensure the server is running and reachable (defaults: Postgres on 127.0.0.1:5432).
+- Redis: Required for Celery workers; integration tests that patch Celery do not require a running worker/broker unless explicitly testing them.
 
 ### Docker Deployment (Known Issues)
 
@@ -109,6 +143,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 **Working Alternative:** Use local Poetry-based development as documented above.
 
 **If Docker is needed:** Fix the following known issues in docker-compose files:
+
 - Build timeouts during Poetry install step
 - YAML indentation errors in docker-compose.base.yml (lines 27-28, 51-52, 75)
 - Path mapping issues in docker/docker-compose.sqlite.yml
@@ -116,6 +151,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 ## Common Tasks
 
 ### Repository Structure
+
 ```
 .
 ├── README.md                 # Main documentation
@@ -135,7 +171,10 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 │   ├── schemas/            # Pydantic schemas
 │   └── services/           # Business logic services
 ├── tests/                   # Test suite
-│   └── integration/        # Integration tests
+│   ├── integration/        # Integration tests
+│   └── unit/               # Unit tests (fast, isolated)
+├── logs/                   # Application logs (local runs)
+├── scripts/                # Helper scripts (if any)
 └── docker/                 # Docker configuration (has issues)
     ├── Dockerfile
     ├── docker-compose.sqlite.yml
@@ -146,12 +185,14 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 ### Key Configuration Files
 
 **Environment Variables (.env):**
+
 - Database: SQLite by default, supports PostgreSQL/MySQL
 - Redis: Required for Celery tasks (localhost:6379)
 - JWT: Configure SECRET_KEY for production
 - LLM: Set API keys for OpenAI or other providers
 
 **LLM Configuration (llm_config.yaml):**
+
 - Providers: OpenAI, custom OpenAI-compatible endpoints
 - Models: Configurable per task (explain, conversation)
 - Testing: Uses different models for testing vs production
@@ -159,12 +200,14 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 ### API Endpoints Summary
 
 **Health & Info:**
+
 - `GET /` - Application info
 - `GET /api/v1/health/` - Overall health check
 - `GET /api/v1/health/database` - Database health
 - `GET /api/v1/health/ping` - Simple ping
 
 **Authentication (JWT):**
+
 - `POST /api/v1/auth/register` - Create account
 - `POST /api/v1/auth/login` - Get access/refresh tokens
 - `POST /api/v1/auth/refresh` - Rotate tokens
@@ -173,11 +216,13 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 - `PUT /api/v1/auth/me` - Update profile
 
 **Tasks:**
+
 - `GET /api/v1/tasks/health` - Celery worker health
 - `GET /api/v1/tasks/{task_id}/status` - Task status
 - `GET /api/v1/tasks/{task_id}/result` - Task result
 
 **LLM (if configured):**
+
 - LLM endpoints for explain and conversation tasks via Celery
 
 ## Critical Reminders

@@ -6,6 +6,13 @@ The test suite is organized as follows:
 
 - `tests/conftest.py` - Test configuration and shared fixtures (async engine/session, HTTP client)
 - `tests/integration/` - Integration tests for API endpoints, DB operations, and LLM tasks
+- `tests/unit/` - Fast, isolated unit tests (no network/db) covering core config, security, Redis client, database connection helpers, and services
+
+Unit test layout:
+
+- `tests/unit/core/` — config parsing/validation, security (hashing/JWT), logging config, Redis client
+- `tests/unit/database/` — engine/session creation, event listeners, health and masking helpers
+- `tests/unit/services/` — AuthService (CRUD/auth flows with mocks), TaskService (Celery orchestration with mocks), RefreshSessionStore, LLMService (mocked chains/models)
 
 ### Running Tests
 
@@ -26,6 +33,12 @@ Common examples:
 ```bash
 # Only integration tests (uses the registered 'integration' marker)
 poetry run pytest -m integration
+
+# Only unit tests
+poetry run pytest tests/unit
+
+# Only core unit tests (subset)
+poetry run pytest tests/unit/core
 
 # Only LLM task tests (mocked chains)
 poetry run pytest tests/integration/test_llm_tasks.py
@@ -80,6 +93,11 @@ Tests use the same database configuration as the main application but with:
 - Proper connection cleanup to prevent resource leaks
 - Isolated database sessions for each test
 - Explicit table create/drop within tests that need schema
+
+Notes:
+
+- By default, tests run against SQLite (aiosqlite) unless you override DATABASE_URL/SERVICE in your env/.env.
+- If you point tests to PostgreSQL/MySQL, ensure the server is reachable and credentials match your env.
 
 ### LLM Integration Tests
 
