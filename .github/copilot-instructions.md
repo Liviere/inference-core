@@ -6,6 +6,70 @@ FastAPI backend template with Celery background tasks, JWT authentication, LLM i
 
 ## Working Effectively
 
+### Acquiring up-to-date third‑party library context – MCP Context7
+
+To minimize hallucinations and apply the latest recommended best practices, EVERY task that depends on behavior / API / configuration of an external library SHOULD begin by fetching fresh docs via the MCP "context7" mechanism.
+
+#### When to use it
+
+Use MCP Context7 whenever the task involves (non‑exhaustive list):
+
+- FastAPI / Starlette (routing, dependency injection, background tasks, lifespan, streaming)
+- Pydantic / pydantic-settings (validation, BaseModel, ConfigDict)
+- SQLAlchemy (models, async engine, session patterns, migrations)
+- Celery / Redis (broker/result backend config, retry, acks_late, task routing)
+- LangChain / langchain-openai / langchain-community (chains, tools, structured output, rate limiting, async patterns)
+- Sentry SDK (performance, traces_sample_rate, FastAPI / Celery integrations)
+- Uvicorn (server params, workers vs reload)
+- Locust (performance testing, task definitions)
+- JWT / python-jose / security (algorithms, rotating secrets)
+- Password hashing: passlib, bcrypt (rounds / gensalt configuration)
+- Any newly introduced or less‑familiar library in the project
+
+If you are NOT 100% sure about the current API or there may have been breaking changes in the pinned version range in `pyproject.toml` – fetch context first.
+
+#### Minimal Context7 workflow
+
+1. Identify the library + topic (e.g. "fastapi dependency overrides", "sqlalchemy async session best practices", "celery retry exponential backoff").
+2. Call resolve-library-id (mcp_context7_resolve-library-id) with the library name.
+3. Fetch focused docs (mcp_context7_get-library-docs) with a `topic`; raise token limit if you need broader scope (e.g. 12000).
+4. Summarize key points (specific classes / functions / params), list pitfalls, THEN implement.
+5. Add brief inline source references (e.g. `# Source: FastAPI docs – dependency overrides, 2025-08 snapshot`).
+
+#### Agent response convention
+
+- If context was fetched: include a "Context7 Sources" section listing library → topics.
+- If the user explicitly wants a quick trivial answer (e.g. a simple BaseModel), you MAY skip fetching, BUT mention that extended context can be pulled on request.
+- If intuition conflicts with docs: prefer docs and flag the discrepancy.
+
+#### Pre‑implementation checklist (third‑party usage)
+
+1. Library & topic identified? (YES/NO)
+2. Context7 docs fetched? (YES/NO + if NO, justify)
+3. Key APIs / params / edge cases enumerated? (YES/NO)
+4. Version range from `pyproject.toml` considered? (YES/NO)
+5. Source annotation added in code/comments? (YES/NO)
+
+#### Example (condensed)
+
+Task: add an endpoint that streams LLM output.
+
+1. resolve-library-id: fastapi, langchain-openai
+2. get-library-docs topics: "streaming responses", "async openai streaming"
+3. Summary: FastAPI – use `StreamingResponse`; LangChain – attach token streaming callback handler.
+4. Implement + reference sources in comments.
+
+#### Good practices when combining libraries
+
+- FastAPI + SQLAlchemy async: always close the session via a dependency using the `yield` pattern (docs: "FastAPI SQL (async) session pattern").
+- Celery + SQLAlchemy: do not share an async session with the worker; create a fresh session per task.
+- LangChain + Celery: for real‑time streaming prefer a FastAPI WebSocket; Celery is for long‑running, non‑interactive tasks.
+- Sentry: for new background tasks ensure tracing/span context is propagated explicitly if needed (see Performance / OpenTelemetry sections in docs).
+
+> In short: WHEN IN DOUBT → FETCH Context7 FIRST, THEN CODE.
+
+---
+
 ### Bootstrap, Build, and Test the Repository
 
 **Prerequisites:**
