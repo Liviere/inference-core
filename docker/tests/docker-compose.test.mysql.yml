@@ -1,0 +1,156 @@
+# Docker Compose for Isolated Test Environment - MySQL
+# Ports: app-test:8100, redis-test:6380, mysql-test:33306
+# Usage: docker compose -f docker/tests/docker-compose.test.mysql.yml --env-file docker/tests/.env.test.example up -d
+# Cleanup: docker compose -f docker/tests/docker-compose.test.mysql.yml down -v
+
+name: ${APP_NAME:-backend-template-test}-mysql
+
+services:
+  # FastAPI Application (Test)
+  app-test:
+    build:
+      context: ../..
+      dockerfile: docker/tests/Dockerfile
+    container_name: ${APP_NAME:-backend-template-test}-app
+    restart: unless-stopped
+    command:
+      [
+        'fastapi',
+        'run',
+        '--port',
+        '${PORT:-8100}',
+        '--host',
+        '${HOST:-0.0.0.0}',
+      ]
+    ports:
+      - '${PORT:-8100}:${PORT:-8100}'
+    environment:
+      ENVIRONMENT: testing
+      APP_NAME: ${APP_NAME:-backend-template-test}
+      APP_DESCRIPTION: ${APP_DESCRIPTION:-Test environment for FastAPI backend}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      DATABASE_SERVICE: mysql+aiomysql
+      DATABASE_HOST: mysql-test
+      DATABASE_PORT: 3306
+      DATABASE_NAME: ${DATABASE_NAME:-app_test_db}
+      DATABASE_USER: ${DATABASE_USER:-test_user}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-test_password}
+      CELERY_BROKER_URL: redis://redis-test:${REDIS_PORT:-6380}/0
+      CELERY_RESULT_BACKEND: redis://redis-test:${REDIS_PORT:-6380}/1
+      REDIS_URL: redis://redis-test:${REDIS_PORT:-6380}/10
+      SECRET_KEY: ${SECRET_KEY:-test-secret-key-do-not-use-in-production}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      REDIS_REFRESH_PREFIX: ${REDIS_REFRESH_PREFIX:-test:auth:refresh:}
+      RUN_LLM_REAL_TESTS: ${RUN_LLM_REAL_TESTS:-0}
+      DEBUG: ${DEBUG:-false}
+    networks:
+      - test-network
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'curl',
+          '-f',
+          'http://localhost:${PORT:-8100}/api/v1/health/ping',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Celery Worker (Test)
+  celery-worker-test:
+    build:
+      context: ../..
+      dockerfile: docker/tests/Dockerfile
+    container_name: ${APP_NAME:-backend-template-test}-celery-worker
+    restart: unless-stopped
+    command: >
+      sh -c "poetry run celery -A app.celery.celery_main:celery_app worker 
+             --loglevel=info 
+             --queues=default,llm_tasks
+             --hostname=test-worker@%h 
+             --max-tasks-per-child=50 
+             --time-limit=180 
+             --soft-time-limit=150"
+    environment:
+      ENVIRONMENT: testing
+      DATABASE_SERVICE: mysql+aiomysql
+      DATABASE_HOST: mysql-test
+      DATABASE_PORT: 3306
+      DATABASE_NAME: ${DATABASE_NAME:-app_test_db}
+      DATABASE_USER: ${DATABASE_USER:-test_user}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-test_password}
+      CELERY_BROKER_URL: redis://redis-test:${REDIS_PORT:-6380}/0
+      CELERY_RESULT_BACKEND: redis://redis-test:${REDIS_PORT:-6380}/1
+      SECRET_KEY: ${SECRET_KEY:-test-secret-key-do-not-use-in-production}
+      RUN_LLM_REAL_TESTS: ${RUN_LLM_REAL_TESTS:-0}
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    networks:
+      - test-network
+
+  # MySQL Database (Test)
+  mysql-test:
+    image: mysql:8.0
+    container_name: ${APP_NAME:-backend-template-test}-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:-test_root_password}
+      MYSQL_DATABASE: ${DATABASE_NAME:-app_test_db}
+      MYSQL_USER: ${DATABASE_USER:-test_user}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:-test_password}
+    ports:
+      - '${DATABASE_PORT_MYSQL:-33306}:3306'
+    # Use tmpfs for ephemeral storage (no persistence)
+    tmpfs:
+      - /var/lib/mysql:noexec,nosuid,size=500m
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost']
+      timeout: 20s
+      retries: 10
+      interval: 10s
+      start_period: 15s
+    command: >
+      --default-authentication-plugin=mysql_native_password 
+      --character-set-server=utf8mb4 
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=100
+      --table_open_cache=32
+      --innodb_buffer_pool_size=128M
+
+  # Redis for Celery and App Sessions (Test)
+  redis-test:
+    image: redis:7-alpine
+    container_name: ${APP_NAME:-backend-template-test}-redis
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6380}:${REDIS_PORT:-6380}'
+    command: redis-server --appendonly no --port ${REDIS_PORT:-6380} --save ""
+    # Use tmpfs for ephemeral storage (no persistence)
+    tmpfs:
+      - /data:noexec,nosuid,size=100m
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-p', '${REDIS_PORT:-6380}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  test-network:
+    driver: bridge
+    name: ${APP_NAME:-backend-template-test}-mysql-network

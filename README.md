@@ -51,6 +51,24 @@ The project includes a test suite with fixtures for database testing and API int
 
 For comprehensive testing documentation, environment setup, and troubleshooting, see [tests/README.md](tests/README.md).
 
+### Isolated Test Docker Environment
+
+For running tests in an isolated, stateless Docker environment that doesn't conflict with development setups:
+
+```bash
+# Quick start with PostgreSQL test environment
+cp docker/tests/.env.test.example docker/tests/.env.test
+docker compose -f docker/tests/docker-compose.test.postgres.yml --env-file docker/tests/.env.test up -d
+
+# Verify health
+curl http://localhost:8100/api/v1/health/ping
+
+# Cleanup when done
+docker compose -f docker/tests/docker-compose.test.postgres.yml down -v
+```
+
+Alternative test environments are available for SQLite and MySQL. For detailed instructions, configuration options, and CI integration, see [docs/testing-docker.md](docs/testing-docker.md).
+
 ## API Endpoints (v1)
 
 This project also includes an API dedicated to working with LLM models. For details on LLM endpoints, configuration, and usage, see [app/llm/README.md](app/llm/README.md).

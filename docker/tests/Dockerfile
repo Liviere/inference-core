@@ -36,7 +36,7 @@ COPY app ./app
 COPY tests ./tests
 COPY run.py ./
 COPY llm_config.yaml ./
-COPY .env ./
+COPY docker/tests/.env.test ./.env
 
 # Create logs directory and set permissions
 RUN mkdir -p /app/logs
