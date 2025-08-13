@@ -5,6 +5,7 @@ Task Service for managing Celery tasks
 from typing import Any, Dict, Optional
 
 from celery.result import AsyncResult
+from fastapi.concurrency import run_in_threadpool
 
 from app.celery.celery_main import celery_app
 
@@ -93,6 +94,32 @@ class TaskService:
             "registered": inspect.registered(),
         }
 
+    # -------------------------
+    # Async wrappers (threadpool)
+    # -------------------------
+
+    async def get_task_status_async(self, task_id: str) -> Dict[str, Any]:
+        """Async wrapper for get_task_status to avoid blocking the event loop."""
+        return await run_in_threadpool(self.get_task_status, task_id)
+
+    async def get_task_result_async(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> Any:
+        """Async wrapper for get_task_result to avoid blocking the event loop."""
+        return await run_in_threadpool(self.get_task_result, task_id, timeout)
+
+    async def cancel_task_async(self, task_id: str) -> bool:
+        """Async wrapper for cancel_task to avoid blocking the event loop."""
+        return await run_in_threadpool(self.cancel_task, task_id)
+
+    async def get_active_tasks_async(self) -> Dict[str, Any]:
+        """Async wrapper for get_active_tasks to avoid blocking the event loop."""
+        return await run_in_threadpool(self.get_active_tasks)
+
+    async def get_worker_stats_async(self) -> Dict[str, Any]:
+        """Async wrapper for get_worker_stats to avoid blocking the event loop."""
+        return await run_in_threadpool(self.get_worker_stats)
+
     def explain_async(self, **kwargs) -> str:
         """Submit explenation task"""
         task = self.celery_app.send_task("llm.explain", kwargs=kwargs)
@@ -102,6 +129,14 @@ class TaskService:
         """Submit conversation task (one turn)"""
         task = self.celery_app.send_task("llm.conversation", kwargs=kwargs)
         return task.id
+
+    async def explain_submit_async(self, **kwargs) -> str:
+        """Async wrapper for explain_async to avoid blocking the event loop."""
+        return await run_in_threadpool(self.explain_async, **kwargs)
+
+    async def conversation_submit_async(self, **kwargs) -> str:
+        """Async wrapper for conversation_async to avoid blocking the event loop."""
+        return await run_in_threadpool(self.conversation_async, **kwargs)
 
 
 # Global task service instance

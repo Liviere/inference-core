@@ -33,7 +33,7 @@ async def get_task_status(
     Returns detailed information about task state, result, and any errors.
     """
     try:
-        status = task_service.get_task_status(task_id)
+        status = await task_service.get_task_status_async(task_id)
 
         return TaskStatusResponse(
             task_id=task_id,
@@ -64,7 +64,7 @@ async def get_task_result(
     Waits for task completion if still running (up to timeout).
     """
     try:
-        result = task_service.get_task_result(task_id, timeout=timeout)
+        result = await task_service.get_task_result_async(task_id, timeout=timeout)
 
         return {"task_id": task_id, "result": result, "success": True}
 
@@ -85,7 +85,7 @@ async def cancel_task(
     Attempts to gracefully terminate the task.
     """
     try:
-        cancelled = task_service.cancel_task(task_id)
+        cancelled = await task_service.cancel_task_async(task_id)
 
         return TaskCancelResponse(
             task_id=task_id,
@@ -108,7 +108,7 @@ async def get_active_tasks(task_service: TaskService = Depends(get_task_service)
     Returns lists of active, scheduled, and reserved tasks across all workers.
     """
     try:
-        active_info = task_service.get_active_tasks()
+        active_info = await task_service.get_active_tasks_async()
 
         return ActiveTasksResponse(
             active=active_info["active"] or {},
@@ -131,7 +131,7 @@ async def get_worker_stats(task_service: TaskService = Depends(get_task_service)
     Returns performance metrics, registered tasks, and worker health information.
     """
     try:
-        stats = task_service.get_worker_stats()
+        stats = await task_service.get_worker_stats_async()
 
         return WorkerStatsResponse(
             stats=stats["stats"] or {},
@@ -155,7 +155,7 @@ async def health_check(task_service: TaskService = Depends(get_task_service)):
     """
     try:
         # Try to ping workers
-        stats = task_service.get_worker_stats()
+        stats = await task_service.get_worker_stats_async()
         ping_responses = stats.get("ping", {})
 
         # Count active workers

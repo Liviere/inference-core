@@ -104,7 +104,9 @@ async def explain(
         TaskResponse with task ID and status
     """
     try:
-        task_id = task_service.explain_async(**request.model_dump(exclude_none=True))
+        task_id = await task_service.explain_submit_async(
+            **request.model_dump(exclude_none=True)
+        )
 
         return TaskResponse(
             task_id=task_id,
@@ -129,10 +131,8 @@ async def conversation(
     """
     try:
         # Build kwargs for Celery task
-        kwargs: Dict[str, Any] = {
-            **request.model_dump(exclude_none=True),
-        }
-        task_id = task_service.conversation_async(**kwargs)
+        kwargs: Dict[str, Any] = {**request.model_dump(exclude_none=True)}
+        task_id = await task_service.conversation_submit_async(**kwargs)
 
         return TaskResponse(
             task_id=task_id,
