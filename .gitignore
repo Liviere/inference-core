@@ -169,3 +169,4 @@ llm_config.yaml
 
 # Logs
 logs/
+reports/
