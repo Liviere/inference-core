@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from logging.config import dictConfig
 
@@ -19,11 +20,28 @@ class JsonFormatter(BaseJsonFormatter):
 
 
 def setup_logging():
-    """
-    Setup logging configuration for the application.
+    """Configure application logging with safe fallback.
+
+    If the file handler cannot be configured (e.g. permission denied when the
+    container runs as non-root and a host directory is mounted with restrictive
+    ownership), the configuration gracefully degrades to console-only logging
+    instead of aborting application startup.
     """
     settings = get_settings()
     log_level = "DEBUG" if settings.debug else "INFO"
+
+    log_dir = os.path.join("logs")
+    log_file_path = os.path.join(log_dir, "app.log")
+
+    # Try to create the logs directory if it doesn't exist.
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except Exception as e:  # pragma: no cover - extremely rare
+        # Fall back silently; we'll still attempt console logging.
+        print(
+            f"[logging] Unable to create log directory '{log_dir}': {e}",
+            file=sys.stderr,
+        )
 
     logging_config = {
         "version": 1,
@@ -48,7 +66,7 @@ def setup_logging():
             "file": {
                 "class": "logging.handlers.TimedRotatingFileHandler",
                 "formatter": "json",
-                "filename": "logs/app.log",
+                "filename": log_file_path,
                 "when": "midnight",
                 "interval": 1,
                 "backupCount": 30,
@@ -77,4 +95,22 @@ def setup_logging():
             "level": log_level,
         },
     }
-    dictConfig(logging_config)
+
+    try:
+        dictConfig(logging_config)
+    except Exception as e:
+        # Remove file handler and retry with console-only.
+        for logger_name in list(logging_config.get("loggers", {}).keys()):
+            handlers = logging_config["loggers"][logger_name].get("handlers", [])
+            logging_config["loggers"][logger_name]["handlers"] = [
+                h for h in handlers if h != "file"
+            ]
+        # Root logger
+        logging_config["root"]["handlers"] = [
+            h for h in logging_config["root"]["handlers"] if h != "file"
+        ]
+        logging_config["handlers"].pop("file", None)
+        dictConfig(logging_config)
+        logging.getLogger(__name__).warning(
+            "File logging disabled; falling back to console only (%s)", e
+        )

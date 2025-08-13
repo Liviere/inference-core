@@ -46,16 +46,19 @@ services:
       DEBUG: ${DEBUG:-false}
     networks:
       - test-network
-    volumes:
-      # Use ephemeral volume for logs (no persistence)
-      - /tmp/test-logs:/app/logs
     depends_on:
       postgres-test:
         condition: service_healthy
       redis-test:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-8100}/api/v1/health/ping"]
+      test:
+        [
+          'CMD',
+          'curl',
+          '-f',
+          'http://localhost:${PORT:-8100}/api/v1/health/ping',
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -95,9 +98,6 @@ services:
         condition: service_healthy
     networks:
       - test-network
-    volumes:
-      # Use ephemeral volume for logs (no persistence)
-      - /tmp/test-logs:/app/logs
 
   # PostgreSQL Database (Test)
   postgres-test:
@@ -150,5 +150,3 @@ networks:
   test-network:
     driver: bridge
     name: ${APP_NAME:-backend-template-test}-postgres-network
-
-# No volumes defined - everything is ephemeral
