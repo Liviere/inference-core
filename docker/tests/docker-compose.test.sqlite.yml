@@ -10,7 +10,7 @@ services:
   app-test:
     build:
       context: ../..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/tests/Dockerfile
     container_name: ${APP_NAME:-backend-template-test}-app
     restart: unless-stopped
     command:
@@ -62,7 +62,7 @@ services:
   celery-worker-test:
     build:
       context: ../..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/tests/Dockerfile
     container_name: ${APP_NAME:-backend-template-test}-celery-worker
     restart: unless-stopped
     command: >
