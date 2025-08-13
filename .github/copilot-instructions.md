@@ -42,14 +42,6 @@ If you are NOT 100% sure about the current API or there may have been breaking c
 - If the user explicitly wants a quick trivial answer (e.g. a simple BaseModel), you MAY skip fetching, BUT mention that extended context can be pulled on request.
 - If intuition conflicts with docs: prefer docs and flag the discrepancy.
 
-#### Pre‑implementation checklist (third‑party usage)
-
-1. Library & topic identified? (YES/NO)
-2. Context7 docs fetched? (YES/NO + if NO, justify)
-3. Key APIs / params / edge cases enumerated? (YES/NO)
-4. Version range from `pyproject.toml` considered? (YES/NO)
-5. Source annotation added in code/comments? (YES/NO)
-
 #### Example (condensed)
 
 Task: add an endpoint that streams LLM output.
@@ -58,13 +50,6 @@ Task: add an endpoint that streams LLM output.
 2. get-library-docs topics: "streaming responses", "async openai streaming"
 3. Summary: FastAPI – use `StreamingResponse`; LangChain – attach token streaming callback handler.
 4. Implement + reference sources in comments.
-
-#### Good practices when combining libraries
-
-- FastAPI + SQLAlchemy async: always close the session via a dependency using the `yield` pattern (docs: "FastAPI SQL (async) session pattern").
-- Celery + SQLAlchemy: do not share an async session with the worker; create a fresh session per task.
-- LangChain + Celery: for real‑time streaming prefer a FastAPI WebSocket; Celery is for long‑running, non‑interactive tasks.
-- Sentry: for new background tasks ensure tracing/span context is propagated explicitly if needed (see Performance / OpenTelemetry sections in docs).
 
 > In short: WHEN IN DOUBT → FETCH Context7 FIRST, THEN CODE.
 
