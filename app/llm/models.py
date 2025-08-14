@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI  # Source: LangChain Google Gemini docs 2025-08
 from pydantic import SecretStr
 
 from .config import LLMConfig, ModelConfig, ModelProvider
@@ -78,6 +79,9 @@ class LLMModelFactory:
         elif config.provider in [ModelProvider.CUSTOM_OPENAI_COMPATIBLE]:
             return self._create_openai_compatible_model(config, model_params)
 
+        elif config.provider == ModelProvider.GEMINI:
+            return self._create_gemini_model(config, model_params)
+
         else:
             logger.error(f"Unsupported provider: {config.provider}")
             return None
@@ -112,6 +116,27 @@ class LLMModelFactory:
             )
         except Exception as e:
             logger.error(f"Failed to create OpenAI-compatible model: {str(e)}")
+            return None
+
+    def _create_gemini_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatGoogleGenerativeAI]:
+        """Create Gemini model instance.
+
+        Requires GOOGLE_API_KEY environment variable (loaded earlier into config.api_key).
+        """
+        if not config.api_key:
+            logger.error("Gemini API key (GOOGLE_API_KEY) not provided")
+            return None
+        try:
+            # ChatGoogleGenerativeAI accepts model plus parameters like temperature, max_output_tokens
+            # Map max_tokens to max_output_tokens for Gemini.
+            gemini_params = params.copy()
+            if "max_tokens" in gemini_params:
+                gemini_params["max_output_tokens"] = gemini_params.pop("max_tokens")
+            return ChatGoogleGenerativeAI(model=config.name, api_key=config.api_key, **gemini_params)
+        except Exception as e:
+            logger.error(f"Failed to create Gemini model: {str(e)}")
             return None
 
     def get_available_models(self) -> Dict[str, bool]:

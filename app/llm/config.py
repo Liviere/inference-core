@@ -23,6 +23,7 @@ class ModelProvider(str, Enum):
 
     OPENAI = "openai"
     CUSTOM_OPENAI_COMPATIBLE = "custom_openai_compatible"
+    GEMINI = "gemini"
 
 
 class ProviderConfig(BaseModel):
@@ -214,18 +215,21 @@ class LLMConfig:
     def is_model_available(self, model_name: str) -> bool:
         """Check if a model is available"""
         config = self.get_model_config(model_name)
-        provider_config = self.get_provider_config(config.provider)
         if not config:
             return False
+        provider_config = self.get_provider_config(config.provider)
 
         # For OpenAI and DeepInfra models, check if API key is available
         if provider_config.requires_api_key:
-            return config.api_key is not None and config.api_key.strip() != ""
+            return bool(config.api_key and config.api_key.strip())
 
-        # For CUSTOM_OPENAI_COMPATIBLE, assume available if base_url is set
-        # In production, you might want to add actual connectivity checks
-        if config.provider in [ModelProvider.CUSTOM_OPENAI_COMPATIBLE]:
-            return config.base_url is not None and config.base_url.strip() != ""
+        # Custom OpenAI-compatible endpoints
+        if config.provider == ModelProvider.CUSTOM_OPENAI_COMPATIBLE:
+            return bool(config.base_url and config.base_url.strip())
+
+        # Gemini (explicit check retained though requires_api_key should cover)
+        if config.provider == ModelProvider.GEMINI:
+            return bool(config.api_key and config.api_key.strip())
 
         return False
 

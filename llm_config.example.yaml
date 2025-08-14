@@ -10,6 +10,12 @@ providers:
     requires_api_key: true
     openai_compatible: true
 
+  gemini:
+    name: 'Google Gemini'
+    api_key_env: 'GOOGLE_API_KEY'
+    requires_api_key: true
+    openai_compatible: false
+
   custom_openai_compatible:
     name: 'Custom OpenAI Compatible'
     api_key_env: 'CUSTOM_LLM_API_KEY'
@@ -41,6 +47,21 @@ models:
     max_tokens: 4096
     temperature: 0.7
 
+  # Gemini Models
+  gemini-2.5-flash: # Fast multimodal
+    provider: 'gemini'
+    display_name: 'Gemini 2.0 Flash'
+    description: 'Fast Gemini model for general tasks'
+    max_tokens: 8192
+    temperature: 0.7
+
+  gemini-2.5-pro: # Higher quality reasoning
+    provider: 'gemini'
+    display_name: 'Gemini 2.0 Pro'
+    description: 'High quality Gemini model for complex reasoning'
+    max_tokens: 8192
+    temperature: 0.6
+
   # Custom OpenAI Compatible Models
   meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8:
     provider: 'custom_openai_compatible'
@@ -68,13 +89,13 @@ models:
 tasks:
   explain:
     primary: 'gpt-5-mini'
-    fallback: ['deepseek-ai/DeepSeek-V3-0324']
+    fallback: ['gemini-2.5-flash', 'deepseek-ai/DeepSeek-V3-0324']
     testing: ['gpt-5-nano']
     description: 'Models suitable for explanations'
 
   conversation:
     primary: 'gpt-5-mini'
-    fallback: ['deepseek-ai/DeepSeek-V3-0324']
+    fallback: ['gemini-2.5-flash', 'deepseek-ai/DeepSeek-V3-0324']
     testing: ['gpt-5-nano']
     description: 'Models optimized for multi-turn chat'
 
