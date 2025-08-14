@@ -24,6 +24,7 @@ class ModelProvider(str, Enum):
     OPENAI = "openai"
     CUSTOM_OPENAI_COMPATIBLE = "custom_openai_compatible"
     GEMINI = "gemini"
+    CLAUDE = "claude"
 
 
 class ProviderConfig(BaseModel):

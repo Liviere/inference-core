@@ -8,9 +8,10 @@ Supports multiple providers through OpenAI-compatible interfaces.
 import logging
 from typing import Any, Dict, Optional
 
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
-from langchain_google_genai import ChatGoogleGenerativeAI  # Source: LangChain Google Gemini docs 2025-08
 from pydantic import SecretStr
 
 from .config import LLMConfig, ModelConfig, ModelProvider
@@ -82,6 +83,9 @@ class LLMModelFactory:
         elif config.provider == ModelProvider.GEMINI:
             return self._create_gemini_model(config, model_params)
 
+        elif config.provider == ModelProvider.CLAUDE:
+            return self._create_claude_model(config, model_params)
+
         else:
             logger.error(f"Unsupported provider: {config.provider}")
             return None
@@ -134,9 +138,37 @@ class LLMModelFactory:
             gemini_params = params.copy()
             if "max_tokens" in gemini_params:
                 gemini_params["max_output_tokens"] = gemini_params.pop("max_tokens")
-            return ChatGoogleGenerativeAI(model=config.name, api_key=config.api_key, **gemini_params)
+            return ChatGoogleGenerativeAI(
+                model=config.name, api_key=config.api_key, **gemini_params
+            )
         except Exception as e:
             logger.error(f"Failed to create Gemini model: {str(e)}")
+            return None
+
+    def _create_claude_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatAnthropic]:
+        """Create Claude (Anthropic) model instance.
+
+        Claude uses max_tokens (not max_output_tokens) for responses; keep mapping simple.
+        """
+        if not config.api_key:
+            logger.error("Anthropic API key (ANTHROPIC_API_KEY) not provided")
+            return None
+        try:
+            # ChatAnthropic expects model plus temperature, max_tokens, etc.
+            anthro_params = params.copy()
+            # Claude (Anthropic) Messages API does NOT accept frequency_penalty / presence_penalty currently
+            anthro_params.pop("frequency_penalty", None)
+            anthro_params.pop("presence_penalty", None)
+            # Anthropic client expects 'max_tokens' for output, keep as is. request_timeout -> timeout
+            if "request_timeout" in anthro_params:
+                anthro_params["timeout"] = anthro_params.pop("request_timeout")
+            return ChatAnthropic(
+                model=config.name, api_key=config.api_key, **anthro_params
+            )
+        except Exception as e:
+            logger.error(f"Failed to create Claude model: {str(e)}")
             return None
 
     def get_available_models(self) -> Dict[str, bool]:

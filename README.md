@@ -204,6 +204,7 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `FLOWER_PORT`                 | Flower port (used for both host and container)                   | `5555`                                                             | Docker              |
 | `OPENAI_API_KEY`              | API key for OpenAI provider                                      | None                                                               | LLM                 |
 | `GOOGLE_API_KEY`              | API key for Google Gemini models                                 | None                                                               | LLM                 |
+| `ANTHROPIC_API_KEY`           | API key for Anthropic Claude models                              | None                                                               | LLM                 |
 | `LLM_EXPLAIN_MODEL`           | Override model for the 'explain' task                            | None                                                               | LLM                 |
 | `LLM_CONVERSATION_MODEL`      | Override model for the 'conversation' task                       | None                                                               | LLM                 |
 | `LLM_ENABLE_CACHING`          | Enable in-process LLM response caching (fallback mode)           | `true`                                                             | LLM                 |
