@@ -210,3 +210,55 @@ async def health_check(llm_service=Depends(get_llm_service_dependency)):
             "available_models": 0,
             "total_models": 0,
         }
+
+
+# Debug endpoint for parameter policies (only available in DEBUG mode)
+from app.core.config import get_settings
+
+@router.get("/param-policy/{provider}")
+async def get_param_policy(provider: str):
+    """
+    Get parameter policy for a specific LLM provider.
+    
+    Only available when DEBUG=True in settings.
+    Useful for inspecting parameter normalization rules.
+    """
+    settings = get_settings()
+    if not settings.debug:
+        raise HTTPException(
+            status_code=404, 
+            detail="Debug endpoints are only available in DEBUG mode"
+        )
+    
+    try:
+        from app.llm.param_policy import get_provider_policy, get_supported_providers
+        from app.llm.config import ModelProvider
+        
+        # Convert string to ModelProvider enum
+        try:
+            provider_enum = ModelProvider(provider)
+        except ValueError:
+            supported = [p.value for p in get_supported_providers()]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported provider '{provider}'. Supported: {supported}"
+            )
+        
+        policy = get_provider_policy(provider_enum)
+        
+        return {
+            "provider": provider,
+            "policy": {
+                "allowed_parameters": list(policy.allowed),
+                "parameter_mappings": dict(policy.renamed),
+                "dropped_parameters": list(policy.dropped)
+            },
+            "description": f"Parameter normalization policy for {provider} provider"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get parameter policy: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to get parameter policy: {str(e)}"
+        )
