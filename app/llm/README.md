@@ -33,12 +33,12 @@ The `param_policy.py` module defines parameter policies for each provider:
 
 ### Provider-Specific Behavior
 
-| Provider | Allowed Parameters | Parameter Mappings | Dropped Parameters |
-|----------|-------------------|-------------------|-------------------|
-| OpenAI | `temperature`, `max_tokens`, `top_p`, `frequency_penalty`, `presence_penalty`, `request_timeout` | None | None |
-| Custom OpenAI | Same as OpenAI | None | None |
-| Gemini | `temperature`, `max_output_tokens`, `top_p` | `max_tokens` → `max_output_tokens` | `frequency_penalty`, `presence_penalty`, `request_timeout` |
-| Claude | `temperature`, `max_tokens`, `top_p`, `timeout` | `request_timeout` → `timeout` | `frequency_penalty`, `presence_penalty` |
+| Provider      | Allowed Parameters                                                                               | Parameter Mappings                 | Dropped Parameters                                         |
+| ------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------- | ---------------------------------------------------------- |
+| OpenAI        | `temperature`, `max_tokens`, `top_p`, `frequency_penalty`, `presence_penalty`, `request_timeout` | None                               | None                                                       |
+| Custom OpenAI | Same as OpenAI                                                                                   | None                               | None                                                       |
+| Gemini        | `temperature`, `max_output_tokens`, `top_p`                                                      | `max_tokens` → `max_output_tokens` | `frequency_penalty`, `presence_penalty`, `request_timeout` |
+| Claude        | `temperature`, `max_tokens`, `top_p`, `timeout`                                                  | `request_timeout` → `timeout`      | `frequency_penalty`, `presence_penalty`                    |
 
 ### Debug Logging
 
@@ -79,6 +79,113 @@ Provider API keys (examples, depending on your providers):
 - `OPENAI_API_KEY`
 - `CUSTOM_LLM_API_KEY`
 - `DEEPINFRA_API_KEY`
+
+### LLM Parameter Policies & Dynamic Parameters
+
+The LLM layer includes a centralized, configurable parameter normalization system allowing you to:
+
+- Maintain per-provider base policies (allowed / renamed / dropped parameters)
+- Apply YAML-driven overrides per provider or per model
+- Introduce entirely new parameters without code changes (allowed or via experimental prefixes)
+- Perform hard replaces (replace) or additive (patch) modifications
+- Enforce deprecation of legacy parameters (e.g., GPT‑5 family no longer accepts temperature/top_p/etc.)
+
+Configuration lives in `llm_config.yaml` under the `param_policies` section:
+
+```yaml
+param_policies:
+  settings:
+    # Any parameter starting with these prefixes is passed through even if unknown
+    passthrough_prefixes: ['x_', 'ext_']
+  providers:
+    openai:
+      patch:
+        allowed: ['logit_bias']
+  models:
+    gpt-5:
+      replace: # Fully replace base policy for this model
+        allowed: ['reasoning_effort', 'verbosity']
+        dropped:
+          [
+            'temperature',
+            'top_p',
+            'frequency_penalty',
+            'presence_penalty',
+            'max_tokens',
+            'request_timeout',
+          ]
+```
+
+Semantics:
+
+- `patch`: merge into existing sets/maps (additive)
+- `replace`: overwrite the entire collection(s) provided
+- `allowed`: parameters forwarded as-is (after rename mapping if present)
+- `renamed`: old_name -> new_name mapping (handled before allowed check)
+- `dropped`: always removed silently
+- `passthrough_prefixes`: wildcard allow-list for experimental parameters (e.g. `x_reasoning_graph_depth`)
+
+Model-Level Overrides:
+The system merges (in order): base provider policy → provider overrides → model override. A model override using `replace` can completely discard legacy parameters.
+
+GPT‑5 Breaking Change Example:
+The GPT‑5 models in the example config remove classic sampling parameters and introduce `reasoning_effort` + `verbosity`. Requests supplying deprecated parameters for a `gpt-5*` model result in a validation error at service layer.
+
+HTTP Request Example (Explain):
+
+```json
+POST /api/v1/llm/explain
+{
+  "question": "Explain attention in transformers",
+  "model_name": "gpt-5",
+  "reasoning_effort": "high",
+  "verbosity": "high"
+}
+```
+
+Experimental Parameter Example:
+
+```json
+{
+	"model_name": "gpt-5",
+	"x_trace_id": "123e4567",
+	"x_reasoning_graph_depth": 4
+}
+```
+
+If the prefixes are listed in `passthrough_prefixes`, both parameters are forwarded to the underlying model SDK (subject to provider acceptance).
+
+Debugging Policies:
+When `DEBUG=True`, you can inspect effective policies:
+
+```
+GET /api/v1/llm/param-policy/openai              # Provider policy
+GET /api/v1/llm/param-policy/openai?model=gpt-5  # Effective merged model policy
+```
+
+Migration Tips:
+
+1. Start new parameters behind a passthrough prefix.
+2. Once stable, move them into `allowed` (remove prefix usage).
+3. When deprecating old params: add them to `dropped` OR use `replace` to exclude them entirely.
+4. Add tests asserting normalization if behavior is critical.
+
+Error Handling:
+
+- Unknown parameter without an allowed prefix → dropped with a warning log.
+- Deprecated legacy param explicitly sent to a GPT‑5 model → raises `ValueError` (mapped to 500 by default; you can adjust to 400 in the router if desired).
+
+Where Logic Lives:
+
+- Policy merging / normalization: `app/llm/param_policy.py`
+- Factory applying normalization: `app/llm/models.py`
+- Service-level deprecation guard (GPT‑5 legacy sampling): `app/services/llm_service.py`
+
+To extend further (ideas):
+
+- Add value constraints (ranges/enums) in YAML for validation
+- Add policy introspection endpoint listing effective differences vs. base
+- Introduce `defaults` section to auto-inject values when caller omits them
 
 ## Usage (API)
 

@@ -58,6 +58,8 @@ class LLMService:
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
         request_timeout: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        verbosity: Optional[str] = None,
     ) -> LLMResponse:
         """
         Generate an explanation for a given question using the specified model.
@@ -71,6 +73,18 @@ class LLMService:
         """
         self._log_request("explain", {"question": question, "model_name": model_name})
         try:
+            # Deprecation guard for GPT-5 family: classic sampling params removed
+            if model_name and model_name.startswith("gpt-5"):
+                for legacy in [
+                    ("temperature", temperature),
+                    ("top_p", top_p),
+                    ("frequency_penalty", frequency_penalty),
+                    ("presence_penalty", presence_penalty),
+                ]:
+                    if legacy[1] is not None:
+                        raise ValueError(
+                            f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
+                        )
             model_params = {
                 k: v
                 for k, v in {
@@ -80,6 +94,8 @@ class LLMService:
                     "frequency_penalty": frequency_penalty,
                     "presence_penalty": presence_penalty,
                     "timeout": request_timeout,
+                    "reasoning_effort": reasoning_effort,
+                    "verbosity": verbosity,
                 }.items()
                 if v is not None
             }
@@ -112,6 +128,8 @@ class LLMService:
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
         request_timeout: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        verbosity: Optional[str] = None,
     ) -> LLMResponse:
         """Engage in a multi-turn conversation within a session.
 
@@ -133,6 +151,17 @@ class LLMService:
         )
         try:
             # Map request_timeout to factory's expected 'timeout'
+            if model_name and model_name.startswith("gpt-5"):
+                for legacy in [
+                    ("temperature", temperature),
+                    ("top_p", top_p),
+                    ("frequency_penalty", frequency_penalty),
+                    ("presence_penalty", presence_penalty),
+                ]:
+                    if legacy[1] is not None:
+                        raise ValueError(
+                            f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
+                        )
             model_params = {
                 k: v
                 for k, v in {
@@ -142,6 +171,8 @@ class LLMService:
                     "frequency_penalty": frequency_penalty,
                     "presence_penalty": presence_penalty,
                     "timeout": request_timeout,
+                    "reasoning_effort": reasoning_effort,
+                    "verbosity": verbosity,
                 }.items()
                 if v is not None
             }

@@ -64,20 +64,31 @@ class LLMModelFactory:
         """Create model instance based on provider"""
 
         # Merge config with kwargs
-        raw_params = {
-            "temperature": kwargs.get("temperature", config.temperature),
-            "max_tokens": kwargs.get("max_tokens", config.max_tokens),
-            "top_p": kwargs.get("top_p", config.top_p),
-            "frequency_penalty": kwargs.get(
-                "frequency_penalty", config.frequency_penalty
-            ),
-            "presence_penalty": kwargs.get("presence_penalty", config.presence_penalty),
-            "request_timeout": kwargs.get("timeout", config.timeout),
-        }
+        # Start with provided kwargs (new dynamic params like reasoning_effort, verbosity etc.)
+        raw_params: Dict[str, Any] = dict(kwargs)
+
+        # Backward compatibility: fill legacy sampling params only if not explicitly provided
+        if "temperature" not in raw_params:
+            raw_params["temperature"] = config.temperature
+        if "max_tokens" not in raw_params:
+            raw_params["max_tokens"] = config.max_tokens
+        if "top_p" not in raw_params:
+            raw_params["top_p"] = config.top_p
+        if "frequency_penalty" not in raw_params:
+            raw_params["frequency_penalty"] = config.frequency_penalty
+        if "presence_penalty" not in raw_params:
+            raw_params["presence_penalty"] = config.presence_penalty
+        # Unified timeout key (internal) -> request_timeout or provider mapping via policy rename
+        if "request_timeout" not in raw_params and "timeout" in raw_params:
+            raw_params["request_timeout"] = raw_params.pop("timeout")
+        elif "request_timeout" not in raw_params:
+            raw_params["request_timeout"] = config.timeout
 
         # Normalize parameters for the specific provider
         try:
-            model_params = normalize_params(config.provider, raw_params)
+            model_params = normalize_params(
+                config.provider, raw_params, model_name=config.name
+            )
         except ValueError as e:
             logger.error(f"Parameter normalization failed: {e}")
             return None
@@ -161,9 +172,7 @@ class LLMModelFactory:
             return None
         try:
             # Parameters are already normalized by param_policy
-            return ChatAnthropic(
-                model=config.name, api_key=config.api_key, **params
-            )
+            return ChatAnthropic(model=config.name, api_key=config.api_key, **params)
         except Exception as e:
             logger.error(f"Failed to create Claude model: {str(e)}")
             return None

@@ -47,6 +47,16 @@ class BaseLLMRequest(BaseModel):
         default=None, ge=1, description="Request timeout in seconds"
     )
 
+    # GPT-5+ experimental params (temperature/top_p deprecated there)
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description="Reasoning effort level for advanced models (e.g., low|medium|high)",
+    )
+    verbosity: Optional[str] = Field(
+        default=None,
+        description="Verbosity of the response (e.g., low|medium|high)",
+    )
+
 
 class ExplainRequest(BaseLLMRequest):
     """Request model for explanation endpoint"""
@@ -215,25 +225,29 @@ async def health_check(llm_service=Depends(get_llm_service_dependency)):
 # Debug endpoint for parameter policies (only available in DEBUG mode)
 from app.core.config import get_settings
 
+
 @router.get("/param-policy/{provider}")
-async def get_param_policy(provider: str):
+async def get_param_policy(provider: str, model: Optional[str] = None):
     """
     Get parameter policy for a specific LLM provider.
-    
+
     Only available when DEBUG=True in settings.
     Useful for inspecting parameter normalization rules.
     """
     settings = get_settings()
     if not settings.debug:
         raise HTTPException(
-            status_code=404, 
-            detail="Debug endpoints are only available in DEBUG mode"
+            status_code=404, detail="Debug endpoints are only available in DEBUG mode"
         )
-    
+
     try:
-        from app.llm.param_policy import get_provider_policy, get_supported_providers
         from app.llm.config import ModelProvider
-        
+        from app.llm.param_policy import (
+            get_model_policy,
+            get_provider_policy,
+            get_supported_providers,
+        )
+
         # Convert string to ModelProvider enum
         try:
             provider_enum = ModelProvider(provider)
@@ -241,24 +255,60 @@ async def get_param_policy(provider: str):
             supported = [p.value for p in get_supported_providers()]
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported provider '{provider}'. Supported: {supported}"
+                detail=f"Unsupported provider '{provider}'. Supported: {supported}",
             )
-        
-        policy = get_provider_policy(provider_enum)
-        
-        return {
+
+        provider_policy = get_provider_policy(provider_enum)
+
+        response = {
             "provider": provider,
             "policy": {
-                "allowed_parameters": list(policy.allowed),
-                "parameter_mappings": dict(policy.renamed),
-                "dropped_parameters": list(policy.dropped)
+                "allowed_parameters": sorted(list(provider_policy.allowed)),
+                "parameter_mappings": dict(provider_policy.renamed),
+                "dropped_parameters": sorted(list(provider_policy.dropped)),
+                "passthrough_prefixes": sorted(
+                    list(provider_policy.passthrough_prefixes)
+                ),
             },
-            "description": f"Parameter normalization policy for {provider} provider"
+            "description": f"Parameter normalization policy for {provider} provider",
         }
-        
+
+        if model:
+            # Determine provider from model config if mismatch not handled here (simple attempt)
+            try:
+                from app.llm.config import llm_config
+
+                model_cfg = llm_config.get_model_config(model)
+                if model_cfg and model_cfg.provider != provider_enum:
+                    response["model_provider_mismatch"] = {
+                        "model": model,
+                        "model_provider": model_cfg.provider.value,
+                        "requested_provider": provider_enum.value,
+                        "note": "Using model's actual provider for effective policy merge",
+                    }
+                    effective_provider = model_cfg.provider
+                else:
+                    effective_provider = provider_enum
+            except Exception:
+                effective_provider = provider_enum
+
+            model_policy = get_model_policy(model, effective_provider)
+            response["model"] = {
+                "name": model,
+                "effective_policy": {
+                    "allowed_parameters": sorted(list(model_policy.allowed)),
+                    "parameter_mappings": dict(model_policy.renamed),
+                    "dropped_parameters": sorted(list(model_policy.dropped)),
+                    "passthrough_prefixes": sorted(
+                        list(model_policy.passthrough_prefixes)
+                    ),
+                },
+            }
+
+        return response
+
     except Exception as e:
         logger.error(f"Failed to get parameter policy: {str(e)}")
         raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to get parameter policy: {str(e)}"
+            status_code=500, detail=f"Failed to get parameter policy: {str(e)}"
         )

@@ -53,6 +53,13 @@ models:
     max_tokens: 4096
     temperature: 0.7
 
+  gpt-4.1:
+    provider: 'openai'
+    display_name: 'GPT-4.1'
+    description: 'Legacy model with advanced capabilities'
+    max_tokens: 8192
+    temperature: 0.7
+
   # Gemini Models
   gemini-2.5-flash: # Fast multimodal
     provider: 'gemini'
@@ -174,3 +181,57 @@ settings:
   env_overrides:
     explain: 'LLM_EXPLAIN_MODEL'
     conversation: 'LLM_CONVERSATION_MODEL'
+
+# Parameter policy overrides (optional)
+# Allows introducing NEW parameters without code changes.
+# Semantics:
+#  - providers.<provider>.patch|replace
+#  - models.<model>.patch|replace (provider inferred unless specified)
+#  - settings.passthrough_prefixes: any param starting with these prefixes is forwarded
+param_policies:
+  settings:
+    passthrough_prefixes: ['x_', 'ext_']
+  providers:
+    openai:
+      patch:
+        allowed: ['logit_bias']
+    claude:
+      patch:
+        allowed: ['metadata', 'system']
+  models:
+    gpt-5:
+      replace:
+        allowed: ['reasoning_effort', 'verbosity']
+        dropped:
+          [
+            'temperature',
+            'top_p',
+            'frequency_penalty',
+            'presence_penalty',
+            'max_tokens',
+            'request_timeout',
+          ]
+    gpt-5-mini:
+      replace:
+        allowed: ['reasoning_effort', 'verbosity']
+        dropped:
+          [
+            'temperature',
+            'top_p',
+            'frequency_penalty',
+            'presence_penalty',
+            'max_tokens',
+            'request_timeout',
+          ]
+    gpt-5-nano:
+      replace:
+        allowed: ['reasoning_effort', 'verbosity']
+        dropped:
+          [
+            'temperature',
+            'top_p',
+            'frequency_penalty',
+            'presence_penalty',
+            'max_tokens',
+            'request_timeout',
+          ]
