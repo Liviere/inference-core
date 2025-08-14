@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from .config import LLMConfig, ModelConfig, ModelProvider
+from .param_policy import normalize_params
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class LLMModelFactory:
         """Create model instance based on provider"""
 
         # Merge config with kwargs
-        model_params = {
+        raw_params = {
             "temperature": kwargs.get("temperature", config.temperature),
             "max_tokens": kwargs.get("max_tokens", config.max_tokens),
             "top_p": kwargs.get("top_p", config.top_p),
@@ -73,6 +74,13 @@ class LLMModelFactory:
             "presence_penalty": kwargs.get("presence_penalty", config.presence_penalty),
             "request_timeout": kwargs.get("timeout", config.timeout),
         }
+
+        # Normalize parameters for the specific provider
+        try:
+            model_params = normalize_params(config.provider, raw_params)
+        except ValueError as e:
+            logger.error(f"Parameter normalization failed: {e}")
+            return None
 
         if config.provider == ModelProvider.OPENAI:
             return self._create_openai_model(config, model_params)
@@ -133,13 +141,9 @@ class LLMModelFactory:
             logger.error("Gemini API key (GOOGLE_API_KEY) not provided")
             return None
         try:
-            # ChatGoogleGenerativeAI accepts model plus parameters like temperature, max_output_tokens
-            # Map max_tokens to max_output_tokens for Gemini.
-            gemini_params = params.copy()
-            if "max_tokens" in gemini_params:
-                gemini_params["max_output_tokens"] = gemini_params.pop("max_tokens")
+            # Parameters are already normalized by param_policy
             return ChatGoogleGenerativeAI(
-                model=config.name, api_key=config.api_key, **gemini_params
+                model=config.name, api_key=config.api_key, **params
             )
         except Exception as e:
             logger.error(f"Failed to create Gemini model: {str(e)}")
@@ -150,22 +154,15 @@ class LLMModelFactory:
     ) -> Optional[ChatAnthropic]:
         """Create Claude (Anthropic) model instance.
 
-        Claude uses max_tokens (not max_output_tokens) for responses; keep mapping simple.
+        Parameters are already normalized by param_policy.
         """
         if not config.api_key:
             logger.error("Anthropic API key (ANTHROPIC_API_KEY) not provided")
             return None
         try:
-            # ChatAnthropic expects model plus temperature, max_tokens, etc.
-            anthro_params = params.copy()
-            # Claude (Anthropic) Messages API does NOT accept frequency_penalty / presence_penalty currently
-            anthro_params.pop("frequency_penalty", None)
-            anthro_params.pop("presence_penalty", None)
-            # Anthropic client expects 'max_tokens' for output, keep as is. request_timeout -> timeout
-            if "request_timeout" in anthro_params:
-                anthro_params["timeout"] = anthro_params.pop("request_timeout")
+            # Parameters are already normalized by param_policy
             return ChatAnthropic(
-                model=config.name, api_key=config.api_key, **anthro_params
+                model=config.name, api_key=config.api_key, **params
             )
         except Exception as e:
             logger.error(f"Failed to create Claude model: {str(e)}")

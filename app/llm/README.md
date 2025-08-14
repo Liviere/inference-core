@@ -8,6 +8,7 @@ This module provides a dedicated API and service layer for working with Large La
 - `chains.py`: LangChain chains (includes multi-turn conversation with message history)
 - `models.py`: Model factory (OpenAI and OpenAI-compatible providers)
 - `config.py`: Loads `llm_config.yaml` with providers/models/tasks mapping
+- `param_policy.py`: Centralized parameter normalization and validation for all providers
 - `../services/llm_service.py`: High-level service interface for LLM operations
 
 ## Features
@@ -16,6 +17,48 @@ This module provides a dedicated API and service layer for working with Large La
 - Conversation task: multi-turn chat with session-based message history
 - RunnableWithMessageHistory pattern for robust conversation state
 - SQL-backed chat history by default using SQLChatMessageHistory (can be swapped for Redis/other DB backends)
+- **Centralized Parameter Normalization**: Automatic parameter filtering and mapping for all providers
+
+## Parameter Normalization
+
+The LLM module includes a centralized parameter normalization system that prevents runtime errors from provider-specific parameter incompatibilities.
+
+### How It Works
+
+The `param_policy.py` module defines parameter policies for each provider:
+
+- **Allowed parameters**: Parameters the provider accepts
+- **Renamed parameters**: Parameter mappings (e.g., `max_tokens` → `max_output_tokens` for Gemini)
+- **Dropped parameters**: Parameters that should be silently removed (e.g., `frequency_penalty` for Claude)
+
+### Provider-Specific Behavior
+
+| Provider | Allowed Parameters | Parameter Mappings | Dropped Parameters |
+|----------|-------------------|-------------------|-------------------|
+| OpenAI | `temperature`, `max_tokens`, `top_p`, `frequency_penalty`, `presence_penalty`, `request_timeout` | None | None |
+| Custom OpenAI | Same as OpenAI | None | None |
+| Gemini | `temperature`, `max_output_tokens`, `top_p` | `max_tokens` → `max_output_tokens` | `frequency_penalty`, `presence_penalty`, `request_timeout` |
+| Claude | `temperature`, `max_tokens`, `top_p`, `timeout` | `request_timeout` → `timeout` | `frequency_penalty`, `presence_penalty` |
+
+### Debug Logging
+
+When parameters are renamed or dropped, debug-level log messages are emitted:
+
+```
+DEBUG: Parameter renamed for gemini: max_tokens -> max_output_tokens
+DEBUG: Parameter dropped for claude: frequency_penalty (value: 0.1)
+```
+
+### Usage
+
+Parameter normalization happens automatically in the `LLMModelFactory`. No changes are needed in your application code - the system will:
+
+1. Accept all standard LLM parameters from your service calls
+2. Automatically filter/map them based on the target provider
+3. Log any transformations at debug level
+4. Pass only compatible parameters to the underlying SDK
+
+This prevents errors like `TypeError: unsupported parameter 'frequency_penalty'` when using Claude or similar provider-specific incompatibilities.
 
 ## Configuration
 
