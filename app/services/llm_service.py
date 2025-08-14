@@ -7,9 +7,10 @@ This is the primary entry point for the API to interact with LLM capabilities.
 
 import logging
 from datetime import UTC, datetime
-from typing import Any, Dict, Optional, cast
+from typing import Any, AsyncGenerator, Dict, Optional, cast
 
 from pydantic import BaseModel
+from fastapi import Request
 
 from app.llm.chains import create_conversation_chain, create_explanation_chain
 from app.llm.config import llm_config
@@ -191,6 +192,174 @@ class LLMService:
             return result
         except Exception as e:
             self._handle_error("conversation", e)
+            raise e
+
+    async def stream_conversation(
+        self,
+        session_id: Optional[str],
+        user_input: str,
+        model_name: Optional[str] = None,
+        request: Optional[Request] = None,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        request_timeout: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        verbosity: Optional[str] = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream a conversation response using Server-Sent Events.
+
+        Args:
+            session_id: Conversation session ID (auto-generated if None)
+            user_input: User's message
+            model_name: Optional model name override
+            request: FastAPI request object for disconnect detection
+
+        Returns:
+            AsyncGenerator yielding SSE-formatted bytes
+        """
+        # Import here to avoid circular imports
+        from app.llm.streaming import stream_conversation
+
+        self._log_request(
+            "stream_conversation",
+            {
+                "session_id": session_id,
+                "user_input": user_input[:128],
+                "model_name": model_name,
+            },
+        )
+
+        try:
+            # Build model parameters
+            model_params = {}
+            if temperature is not None:
+                model_params["temperature"] = temperature
+            if max_tokens is not None:
+                model_params["max_tokens"] = max_tokens
+            if top_p is not None:
+                model_params["top_p"] = top_p
+            if frequency_penalty is not None:
+                model_params["frequency_penalty"] = frequency_penalty
+            if presence_penalty is not None:
+                model_params["presence_penalty"] = presence_penalty
+            if request_timeout is not None:
+                model_params["request_timeout"] = request_timeout
+            if reasoning_effort is not None:
+                model_params["reasoning_effort"] = reasoning_effort
+            if verbosity is not None:
+                model_params["verbosity"] = verbosity
+
+            # Map request_timeout to factory's expected 'timeout'
+            if model_name and model_name.startswith("gpt-5"):
+                for legacy in [
+                    ("temperature", temperature),
+                    ("top_p", top_p),
+                    ("frequency_penalty", frequency_penalty),
+                    ("presence_penalty", presence_penalty),
+                ]:
+                    if legacy[1] is not None:
+                        raise ValueError(
+                            f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
+                        )
+
+            async for chunk in stream_conversation(
+                session_id=session_id,
+                user_input=user_input,
+                model_name=model_name,
+                request=request,
+                **model_params
+            ):
+                yield chunk
+
+            self._update_usage_stats()
+        except Exception as e:
+            self._handle_error("stream_conversation", e)
+            raise e
+
+    async def stream_explanation(
+        self,
+        question: str,
+        model_name: Optional[str] = None,
+        request: Optional[Request] = None,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        request_timeout: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        verbosity: Optional[str] = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream an explanation response using Server-Sent Events.
+
+        Args:
+            question: Question to explain
+            model_name: Optional model name override
+            request: FastAPI request object for disconnect detection
+
+        Returns:
+            AsyncGenerator yielding SSE-formatted bytes
+        """
+        # Import here to avoid circular imports
+        from app.llm.streaming import stream_explanation
+
+        self._log_request(
+            "stream_explanation",
+            {
+                "question": question[:128],
+                "model_name": model_name,
+            },
+        )
+
+        try:
+            # Build model parameters
+            model_params = {}
+            if temperature is not None:
+                model_params["temperature"] = temperature
+            if max_tokens is not None:
+                model_params["max_tokens"] = max_tokens
+            if top_p is not None:
+                model_params["top_p"] = top_p
+            if frequency_penalty is not None:
+                model_params["frequency_penalty"] = frequency_penalty
+            if presence_penalty is not None:
+                model_params["presence_penalty"] = presence_penalty
+            if request_timeout is not None:
+                model_params["request_timeout"] = request_timeout
+            if reasoning_effort is not None:
+                model_params["reasoning_effort"] = reasoning_effort
+            if verbosity is not None:
+                model_params["verbosity"] = verbosity
+
+            # Map request_timeout to factory's expected 'timeout'
+            if model_name and model_name.startswith("gpt-5"):
+                for legacy in [
+                    ("temperature", temperature),
+                    ("top_p", top_p),
+                    ("frequency_penalty", frequency_penalty),
+                    ("presence_penalty", presence_penalty),
+                ]:
+                    if legacy[1] is not None:
+                        raise ValueError(
+                            f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
+                        )
+
+            async for chunk in stream_explanation(
+                question=question,
+                model_name=model_name,
+                request=request,
+                **model_params
+            ):
+                yield chunk
+
+            self._update_usage_stats()
+        except Exception as e:
+            self._handle_error("stream_explanation", e)
             raise e
 
     def get_available_models(self) -> Dict[str, bool]:
