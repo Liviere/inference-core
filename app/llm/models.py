@@ -50,7 +50,18 @@ class LLMModelFactory:
             return None
 
         try:
+            # Ensure streaming flag is preserved (some providers require 'streaming=True' at init)
+            if "streaming" not in kwargs:
+                kwargs["streaming"] = True if kwargs.get("callbacks") else False
+
             model = self._create_model_instance(model_config, **kwargs)
+
+            # Force-enable attribute if it exists but got lost
+            if model and kwargs.get("callbacks") and hasattr(model, "streaming"):
+                try:
+                    setattr(model, "streaming", True)
+                except Exception:
+                    pass
             if model and self.config.enable_caching:
                 self._model_cache[cache_key] = model
             return model

@@ -41,7 +41,6 @@ class BaseChain:
             params = self.model_params
             model = self.model_factory.get_model_for_task(task, **params)
             self.model_name = model.model_name
-            t = 1
 
         if not model:
             raise ValueError(f"Could not create model for task: {task}")

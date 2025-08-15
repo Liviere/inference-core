@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<title>LLM Streaming Test</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<style>
+			:root {
+				color-scheme: light dark;
+			}
+			body {
+				font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu,
+					sans-serif;
+				margin: 0;
+				padding: 1.25rem;
+				line-height: 1.4;
+			}
+			h1 {
+				font-size: 1.4rem;
+				margin: 0 0 1rem;
+			}
+			form,
+			.panel {
+				background: var(--panel-bg, #1e1e1e10);
+				backdrop-filter: blur(4px);
+				border: 1px solid #8884;
+				border-radius: 10px;
+				padding: 1rem;
+				margin-bottom: 1rem;
+				width: 100%; /* user tweak */
+			}
+			label {
+				display: block;
+				font-size: 0.75rem;
+				text-transform: uppercase;
+				letter-spacing: 0.05em;
+				opacity: 0.7;
+				margin-bottom: 0.35rem;
+			}
+			input[type='text'],
+			textarea,
+			select {
+				width: 100%;
+				box-sizing: border-box;
+				padding: 0.6rem 0.7rem;
+				font: inherit;
+				border: 1px solid #666;
+				border-radius: 6px;
+				background: #fff0;
+				color: inherit;
+				resize: vertical;
+			}
+			textarea {
+				min-height: 80px;
+			}
+			button {
+				cursor: pointer;
+				font: inherit;
+				border: 1px solid #555;
+				background: linear-gradient(135deg, #2563eb, #1d4ed8);
+				color: #fff;
+				padding: 0.65rem 1.1rem;
+				border-radius: 6px;
+				display: inline-flex;
+				align-items: center;
+				gap: 0.4rem;
+			}
+			button.secondary {
+				background: #444;
+			}
+			button:disabled {
+				opacity: 0.5;
+				cursor: not-allowed;
+			}
+			.row {
+				display: flex;
+				gap: 0.75rem;
+				flex-wrap: wrap;
+			}
+			.row .col {
+				flex: 1 1 220px;
+				min-width: 200px;
+			}
+			#output {
+				font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+					'Liberation Mono', monospace;
+				white-space: pre-wrap;
+				word-break: break-word;
+				padding: 1rem;
+				background: #111;
+				color: #e2e8f0;
+				border-radius: 8px;
+				min-height: 500px; /* user tweak */
+				position: relative;
+			}
+			#output.streaming:after {
+				content: 'Streaming...';
+				position: absolute;
+				top: 6px;
+				right: 10px;
+				font-size: 0.65rem;
+				letter-spacing: 0.05em;
+				background: #2563eb;
+				color: #fff;
+				padding: 2px 6px;
+				border-radius: 4px;
+				animation: pulse 1.4s infinite;
+			}
+			@keyframes pulse {
+				0%,
+				100% {
+					opacity: 0.3;
+				}
+				50% {
+					opacity: 1;
+				}
+			}
+			.tokens {
+				font-size: 0.7rem;
+				opacity: 0.7;
+				margin-top: 0.5rem;
+				font-family: inherit;
+				display: flex;
+				gap: 0.75rem;
+				flex-wrap: wrap;
+			}
+			.event-log {
+				font-size: 0.7rem;
+				max-height: 160px;
+				min-height: 80px; /* user tweak */
+				overflow: auto;
+				background: #0008;
+				padding: 0.5rem 0.6rem;
+				border-radius: 6px;
+			}
+			/* user tweak: ensure last column in first row spans full width if present */
+			div.row:nth-child(1) > div:nth-child(5) { width: 100%; }
+			.badge {
+				background: #334155;
+				color: #fff;
+				padding: 2px 6px;
+				border-radius: 999px;
+				font-size: 0.65rem;
+			}
+			.error {
+				color: #f87171;
+			}
+			.dim {
+				opacity: 0.55;
+			}
+			.grid {
+				display: grid;
+				gap: 1rem;
+				grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+			}
+			footer {
+				margin-top: 2rem;
+				font-size: 0.65rem;
+				opacity: 0.6;
+			}
+			a {
+				color: #2563eb;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>LLM Streaming Tester</h1>
+		<form id="stream-form">
+			<div class="row">
+				<div class="col">
+					<label for="mode">Mode</label>
+					<select id="mode">
+						<option value="conversation" selected>Conversation</option>
+						<option value="explain">Explain</option>
+					</select>
+				</div>
+			<div class="row">
+				<div class="col">
+					<label for="session_id" class="conversation-only">Session ID (optional)</label>
+					<input type="text" id="session_id" class="conversation-only" placeholder="auto-generate if empty" />
+				</div>
+				<div class="col">
+					<label for="model_name">Model Override (optional)</label>
+					<input type="text" id="model_name" placeholder="e.g. gpt-4o-mini" />
+				</div>
+				<div class="col">
+					<label for="temperature" class="conversation-only">Temperature</label>
+					<input type="text" id="temperature" class="conversation-only" placeholder="e.g. 0.7" />
+				</div>
+				<div class="col">
+					<label for="max_tokens" class="conversation-only">Max Tokens</label>
+					<input type="text" id="max_tokens" class="conversation-only" placeholder="e.g. 256" />
+				</div>
+			</div>
+			<label for="prompt_input" id="prompt_label">User Message</label>
+			<textarea id="prompt_input" placeholder="Ask something..." required>Hello! Napisz proszę krótkie podsumowanie zalet FastAPI w języku polskim.</textarea>
+			<div
+				style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center"
+			>
+				<button type="submit" id="startBtn">Start Stream</button>
+				<button type="button" class="secondary" id="abortBtn" disabled>
+					Abort
+				</button>
+				<button type="button" class="secondary" id="clearBtn">Clear</button>
+				<span id="status" class="dim"></span>
+			</div>
+		</form>
+
+		<div class="panel" id="resultPanel">
+			<h2 style="margin-top:0;font-size:1rem;display:flex;align-items:center;gap:0.5rem">Output <span id="sessionBadge" class="badge" style="display:none"></span></h2>
+			<div id="output" style="width:100%"></div>
+			<div class="tokens" id="usage"></div>
+			<h3 style="margin:1.2rem 0 0.4rem;font-size:0.8rem;letter-spacing:0.05em;text-transform:uppercase;opacity:.75">Event Log</h3>
+			<div id="eventLog" class="event-log" style="width:100%"></div>
+		</div>
+
+		<footer>
+			Simple manual QA page for SSE endpoints. Conversation: POST
+			/api/v1/llm/conversation/stream, Explanation: POST
+			/api/v1/llm/explain/stream. Refresh to reset.
+		</footer>
+
+		<script>
+			(function () {
+				const form = document.getElementById('stream-form');
+				const modeSel = document.getElementById('mode');
+				const promptLabel = document.getElementById('prompt_label');
+				const promptInput = document.getElementById('prompt_input');
+				const outputEl = document.getElementById('output');
+				const usageEl = document.getElementById('usage');
+				const eventLog = document.getElementById('eventLog');
+				const sessionBadge = document.getElementById('sessionBadge');
+				const statusEl = document.getElementById('status');
+				const startBtn = document.getElementById('startBtn');
+				const abortBtn = document.getElementById('abortBtn');
+				const clearBtn = document.getElementById('clearBtn');
+				let controller = null;
+
+				function updateModeUI() {
+					const mode = modeSel.value;
+					const convoOnly = document.querySelectorAll('.conversation-only');
+					if (mode === 'conversation') {
+						promptLabel.textContent = 'User Message';
+						promptInput.placeholder = 'Ask something...';
+						convoOnly.forEach(el => (el.style.display = ''));
+					} else {
+						promptLabel.textContent = 'Question';
+						promptInput.placeholder = 'Explain something...';
+						convoOnly.forEach(el => (el.style.display = 'none'));
+					}
+				}
+				modeSel.addEventListener('change', updateModeUI);
+				updateModeUI();
+
+				function log(msg, type = 'info') {
+					const div = document.createElement('div');
+					div.textContent = msg;
+					if (type === 'error') div.className = 'error';
+					eventLog.appendChild(div);
+					eventLog.scrollTop = eventLog.scrollHeight;
+				}
+				function setStatus(msg) {
+					statusEl.textContent = msg || '';
+				}
+				function resetUsage() {
+					usageEl.textContent = '';
+				}
+
+				clearBtn.addEventListener('click', () => {
+					outputEl.textContent = '';
+					resetUsage();
+					eventLog.textContent = '';
+				});
+
+				abortBtn.addEventListener('click', () => {
+					if (controller) {
+						controller.abort();
+						log('Abort requested');
+						setStatus('aborted');
+						abortBtn.disabled = true;
+						startBtn.disabled = false;
+						outputEl.classList.remove('streaming');
+					}
+				});
+
+				form.addEventListener('submit', async (e) => {
+					e.preventDefault();
+					if (controller) {
+						controller.abort();
+					}
+					controller = new AbortController();
+					const mode = modeSel.value;
+					const session_id = document.getElementById('session_id').value.trim();
+					const model_name = document.getElementById('model_name').value.trim();
+					const text_value = promptInput.value;
+					const temperature = document
+						.getElementById('temperature')
+						.value.trim();
+					const max_tokens = document.getElementById('max_tokens').value.trim();
+
+					outputEl.textContent = '';
+					resetUsage();
+					eventLog.textContent = '';
+					outputEl.classList.add('streaming');
+					startBtn.disabled = true;
+					abortBtn.disabled = false;
+					setStatus('streaming...');
+
+					let endpoint = '';
+					let body = {};
+					if (mode === 'conversation') {
+						endpoint = '/api/v1/llm/conversation/stream';
+						body = { user_input: text_value };
+						if (session_id) body.session_id = session_id; else body.session_id = undefined;
+						if (temperature) body.temperature = parseFloat(temperature);
+						if (max_tokens) body.max_tokens = parseInt(max_tokens, 10);
+					} else {
+						endpoint = '/api/v1/llm/explain/stream';
+						body = { question: text_value };
+					}
+					if (model_name) body.model_name = model_name;
+					log('POST ' + endpoint);
+
+					try {
+						const response = await fetch(endpoint, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(body),
+							signal: controller.signal,
+						});
+						if (!response.ok || !response.body) {
+							throw new Error('Network error: ' + response.status);
+						}
+
+						const reader = response.body.getReader();
+						const decoder = new TextDecoder();
+						let buffer = '';
+						while (true) {
+							const { value, done } = await reader.read();
+							if (done) break;
+							buffer += decoder.decode(value, { stream: true });
+							let idx;
+							while ((idx = buffer.indexOf('\n\n')) !== -1) {
+								const raw = buffer.slice(0, idx).trim();
+								buffer = buffer.slice(idx + 2);
+								if (!raw.startsWith('data:')) continue;
+								const jsonStr = raw.slice(5).trim();
+								if (!jsonStr) continue;
+								try {
+									const evt = JSON.parse(jsonStr);
+									handleEvent(evt);
+								} catch (err) {
+									log('Parse error: ' + err.message, 'error');
+								}
+							}
+						}
+						finalize();
+					} catch (err) {
+						if (err.name === 'AbortError') {
+							log('Stream aborted by user');
+						} else {
+							log('Stream error: ' + err.message, 'error');
+						}
+						finalize();
+					}
+				});
+
+				function handleEvent(evt) {
+					switch (evt.event) {
+						case 'start':
+							log(
+								'[start] model=' + evt.model + (evt.session_id ? ' session=' + evt.session_id : '')
+							);
+							if (evt.session_id) {
+								sessionBadge.style.display = 'inline-block';
+								sessionBadge.textContent = evt.session_id;
+							}
+							break;
+						case 'token':
+							outputEl.textContent += evt.content;
+							break;
+						case 'usage':
+							usageEl.textContent = `Usage → input: ${evt.usage.input_tokens} | output: ${evt.usage.output_tokens} | total: ${evt.usage.total_tokens}`;
+							break;
+						case 'error':
+							log('[error] ' + evt.message, 'error');
+							break;
+						case 'end':
+							log('[end]');
+							finalize();
+							break;
+						default:
+							log('[unknown] ' + JSON.stringify(evt));
+					}
+				}
+
+				function finalize() {
+					outputEl.classList.remove('streaming');
+					startBtn.disabled = false;
+					abortBtn.disabled = true;
+					controller = null;
+					setStatus('idle');
+				}
+
+				// (Removed legacy separate explanation tester; unified mode select handles both.)
+			})();
+		</script>
+	</body>
+</html>

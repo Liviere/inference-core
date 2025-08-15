@@ -5,6 +5,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .api.v1.routes import auth, health, llm, tasks
 from .core.config import get_settings
@@ -118,6 +119,18 @@ def create_application() -> FastAPI:
 
     # Configure API routers explicitly
     setup_routers(app)
+
+    # Mount simple static test assets (only in debug/development) for LLM streaming manual QA
+    # These assets provide a lightweight in-browser UI to exercise SSE streaming endpoints.
+    try:
+        if settings.debug:
+            app.mount(
+                "/static",
+                StaticFiles(directory="app/frontend", html=True),
+                name="static",
+            )
+    except Exception as e:
+        logging.warning(f"Could not mount static test assets: {e}")
 
     # Add root endpoint
     @app.get("/", tags=["Root"])
