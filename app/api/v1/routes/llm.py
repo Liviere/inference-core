@@ -8,7 +8,8 @@ Provides endpoints for story generation, analysis, and other LLM-powered feature
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.schemas.tasks_responses import TaskResponse
@@ -154,6 +155,114 @@ async def conversation(
         raise HTTPException(
             status_code=500,
             detail=f"Conversation task submission failed: {str(e)}",
+        )
+
+
+@router.post("/conversation/stream")
+async def conversation_stream(
+    request: ConversationRequest,
+    http_request: Request,
+    llm_service=Depends(get_llm_service_dependency)
+):
+    """
+    Stream a conversation turn using Server-Sent Events.
+
+    Provides real-time token-by-token streaming for conversation responses.
+    If session_id is not provided, a new session will be created.
+    
+    Returns:
+        StreamingResponse with Server-Sent Events (text/event-stream)
+        
+    Event Format:
+        data: {"event":"start","model":"gpt-4o-mini","session_id":"abc123"}
+        data: {"event":"token","content":"Hello"}
+        data: {"event":"token","content":" world"}
+        data: {"event":"usage","usage":{"input_tokens":123,"output_tokens":45,"total_tokens":168}}
+        data: {"event":"end"}
+    """
+    try:
+        # Build kwargs for streaming
+        stream_kwargs = {}
+        for field, value in request.model_dump(exclude_none=True).items():
+            if field not in ["session_id", "user_input", "model_name"]:
+                stream_kwargs[field] = value
+
+        async_generator = llm_service.stream_conversation(
+            session_id=request.session_id,
+            user_input=request.user_input,
+            model_name=request.model_name,
+            request=http_request,
+            **stream_kwargs
+        )
+
+        # Source: FastAPI docs – StreamingResponse, 2025-08 snapshot
+        return StreamingResponse(
+            async_generator,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
+            }
+        )
+    except Exception as e:
+        logger.error(f"Conversation streaming failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Conversation streaming failed: {str(e)}",
+        )
+
+
+@router.post("/explain/stream")
+async def explain_stream(
+    request: ExplainRequest,
+    http_request: Request,
+    llm_service=Depends(get_llm_service_dependency)
+):
+    """
+    Stream an explanation using Server-Sent Events.
+
+    Provides real-time token-by-token streaming for explanation responses.
+    
+    Returns:
+        StreamingResponse with Server-Sent Events (text/event-stream)
+        
+    Event Format:
+        data: {"event":"start","model":"gpt-4o-mini"}
+        data: {"event":"token","content":"Hello"}
+        data: {"event":"token","content":" world"}
+        data: {"event":"usage","usage":{"input_tokens":123,"output_tokens":45,"total_tokens":168}}
+        data: {"event":"end"}
+    """
+    try:
+        # Build kwargs for streaming
+        stream_kwargs = {}
+        for field, value in request.model_dump(exclude_none=True).items():
+            if field not in ["question", "model_name"]:
+                stream_kwargs[field] = value
+
+        async_generator = llm_service.stream_explanation(
+            question=request.question,
+            model_name=request.model_name,
+            request=http_request,
+            **stream_kwargs
+        )
+
+        # Source: FastAPI docs – StreamingResponse, 2025-08 snapshot
+        return StreamingResponse(
+            async_generator,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
+            }
+        )
+    except Exception as e:
+        logger.error(f"Explanation streaming failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Explanation streaming failed: {str(e)}",
         )
 
 

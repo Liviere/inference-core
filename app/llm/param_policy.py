@@ -114,6 +114,7 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
 _DYNAMIC_LOADED = False
 _EFFECTIVE_MODEL_POLICIES: Dict[str, ProviderParamPolicy] = {}
 _GLOBAL_PASSTHROUGH_PREFIXES: Set[str] = set()
+STREAMING_PARAMS = set(["streaming", "callbacks"])
 
 
 def _merge_policy(
@@ -254,19 +255,23 @@ def normalize_params(
         if param_value is None:
             continue
 
+        # Check if parameter is a streaming-related parameter
+        if param_name in STREAMING_PARAMS:
+            continue  # Allow streaming params to pass through
+
         # Check if parameter should be renamed
         if param_name in policy.renamed:
             new_name = policy.renamed[param_name]
             normalized[new_name] = param_value
             logger.debug(
-                f"Parameter renamed for {provider.value}: {param_name} -> {new_name}"
+                f"Parameter renamed for {provider}: {param_name} -> {new_name}"
             )
             continue
 
         # Check if parameter should be dropped
         if param_name in policy.dropped:
             logger.debug(
-                f"Parameter dropped for {provider.value}: {param_name} "
+                f"Parameter dropped for {provider}: {param_name} "
                 f"(value: {param_value})"
             )
             continue
@@ -283,12 +288,12 @@ def normalize_params(
         ):
             normalized[param_name] = param_value
             logger.debug(
-                f"Experimental passthrough parameter for {provider.value}: {param_name}"
+                f"Experimental passthrough parameter for {provider}: {param_name}"
             )
             continue
 
         logger.warning(
-            f"Unknown parameter for {provider.value}: {param_name} (value: {param_value}) - dropping"
+            f"Unknown parameter for {provider}: {param_name} (value: {param_value}) - dropping"
         )
 
     return normalized

@@ -18,6 +18,69 @@ This module provides a dedicated API and service layer for working with Large La
 - RunnableWithMessageHistory pattern for robust conversation state
 - SQL-backed chat history by default using SQLChatMessageHistory (can be swapped for Redis/other DB backends)
 - **Centralized Parameter Normalization**: Automatic parameter filtering and mapping for all providers
+- **Real-Time Token Streaming**: SSE endpoints for conversation & explain using LangChain `astream_events` with graceful fallback
+
+## Streaming Architecture
+
+File: `app/llm/streaming.py`
+
+### Pipeline:
+
+1. API endpoint (`app/api/v1/routes/llm.py`) receives POST and constructs an async generator.
+2. Model is created with `streaming=True` and callback handler.
+3. Preferred streaming path uses `model.astream_events(..., version="v1")` (LangChain 0.3.x) to capture granular events (`on_chat_model_stream`).
+4. Each token (content delta) is pushed into an asyncio queue as `StreamChunk(type="token")`.
+5. The generator emits SSE frames (`data: {...}\n\n`).
+6. Usage metadata (if available) emitted as a `usage` event before `end`.
+7. Conversation: final assistant message persisted to SQL history.
+
+### Event JSON structure:
+
+```
+{"event":"start","model":"<model>","session_id":"<id?>"}
+{"event":"token","content":"partial"}
+{"event":"usage","usage":{"input_tokens":N,"output_tokens":M,"total_tokens":T}}
+{"event":"end"}
+```
+
+### Fallback: If `astream_events` unsupported or errors, code falls back to `model.astream()` and manually extracts chunk content.
+
+Manual Tester (DEV only): Served at `/static/stream.html` when `DEBUG=True`. Provides a unified UI with mode switch (conversation / explain), live output, abort, and event log.
+
+### Client Integration Tips:
+
+- Use `fetch` with ReadableStream (POST body) instead of `EventSource`.
+- Split stream buffer on double newline `\n\n`; parse lines starting with `data:`.
+- Treat `end` as authoritative completion; network close alone might be premature.
+- Accumulate only `event == "token"` for final text body.
+
+### Error Handling:
+
+- `error` event includes `message`.
+- Generator ensures an `end` event after an `error`.
+- If client disconnects mid-stream, task is cancelled; no history persistence for partial reply.
+
+### Local Test Page
+
+When `DEBUG=True` a minimal manual QA page is served at: `http://localhost:8000/static/stream.html`.
+
+### cURL Examples
+
+Conversation streaming:
+
+```bash
+curl -N -H 'Content-Type: application/json' \
+  -d '{"user_input":"Hello!","session_id":"demo-1"}' \
+  http://localhost:8000/api/v1/llm/conversation/stream
+```
+
+Explain streaming:
+
+```bash
+curl -N -H 'Content-Type: application/json' \
+  -d '{"question":"Explain FastAPI in one sentence"}' \
+  http://localhost:8000/api/v1/llm/explain/stream
+```
 
 ## Parameter Normalization
 
