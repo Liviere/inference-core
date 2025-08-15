@@ -256,8 +256,20 @@ async def stream_conversation(
             yield format_sse(error_data)
             return
 
-        # Load conversation history
-        # Use the same sync connection string approach as ConversationChain
+        # Emit start event EARLY (before loading history) for low-latency first byte
+        start_data = {
+            "event": "start",
+            "model": getattr(
+                getattr(model, "model_name", None), "__str__", lambda: None
+            )()
+            or getattr(model, "model_name", None)
+            or model_name
+            or default_model_name,
+            "session_id": session_id,
+        }
+        yield format_sse(start_data)
+
+        # Load conversation history (can be I/O heavy) AFTER start was sent
         from app.core.config import get_settings
 
         settings = get_settings()
@@ -295,19 +307,6 @@ async def stream_conversation(
 
         # Add current user message
         messages.append(HumanMessage(content=user_input))
-
-        # Emit start event
-        start_data = {
-            "event": "start",
-            "model": getattr(
-                getattr(model, "model_name", None), "__str__", lambda: None
-            )()
-            or getattr(model, "model_name", None)
-            or model_name
-            or default_model_name,
-            "session_id": session_id,
-        }
-        yield format_sse(start_data)
 
         # Start streaming using LangChain astream_events (preferred) with fallback to astream
         async def event_stream_model():
