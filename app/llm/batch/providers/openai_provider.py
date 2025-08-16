@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from uuid import UUID
 
 from app.llm.batch import BaseBatchProvider, PreparedSubmission, ProviderResultRow, ProviderStatus, ProviderSubmitResult
+from app.llm.batch.enums import BatchMode, BatchStatus, normalize_provider_status
 
 
 class OpenAIBatchProvider(BaseBatchProvider):
@@ -28,8 +29,15 @@ class OpenAIBatchProvider(BaseBatchProvider):
         # self.client = OpenAI(api_key=config.get("api_key"))
     
     def supports_model(self, model: str) -> bool:
-        """Check if OpenAI supports this model for batch processing"""
+        """
+        Check if OpenAI supports this model for batch processing.
+        
+        TODO: Issue #002 - Replace with llm_config.yaml lookup
+        This should read from the batch.providers.openai.models section
+        in the YAML configuration instead of hard-coded values.
+        """
         # OpenAI batch API supports these models (as of 2024)
+        # TODO: Read from config: llm_config.yaml -> batch.providers.openai.models
         supported_models = {
             "gpt-4o-mini",
             "gpt-4o", 
@@ -43,7 +51,7 @@ class OpenAIBatchProvider(BaseBatchProvider):
         self, 
         batch_id: UUID, 
         model: str, 
-        mode: str, 
+        mode: BatchMode, 
         requests: List[Dict[str, Any]],
         config: Dict[str, Any] = None
     ) -> PreparedSubmission:
@@ -52,7 +60,7 @@ class OpenAIBatchProvider(BaseBatchProvider):
         openai_payloads = []
         
         for i, request in enumerate(requests):
-            if mode == "chat":
+            if mode == BatchMode.CHAT:
                 payload = {
                     "custom_id": f"request_{i}",
                     "method": "POST",
@@ -63,7 +71,7 @@ class OpenAIBatchProvider(BaseBatchProvider):
                         **{k: v for k, v in request.items() if k != "messages"}
                     }
                 }
-            elif mode == "completion":
+            elif mode == BatchMode.COMPLETION:
                 payload = {
                     "custom_id": f"request_{i}",
                     "method": "POST", 
@@ -98,10 +106,12 @@ class OpenAIBatchProvider(BaseBatchProvider):
         
         # Placeholder implementation
         provider_batch_id = f"batch_openai_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        raw_status = "validating"
         
         return ProviderSubmitResult(
             provider_batch_id=provider_batch_id,
-            status="validating",
+            status=normalize_provider_status(self.PROVIDER_NAME, raw_status),
+            raw_status=raw_status,
             submitted_at=datetime.now(),
             metadata={"request_count": len(prepared_submission.payloads)}
         )
@@ -113,9 +123,12 @@ class OpenAIBatchProvider(BaseBatchProvider):
         # return ProviderStatus based on batch.status
         
         # Placeholder implementation
+        raw_status = "completed"  # Could be: validating, in_progress, finalizing, completed, failed, expired, cancelled
+        
         return ProviderStatus(
             provider_batch_id=provider_batch_id,
-            status="completed",  # Could be: validating, in_progress, finalizing, completed, failed, expired, cancelled
+            status=normalize_provider_status(self.PROVIDER_NAME, raw_status),
+            raw_status=raw_status,
             progress={"completed": 10, "total": 10},
             completed_at=datetime.now(),
             result_uri=f"https://api.openai.com/v1/files/{provider_batch_id}_results.jsonl"
@@ -128,15 +141,22 @@ class OpenAIBatchProvider(BaseBatchProvider):
         # 2. Parse the JSONL results
         # 3. Convert to ProviderResultRow format
         
-        # Placeholder implementation
+        # Placeholder implementation with structured usage
+        from app.llm.batch.dto import UsageInfo
+        
         return [
             ProviderResultRow(
                 request_id="request_0",
                 status="success",
                 response={
                     "choices": [{"message": {"content": "Example response"}}],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 20}
-                }
+                    # Usage is now extracted to structured field
+                },
+                usage=UsageInfo(
+                    prompt_tokens=10,
+                    completion_tokens=20,
+                    total_tokens=30
+                )
             )
         ]
     

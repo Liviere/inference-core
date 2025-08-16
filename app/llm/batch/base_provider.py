@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from uuid import UUID
 
 from .dto import PreparedSubmission, ProviderResultRow, ProviderStatus, ProviderSubmitResult
+from .enums import BatchMode
 
 
 class BaseBatchProvider(ABC):
@@ -38,6 +39,10 @@ class BaseBatchProvider(ABC):
         """
         Check if the provider supports a specific model for batch processing.
         
+        TODO: Issue #002 - Replace hard-coded model checks with YAML config lookup
+        This method should read supported models from llm_config.yaml rather than
+        using hard-coded lists in provider implementations.
+        
         Args:
             model: Model name to check
             
@@ -51,17 +56,22 @@ class BaseBatchProvider(ABC):
         self, 
         batch_id: UUID, 
         model: str, 
-        mode: str, 
+        mode: BatchMode, 
         requests: List[Dict[str, Any]],
         config: Dict[str, Any] = None
     ) -> PreparedSubmission:
         """
         Prepare request payloads for batch submission to the provider.
         
+        TODO: Issue #002 - Support chunking for large batches
+        This method may need to return multiple PreparedSubmission objects
+        or the system may need a higher-level splitter to handle large batches
+        that exceed provider limits.
+        
         Args:
             batch_id: Internal batch job identifier
             model: Model name to use
-            mode: Processing mode (chat, embedding, completion, custom)
+            mode: Processing mode (BatchMode enum)
             requests: List of individual requests to process
             config: Additional configuration for the batch
             

@@ -6,7 +6,8 @@ across different LLM providers with a common interface.
 """
 
 from .base_provider import BaseBatchProvider
-from .dto import PreparedSubmission, ProviderResultRow, ProviderStatus, ProviderSubmitResult
+from .dto import PreparedSubmission, ProviderResultRow, ProviderStatus, ProviderSubmitResult, UsageInfo
+from .enums import BatchMode, BatchStatus, normalize_provider_status
 from .exceptions import ProviderError, ProviderPermanentError, ProviderTransientError
 from .registry import BatchProviderRegistry, ProviderNotRegisteredError, batch_provider_registry
 
@@ -19,6 +20,12 @@ __all__ = [
     "ProviderSubmitResult", 
     "ProviderStatus",
     "ProviderResultRow",
+    "UsageInfo",
+    
+    # Enums and utilities
+    "BatchMode",
+    "BatchStatus", 
+    "normalize_provider_status",
     
     # Exceptions
     "ProviderError",

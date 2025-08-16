@@ -11,6 +11,8 @@ from uuid import UUID, uuid4
 
 from app.llm.batch import (
     BaseBatchProvider,
+    BatchMode,
+    BatchStatus,
     BatchProviderRegistry,
     PreparedSubmission,
     ProviderNotRegisteredError,
@@ -19,6 +21,7 @@ from app.llm.batch import (
     ProviderStatus,
     ProviderSubmitResult,
     ProviderTransientError,
+    UsageInfo,
     batch_provider_registry,
 )
 
@@ -42,7 +45,7 @@ class MockBatchProvider(BaseBatchProvider):
         self, 
         batch_id: UUID, 
         model: str, 
-        mode: str, 
+        mode: BatchMode, 
         requests: List[Dict[str, Any]],
         config: Dict[str, Any] = None
     ) -> PreparedSubmission:
@@ -64,14 +67,15 @@ class MockBatchProvider(BaseBatchProvider):
         
         provider_batch_id = f"mock_batch_{uuid4().hex[:8]}"
         self.submitted_batches[provider_batch_id] = {
-            "status": "submitted",
+            "status": BatchStatus.QUEUED,
             "submitted_at": datetime.now(),
             "submission": prepared_submission
         }
         
         return ProviderSubmitResult(
             provider_batch_id=provider_batch_id,
-            status="submitted",
+            status=BatchStatus.QUEUED,
+            raw_status="queued",
             submitted_at=datetime.now()
         )
     
@@ -82,7 +86,8 @@ class MockBatchProvider(BaseBatchProvider):
         batch_data = self.submitted_batches[provider_batch_id]
         return ProviderStatus(
             provider_batch_id=provider_batch_id,
-            status=batch_data["status"]
+            status=batch_data["status"],
+            raw_status=batch_data["status"].value
         )
     
     async def fetch_results(self, provider_batch_id: str) -> List[ProviderResultRow]:
@@ -94,18 +99,20 @@ class MockBatchProvider(BaseBatchProvider):
             ProviderResultRow(
                 request_id="req_1",
                 status="success",
-                response={"result": "mock response 1"}
+                response={"result": "mock response 1"},
+                usage=UsageInfo(prompt_tokens=10, completion_tokens=15, total_tokens=25)
             ),
             ProviderResultRow(
                 request_id="req_2", 
                 status="success",
-                response={"result": "mock response 2"}
+                response={"result": "mock response 2"},
+                usage=UsageInfo(prompt_tokens=12, completion_tokens=18, total_tokens=30)
             )
         ]
     
     async def cancel(self, provider_batch_id: str) -> bool:
         if provider_batch_id in self.submitted_batches:
-            self.submitted_batches[provider_batch_id]["status"] = "cancelled"
+            self.submitted_batches[provider_batch_id]["status"] = BatchStatus.CANCELLED
             return True
         return False
 
@@ -118,7 +125,7 @@ class AnotherMockProvider(BaseBatchProvider):
     def supports_model(self, model: str) -> bool:
         return model == "special_model"
     
-    def prepare_payloads(self, batch_id: UUID, model: str, mode: str, 
+    def prepare_payloads(self, batch_id: UUID, model: str, mode: BatchMode, 
                         requests: List[Dict[str, Any]], config: Dict[str, Any] = None) -> PreparedSubmission:
         return PreparedSubmission(
             batch_id=batch_id, provider_name=self.PROVIDER_NAME,
@@ -128,12 +135,17 @@ class AnotherMockProvider(BaseBatchProvider):
     async def submit(self, prepared_submission: PreparedSubmission) -> ProviderSubmitResult:
         return ProviderSubmitResult(
             provider_batch_id="another_batch_123",
-            status="submitted", 
+            status=BatchStatus.QUEUED, 
+            raw_status="queued",
             submitted_at=datetime.now()
         )
     
     async def poll_status(self, provider_batch_id: str) -> ProviderStatus:
-        return ProviderStatus(provider_batch_id=provider_batch_id, status="completed")
+        return ProviderStatus(
+            provider_batch_id=provider_batch_id, 
+            status=BatchStatus.COMPLETED,
+            raw_status="completed"
+        )
     
     async def fetch_results(self, provider_batch_id: str) -> List[ProviderResultRow]:
         return []
@@ -166,7 +178,7 @@ class TestBaseBatchProvider:
         result = provider.prepare_payloads(
             batch_id=batch_id,
             model="model1",
-            mode="chat",
+            mode=BatchMode.CHAT,
             requests=requests
         )
         
@@ -174,7 +186,7 @@ class TestBaseBatchProvider:
         assert result.batch_id == batch_id
         assert result.provider_name == "mock_provider"
         assert result.model == "model1"
-        assert result.mode == "chat"
+        assert result.mode == BatchMode.CHAT
         assert result.payloads == requests
     
     @pytest.mark.asyncio
@@ -185,7 +197,7 @@ class TestBaseBatchProvider:
             batch_id=uuid4(),
             provider_name="mock_provider",
             model="model1",
-            mode="chat",
+            mode=BatchMode.CHAT,
             payloads=[{"input": "test"}]
         )
         
@@ -193,7 +205,7 @@ class TestBaseBatchProvider:
         
         assert isinstance(result, ProviderSubmitResult)
         assert result.provider_batch_id.startswith("mock_batch_")
-        assert result.status == "submitted"
+        assert result.status == BatchStatus.QUEUED
         assert isinstance(result.submitted_at, datetime)
     
     @pytest.mark.asyncio
@@ -205,7 +217,7 @@ class TestBaseBatchProvider:
         
         prepared = PreparedSubmission(
             batch_id=uuid4(), provider_name="mock_provider",
-            model="model1", mode="chat", payloads=[{"input": "test"}]
+            model="model1", mode=BatchMode.CHAT, payloads=[{"input": "test"}]
         )
         
         with pytest.raises(ProviderTransientError):
@@ -220,7 +232,7 @@ class TestBaseBatchProvider:
         
         prepared = PreparedSubmission(
             batch_id=uuid4(), provider_name="mock_provider",
-            model="model1", mode="chat", payloads=[{"input": "test"}]
+            model="model1", mode=BatchMode.CHAT, payloads=[{"input": "test"}]
         )
         
         with pytest.raises(ProviderPermanentError):
@@ -234,7 +246,7 @@ class TestBaseBatchProvider:
         # Submit a batch first
         prepared = PreparedSubmission(
             batch_id=uuid4(), provider_name="mock_provider",
-            model="model1", mode="chat", payloads=[{"input": "test"}]
+            model="model1", mode=BatchMode.CHAT, payloads=[{"input": "test"}]
         )
         submit_result = await provider.submit(prepared)
         
@@ -243,7 +255,7 @@ class TestBaseBatchProvider:
         
         assert isinstance(status, ProviderStatus)
         assert status.provider_batch_id == submit_result.provider_batch_id
-        assert status.status == "submitted"
+        assert status.status == BatchStatus.QUEUED
     
     @pytest.mark.asyncio
     async def test_fetch_results(self):
@@ -274,7 +286,7 @@ class TestBaseBatchProvider:
         # Submit a batch first
         prepared = PreparedSubmission(
             batch_id=uuid4(), provider_name="mock_provider",
-            model="model1", mode="chat", payloads=[{"input": "test"}]
+            model="model1", mode=BatchMode.CHAT, payloads=[{"input": "test"}]
         )
         submit_result = await provider.submit(prepared)
         
@@ -285,7 +297,7 @@ class TestBaseBatchProvider:
         
         # Verify status changed
         status = await provider.poll_status(submit_result.provider_batch_id)
-        assert status.status == "cancelled"
+        assert status.status == BatchStatus.CANCELLED
 
 
 class TestBatchProviderRegistry:

@@ -5,7 +5,7 @@ Integration test demonstrating the provider registry with example providers.
 import pytest
 from uuid import uuid4
 
-from app.llm.batch import batch_provider_registry
+from app.llm.batch import BatchMode, batch_provider_registry
 from app.llm.batch.providers.openai_provider import OpenAIBatchProvider
 
 
@@ -76,7 +76,7 @@ class TestProviderRegistryIntegration:
         result = provider.prepare_payloads(
             batch_id=batch_id,
             model="gpt-4o-mini",
-            mode="chat",
+            mode=BatchMode.CHAT,
             requests=requests
         )
         
@@ -114,11 +114,11 @@ class TestProviderRegistryIntegration:
         result = provider.prepare_payloads(
             batch_id=batch_id,
             model="gpt-3.5-turbo",
-            mode="completion",
+            mode=BatchMode.COMPLETION,
             requests=requests
         )
         
-        assert result.mode == "completion"
+        assert result.mode == BatchMode.COMPLETION
         payload = result.payloads[0]
         assert payload["url"] == "/v1/completions"
         assert payload["body"]["prompt"] == "Complete this: Hello"
@@ -128,11 +128,11 @@ class TestProviderRegistryIntegration:
         """Test OpenAI provider with unsupported mode"""
         provider = OpenAIBatchProvider()
         
-        with pytest.raises(ValueError, match="Unsupported mode for OpenAI: embedding"):
+        with pytest.raises(ValueError, match="Unsupported mode for OpenAI: BatchMode.EMBEDDING"):
             provider.prepare_payloads(
                 batch_id=uuid4(),
                 model="gpt-4",
-                mode="embedding",
+                mode=BatchMode.EMBEDDING,
                 requests=[{"input": "test"}]
             )
     
@@ -146,7 +146,7 @@ class TestProviderRegistryIntegration:
         prepared = provider.prepare_payloads(
             batch_id=batch_id,
             model="gpt-4o-mini",
-            mode="chat",
+            mode=BatchMode.CHAT,
             requests=[{"messages": [{"role": "user", "content": "Test"}]}]
         )
         
