@@ -10,6 +10,7 @@ import asyncio
 from functools import lru_cache
 from typing import Optional
 
+import redis
 import redis.asyncio as aioredis
 
 from app.core.config import get_settings
@@ -19,6 +20,13 @@ from app.core.config import get_settings
 def get_redis() -> aioredis.Redis:
     settings = get_settings()
     return aioredis.from_url(settings.redis_url, decode_responses=True)
+
+
+@lru_cache()
+def get_sync_redis() -> redis.Redis:
+    """Get synchronous Redis client for use in non-async contexts like Celery tasks"""
+    settings = get_settings()
+    return redis.from_url(settings.redis_url, decode_responses=True)
 
 
 async def ensure_redis_connection() -> bool:

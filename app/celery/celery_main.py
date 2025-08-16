@@ -23,7 +23,7 @@ def create_celery_app() -> Celery:
     celery_app.autodiscover_tasks(["app.celery.tasks"])
 
     # Explicitly include tasks modules (useful for testing/packaging)
-    celery_app.conf.update(include=["app.celery.tasks.llm_tasks"])
+    celery_app.conf.update(include=["app.celery.tasks.llm_tasks", "app.celery.tasks.batch_tasks"])
 
     return celery_app
 
