@@ -6,7 +6,7 @@ for all database models.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, Optional
 
 from sqlalchemy import JSON, Boolean, DateTime, String, Text
@@ -38,6 +38,29 @@ class SmartJSON(TypeDecorator):
         else:
             # Fallback to TEXT for SQLite and older databases
             return dialect.type_descriptor(Text())
+
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            if dialect.name in ("postgresql", "mysql"):
+                return value  # Native JSON support
+            else:
+                import json
+
+                return json.dumps(value) if value is not None else None
+        return None
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            if dialect.name in ("postgresql", "mysql"):
+                return value  # Native JSON support
+            else:
+                import json
+
+                try:
+                    return json.loads(value) if value is not None else None
+                except (json.JSONDecodeError, TypeError):
+                    return None
+        return None
 
 
 @declarative_mixin
@@ -73,7 +96,7 @@ class SoftDeleteMixin:
     def soft_delete(self):
         """Mark record as deleted"""
         self.is_deleted = True
-        self.deleted_at = datetime.utcnow()
+        self.deleted_at = datetime.now(UTC)
 
     def restore(self):
         """Restore soft deleted record"""
