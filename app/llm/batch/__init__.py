@@ -10,6 +10,18 @@ from .exceptions import ProviderTransientError, ProviderPermanentError, Provider
 from .registry import BatchProviderRegistry, registry
 from .providers.base import BaseBatchProvider
 
+# Import and register providers
+def _register_providers():
+    """Register all available batch providers."""
+    try:
+        from .providers.openai_provider import OpenAIBatchProvider
+        registry.register(OpenAIBatchProvider)
+    except ImportError:
+        pass  # OpenAI provider optional if dependencies missing
+
+# Register providers on module import
+_register_providers()
+
 __all__ = [
     "PreparedSubmission",
     "ProviderSubmitResult", 
