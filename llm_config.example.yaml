@@ -250,19 +250,19 @@ batch:
     openai:
       enabled: true
       models:
-        - name: gpt-4o-mini
+        - name: gpt-5-mini
           mode: chat
           max_prompts_per_batch: 20
           pricing_tier: batch
     gemini:
       enabled: true
       models:
-        - name: gemini-1.5-flash
+        - name: gemini-2.5-flash
           mode: chat
           max_prompts_per_batch: 100
     claude:
       enabled: true
       models:
-        - name: claude-3-5-sonnet
+        - name: claude-3-5-haiku-latest
           mode: chat
           max_prompts_per_batch: 100
