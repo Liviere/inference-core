@@ -6,5 +6,6 @@ Each provider implements the BaseBatchProvider interface.
 """
 
 from .base import BaseBatchProvider
+from .openai_provider import OpenAIBatchProvider
 
-__all__ = ["BaseBatchProvider"]
+__all__ = ["BaseBatchProvider", "OpenAIBatchProvider"]
