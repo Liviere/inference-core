@@ -6,7 +6,7 @@ Provides CRUD operations and business logic for BatchJob, BatchItem, and BatchEv
 """
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -55,16 +55,16 @@ class BatchService:
             config_json=job_data.config_json,
             created_by=created_by,
         )
-        
+
         self.session.add(job)
         await self.session.commit()
         await self.session.refresh(job)
-        
+
         # Create initial event
         await self._create_status_change_event(
             job.id, None, BatchJobStatus.CREATED, created_by
         )
-        
+
         logger.info(f"Created batch job {job.id} for provider {job.provider}")
         return job
 
@@ -98,7 +98,7 @@ class BatchService:
             return None
 
         old_status = job.status
-        
+
         # Update fields
         update_data = job_data.model_dump(exclude_unset=True)
         for field, value in update_data.items():
@@ -106,7 +106,7 @@ class BatchService:
                 setattr(job, field, value)
 
         job.updated_by = updated_by
-        
+
         await self.session.commit()
         await self.session.refresh(job)
 
@@ -145,19 +145,21 @@ class BatchService:
         stmt = select(BatchJob).where(
             and_(
                 BatchJob.is_deleted == False,
-                BatchJob.status.in_([
-                    BatchJobStatus.CREATED,
-                    BatchJobStatus.SUBMITTED,
-                    BatchJobStatus.IN_PROGRESS
-                ])
+                BatchJob.status.in_(
+                    [
+                        BatchJobStatus.CREATED,
+                        BatchJobStatus.SUBMITTED,
+                        BatchJobStatus.IN_PROGRESS,
+                    ]
+                ),
             )
         )
-        
+
         if provider:
             stmt = stmt.where(BatchJob.provider == provider)
-            
+
         stmt = stmt.order_by(BatchJob.created_at)
-        
+
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -168,8 +170,8 @@ class BatchService:
             return False
 
         job.is_deleted = True
-        job.deleted_at = datetime.utcnow()
-        
+        job.deleted_at = datetime.now(UTC)
+
         await self.session.commit()
         logger.info(f"Deleted batch job {job.id}")
         return True
@@ -201,9 +203,9 @@ class BatchService:
 
         # Update job request count
         job.request_count = len(items_data)
-        
+
         await self.session.commit()
-        
+
         # Refresh all items
         for item in items:
             await self.session.refresh(item)
@@ -216,17 +218,14 @@ class BatchService:
     ) -> List[BatchItem]:
         """Get batch items for a job"""
         stmt = select(BatchItem).where(
-            and_(
-                BatchItem.batch_job_id == job_id,
-                BatchItem.is_deleted == False
-            )
+            and_(BatchItem.batch_job_id == job_id, BatchItem.is_deleted == False)
         )
-        
+
         if status:
             stmt = stmt.where(BatchItem.status == status)
-            
+
         stmt = stmt.order_by(BatchItem.sequence_index)
-        
+
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -247,7 +246,7 @@ class BatchService:
             return None
 
         old_status = item.status
-        
+
         # Update fields
         update_data = item_data.model_dump(exclude_unset=True)
         for field, value in update_data.items():
@@ -255,7 +254,7 @@ class BatchService:
                 setattr(item, field, value)
 
         item.updated_by = updated_by
-        
+
         await self.session.commit()
         await self.session.refresh(item)
 
@@ -269,24 +268,23 @@ class BatchService:
 
     async def update_batch_items_status(
         self,
-        job_id: UUID,
         items_status_updates: List[Dict[str, Any]],
         updated_by: Optional[UUID] = None,
     ) -> int:
         """Bulk update batch items status"""
         updated_count = 0
-        
+
         for update in items_status_updates:
             item_id = update.get("item_id")
             new_status = update.get("status")
-            
+
             if item_id and new_status:
                 item_update = BatchItemUpdate(
                     status=new_status,
                     output_payload=update.get("output_payload"),
                     error_detail=update.get("error_detail"),
                 )
-                
+
                 if await self.update_batch_item(item_id, item_update, updated_by):
                     updated_count += 1
 
@@ -308,11 +306,11 @@ class BatchService:
             event_data=event_data.event_data,
             created_by=created_by,
         )
-        
+
         self.session.add(event)
         await self.session.commit()
         await self.session.refresh(event)
-        
+
         return event
 
     async def get_batch_events(
@@ -320,12 +318,12 @@ class BatchService:
     ) -> List[BatchEvent]:
         """Get batch events for a job"""
         stmt = select(BatchEvent).where(BatchEvent.batch_job_id == job_id)
-        
+
         if event_type:
             stmt = stmt.where(BatchEvent.event_type == event_type)
-            
+
         stmt = stmt.order_by(desc(BatchEvent.event_timestamp))
-        
+
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -352,7 +350,9 @@ class BatchService:
             .where(BatchJob.is_deleted == False)
             .group_by(BatchJob.provider)
         )
-        jobs_by_provider = {provider: count for provider, count in provider_result.fetchall()}
+        jobs_by_provider = {
+            provider: count for provider, count in provider_result.fetchall()
+        }
 
         # Request statistics
         stats_result = await self.session.execute(
@@ -362,7 +362,11 @@ class BatchService:
                 func.sum(BatchJob.error_count),
             ).where(BatchJob.is_deleted == False)
         )
-        total_requests, total_successes, total_errors = stats_result.fetchone() or (0, 0, 0)
+        total_requests, total_successes, total_errors = stats_result.fetchone() or (
+            0,
+            0,
+            0,
+        )
 
         # Average success rate
         avg_success_rate = 0.0
@@ -390,10 +394,25 @@ class BatchService:
         created_by: Optional[UUID] = None,
     ):
         """Create a status change event"""
+        # Normalize old_status/new_status in case underlying ORM returned raw strings
+        if isinstance(old_status, str):
+            try:
+                old_status_enum = BatchJobStatus(old_status)
+            except ValueError:
+                old_status_enum = None
+        else:
+            old_status_enum = old_status
+        if isinstance(new_status, str):
+            try:
+                new_status_enum = BatchJobStatus(new_status)
+            except ValueError:
+                new_status_enum = None
+        else:
+            new_status_enum = new_status
         event_data = BatchEventCreate(
             event_type=BatchEventType.STATUS_CHANGE,
-            old_status=old_status.value if old_status else None,
-            new_status=new_status.value,
+            old_status=old_status_enum.value if old_status_enum else None,
+            new_status=new_status_enum.value if new_status_enum else None,
         )
         await self.create_batch_event(job_id, event_data, created_by)
 
@@ -434,6 +453,8 @@ class BatchService:
                 if job.error_count == 0:
                     job.status = BatchJobStatus.COMPLETED
                 else:
-                    job.status = BatchJobStatus.COMPLETED  # or FAILED based on error threshold
-                job.completed_at = datetime.utcnow()
+                    job.status = (
+                        BatchJobStatus.COMPLETED
+                    )  # or FAILED based on error threshold
+                job.completed_at = datetime.now(UTC)
                 await self.session.commit()

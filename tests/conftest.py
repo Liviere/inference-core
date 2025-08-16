@@ -48,6 +48,12 @@ async def async_engine() -> AsyncGenerator:
 @pytest_asyncio.fixture()
 async def async_session_with_engine(async_engine) -> AsyncGenerator[AsyncSession, None]:
     """Create an async database session for testing."""
+    # Ensure all tables are created before yielding the session. Some tests
+    # (e.g. batch integration) directly use the session without calling any
+    # API startup hooks, so we must explicitly create metadata here.
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     session_maker = get_non_singleton_session_maker(engine=async_engine)
     async with session_maker() as session:
         try:
@@ -58,6 +64,15 @@ async def async_session_with_engine(async_engine) -> AsyncGenerator[AsyncSession
         finally:
             # Explicitly close the session before the engine is disposed
             await session.close()
+
+    # Optional: drop tables after the fixture scope to keep DB clean between
+    # tests when using the same engine instance. (Engine itself disposed in
+    # async_engine fixture.) Safe best-effort cleanup.
+    try:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+    except Exception:
+        pass
 
 
 @pytest_asyncio.fixture()
