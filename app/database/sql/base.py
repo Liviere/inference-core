@@ -39,6 +39,27 @@ class SmartJSON(TypeDecorator):
             # Fallback to TEXT for SQLite and older databases
             return dialect.type_descriptor(Text())
 
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            if dialect.name in ('postgresql', 'mysql'):
+                return value  # Native JSON support
+            else:
+                import json
+                return json.dumps(value) if value is not None else None
+        return None
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            if dialect.name in ('postgresql', 'mysql'):
+                return value  # Native JSON support
+            else:
+                import json
+                try:
+                    return json.loads(value) if value is not None else None
+                except (json.JSONDecodeError, TypeError):
+                    return None
+        return None
+
 
 @declarative_mixin
 class TimestampMixin:
