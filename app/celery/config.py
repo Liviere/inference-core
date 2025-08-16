@@ -72,16 +72,17 @@ def get_beat_schedule():
     """Get the beat schedule configuration with dynamic polling interval"""
     try:
         from app.llm.config import llm_config
+
         poll_interval = llm_config.batch_config.default_poll_interval_seconds
     except Exception:
         # Fallback to default if config is not available
         poll_interval = 30
-    
+
     return {
-        'batch-poll': {
-            'task': 'batch.poll',
-            'schedule': float(poll_interval),
-            'options': {'queue': 'batch_tasks'}
+        "batch-poll": {
+            "task": "batch.poll",
+            "schedule": float(poll_interval),
+            "options": {"queue": "batch_tasks"},
         },
     }
 

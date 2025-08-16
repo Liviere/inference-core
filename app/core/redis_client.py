@@ -6,9 +6,7 @@ Provides a shared, lazily-initialized Async Redis connection for the app.
 
 from __future__ import annotations
 
-import asyncio
 from functools import lru_cache
-from typing import Optional
 
 import redis
 import redis.asyncio as aioredis
