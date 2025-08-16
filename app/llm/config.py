@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 load_dotenv()
 
@@ -35,6 +35,83 @@ class ProviderConfig(BaseModel):
     openai_compatible: bool = False
     base_url: Optional[str] = None
     api_key_env: Optional[str] = None
+
+
+class BatchRetryConfig(BaseModel):
+    """Configuration for batch retry settings"""
+    
+    max_attempts: int = Field(default=5, ge=1, le=20, description="Maximum number of retry attempts")
+    base_delay: float = Field(default=2.0, ge=0.1, le=60.0, description="Base delay in seconds between retries")
+    max_delay: float = Field(default=60.0, ge=1.0, le=600.0, description="Maximum delay in seconds between retries")
+    
+    @field_validator('max_delay')
+    @classmethod
+    def max_delay_must_be_greater_than_base(cls, v, info):
+        if info.data.get('base_delay') is not None and v < info.data['base_delay']:
+            raise ValueError('max_delay must be greater than or equal to base_delay')
+        return v
+
+
+class BatchModelConfig(BaseModel):
+    """Configuration for a batch-enabled model"""
+    
+    name: str = Field(..., description="Model name", max_length=100)
+    mode: str = Field(..., description="Processing mode (chat, embedding, completion, custom)", max_length=20)
+    max_prompts_per_batch: int = Field(default=100, ge=1, le=1000, description="Maximum prompts per batch")
+    pricing_tier: Optional[str] = Field(None, description="Pricing tier for the model")
+    
+    @field_validator('mode')
+    @classmethod
+    def validate_mode(cls, v):
+        allowed_modes = ['chat', 'embedding', 'completion', 'custom']
+        if v not in allowed_modes:
+            raise ValueError(f'mode must be one of: {", ".join(allowed_modes)}')
+        return v
+
+
+class BatchProviderConfig(BaseModel):
+    """Configuration for a batch-enabled provider"""
+    
+    enabled: bool = Field(default=True, description="Whether batch processing is enabled for this provider")
+    models: List[BatchModelConfig] = Field(default_factory=list, description="List of batch-enabled models")
+
+
+class BatchDefaultsConfig(BaseModel):
+    """Default configuration for batch processing"""
+    
+    retry: BatchRetryConfig = Field(default_factory=BatchRetryConfig, description="Default retry configuration")
+
+
+class BatchConfig(BaseModel):
+    """Main batch configuration"""
+    
+    enabled: bool = Field(default=True, description="Whether batch processing is globally enabled")
+    default_poll_interval_seconds: int = Field(default=30, ge=5, le=3600, description="Default polling interval in seconds")
+    max_concurrent_provider_polls: int = Field(default=5, ge=1, le=20, description="Maximum concurrent provider polls")
+    defaults: BatchDefaultsConfig = Field(default_factory=BatchDefaultsConfig, description="Default batch settings")
+    providers: Dict[str, BatchProviderConfig] = Field(default_factory=dict, description="Provider-specific batch configurations")
+    
+    def get_provider_models(self, provider: str) -> List[BatchModelConfig]:
+        """Get list of batch-enabled models for a specific provider"""
+        provider_config = self.providers.get(provider)
+        if not provider_config or not provider_config.enabled:
+            return []
+        return provider_config.models
+    
+    def is_provider_enabled(self, provider: str) -> bool:
+        """Check if batch processing is enabled for a specific provider"""
+        if not self.enabled:
+            return False
+        provider_config = self.providers.get(provider)
+        return provider_config is not None and provider_config.enabled
+    
+    def get_model_config(self, provider: str, model: str) -> Optional[BatchModelConfig]:
+        """Get batch configuration for a specific model"""
+        models = self.get_provider_models(provider)
+        for model_config in models:
+            if model_config.name == model:
+                return model_config
+        return None
 
 
 class ModelConfig(BaseModel):
@@ -68,6 +145,7 @@ class LLMConfig:
         self.default_timeout: int = 60
         self.retry_attempts: int = 3
         self.retry_delay: float = 1.0
+        self.batch_config: BatchConfig = BatchConfig()  # Initialize with defaults
         self._load_config()
 
     def _load_config(self):
@@ -158,6 +236,66 @@ class LLMConfig:
         self.default_timeout = settings.get("default_timeout", 60)
         self.retry_attempts = settings.get("retry_attempts", 3)
         self.retry_delay = settings.get("retry_delay", 1.0)
+
+        # Parse batch configuration
+        self._load_batch_config(yaml_config)
+
+    def _load_batch_config(self, yaml_config: Dict[str, Any]):
+        """Load and validate batch configuration from YAML"""
+        batch_data = yaml_config.get("batch", {})
+        
+        try:
+            # If batch section is missing or empty, use defaults
+            if not batch_data:
+                self.batch_config = BatchConfig()
+                return
+            
+            # Parse provider configurations
+            batch_providers = {}
+            providers_data = batch_data.get("providers", {})
+            
+            for provider_name, provider_data in providers_data.items():
+                # Validate provider exists in main providers config
+                if provider_name not in self.providers:
+                    logging.warning(f"Batch configuration references unknown provider: {provider_name}")
+                    continue
+                
+                # Parse models for this provider
+                models_data = provider_data.get("models", [])
+                models = []
+                
+                for model_data in models_data:
+                    try:
+                        model_config = BatchModelConfig(**model_data)
+                        models.append(model_config)
+                    except Exception as e:
+                        logging.error(f"Invalid batch model configuration for {provider_name}: {e}")
+                        continue
+                
+                batch_providers[provider_name] = BatchProviderConfig(
+                    enabled=provider_data.get("enabled", True),
+                    models=models
+                )
+            
+            # Parse defaults
+            defaults_data = batch_data.get("defaults", {})
+            retry_data = defaults_data.get("retry", {})
+            defaults = BatchDefaultsConfig(
+                retry=BatchRetryConfig(**retry_data)
+            )
+            
+            # Create batch configuration
+            self.batch_config = BatchConfig(
+                enabled=batch_data.get("enabled", True),
+                default_poll_interval_seconds=batch_data.get("default_poll_interval_seconds", 30),
+                max_concurrent_provider_polls=batch_data.get("max_concurrent_provider_polls", 5),
+                defaults=defaults,
+                providers=batch_providers
+            )
+            
+        except Exception as e:
+            logging.error(f"Error loading batch configuration: {e}. Using default configuration.")
+            self.batch_config = BatchConfig()
 
     def _load_fallback_config(self):
         """Load fallback configuration when YAML file is not available"""

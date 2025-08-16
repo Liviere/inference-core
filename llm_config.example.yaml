@@ -235,3 +235,34 @@ param_policies:
             'max_tokens',
             'request_timeout',
           ]
+
+# Batch Processing Configuration
+batch:
+  enabled: true
+  default_poll_interval_seconds: 30
+  max_concurrent_provider_polls: 5
+  defaults:
+    retry:
+      max_attempts: 5
+      base_delay: 2
+      max_delay: 60
+  providers:
+    openai:
+      enabled: true
+      models:
+        - name: gpt-5-mini
+          mode: chat
+          max_prompts_per_batch: 20
+          pricing_tier: batch
+    gemini:
+      enabled: true
+      models:
+        - name: gemini-2.5-flash
+          mode: chat
+          max_prompts_per_batch: 100
+    claude:
+      enabled: true
+      models:
+        - name: claude-3-5-haiku-latest
+          mode: chat
+          max_prompts_per_batch: 100
