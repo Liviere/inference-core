@@ -43,12 +43,14 @@ class CeleryConfig:
     # Queue configuration with priority
     task_routes = {
         "app.celery.tasks.llm_tasks.*": {"queue": "llm_tasks"},
+        "app.celery.tasks.batch_tasks.*": {"queue": "batch_tasks"},
     }
 
     task_default_queue = "default"
     task_queues = [
         Queue("default", Exchange("default"), routing_key="default"),
         Queue("llm_tasks", Exchange("llm_tasks"), routing_key="llm_tasks"),
+        Queue("batch_tasks", Exchange("batch_tasks"), routing_key="batch_tasks"),
     ]
 
     # Monitoring
@@ -63,3 +65,27 @@ class CeleryConfig:
     }
 
     result_backend_transport_options = {"retry_policy": {"timeout": 5.0}}
+
+
+# Beat schedule configuration
+def get_beat_schedule():
+    """Get the beat schedule configuration with dynamic polling interval"""
+    try:
+        from app.llm.config import llm_config
+
+        poll_interval = llm_config.batch_config.default_poll_interval_seconds
+    except Exception:
+        # Fallback to default if config is not available
+        poll_interval = 30
+
+    return {
+        "batch-poll": {
+            "task": "batch.poll",
+            "schedule": float(poll_interval),
+            "options": {"queue": "batch_tasks"},
+        },
+    }
+
+
+# Set beat schedule on the class
+CeleryConfig.beat_schedule = get_beat_schedule()
