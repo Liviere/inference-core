@@ -136,6 +136,8 @@ dmypy.json
 
 # Database files
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -170,6 +172,7 @@ llm_config.yaml
 # Logs
 logs/
 reports/
+issues/
 
 # Test environment file (excluded from repo)
 docker/tests/.env.test
