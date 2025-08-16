@@ -172,7 +172,6 @@ llm_config.yaml
 # Logs
 logs/
 reports/
-issues/
 
 # Test environment file (excluded from repo)
 docker/tests/.env.test
