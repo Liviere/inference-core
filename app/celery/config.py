@@ -84,6 +84,18 @@ def get_beat_schedule():
             "schedule": float(poll_interval),
             "options": {"queue": "batch_tasks"},
         },
+        "batch-dispatch": {
+            "task": "batch.dispatch",
+            # Prefer faster dispatch than poll (submit quickly, then poll at its own cadence)
+            "schedule": float(
+                getattr(
+                    llm_config.batch_config, "default_dispatch_interval_seconds", 15
+                )
+                if "llm_config" in globals()
+                else 15
+            ),
+            "options": {"queue": "batch_tasks"},
+        },
     }
 
 

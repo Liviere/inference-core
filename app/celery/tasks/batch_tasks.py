@@ -5,6 +5,7 @@ Orchestrates batch job submission, polling, fetching results, and retry operatio
 Includes concurrency controls and error handling with exponential backoff.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -30,9 +31,100 @@ from app.services.batch_service import BatchService
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Async event loop management
+# ---------------------------------------------------------------------------
+# Problem: Using asyncio.run() inside Celery (prefork) tasks creates a brand new
+# event loop for every invocation and closes it afterwards. SQLAlchemy async
+# engine / asyncpg connections become bound to the original loop they were
+# created on. Reusing pooled connections across new loops then triggers errors:
+#   "Future <...> attached to a different loop" or "Event loop is closed".
+# Solution: Maintain a persistent event loop per worker process and run all
+# coroutines via that loop (run_until_complete). Each Celery worker process
+# executes tasks sequentially, so this is safe. If concurrency changes to allow
+# parallel execution in the same process, a more robust queue/loop thread would
+# be needed.
+
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _run_async(coro):
+    """Run an async coroutine on a persistent event loop.
+
+    Ensures a single event loop per process preventing cross-loop attachment
+    issues with asyncpg / SQLAlchemy.
+    """
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(coro)
+
+
 # Redis lock keys
 BATCH_POLL_LOCK_KEY = "batch_poll:lock"
 BATCH_POLL_LOCK_TIMEOUT = 300  # 5 minutes
+
+# Dispatch lock to avoid multiple workers dispatching simultaneously (short TTL)
+BATCH_DISPATCH_LOCK_KEY = "batch_dispatch:lock"
+BATCH_DISPATCH_LOCK_TIMEOUT = 60
+
+
+@celery_app.task(
+    bind=True,
+    name="batch.dispatch",
+)
+def batch_dispatch(self) -> Dict[str, Any]:
+    """Dispatch (submit) all jobs in CREATED status.
+
+    Runs periodically via beat; finds jobs still in CREATED and enqueues a submit task
+    per job. Lightweight – real submission logic stays in batch_submit (idempotent).
+    """
+    start_time = time.time()
+    redis_client = get_sync_redis()
+    lock_acquired = redis_client.set(
+        BATCH_DISPATCH_LOCK_KEY, "1", nx=True, ex=BATCH_DISPATCH_LOCK_TIMEOUT
+    )
+    if not lock_acquired:
+        logger.debug("Dispatch already running, skipping")
+        return {
+            "status": "skipped",
+            "reason": "lock",
+            "duration": time.time() - start_time,
+        }
+
+    dispatched = 0
+    errors = 0
+    try:
+
+        async def _dispatch():
+            nonlocal dispatched, errors
+            async with get_async_session() as session:
+                batch_service = BatchService(session)
+                # Select jobs in CREATED
+                result = await session.execute(
+                    select(BatchJob).where(BatchJob.status == BatchJobStatus.CREATED)
+                )
+                jobs = result.scalars().all()
+                for job in jobs:
+                    try:
+                        batch_submit.delay(str(job.id))
+                        dispatched += 1
+                    except Exception as e:
+                        logger.error(f"Failed to enqueue submit for job {job.id}: {e}")
+                        errors += 1
+
+        _run_async(_dispatch())
+    finally:
+        redis_client.delete(BATCH_DISPATCH_LOCK_KEY)
+
+    return {
+        "status": "completed",
+        "jobs_dispatched": dispatched,
+        "errors": errors,
+        "duration": time.time() - start_time,
+    }
 
 
 @celery_app.task(
@@ -87,22 +179,22 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 if not items:
                     raise ValueError(f"No items found for batch job {job_id}")
 
-                # Get provider instance
+                # Build provider runtime config (merge general provider + batch model info)
                 provider_instance = registry.create_provider(
                     job.provider,
-                    config=llm_config.batch_config.providers.get(job.provider, {}),
+                    config=llm_config.get_provider_runtime_config(job.provider),
                 )
 
                 # Prepare submission
-                item_data = []
-                for item in items:
-                    item_data.append(
-                        {
-                            "custom_id": str(item.id),
-                            "sequence_index": item.sequence_index,
-                            "input_payload": item.input_payload,
-                        }
-                    )
+                item_data = [
+                    {
+                        # Provider prepare_payloads expects an 'id' field
+                        "id": str(item.id),
+                        "sequence_index": item.sequence_index,
+                        "input_payload": item.input_payload,
+                    }
+                    for item in items
+                ]
 
                 prepared_submission = provider_instance.prepare_payloads(
                     batch_items=item_data,
@@ -123,6 +215,22 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                         submitted_at=submit_result.submitted_at,
                     ),
                 )
+                # Create semantic event for submission (separate from status change)
+                try:
+                    from app.database.sql.models.batch import BatchEventType
+
+                    await batch_service.create_semantic_event(
+                        job_uuid,
+                        BatchEventType.SUBMITTED,
+                        event_data={
+                            "provider_batch_id": submit_result.provider_batch_id,
+                            "item_count": submit_result.item_count,
+                        },
+                    )
+                except Exception as evt_err:  # pragma: no cover - non critical
+                    logger.warning(
+                        f"Failed to create SUBMITTED event for job {job_id}: {evt_err}"
+                    )
 
                 logger.info(
                     f"Successfully submitted batch job {job_id} to provider {job.provider}"
@@ -137,9 +245,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_submit())
+        return _run_async(_submit())
 
     except ProviderPermanentError as e:
         logger.error(f"Permanent error submitting batch job {job_id}: {e}")
@@ -153,9 +259,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     BatchJobUpdate(status=BatchJobStatus.FAILED, error_summary=str(e)),
                 )
 
-        import asyncio
-
-        asyncio.run(_mark_failed())
+        _run_async(_mark_failed())
 
         return {
             "job_id": job_id,
@@ -245,9 +349,7 @@ def batch_poll(self) -> Dict[str, Any]:
                         # Get provider instance
                         provider_instance = registry.create_provider(
                             job.provider,
-                            config=llm_config.batch_config.providers.get(
-                                job.provider, {}
-                            ),
+                            config=llm_config.get_provider_runtime_config(job.provider),
                         )
 
                         # Poll provider status
@@ -316,9 +418,7 @@ def batch_poll(self) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_poll())
+        return _run_async(_poll())
 
     except Exception as e:
         logger.error(f"Error in batch poll: {e}")
@@ -398,7 +498,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                 # Get provider instance
                 provider_instance = registry.create_provider(
                     job.provider,
-                    config=llm_config.batch_config.providers.get(job.provider, {}),
+                    config=llm_config.get_provider_runtime_config(job.provider),
                 )
 
                 # Fetch results from provider
@@ -443,6 +543,23 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                         success_count=success_count, error_count=error_count
                     ),
                 )
+                # Emit semantic fetch completed event
+                try:
+                    from app.database.sql.models.batch import BatchEventType
+
+                    await batch_service.create_semantic_event(
+                        job_uuid,
+                        BatchEventType.FETCH_COMPLETED,
+                        event_data={
+                            "success_count": success_count,
+                            "error_count": error_count,
+                            "total_items": len(items),
+                        },
+                    )
+                except Exception as evt_err:  # pragma: no cover
+                    logger.warning(
+                        f"Failed to create FETCH_COMPLETED event for job {job_id}: {evt_err}"
+                    )
 
                 logger.info(
                     f"Fetched results for job {job_id}: {success_count} successful, {error_count} failed"
@@ -457,9 +574,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_fetch())
+        return _run_async(_fetch())
 
     except ProviderPermanentError as e:
         logger.error(f"Permanent error fetching batch job {job_id}: {e}")
@@ -572,9 +687,7 @@ def batch_retry_failed(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_retry())
+        return _run_async(_retry())
 
     except Exception as e:
         logger.error(f"Error retrying failed items from job {job_id}: {e}")

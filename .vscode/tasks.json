@@ -26,6 +26,14 @@
 			"problemMatcher": []
 		},
 		{
+			"label": "Celery: Start Beat",
+			"type": "shell",
+			"command": "poetry run celery -A app.celery.celery_main:celery_app beat --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
 			"label": "Celery: Start Worker (DEBUG)",
 			"type": "shell",
 			"command": "export DEBUG_CELERY=1 && poetry run celery -A app.celery.celery_main:celery_app worker --concurrency=1 --loglevel=info",

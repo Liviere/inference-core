@@ -205,3 +205,48 @@ class BatchItemQuery(BaseModel):
     has_error: Optional[bool] = Field(None, description="Filter items with/without errors")
     limit: int = Field(100, description="Maximum number of results", ge=1, le=1000)
     offset: int = Field(0, description="Number of results to skip", ge=0)
+
+
+# API-specific request schemas
+class BatchItemInput(BaseModel):
+    """Schema for batch item input in API requests"""
+    input: Dict[str, Any] = Field(..., description="Input data for processing")
+    custom_id: Optional[str] = Field(None, description="Optional custom identifier", max_length=255)
+
+
+class BatchJobCreateRequest(BaseModel):
+    """Schema for creating a batch job via API"""
+    provider: str = Field(..., description="LLM provider name", max_length=50)
+    model: str = Field(..., description="Model name", max_length=100)
+    items: List[BatchItemInput] = Field(..., description="List of items to process", min_length=1, max_length=1000)
+    params: Optional[Dict[str, Any]] = Field(None, description="Additional parameters for processing")
+
+
+class BatchJobCreateResponse(BaseModel):
+    """Schema for batch job creation response"""
+    job_id: UUID = Field(..., description="Unique job identifier")
+    status: BatchJobStatus = Field(..., description="Initial job status")
+    message: str = Field(..., description="Success message")
+    item_count: int = Field(..., description="Number of items in the batch")
+
+
+class BatchJobDetailResponse(BatchJobResponse):
+    """Schema for detailed batch job response with events"""
+    events: List[BatchEventResponse] = Field(default_factory=list, description="Job events")
+
+
+class BatchItemListResponse(BaseModel):
+    """Schema for paginated batch items response"""
+    items: List[BatchItemResponse] = Field(..., description="List of batch items")
+    total: int = Field(..., description="Total number of items")
+    limit: int = Field(..., description="Items per page")
+    offset: int = Field(..., description="Items skipped")
+    has_more: bool = Field(..., description="Whether there are more items")
+
+
+class BatchCancelResponse(BaseModel):
+    """Schema for batch cancellation response"""
+    job_id: UUID = Field(..., description="Unique job identifier")
+    status: BatchJobStatus = Field(..., description="Updated job status")
+    message: str = Field(..., description="Cancellation result message")
+    cancelled: bool = Field(..., description="Whether cancellation was successful")
