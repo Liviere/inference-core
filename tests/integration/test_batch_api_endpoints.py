@@ -55,7 +55,7 @@ class TestBatchAPIEndpoints:
         """Test creating batch job without authentication"""
         request_data = {
             "provider": "openai",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
             "items": [
                 {
                     "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -75,7 +75,7 @@ class TestBatchAPIEndpoints:
 
         request_data = {
             "provider": "openai",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
             "items": [
                 {
                     "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -142,7 +142,7 @@ class TestBatchAPIEndpoints:
         auth_token = await self.get_auth_token(async_test_client)
         create_payload = {
             "provider": "openai",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
             "items": [
                 {
                     "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -174,7 +174,7 @@ class TestBatchAPIEndpoints:
         data = response.json()
         assert data["id"] == job_id
         assert data["provider"] == "openai"
-        assert data["model"] == "gpt-4o-mini"
+        assert data["model"] == "gpt-5-mini"
         assert data["status"] == "created"
         assert data["request_count"] == 2
         assert data["success_count"] == 0
@@ -211,7 +211,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -269,7 +269,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -314,7 +314,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -366,7 +366,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -416,7 +416,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -481,7 +481,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -515,7 +515,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -548,7 +548,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": "gpt-5-mini",
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -617,3 +617,97 @@ class TestBatchAPIEndpoints:
         # Test cancel endpoint
         response = await async_test_client.post(f"/api/v1/llm/batch/{fake_uuid}/cancel")
         assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    # --- Provider / Model Validation Tests ---
+    async def test_create_batch_job_unknown_provider(
+        self, async_test_client: AsyncClient
+    ):
+        token = await self.get_auth_token(async_test_client)
+        resp = await async_test_client.post(
+            "/api/v1/llm/batch/",
+            json={
+                "provider": "nope",
+                "model": "gpt-5-mini",
+                "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Unknown provider" in resp.text
+
+    async def test_create_batch_job_unknown_model(self, async_test_client: AsyncClient):
+        token = await self.get_auth_token(async_test_client)
+        resp = await async_test_client.post(
+            "/api/v1/llm/batch/",
+            json={
+                "provider": "openai",
+                "model": "made-up-model-xyz",
+                "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Unknown model" in resp.text
+
+    async def test_create_batch_job_model_provider_mismatch(
+        self, async_test_client: AsyncClient
+    ):
+        token = await self.get_auth_token(async_test_client)
+        resp = await async_test_client.post(
+            "/api/v1/llm/batch/",
+            json={
+                "provider": "openai",
+                "model": "claude-3-5-haiku-latest",
+                "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "belongs to provider" in resp.text
+
+    async def test_create_batch_job_provider_not_batch_enabled(
+        self, async_test_client: AsyncClient
+    ):
+        token = await self.get_auth_token(async_test_client)
+        resp = await async_test_client.post(
+            "/api/v1/llm/batch/",
+            json={
+                "provider": "custom_openai_compatible",
+                "model": "deepseek-ai/DeepSeek-V3-0324",
+                "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "not enabled for batch" in resp.text
+
+    async def test_create_batch_job_model_not_batch_enabled(
+        self, async_test_client: AsyncClient
+    ):
+        token = await self.get_auth_token(async_test_client)
+        resp = await async_test_client.post(
+            "/api/v1/llm/batch/",
+            json={
+                "provider": "openai",
+                "model": "gpt-5",
+                "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "not configured for batch" in resp.text
+
+    async def test_create_batch_job_mode_mismatch(self, async_test_client: AsyncClient):
+        token = await self.get_auth_token(async_test_client)
+        resp = await async_test_client.post(
+            "/api/v1/llm/batch/",
+            json={
+                "provider": "openai",
+                "model": "gpt-5-mini",
+                "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
+                "params": {"mode": "embedding"},
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Mode 'embedding' not allowed" in resp.text

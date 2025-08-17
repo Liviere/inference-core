@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependecies import get_current_active_user, get_db
 from app.database.sql.models.batch import BatchItemStatus, BatchJobStatus
+from app.llm.config import ModelProvider, llm_config
 from app.schemas.batch import (
     BatchCancelResponse,
     BatchItemListResponse,
@@ -59,14 +60,73 @@ async def create_batch_job(
         HTTPException: If validation fails or creation error occurs
     """
     try:
-        # Validate provider and model exist (this would be where we check against config)
-        # For now, we'll proceed with the request as-is since validation is complex
+        # --- Validation against LLM configuration ---
+        provider = request.provider
+        model_name = request.model
+
+        # 1. Provider exists
+        if provider not in llm_config.providers:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown provider '{provider}'",
+            )
+
+        # 2. Model exists
+        model_cfg = llm_config.get_model_config(model_name)
+        if not model_cfg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown model '{model_name}'",
+            )
+
+        # 3. Model/provider consistency
+        # model_cfg.provider may already be a string because of pydantic use_enum_values
+        provider_value = (
+            model_cfg.provider.value
+            if hasattr(model_cfg.provider, "value")
+            else str(model_cfg.provider)
+        )
+        if provider_value != provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Model '{model_name}' belongs to provider '{provider_value}',"
+                    f" not '{provider}'"
+                ),
+            )
+
+        # 4. Batch provider enabled
+        if not llm_config.batch_config.is_provider_enabled(provider):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Provider '{provider}' is not enabled for batch processing",
+            )
+
+        # 5. Model batch-enabled for provider
+        batch_model_cfg = llm_config.batch_config.get_model_config(provider, model_name)
+        if not batch_model_cfg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Model '{model_name}' is not configured for batch processing under provider '{provider}'"
+                ),
+            )
 
         # Determine processing mode based on the input structure
         # For simplicity, default to "chat" mode unless specified in params
         mode = "chat"
         if request.params and "mode" in request.params:
             mode = request.params["mode"]
+
+        # 6. Mode matches configured batch model mode
+        if batch_model_cfg.mode != mode:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Mode '{mode}' not allowed for model '{model_name}'. "
+                    f"Expected '{batch_model_cfg.mode}'"
+                ),
+            )
 
         # Create the batch job
         from app.schemas.batch import BatchJobCreate
@@ -107,6 +167,9 @@ async def create_batch_job(
             item_count=len(request.items),
         )
 
+    except HTTPException:
+        # Re-raise validation HTTP errors so they propagate correctly
+        raise
     except ValueError as e:
         logger.error(f"Validation error creating batch job: {str(e)}")
         raise HTTPException(
