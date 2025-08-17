@@ -31,6 +31,7 @@ from app.services.batch_service import BatchService
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Async event loop management
 # ---------------------------------------------------------------------------
@@ -64,6 +65,66 @@ def _run_async(coro):
 # Redis lock keys
 BATCH_POLL_LOCK_KEY = "batch_poll:lock"
 BATCH_POLL_LOCK_TIMEOUT = 300  # 5 minutes
+
+# Dispatch lock to avoid multiple workers dispatching simultaneously (short TTL)
+BATCH_DISPATCH_LOCK_KEY = "batch_dispatch:lock"
+BATCH_DISPATCH_LOCK_TIMEOUT = 60
+
+
+@celery_app.task(
+    bind=True,
+    name="batch.dispatch",
+)
+def batch_dispatch(self) -> Dict[str, Any]:
+    """Dispatch (submit) all jobs in CREATED status.
+
+    Runs periodically via beat; finds jobs still in CREATED and enqueues a submit task
+    per job. Lightweight – real submission logic stays in batch_submit (idempotent).
+    """
+    start_time = time.time()
+    redis_client = get_sync_redis()
+    lock_acquired = redis_client.set(
+        BATCH_DISPATCH_LOCK_KEY, "1", nx=True, ex=BATCH_DISPATCH_LOCK_TIMEOUT
+    )
+    if not lock_acquired:
+        logger.debug("Dispatch already running, skipping")
+        return {
+            "status": "skipped",
+            "reason": "lock",
+            "duration": time.time() - start_time,
+        }
+
+    dispatched = 0
+    errors = 0
+    try:
+
+        async def _dispatch():
+            nonlocal dispatched, errors
+            async with get_async_session() as session:
+                batch_service = BatchService(session)
+                # Select jobs in CREATED
+                result = await session.execute(
+                    select(BatchJob).where(BatchJob.status == BatchJobStatus.CREATED)
+                )
+                jobs = result.scalars().all()
+                for job in jobs:
+                    try:
+                        batch_submit.delay(str(job.id))
+                        dispatched += 1
+                    except Exception as e:
+                        logger.error(f"Failed to enqueue submit for job {job.id}: {e}")
+                        errors += 1
+
+        _run_async(_dispatch())
+    finally:
+        redis_client.delete(BATCH_DISPATCH_LOCK_KEY)
+
+    return {
+        "status": "completed",
+        "jobs_dispatched": dispatched,
+        "errors": errors,
+        "duration": time.time() - start_time,
+    }
 
 
 @celery_app.task(
@@ -118,22 +179,22 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 if not items:
                     raise ValueError(f"No items found for batch job {job_id}")
 
-                # Get provider instance
+                # Build provider runtime config (merge general provider + batch model info)
                 provider_instance = registry.create_provider(
                     job.provider,
-                    config=llm_config.batch_config.providers.get(job.provider, {}),
+                    config=llm_config.get_provider_runtime_config(job.provider),
                 )
 
                 # Prepare submission
-                item_data = []
-                for item in items:
-                    item_data.append(
-                        {
-                            "custom_id": str(item.id),
-                            "sequence_index": item.sequence_index,
-                            "input_payload": item.input_payload,
-                        }
-                    )
+                item_data = [
+                    {
+                        # Provider prepare_payloads expects an 'id' field
+                        "id": str(item.id),
+                        "sequence_index": item.sequence_index,
+                        "input_payload": item.input_payload,
+                    }
+                    for item in items
+                ]
 
                 prepared_submission = provider_instance.prepare_payloads(
                     batch_items=item_data,
@@ -272,9 +333,7 @@ def batch_poll(self) -> Dict[str, Any]:
                         # Get provider instance
                         provider_instance = registry.create_provider(
                             job.provider,
-                            config=llm_config.batch_config.providers.get(
-                                job.provider, {}
-                            ),
+                            config=llm_config.get_provider_runtime_config(job.provider),
                         )
 
                         # Poll provider status
@@ -423,7 +482,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                 # Get provider instance
                 provider_instance = registry.create_provider(
                     job.provider,
-                    config=llm_config.batch_config.providers.get(job.provider, {}),
+                    config=llm_config.get_provider_runtime_config(job.provider),
                 )
 
                 # Fetch results from provider
