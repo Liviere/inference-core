@@ -18,6 +18,18 @@ def _register_providers():
         registry.register(OpenAIBatchProvider)
     except ImportError:
         pass  # OpenAI provider optional if dependencies missing
+    
+    try:
+        from .providers.gemini_provider import GeminiBatchProvider
+        registry.register(GeminiBatchProvider)
+    except ImportError:
+        pass  # Gemini provider optional if dependencies missing
+    
+    try:
+        from .providers.claude_provider import ClaudeBatchProvider
+        registry.register(ClaudeBatchProvider)
+    except ImportError:
+        pass  # Claude provider optional if dependencies missing
 
 # Register providers on module import
 _register_providers()
