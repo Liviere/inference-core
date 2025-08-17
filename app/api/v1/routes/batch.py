@@ -145,7 +145,9 @@ async def get_batch_job(
     """
     try:
         job = await batch_service.get_batch_job(job_id)
-        if not job:
+        user_id = UUID(current_user["id"])
+        if not job or job.created_by != user_id:
+            # Return 404 to avoid leaking existence of other users' jobs
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
@@ -224,7 +226,7 @@ async def get_batch_job(
 @router.get("/{job_id}/items", response_model=BatchItemListResponse)
 async def get_batch_items(
     job_id: UUID,
-    status: Optional[BatchItemStatus] = Query(
+    item_status: Optional[BatchItemStatus] = Query(
         None, description="Filter by item status"
     ),
     limit: int = Query(100, description="Maximum number of results", ge=1, le=1000),
@@ -239,7 +241,7 @@ async def get_batch_items(
 
     Args:
         job_id: Unique batch job identifier
-        status: Optional filter by item status
+        item_status: Optional filter by item status
         limit: Maximum number of items to return
         offset: Number of items to skip
         current_user: Authenticated user
@@ -254,14 +256,15 @@ async def get_batch_items(
     try:
         # Verify job exists
         job = await batch_service.get_batch_job(job_id)
-        if not job:
+        user_id = UUID(current_user["id"])
+        if not job or job.created_by != user_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
             )
 
         # Get items with filtering
-        items = await batch_service.get_batch_items(job_id, status=status)
+        items = await batch_service.get_batch_items(job_id, status=item_status)
 
         # Apply pagination
         total = len(items)
@@ -340,7 +343,8 @@ async def cancel_batch_job(
     try:
         # Get the job
         job = await batch_service.get_batch_job(job_id)
-        if not job:
+        user_id = UUID(current_user["id"])
+        if not job or job.created_by != user_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
@@ -382,7 +386,7 @@ async def cancel_batch_job(
                 cancelled_with_provider = False
 
         # Update job status locally
-        user_id = UUID(current_user["id"])
+        # user_id already defined above
         from app.schemas.batch import BatchJobUpdate
 
         update_data = BatchJobUpdate(status=BatchJobStatus.CANCELLED)
