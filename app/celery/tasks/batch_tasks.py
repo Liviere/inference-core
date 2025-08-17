@@ -5,6 +5,7 @@ Orchestrates batch job submission, polling, fetching results, and retry operatio
 Includes concurrency controls and error handling with exponential backoff.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,36 @@ from app.schemas.batch import (
 from app.services.batch_service import BatchService
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Async event loop management
+# ---------------------------------------------------------------------------
+# Problem: Using asyncio.run() inside Celery (prefork) tasks creates a brand new
+# event loop for every invocation and closes it afterwards. SQLAlchemy async
+# engine / asyncpg connections become bound to the original loop they were
+# created on. Reusing pooled connections across new loops then triggers errors:
+#   "Future <...> attached to a different loop" or "Event loop is closed".
+# Solution: Maintain a persistent event loop per worker process and run all
+# coroutines via that loop (run_until_complete). Each Celery worker process
+# executes tasks sequentially, so this is safe. If concurrency changes to allow
+# parallel execution in the same process, a more robust queue/loop thread would
+# be needed.
+
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _run_async(coro):
+    """Run an async coroutine on a persistent event loop.
+
+    Ensures a single event loop per process preventing cross-loop attachment
+    issues with asyncpg / SQLAlchemy.
+    """
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(coro)
+
 
 # Redis lock keys
 BATCH_POLL_LOCK_KEY = "batch_poll:lock"
@@ -137,9 +168,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_submit())
+        return _run_async(_submit())
 
     except ProviderPermanentError as e:
         logger.error(f"Permanent error submitting batch job {job_id}: {e}")
@@ -153,9 +182,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     BatchJobUpdate(status=BatchJobStatus.FAILED, error_summary=str(e)),
                 )
 
-        import asyncio
-
-        asyncio.run(_mark_failed())
+        _run_async(_mark_failed())
 
         return {
             "job_id": job_id,
@@ -316,9 +343,7 @@ def batch_poll(self) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_poll())
+        return _run_async(_poll())
 
     except Exception as e:
         logger.error(f"Error in batch poll: {e}")
@@ -457,9 +482,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_fetch())
+        return _run_async(_fetch())
 
     except ProviderPermanentError as e:
         logger.error(f"Permanent error fetching batch job {job_id}: {e}")
@@ -572,9 +595,7 @@ def batch_retry_failed(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        import asyncio
-
-        return asyncio.run(_retry())
+        return _run_async(_retry())
 
     except Exception as e:
         logger.error(f"Error retrying failed items from job {job_id}: {e}")
