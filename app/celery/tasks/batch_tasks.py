@@ -215,6 +215,22 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                         submitted_at=submit_result.submitted_at,
                     ),
                 )
+                # Create semantic event for submission (separate from status change)
+                try:
+                    from app.database.sql.models.batch import BatchEventType
+
+                    await batch_service.create_semantic_event(
+                        job_uuid,
+                        BatchEventType.SUBMITTED,
+                        event_data={
+                            "provider_batch_id": submit_result.provider_batch_id,
+                            "item_count": submit_result.item_count,
+                        },
+                    )
+                except Exception as evt_err:  # pragma: no cover - non critical
+                    logger.warning(
+                        f"Failed to create SUBMITTED event for job {job_id}: {evt_err}"
+                    )
 
                 logger.info(
                     f"Successfully submitted batch job {job_id} to provider {job.provider}"
@@ -527,6 +543,23 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                         success_count=success_count, error_count=error_count
                     ),
                 )
+                # Emit semantic fetch completed event
+                try:
+                    from app.database.sql.models.batch import BatchEventType
+
+                    await batch_service.create_semantic_event(
+                        job_uuid,
+                        BatchEventType.FETCH_COMPLETED,
+                        event_data={
+                            "success_count": success_count,
+                            "error_count": error_count,
+                            "total_items": len(items),
+                        },
+                    )
+                except Exception as evt_err:  # pragma: no cover
+                    logger.warning(
+                        f"Failed to create FETCH_COMPLETED event for job {job_id}: {evt_err}"
+                    )
 
                 logger.info(
                     f"Fetched results for job {job_id}: {success_count} successful, {error_count} failed"

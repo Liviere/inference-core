@@ -313,6 +313,29 @@ class BatchService:
 
         return event
 
+    async def create_semantic_event(
+        self,
+        job_id: UUID,
+        event_type: BatchEventType,
+        event_data: Optional[Dict[str, Any]] = None,
+        created_by: Optional[UUID] = None,
+    ) -> BatchEvent:
+        """Create a semantic (non-status-change) event.
+
+        Args:
+            job_id: Target batch job
+            event_type: Semantic event type (submitted, fetch_completed, ...)
+            event_data: Additional metadata
+            created_by: Optional user id
+        """
+        be = BatchEventCreate(
+            event_type=event_type,
+            old_status=None,
+            new_status=None,
+            event_data=event_data or {},
+        )
+        return await self.create_batch_event(job_id, be, created_by)
+
     async def get_batch_events(
         self, job_id: UUID, event_type: Optional[BatchEventType] = None
     ) -> List[BatchEvent]:
@@ -321,8 +344,10 @@ class BatchService:
 
         if event_type:
             stmt = stmt.where(BatchEvent.event_type == event_type)
-
-        stmt = stmt.order_by(desc(BatchEvent.event_timestamp))
+        # Ascending order -> natural chronological timeline
+        stmt = stmt.order_by(
+            BatchEvent.event_timestamp, BatchEvent.created_at, BatchEvent.id
+        )
 
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

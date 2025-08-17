@@ -46,6 +46,9 @@ class BatchEventType(str, Enum):
     ITEM_UPDATE = "item_update"
     ERROR = "error"
     PROGRESS_UPDATE = "progress_update"
+    # Semantic lifecycle markers (non-status-change but important timeline anchors)
+    SUBMITTED = "submitted"  # Provider submission finished (provider_batch_id assigned)
+    FETCH_COMPLETED = "fetch_completed"  # Results fetched and item statuses updated
 
 
 class BatchJob(FullAuditModel):
