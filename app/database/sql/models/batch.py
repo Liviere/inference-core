@@ -28,6 +28,7 @@ class BatchJobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 class BatchItemStatus(str, Enum):

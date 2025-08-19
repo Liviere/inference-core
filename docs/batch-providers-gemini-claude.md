@@ -5,6 +5,7 @@ This document explains how to configure and use the newly added Google Gemini an
 ## Overview
 
 The batch processing framework now supports three providers:
+
 - **OpenAI** (`openai`) - GPT models with /v1/batches API
 - **Google Gemini** (`gemini`) - Gemini models with native batch mode
 - **Anthropic Claude** (`claude`) - Claude models with message batch API
@@ -47,16 +48,19 @@ provider = registry.create_provider("gemini", {"api_key": "your_key"})
 ### Gemini Provider (`gemini`)
 
 **Supported Models:**
+
 - `gemini-2.0-flash`
-- `gemini-1.5-pro`  
+- `gemini-1.5-pro`
 - `gemini-1.5-flash`
 - `gemini-pro`
 - `gemini-flash`
 
 **Supported Modes:**
+
 - `chat` - Conversational interactions
 
 **Input Formats:**
+
 ```python
 # Messages format (preferred)
 {
@@ -79,6 +83,7 @@ provider = registry.create_provider("gemini", {"api_key": "your_key"})
 ### Claude Provider (`claude`)
 
 **Supported Models:**
+
 - `claude-3.5-sonnet`
 - `claude-3-opus`
 - `claude-3-haiku`
@@ -86,9 +91,11 @@ provider = registry.create_provider("gemini", {"api_key": "your_key"})
 - Any model containing "claude-3", "claude-4", "sonnet", "opus", or "haiku"
 
 **Supported Modes:**
+
 - `chat` - Conversational interactions
 
 **Input Formats:**
+
 ```python
 # Messages format (preferred)
 {
@@ -164,16 +171,16 @@ import time
 while True:
     status = provider.poll_status(result.provider_batch_id)
     print(f"Status: {status.normalized_status}")
-    
+
     if status.normalized_status in ["completed", "failed", "cancelled"]:
         break
-    
+
     time.sleep(30)  # Wait 30 seconds
 
 # Fetch results when completed
 if status.normalized_status == "completed":
     results = provider.fetch_results(result.provider_batch_id)
-    
+
     for result_row in results:
         print(f"Item {result_row.custom_id}:")
         if result_row.is_success:
@@ -222,8 +229,9 @@ batch_items = [
 Both providers follow consistent error handling patterns:
 
 ### Transient Errors (Retryable)
+
 - Rate limits
-- Temporary service unavailability  
+- Temporary service unavailability
 - Network timeouts
 - HTTP 429, 502, 503 errors
 
@@ -239,6 +247,7 @@ except ProviderTransientError as e:
 ```
 
 ### Permanent Errors (Non-retryable)
+
 - Invalid API keys
 - Unsupported models
 - Malformed requests
@@ -257,42 +266,48 @@ except ProviderPermanentError as e:
 ## Status Mapping
 
 ### Gemini Status Mapping
-| Gemini Status | Internal Status |
-|---------------|-----------------|
-| `JOB_STATE_QUEUED` | `submitted` |
-| `JOB_STATE_PENDING` | `submitted` |
-| `JOB_STATE_RUNNING` | `in_progress` |
-| `JOB_STATE_SUCCEEDED` | `completed` |
-| `JOB_STATE_FAILED` | `failed` |
-| `JOB_STATE_CANCELLED` | `cancelled` |
+
+| Gemini Status         | Internal Status |
+| --------------------- | --------------- |
+| `JOB_STATE_QUEUED`    | `submitted`     |
+| `JOB_STATE_PENDING`   | `submitted`     |
+| `JOB_STATE_RUNNING`   | `in_progress`   |
+| `JOB_STATE_SUCCEEDED` | `completed`     |
+| `JOB_STATE_FAILED`    | `failed`        |
+| `JOB_STATE_CANCELLED` | `cancelled`     |
 
 ### Claude Status Mapping
+
 | Claude Status | Internal Status |
-|---------------|-----------------|
-| `in_progress` | `in_progress` |
-| `ended` | `completed` |
-| `errored` | `failed` |
-| `expired` | `failed` |
-| `canceling` | `cancelled` |
+| ------------- | --------------- |
+| `in_progress` | `in_progress`   |
+| `ended`       | `completed`     |
+| `errored`     | `failed`        |
+| `expired`     | `failed`        |
+| `canceling`   | `cancelled`     |
 
 ## Best Practices
 
 ### Model Selection
+
 - Use `gemini-2.0-flash` for fast, cost-effective Gemini processing
 - Use `claude-3.5-sonnet` for high-quality Claude responses
 - Check model support before submitting batches
 
 ### Batch Size Considerations
+
 - **Gemini**: Supports large batches with inlined requests
 - **Claude**: Efficient with moderate batch sizes (50% cost savings)
 - **General**: Start with smaller batches (10-50 items) for testing
 
 ### API Key Management
+
 - Store API keys securely in environment variables
 - Use different keys for development and production
 - Implement key rotation practices
 
 ### Error Recovery
+
 ```python
 def submit_with_retry(provider, prepared, max_retries=3):
     for attempt in range(max_retries):
@@ -319,31 +334,33 @@ batch:
     gemini:
       enabled: true
       models:
-        - name: "gemini-2.0-flash"
-          mode: "chat"
+        - name: 'gemini-2.0-flash'
+          mode: 'chat'
           max_batch_size: 1000
     claude:
-      enabled: true  
+      enabled: true
       models:
-        - name: "claude-3.5-sonnet"
-          mode: "chat"
+        - name: 'claude-3.5-sonnet'
+          mode: 'chat'
           max_batch_size: 500
 ```
 
 ## Testing
 
 The implementation includes comprehensive test coverage:
+
 - **Unit Tests**: 27 test cases covering both providers
 - **Integration Tests**: 12 test cases with mocked HTTP requests
 - **Error Scenarios**: Transient and permanent error handling
 - **Cross-Provider**: Compatibility and consistency testing
 
 Run tests with:
+
 ```bash
 # Unit tests
 poetry run pytest tests/unit/llm/test_gemini_claude_providers.py
 
-# Integration tests  
+# Integration tests
 poetry run pytest tests/integration/test_gemini_claude_batch_integration.py
 
 # All batch-related tests
@@ -355,17 +372,20 @@ poetry run pytest tests/unit/llm/test_batch* tests/integration/test_*batch*
 ### Common Issues
 
 1. **Provider not found**: Ensure dependencies are installed
+
    ```bash
    poetry install  # Installs google-genai and anthropic SDKs
    ```
 
 2. **API key errors**: Check environment variables and permissions
+
    ```python
    import os
    print(os.getenv('GOOGLE_GENAI_API_KEY'))  # Should not be None
    ```
 
 3. **Model not supported**: Verify model name and provider compatibility
+
    ```python
    print(provider.supports_model("your-model", "chat"))
    ```
@@ -379,6 +399,7 @@ poetry run pytest tests/unit/llm/test_batch* tests/integration/test_*batch*
 ### Debug Mode
 
 Enable debug logging to troubleshoot issues:
+
 ```python
 import logging
 logging.getLogger('app.llm.batch.providers').setLevel(logging.DEBUG)
@@ -409,3 +430,7 @@ result = provider.submit(prepared)
 ```
 
 This migration provides significant cost savings (up to 50% for Claude, similar for Gemini) and better throughput for large-scale processing tasks.
+
+## External Resources
+
+- [Gemini Batch API Interface](https://ai.google.dev/api/batch-mode)

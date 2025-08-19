@@ -5,23 +5,24 @@ Tests the provider implementations to ensure they follow the interface
 contract and handle provider-specific logic correctly.
 """
 
-import pytest
 from datetime import datetime
 from typing import List, Optional
+from unittest.mock import MagicMock, Mock, patch
 from uuid import uuid4
-from unittest.mock import Mock, patch, MagicMock
+
+import pytest
 
 from app.llm.batch import (
     BaseBatchProvider,
     PreparedSubmission,
-    ProviderSubmitResult,
-    ProviderStatus,
-    ProviderResultRow,
-    ProviderTransientError,
     ProviderPermanentError,
+    ProviderResultRow,
+    ProviderStatus,
+    ProviderSubmitResult,
+    ProviderTransientError,
 )
-from app.llm.batch.providers.gemini_provider import GeminiBatchProvider
 from app.llm.batch.providers.claude_provider import ClaudeBatchProvider
+from app.llm.batch.providers.gemini_provider import GeminiBatchProvider
 
 
 class TestGeminiBatchProvider:
@@ -30,9 +31,11 @@ class TestGeminiBatchProvider:
     def setup_method(self):
         """Setup test environment."""
         self.config = {"api_key": "test_gemini_key"}
-        
+
         # Mock the Google GenAI client
-        with patch('app.llm.batch.providers.gemini_provider.genai.Client') as mock_client_class:
+        with patch(
+            "app.llm.batch.providers.gemini_provider.genai.Client"
+        ) as mock_client_class:
             self.mock_client = Mock()
             mock_client_class.return_value = self.mock_client
             self.provider = GeminiBatchProvider(self.config)
@@ -44,48 +47,53 @@ class TestGeminiBatchProvider:
 
     def test_initialization_without_api_key(self):
         """Test provider initialization fails without API key."""
-        with pytest.raises(ProviderPermanentError, match="Google GenAI API key is required"):
+        with pytest.raises(
+            ProviderPermanentError, match="Google GenAI API key is required"
+        ):
             GeminiBatchProvider({})
 
     def test_supports_model_valid_combinations(self):
         """Test supports_model returns True for valid combinations."""
         # Valid Gemini models
+        assert self.provider.supports_model("gemini-2.5-flash", "chat") is True
+        assert self.provider.supports_model("gemini-2.5-pro", "chat") is True
+        assert (
+            self.provider.supports_model("models/gemini-2.5-flash", "chat") is True
+        )  # prefix variant
         assert self.provider.supports_model("gemini-2.0-flash", "chat") is True
-        assert self.provider.supports_model("gemini-1.5-pro", "chat") is True
-        assert self.provider.supports_model("gemini-1.5-flash", "chat") is True
-        assert self.provider.supports_model("gemini-pro", "chat") is True
+        # Legacy models intentionally not supported in batch mode anymore:
+        assert self.provider.supports_model("gemini-1.5-pro", "chat") is False
+        assert self.provider.supports_model("gemini-1.5-flash", "chat") is False
+        assert self.provider.supports_model("gemini-pro", "chat") is False
 
     def test_supports_model_invalid_combinations(self):
         """Test supports_model returns False for invalid combinations."""
         # Unsupported models
         assert self.provider.supports_model("gpt-4", "chat") is False
         assert self.provider.supports_model("claude-3", "chat") is False
-        
+
         # Unsupported modes
-        assert self.provider.supports_model("gemini-2.0-flash", "embedding") is False
-        assert self.provider.supports_model("gemini-2.0-flash", "completion") is False
+
+        assert self.provider.supports_model("gemini-2.5-flash", "embedding") is False
+        assert self.provider.supports_model("gemini-2.5-flash", "completion") is False
 
     def test_prepare_payloads_with_messages(self):
         """Test payload preparation with messages format."""
         batch_items = [
             {
                 "id": "item_1",
-                "input_payload": {
-                    "messages": [
-                        {"role": "user", "content": "Hello"}
-                    ]
-                }
+                "input_payload": {"messages": [{"role": "user", "content": "Hello"}]},
             }
         ]
-        
+
         result = self.provider.prepare_payloads(batch_items, "gemini-2.0-flash", "chat")
-        
+
         assert isinstance(result, PreparedSubmission)
         assert result.provider == "gemini"
         assert result.model == "gemini-2.0-flash"
         assert result.mode == "chat"
         assert len(result.items) == 1
-        
+
         item = result.items[0]
         assert "contents" in item
         assert len(item["contents"]) == 1
@@ -94,17 +102,10 @@ class TestGeminiBatchProvider:
 
     def test_prepare_payloads_with_content(self):
         """Test payload preparation with direct content."""
-        batch_items = [
-            {
-                "id": "item_1",
-                "input_payload": {
-                    "content": "Hello Gemini"
-                }
-            }
-        ]
-        
+        batch_items = [{"id": "item_1", "input_payload": {"content": "Hello Gemini"}}]
+
         result = self.provider.prepare_payloads(batch_items, "gemini-2.0-flash", "chat")
-        
+
         item = result.items[0]
         assert "contents" in item
         assert len(item["contents"]) == 1
@@ -119,8 +120,10 @@ class TestGeminiBatchProvider:
     def test_prepare_payloads_unsupported_model_error(self):
         """Test prepare_payloads raises error for unsupported model."""
         batch_items = [{"id": "item_1", "input_payload": {"content": "test"}}]
-        
-        with pytest.raises(ProviderPermanentError, match="not supported by Gemini provider"):
+
+        with pytest.raises(
+            ProviderPermanentError, match="not supported by Gemini provider"
+        ):
             self.provider.prepare_payloads(batch_items, "gpt-4", "chat")
 
     def test_submit_success(self):
@@ -130,28 +133,30 @@ class TestGeminiBatchProvider:
         mock_batch_job.name = "batch_123"
         mock_batch_job.state = "JOB_STATE_QUEUED"
         mock_batch_job.create_time = datetime.now()
-        
+
         self.mock_client.batches.create.return_value = mock_batch_job
-        
+
         # Prepare submission
         prepared = PreparedSubmission(
             batch_job_id=uuid4(),
             provider="gemini",
             model="gemini-2.0-flash",
             mode="chat",
-            items=[{
-                "_custom_id": "item_1",
-                "contents": [{"role": "user", "parts": [{"text": "Hello"}]}]
-            }]
+            items=[
+                {
+                    "_custom_id": "item_1",
+                    "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+                }
+            ],
         )
-        
+
         result = self.provider.submit(prepared)
-        
+
         assert isinstance(result, ProviderSubmitResult)
         assert result.provider_batch_id == "batch_123"
         assert result.status == "JOB_STATE_QUEUED"
         assert result.item_count == 1
-        
+
         # Verify client was called correctly
         self.mock_client.batches.create.assert_called_once()
         args, kwargs = self.mock_client.batches.create.call_args
@@ -166,16 +171,16 @@ class TestGeminiBatchProvider:
         mock_batch_job.update_time = datetime.now()
         mock_batch_job.start_time = None
         mock_batch_job.end_time = None
-        
+
         self.mock_client.batches.get.return_value = mock_batch_job
-        
+
         result = self.provider.poll_status("batch_123")
-        
+
         assert isinstance(result, ProviderStatus)
         assert result.provider_batch_id == "batch_123"
         assert result.status == "JOB_STATE_RUNNING"
         assert result.normalized_status == "in_progress"
-        
+
         self.mock_client.batches.get.assert_called_once_with(name="batch_123")
 
     def test_status_mapping(self):
@@ -185,9 +190,9 @@ class TestGeminiBatchProvider:
             ("JOB_STATE_RUNNING", "in_progress"),
             ("JOB_STATE_SUCCEEDED", "completed"),
             ("JOB_STATE_FAILED", "failed"),
-            ("JOB_STATE_CANCELLED", "cancelled")
+            ("JOB_STATE_CANCELLED", "cancelled"),
         ]
-        
+
         for gemini_status, expected_internal in test_cases:
             assert self.provider.STATUS_MAPPING[gemini_status] == expected_internal
 
@@ -195,11 +200,11 @@ class TestGeminiBatchProvider:
         """Test successful batch cancellation."""
         mock_result = Mock()
         mock_result.state = "JOB_STATE_CANCELLED"
-        
+
         self.mock_client.batches.cancel.return_value = mock_result
-        
+
         result = self.provider.cancel("batch_123")
-        
+
         assert result is True
         self.mock_client.batches.cancel.assert_called_once_with(name="batch_123")
 
@@ -210,9 +215,11 @@ class TestClaudeBatchProvider:
     def setup_method(self):
         """Setup test environment."""
         self.config = {"api_key": "test_claude_key"}
-        
+
         # Mock the Anthropic client
-        with patch('app.llm.batch.providers.claude_provider.Anthropic') as mock_client_class:
+        with patch(
+            "app.llm.batch.providers.claude_provider.Anthropic"
+        ) as mock_client_class:
             self.mock_client = Mock()
             mock_client_class.return_value = self.mock_client
             self.provider = ClaudeBatchProvider(self.config)
@@ -224,7 +231,9 @@ class TestClaudeBatchProvider:
 
     def test_initialization_without_api_key(self):
         """Test provider initialization fails without API key."""
-        with pytest.raises(ProviderPermanentError, match="Anthropic API key is required"):
+        with pytest.raises(
+            ProviderPermanentError, match="Anthropic API key is required"
+        ):
             ClaudeBatchProvider({})
 
     def test_supports_model_valid_combinations(self):
@@ -240,7 +249,7 @@ class TestClaudeBatchProvider:
         # Unsupported models
         assert self.provider.supports_model("gpt-4", "chat") is False
         assert self.provider.supports_model("gemini-pro", "chat") is False
-        
+
         # Unsupported modes
         assert self.provider.supports_model("claude-3.5-sonnet", "embedding") is False
         assert self.provider.supports_model("claude-3.5-sonnet", "completion") is False
@@ -251,22 +260,22 @@ class TestClaudeBatchProvider:
             {
                 "id": "item_1",
                 "input_payload": {
-                    "messages": [
-                        {"role": "user", "content": "Hello Claude"}
-                    ],
-                    "max_tokens": 2048
-                }
+                    "messages": [{"role": "user", "content": "Hello Claude"}],
+                    "max_tokens": 2048,
+                },
             }
         ]
-        
-        result = self.provider.prepare_payloads(batch_items, "claude-3.5-sonnet", "chat")
-        
+
+        result = self.provider.prepare_payloads(
+            batch_items, "claude-3.5-sonnet", "chat"
+        )
+
         assert isinstance(result, PreparedSubmission)
         assert result.provider == "claude"
         assert result.model == "claude-3.5-sonnet"
         assert result.mode == "chat"
         assert len(result.items) == 1
-        
+
         item = result.items[0]
         assert item["custom_id"] == "item_1"
         assert item["params"]["model"] == "claude-3.5-sonnet"
@@ -277,17 +286,12 @@ class TestClaudeBatchProvider:
 
     def test_prepare_payloads_with_content(self):
         """Test payload preparation with direct content."""
-        batch_items = [
-            {
-                "id": "item_1",
-                "input_payload": {
-                    "content": "Hello Claude"
-                }
-            }
-        ]
-        
-        result = self.provider.prepare_payloads(batch_items, "claude-3.5-sonnet", "chat")
-        
+        batch_items = [{"id": "item_1", "input_payload": {"content": "Hello Claude"}}]
+
+        result = self.provider.prepare_payloads(
+            batch_items, "claude-3.5-sonnet", "chat"
+        )
+
         item = result.items[0]
         assert item["custom_id"] == "item_1"
         assert len(item["params"]["messages"]) == 1
@@ -304,13 +308,15 @@ class TestClaudeBatchProvider:
                     "temperature": 0.7,
                     "top_p": 0.9,
                     "max_tokens": 512,
-                    "system": "You are a helpful assistant"
-                }
+                    "system": "You are a helpful assistant",
+                },
             }
         ]
-        
-        result = self.provider.prepare_payloads(batch_items, "claude-3.5-sonnet", "chat")
-        
+
+        result = self.provider.prepare_payloads(
+            batch_items, "claude-3.5-sonnet", "chat"
+        )
+
         item = result.items[0]
         params = item["params"]
         assert params["temperature"] == 0.7
@@ -326,32 +332,34 @@ class TestClaudeBatchProvider:
         mock_batch.processing_status = "in_progress"
         mock_batch.created_at = datetime.now()
         mock_batch.expires_at = None
-        
+
         self.mock_client.messages.batches.create.return_value = mock_batch
-        
+
         # Prepare submission
         prepared = PreparedSubmission(
             batch_job_id=uuid4(),
             provider="claude",
             model="claude-3.5-sonnet",
             mode="chat",
-            items=[{
-                "custom_id": "item_1",
-                "params": {
-                    "model": "claude-3.5-sonnet",
-                    "max_tokens": 1024,
-                    "messages": [{"role": "user", "content": "Hello"}]
+            items=[
+                {
+                    "custom_id": "item_1",
+                    "params": {
+                        "model": "claude-3.5-sonnet",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
                 }
-            }]
+            ],
         )
-        
+
         result = self.provider.submit(prepared)
-        
+
         assert isinstance(result, ProviderSubmitResult)
         assert result.provider_batch_id == "batch_abc123"
         assert result.status == "in_progress"
         assert result.item_count == 1
-        
+
         # Verify client was called correctly
         self.mock_client.messages.batches.create.assert_called_once()
 
@@ -367,17 +375,17 @@ class TestClaudeBatchProvider:
         mock_batch.request_counts.processing = 0
         mock_batch.request_counts.succeeded = 5
         mock_batch.request_counts.errored = 0
-        
+
         # Mock the list method to return our batch
         mock_page = Mock()
         mock_page.data = [mock_batch]
         self.mock_client.messages.batches.list.return_value = mock_page
-        
+
         # Also mock retrieve in case it exists
         self.mock_client.messages.batches.retrieve = Mock(return_value=mock_batch)
-        
+
         result = self.provider.poll_status("batch_abc123")
-        
+
         assert isinstance(result, ProviderStatus)
         assert result.provider_batch_id == "batch_abc123"
         assert result.status == "ended"
@@ -391,9 +399,9 @@ class TestClaudeBatchProvider:
             ("ended", "completed"),
             ("errored", "failed"),
             ("expired", "failed"),
-            ("canceling", "cancelled")
+            ("canceling", "cancelled"),
         ]
-        
+
         for claude_status, expected_internal in test_cases:
             assert self.provider.STATUS_MAPPING[claude_status] == expected_internal
 
@@ -412,23 +420,23 @@ class TestClaudeBatchProvider:
         mock_entry.result.message.stop_reason = "end_turn"
         mock_entry.result.message.stop_sequence = None
         mock_entry.result.message.usage = None
-        
+
         # Mock content with text
         mock_content = Mock()
         mock_content.text = "Hello! How can I help you?"
         mock_entry.result.message.content = [mock_content]
-        
+
         # Mock status polling to return completed
-        with patch.object(self.provider, 'poll_status') as mock_poll:
+        with patch.object(self.provider, "poll_status") as mock_poll:
             mock_status = Mock()
             mock_status.normalized_status = "completed"
             mock_poll.return_value = mock_status
-            
+
             # Mock results stream
             self.mock_client.messages.batches.results.return_value = [mock_entry]
-            
+
             results = self.provider.fetch_results("batch_abc123")
-            
+
             assert len(results) == 1
             result = results[0]
             assert isinstance(result, ProviderResultRow)
@@ -444,14 +452,14 @@ class TestProviderIntegration:
     def test_providers_can_be_registered(self):
         """Test that new providers can be registered in the registry."""
         from app.llm.batch.registry import BatchProviderRegistry
-        
+
         # Create a fresh registry for testing
         test_registry = BatchProviderRegistry()
-        
+
         # Register providers manually
         test_registry.register(GeminiBatchProvider)
         test_registry.register(ClaudeBatchProvider)
-        
+
         # Check that providers are registered
         registered_providers = test_registry.list()
         assert "gemini" in registered_providers
@@ -460,22 +468,26 @@ class TestProviderIntegration:
     def test_providers_can_be_created_from_registry(self):
         """Test that providers can be created from the registry."""
         from app.llm.batch.registry import BatchProviderRegistry
-        
+
         # Create a fresh registry for testing
         test_registry = BatchProviderRegistry()
-        
+
         # Register providers
         test_registry.register(GeminiBatchProvider)
         test_registry.register(ClaudeBatchProvider)
-        
+
         # Test Gemini provider creation
-        with patch('app.llm.batch.providers.gemini_provider.genai.Client'):
-            gemini_provider = test_registry.create_provider("gemini", {"api_key": "test"})
+        with patch("app.llm.batch.providers.gemini_provider.genai.Client"):
+            gemini_provider = test_registry.create_provider(
+                "gemini", {"api_key": "test"}
+            )
             assert isinstance(gemini_provider, GeminiBatchProvider)
-        
+
         # Test Claude provider creation
-        with patch('app.llm.batch.providers.claude_provider.Anthropic'):
-            claude_provider = test_registry.create_provider("claude", {"api_key": "test"})
+        with patch("app.llm.batch.providers.claude_provider.Anthropic"):
+            claude_provider = test_registry.create_provider(
+                "claude", {"api_key": "test"}
+            )
             assert isinstance(claude_provider, ClaudeBatchProvider)
 
     def test_provider_error_handling_patterns(self):
@@ -483,27 +495,27 @@ class TestProviderIntegration:
         # Test providers raise appropriate errors for missing API keys
         with pytest.raises(ProviderPermanentError):
             GeminiBatchProvider({})
-        
+
         with pytest.raises(ProviderPermanentError):
             ClaudeBatchProvider({})
 
     def test_provider_model_support_coverage(self):
         """Test that providers support expected model patterns."""
         # Mock clients to avoid initialization errors
-        with patch('app.llm.batch.providers.gemini_provider.genai.Client'):
+        with patch("app.llm.batch.providers.gemini_provider.genai.Client"):
             gemini = GeminiBatchProvider({"api_key": "test"})
-        
-        with patch('app.llm.batch.providers.claude_provider.Anthropic'):
+
+        with patch("app.llm.batch.providers.claude_provider.Anthropic"):
             claude = ClaudeBatchProvider({"api_key": "test"})
-        
+
         # Test Gemini models
         assert gemini.supports_model("gemini-2.0-flash", "chat")
         assert not gemini.supports_model("claude-3.5-sonnet", "chat")
-        
-        # Test Claude models  
+
+        # Test Claude models
         assert claude.supports_model("claude-3.5-sonnet", "chat")
         assert not claude.supports_model("gemini-2.0-flash", "chat")
-        
+
         # Both should reject unsupported modes
         assert not gemini.supports_model("gemini-2.0-flash", "embedding")
         assert not claude.supports_model("claude-3.5-sonnet", "embedding")
