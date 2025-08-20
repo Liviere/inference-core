@@ -541,9 +541,7 @@ class GeminiBatchProvider(BaseBatchProvider):
                 f"Gemini batch result fetching failed: {str(e)}", self.PROVIDER_NAME
             )
 
-    def _parse_inlined_responses(
-        self, inlined_responses: List[dict]
-    ) -> List[ProviderResultRow]:
+    def _parse_inlined_responses(self, inlined_responses) -> List[ProviderResultRow]:
         """
         Parse Gemini inlined responses into ProviderResultRow format.
 

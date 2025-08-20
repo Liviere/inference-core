@@ -7,9 +7,11 @@ Covers success and failure scenarios as specified in acceptance criteria.
 
 import json
 from datetime import datetime
+from typing import List, Optional
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from pydantic import BaseModel
 
 from app.llm.batch import (
     ProviderPermanentError,
@@ -18,6 +20,40 @@ from app.llm.batch import (
 )
 from app.llm.batch.providers.claude_provider import ClaudeBatchProvider
 from app.llm.batch.providers.gemini_provider import GeminiBatchProvider
+
+###################################
+#            Helpers             #
+###################################
+
+
+class MockPart(BaseModel):
+    text: Optional[str] = None
+
+
+class MockContent(BaseModel):
+    parts: List[MockPart] = []
+
+
+class MockCandidate(BaseModel):
+    content: MockContent
+
+
+class MockResponse(BaseModel):
+    candidates: List[MockCandidate] = []
+    text: Optional[str] = None
+
+    def __contains__(self, key: str) -> bool:
+        return hasattr(self, key) and getattr(self, key) is not None
+
+
+class MockInlinedResponse(BaseModel):
+    id: str
+    state: str
+    response: MockResponse
+    error: Optional[str] = None
+
+    def __contains__(self, key: str) -> bool:
+        return hasattr(self, key) and getattr(self, key) is not None
 
 
 class TestGeminiProviderIntegration:
@@ -32,95 +68,95 @@ class TestGeminiProviderIntegration:
             mock_client_class.return_value = self.mock_client
             self.provider = GeminiBatchProvider({"api_key": "test_key"})
 
-    # def test_complete_batch_workflow_success(self):
-    #     """Test complete batch workflow from submission to results."""
-    #     # Test data
-    #     batch_items = [
-    #         {
-    #             "id": "item_1",
-    #             "input_payload": {
-    #                 "messages": [{"role": "user", "content": "Hello Gemini"}]
-    #             },
-    #         },
-    #         {"id": "item_2", "input_payload": {"content": "How are you?"}},
-    #     ]
+    def test_complete_batch_workflow_success(self):
+        """Test complete batch workflow from submission to results."""
+        # Test data
+        batch_items = [
+            {
+                "id": "item_1",
+                "input_payload": {
+                    "messages": [{"role": "user", "content": "Hello Gemini"}]
+                },
+            },
+            {"id": "item_2", "input_payload": {"content": "How are you?"}},
+        ]
 
-    #     # 1. Prepare payloads
-    #     prepared = self.provider.prepare_payloads(
-    #         batch_items, "gemini-2.5-flash", "chat"
-    #     )
-    #     assert len(prepared.items) == 2
-    #     assert prepared.provider == "gemini"
+        # 1. Prepare payloads
+        prepared = self.provider.prepare_payloads(
+            batch_items, "gemini-2.5-flash", "chat"
+        )
+        assert len(prepared.items) == 2
+        assert prepared.provider == "gemini"
 
-    #     # 2. Mock batch submission
-    #     mock_batch = Mock()
-    #     mock_batch.name = "batch_gemini_123"
-    #     mock_batch.state = "JOB_STATE_QUEUED"
-    #     mock_batch.create_time = datetime.now()
+        # 2. Mock batch submission
+        mock_batch = Mock()
+        mock_batch.name = "batch_gemini_123"
+        mock_batch.state = "JOB_STATE_QUEUED"
+        mock_batch.create_time = datetime.now()
 
-    #     self.mock_client.batches.create.return_value = mock_batch
+        self.mock_client.batches.create.return_value = mock_batch
 
-    #     # Submit batch
-    #     submit_result = self.provider.submit(prepared)
-    #     assert submit_result.provider_batch_id == "batch_gemini_123"
-    #     assert submit_result.status == "JOB_STATE_QUEUED"
-    #     assert submit_result.item_count == 2
+        # Submit batch
+        submit_result = self.provider.submit(prepared)
+        assert submit_result.provider_batch_id == "batch_gemini_123"
+        assert submit_result.status == "JOB_STATE_QUEUED"
+        assert submit_result.item_count == 2
 
-    #     # 3. Mock status polling (in progress)
-    #     mock_batch_running = Mock()
-    #     mock_batch_running.state = "JOB_STATE_RUNNING"
-    #     mock_batch_running.create_time = datetime.now()
-    #     mock_batch_running.update_time = datetime.now()
-    #     mock_batch_running.start_time = datetime.now()
-    #     mock_batch_running.end_time = None
+        # 3. Mock status polling (in progress)
+        mock_batch_running = Mock()
+        mock_batch_running.state = "JOB_STATE_RUNNING"
+        mock_batch_running.create_time = datetime.now()
+        mock_batch_running.update_time = datetime.now()
+        mock_batch_running.start_time = datetime.now()
+        mock_batch_running.end_time = None
 
-    #     self.mock_client.batches.get.return_value = mock_batch_running
+        self.mock_client.batches.get.return_value = mock_batch_running
 
-    #     status = self.provider.poll_status("batch_gemini_123")
-    #     assert status.normalized_status == "in_progress"
+        status = self.provider.poll_status("batch_gemini_123")
+        assert status.normalized_status == "in_progress"
 
-    #     # 4. Mock completion and results
-    #     mock_batch_completed = Mock()
-    #     mock_batch_completed.state = "JOB_STATE_SUCCEEDED"
-    #     mock_batch_completed.create_time = datetime.now()
-    #     mock_batch_completed.update_time = datetime.now()
-    #     mock_batch_completed.start_time = datetime.now()
-    #     mock_batch_completed.end_time = datetime.now()
-    #     mock_batch_completed.dest = Mock()
+        # 4. Mock completion and results
+        mock_batch_completed = Mock()
+        mock_batch_completed.state = "JOB_STATE_SUCCEEDED"
+        mock_batch_completed.create_time = datetime.now()
+        mock_batch_completed.update_time = datetime.now()
+        mock_batch_completed.start_time = datetime.now()
+        mock_batch_completed.end_time = datetime.now()
+        mock_batch_completed.dest = Mock()
 
-    #     # Build SDK-like mock objects instead of raw dicts
-    #     def make_response(text: str):
-    #         part = Mock()
-    #         part.text = text
-    #         content = Mock()
-    #         content.parts = [part]
-    #         candidate = Mock()
-    #         candidate.content = content
-    #         response = Mock()
-    #         response.text = text  # direct text path
-    #         response.candidates = [candidate]
-    #         wrapper = Mock()
-    #         wrapper.response = response
-    #         return wrapper
+        # Build SDK-like mock objects instead of raw dicts
+        def make_response(
+            text: str, state: str = "JOB_STATE_SUCCEEDED", custom_id: str = "test_id"
+        ) -> MockInlinedResponse:
 
-    #     mock_batch_completed.dest.inlined_responses = [
-    #         make_response("Hello! Nice to meet you."),
-    #         make_response("I'm doing well, thank you!"),
-    #     ]
+            part = MockPart(text=text)
+            content = MockContent(parts=[part])
+            candidate = MockCandidate(content=content)
+            response = MockResponse(candidates=[candidate], text=text)
+            return MockInlinedResponse(
+                id=custom_id,
+                state=state,
+                response=response,
+            )
 
-    #     self.mock_client.batches.get.return_value = mock_batch_completed
+        mock_batch_completed.dest.inlined_responses = [
+            make_response("Hello! Nice to meet you.", custom_id="item_1"),
+            make_response("I'm doing well, thank you!", custom_id="item_2"),
+        ]
 
-    #     # Check final status
-    #     final_status = self.provider.poll_status("batch_gemini_123")
-    #     assert final_status.normalized_status == "completed"
+        self.mock_client.batches.get.return_value = mock_batch_completed
 
-    #     # Fetch results
-    #     results = self.provider.fetch_results("batch_gemini_123")
-    #     assert len(results) == 2
-    #     assert all(isinstance(r, ProviderResultRow) for r in results)
-    #     assert all(r.is_success for r in results)
-    #     assert results[0].output_text == "Hello! Nice to meet you."
-    #     assert results[1].output_text == "I'm doing well, thank you!"
+        # Check final status
+        final_status = self.provider.poll_status("batch_gemini_123")
+        assert final_status.normalized_status == "completed"
+
+        # Fetch results
+        results = self.provider.fetch_results("batch_gemini_123")
+        assert len(results) == 2
+        assert all(isinstance(r, ProviderResultRow) for r in results)
+        assert all(r.is_success for r in results)
+        assert results[0].output_text == "Hello! Nice to meet you."
+        assert results[1].output_text == "I'm doing well, thank you!"
 
     def test_batch_failure_scenario(self):
         """Test batch failure handling."""
