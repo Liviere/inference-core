@@ -445,6 +445,59 @@ class TestClaudeBatchProvider:
             assert result.is_success is True
             assert result.error_message is None
 
+    def test_fetch_results_sanitizes_complex_objects(self):
+        """Ensure fetch_results produces JSON-serializable output_data for complex SDK objects."""
+        # Arrange: mock status polling to 'completed'
+        with patch.object(self.provider, "poll_status") as mock_poll:
+            mock_poll.return_value = ProviderStatus(
+                provider_batch_id="batch_123",
+                status="ended",
+                normalized_status="completed",
+                progress_info={},
+                estimated_completion=None,
+            )
+
+            # Build complex content block (simulate SDK object)
+            content_block = Mock()
+            content_block.text = "Hello sanitized"
+            content_block.type = "text"
+            content_block.extra_field = object()  # Non-serializable
+
+            usage_obj = Mock()
+            usage_obj.input_tokens = 10
+            usage_obj.output_tokens = 20
+            usage_obj.nested = Mock()
+            usage_obj.nested.foo = "bar"
+
+            message = Mock()
+            message.id = "msg_1"
+            message.type = "message"
+            message.role = "assistant"
+            message.model = "claude-3.5-sonnet"
+            message.content = [content_block]
+            message.stop_reason = "end_turn"
+            message.stop_sequence = None
+            message.usage = usage_obj
+
+            entry = Mock()
+            entry.custom_id = "item_1"
+            entry.result = Mock()
+            entry.result.type = "succeeded"
+            entry.result.message = message
+
+            # Mock results stream
+            self.mock_client.messages.batches.results.return_value = [entry]
+
+            rows = self.provider.fetch_results("batch_123")
+            assert len(rows) == 1
+            row = rows[0]
+            assert row.is_success is True
+            assert row.output_text == "Hello sanitized"
+            import json as _json
+
+            # Should be JSON serializable
+            _json.dumps(row.output_data)
+
 
 class TestProviderIntegration:
     """Test integration between new providers and the registry."""
