@@ -207,6 +207,22 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 submit_result = provider_instance.submit(prepared_submission)
 
                 # Update job with provider batch ID and status
+                # Persist submission metadata (e.g. custom_id_mapping) into job metadata_json
+                try:
+                    metadata = (
+                        job.get_metadata() if hasattr(job, "get_metadata") else {}
+                    )
+                except Exception:
+                    metadata = {}
+                if submit_result.submission_metadata:
+                    # Namespace to avoid clashes with other providers/keys
+                    metadata.setdefault("submission_metadata", {})
+                    metadata["submission_metadata"][
+                        str(job.id)
+                    ] = submit_result.submission_metadata
+                    if hasattr(job, "set_metadata"):
+                        job.set_metadata(metadata)
+
                 await batch_service.update_batch_job(
                     job_uuid,
                     BatchJobUpdate(
@@ -503,6 +519,39 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
 
                 # Fetch results from provider
                 results = provider_instance.fetch_results(job.provider_batch_id)
+
+                # If provider is gemini, attempt to remap synthetic item_X ids to real UUIDs using submission_metadata
+                if job.provider == "gemini":
+                    try:
+                        meta = (
+                            job.get_metadata() if hasattr(job, "get_metadata") else {}
+                        )
+                        submission_meta = meta.get("submission_metadata", {}).get(
+                            str(job.id), {}
+                        )
+                        custom_map = (
+                            submission_meta.get("custom_id_mapping")
+                            if isinstance(submission_meta, dict)
+                            else None
+                        )
+                        # custom_map shape: {index: original_uuid}
+                        if custom_map:
+                            remapped = []
+                            for r in results:
+                                if r.custom_id.startswith("item_"):
+                                    try:
+                                        idx = r.custom_id.split("_", 1)[1]
+                                        original = custom_map.get(idx)
+                                        if original:
+                                            r.custom_id = str(original)
+                                    except Exception:
+                                        pass
+                                remapped.append(r)
+                            results = remapped
+                    except Exception as remap_err:  # pragma: no cover (defensive)
+                        logger.warning(
+                            f"Failed to remap Gemini custom_ids for job {job.id}: {remap_err}"
+                        )
 
                 # Map results to items by custom_id
                 results_map = {result.custom_id: result for result in results}
