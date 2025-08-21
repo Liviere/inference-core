@@ -236,22 +236,22 @@ def reset_metrics() -> None:
     
     WARNING: This should only be used in testing environments.
     """
-    # Get all collector instances
+    # Get all collector instances - only reset counters which support clear()
     collectors_to_reset = [
         batch_jobs_total,
         batch_items_total,
-        batch_job_duration_seconds,
-        batch_poll_cycle_seconds,
-        batch_provider_latency_seconds,
         batch_retry_attempts_total,
         batch_errors_total
     ]
     
     for collector in collectors_to_reset:
-        collector.clear()
+        try:
+            collector.clear()
+        except Exception:
+            # Some metric types don't support clear() - that's OK for testing
+            pass
     
-    # Reset gauges to 0
-    # Note: Gauges don't have a clear() method, so we need to set them to 0
+    # Reset gauges to 0 - they don't have clear() method
     try:
         # This is a bit hacky but necessary for testing
         for metric_family in REGISTRY.collect():
