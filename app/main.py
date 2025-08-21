@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .api.v1.routes import auth, batch, health, llm, tasks
+from .api.v1.routes import auth, batch, health, llm, metrics, tasks
 from .core.config import get_settings
 from .core.logging_config import setup_logging
 from .database.sql.connection import close_database, create_tables
@@ -169,6 +169,9 @@ def setup_routers(app: FastAPI) -> None:
 
     # Include main API router
     app.include_router(api_v1)
+    
+    # Add metrics endpoint at root level (outside API versioning)
+    app.include_router(metrics.router)
 
     # Future: Add other API versions here
     # api_v2 = APIRouter(prefix="/api/v2")
