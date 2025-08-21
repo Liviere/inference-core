@@ -1,6 +1,6 @@
 # Docker Compose for Isolated Test Environment - PostgreSQL
 # Ports: app-test:8100, redis-test:6380, postgres-test:55432
-# Usage: docker compose -f docker/tests/docker-compose.test.postgres.yml --env-file docker/tests/.env.test.example up -d
+# Usage: docker compose -f docker/tests/docker-compose.test.postgres.yml --env-file .env.test.example up -d
 # Cleanup: docker compose -f docker/tests/docker-compose.test.postgres.yml down -v
 
 name: ${APP_NAME:-backend-template-test}-postgres

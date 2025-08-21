@@ -24,7 +24,7 @@ fi
 echo ""
 echo "2. Checking required files..."
 required_files=(
-    "docker/tests/.env.test.example"
+    ".env.test"
     "docker/tests/docker-compose.test.sqlite.yml"
     "docker/tests/docker-compose.test.postgres.yml"
     "docker/tests/docker-compose.test.mysql.yml"
@@ -59,7 +59,7 @@ done
 
 echo ""
 echo "4. Checking environment file structure..."
-env_file="docker/tests/.env.test.example"
+env_file=".env.test"
 
 # Check for required environment variables
 required_vars=(

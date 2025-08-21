@@ -15,7 +15,9 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-load_dotenv()
+load_dotenv(
+    dotenv_path=".env.test" if os.getenv("ENVIRONMENT") == "testing" else ".env"
+)
 
 
 class ModelProvider(str, Enum):

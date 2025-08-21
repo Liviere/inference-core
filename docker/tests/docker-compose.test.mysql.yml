@@ -1,6 +1,6 @@
 # Docker Compose for Isolated Test Environment - MySQL
 # Ports: app-test:8100, redis-test:6380, mysql-test:33306
-# Usage: docker compose -f docker/tests/docker-compose.test.mysql.yml --env-file docker/tests/.env.test.example up -d
+# Usage: docker compose -f docker/tests/docker-compose.test.mysql.yml --env-file .env.test.example up -d
 # Cleanup: docker compose -f docker/tests/docker-compose.test.mysql.yml down -v
 
 name: ${APP_NAME:-backend-template-test}-mysql

@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from typing import Any, List, Optional
 
@@ -24,6 +25,7 @@ class ListParsingEnvSource(EnvSettingsSource):
         """
         Parse comma-separated strings into lists for specific CORS fields
         """
+
         # Handle CORS list fields
         if field_name in (
             "cors_methods",
@@ -327,7 +329,9 @@ class Settings(BaseSettings):
         return base_args
 
     model_config = SettingsConfigDict(
-        env_file=".env", case_sensitive=False, extra="ignore"
+        env_file=".env.test" if os.getenv("ENVIRONMENT") == "testing" else ".env",
+        case_sensitive=False,
+        extra="ignore",
     )
 
     @classmethod
@@ -342,6 +346,15 @@ class Settings(BaseSettings):
         """
         Customize settings sources to use our custom list parsing for environment variables
         """
+
+        if os.getenv("ENVIRONMENT") == "testing":
+            return (
+                init_settings,
+                ListParsingDotEnvSource(settings_cls, env_file=".env.test"),
+                ListParsingEnvSource(settings_cls),
+                file_secret_settings,
+            )
+
         return (
             init_settings,
             ListParsingEnvSource(settings_cls),

@@ -1,12 +1,15 @@
-"""
-Test configuration and fixtures for API tests.
+"""Test configuration and fixtures for API tests.
 
-This module provides common fixtures and configuration for all tests,
-including database setup, test client, and Celery testing utilities.
+IMPORTANT: We force ENVIRONMENT=testing BEFORE importing any application modules.
+Otherwise the settings model would have already chosen .env instead of .env.test
+at class definition time (model_config env_file decision), leading to mixed values.
 """
 
 import os
 from typing import AsyncGenerator
+
+# Ensure test environment flag is present before importing app.* modules
+os.environ.setdefault("ENVIRONMENT", "testing")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

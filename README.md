@@ -57,8 +57,8 @@ For running tests in an isolated, stateless Docker environment that doesn't conf
 
 ```bash
 # Quick start with PostgreSQL test environment
-cp docker/tests/.env.test.example docker/tests/.env.test
-docker compose -f docker/tests/docker-compose.test.postgres.yml --env-file docker/tests/.env.test up -d
+cp docker/tests/.env.test.example .env.test
+docker compose -f docker/tests/docker-compose.test.postgres.yml --env-file .env.test up -d
 
 # Verify health
 curl http://localhost:8100/api/v1/health/ping
