@@ -64,12 +64,11 @@ batch_errors_total = Counter(
 )
 
 
-def record_job_status_change(provider: str, old_status: Optional[str], new_status: str) -> None:
+def record_job_status_change(provider: str, new_status: str) -> None:
     """Record a batch job status change in metrics.
     
     Args:
         provider: LLM provider name (openai, anthropic, etc.)
-        old_status: Previous job status (None for new jobs)
         new_status: New job status
     """
     batch_jobs_total.labels(provider=provider, status=new_status).inc()

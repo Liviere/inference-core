@@ -88,6 +88,7 @@ class BatchLogger:
         """
         fields = {
             "component": "batch_processing",
+            "batch_job": True,  # Add explicit filter tag for batch job logs
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         

@@ -311,13 +311,12 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     config=job.config_json,
                 )
 
-                # Submit to provider (time this operation)
-                submit_start_time = time.time()
-                submit_result = provider_instance.submit(prepared_submission)
-                submit_duration = time.time() - submit_start_time
+                # Submit to provider using decorator for automatic timing
+                @time_provider_operation(provider, "submit")
+                def submit_batch():
+                    return provider_instance.submit(prepared_submission)
                 
-                # Record provider latency
-                record_provider_latency(provider, "submit", submit_duration)
+                submit_result = submit_batch()
 
                 batch_logger.info(
                     f"Provider submission completed for job {job_id}",
@@ -325,7 +324,6 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     provider=provider,
                     operation="submit",
                     provider_batch_id=submit_result.provider_batch_id,
-                    submit_duration_seconds=submit_duration,
                     item_count=submit_result.item_count
                 )
 
@@ -356,7 +354,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 )
                 
                 # Record metrics for status change
-                record_job_status_change(provider, "created", "submitted")
+                record_job_status_change(provider, "submitted")
                 update_jobs_in_progress(provider, 1)  # Job is now in progress
                 
                 # Log structured event
@@ -367,7 +365,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     old_status="created",
                     new_status="submitted",
                     provider_batch_id=submit_result.provider_batch_id,
-                    item_count=submit_result.item_count
+                    item_counts={"item_count": submit_result.item_count}
                 )
                 
                 # Sentry breadcrumb for status change
@@ -465,7 +463,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 
                 # Record status change
                 if provider:
-                    record_job_status_change(provider, "created", "failed")
+                    record_job_status_change(provider, "failed")
 
         _run_async(_mark_failed())
 
@@ -581,7 +579,7 @@ def batch_poll(self) -> Dict[str, Any]:
 
     # Try to acquire lock
     lock_acquired = redis_client.set(
-        BATCH_POLL_LOCK_KEY, "9", nx=True, ex=BATCH_POLL_LOCK_TIMEOUT
+        BATCH_POLL_LOCK_KEY, "1", nx=True, ex=BATCH_POLL_LOCK_TIMEOUT
     )
 
     if not lock_acquired:
@@ -657,15 +655,12 @@ def batch_poll(self) -> Dict[str, Any]:
                             config=llm_config.get_provider_runtime_config(job.provider),
                         )
 
-                        # Poll provider status (time this operation)
-                        poll_start_time = time.time()
-                        provider_status = provider_instance.poll_status(
-                            job.provider_batch_id
-                        )
-                        poll_duration = time.time() - poll_start_time
+                        # Poll provider status using decorator for automatic timing
+                        @time_provider_operation(provider, "poll")
+                        def poll_batch_status():
+                            return provider_instance.poll_status(job.provider_batch_id)
                         
-                        # Record provider latency
-                        record_provider_latency(provider, "poll", poll_duration)
+                        provider_status = poll_batch_status()
                         
                         jobs_polled += 1
                         provider_stats[provider]["polled"] += 1
@@ -676,7 +671,6 @@ def batch_poll(self) -> Dict[str, Any]:
                             provider=provider,
                             provider_batch_id=job.provider_batch_id,
                             operation="poll",
-                            poll_duration_seconds=poll_duration,
                             provider_status=provider_status.normalized_status,
                             current_status=job.status.value
                         )
@@ -697,7 +691,14 @@ def batch_poll(self) -> Dict[str, Any]:
                                 BatchJobStatus.COMPLETED,
                                 BatchJobStatus.FAILED,
                             ]:
-                                update_data["completed_at"] = datetime.now(timezone.utc)
+                                completed_at = datetime.now(timezone.utc)
+                                update_data["completed_at"] = completed_at
+                                
+                                # Calculate and record job duration
+                                job_start_time = job.submitted_at or job.created_at
+                                if job_start_time:
+                                    duration = (completed_at - job_start_time).total_seconds()
+                                    record_job_duration(provider, new_status.value, duration)
                                 
                                 # Update in-progress counter
                                 update_jobs_in_progress(provider, -1)
@@ -719,7 +720,7 @@ def batch_poll(self) -> Dict[str, Any]:
                             )
                             
                             # Record metrics
-                            record_job_status_change(provider, old_status, new_status.value)
+                            record_job_status_change(provider, new_status.value)
 
                             # Log structured status change
                             batch_logger.log_job_lifecycle_event(
@@ -784,7 +785,7 @@ def batch_poll(self) -> Dict[str, Any]:
                         )
                         
                         # Record status change and update counters
-                        record_job_status_change(provider, job.status.value, "failed")
+                        record_job_status_change(provider, "failed")
                         update_jobs_in_progress(provider, -1)
                         status_changes += 1
 
@@ -1007,13 +1008,12 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     config=llm_config.get_provider_runtime_config(job.provider),
                 )
 
-                # Fetch results from provider (time this operation)
-                fetch_start_time = time.time()
-                results = provider_instance.fetch_results(job.provider_batch_id)
-                fetch_duration = time.time() - fetch_start_time
+                # Fetch results from provider using decorator for automatic timing
+                @time_provider_operation(provider, "fetch")
+                def fetch_batch_results():
+                    return provider_instance.fetch_results(job.provider_batch_id)
                 
-                # Record provider latency
-                record_provider_latency(provider, "fetch", fetch_duration)
+                results = fetch_batch_results()
 
                 batch_logger.info(
                     f"Fetched {len(results)} results from provider",
@@ -1021,7 +1021,6 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     provider=provider,
                     provider_batch_id=job.provider_batch_id,
                     operation="fetch",
-                    fetch_duration_seconds=fetch_duration,
                     results_count=len(results)
                 )
 

@@ -31,9 +31,9 @@ class TestBatchMetrics:
         """Test job status change metrics recording."""
         provider = "test_openai"
         
-        record_job_status_change(provider, None, "created")
-        record_job_status_change(provider, "created", "submitted")
-        record_job_status_change(provider, "submitted", "completed")
+        record_job_status_change(provider, "created")
+        record_job_status_change(provider, "submitted")
+        record_job_status_change(provider, "completed")
         
         summary = get_metrics_summary()
         # The metric might be truncated to 'batch_jobs' in the summary
@@ -137,6 +137,33 @@ class TestBatchMetrics:
         provider_sample = test_samples[0]
         assert provider_sample["value"] >= 0  # Should be positive
     
+    def test_time_provider_operation_decorator(self):
+        """Test the time_provider_operation decorator functionality."""
+        from app.observability.metrics import time_provider_operation
+        
+        provider = "test_decorator"
+        operation = "test_op"
+        
+        @time_provider_operation(provider, operation)
+        def mock_operation():
+            # Simulate some work
+            import time
+            time.sleep(0.01)  # 10ms
+            return "success"
+        
+        result = mock_operation()
+        assert result == "success"
+        
+        # Check that latency was recorded
+        summary = get_metrics_summary()
+        assert "batch_provider_latency_seconds" in summary
+        
+        latency_samples = summary["batch_provider_latency_seconds"]["samples"]
+        test_samples = [s for s in latency_samples 
+                       if s["labels"]["provider"] == provider 
+                       and s["labels"]["operation"] == operation]
+        assert len(test_samples) > 0
+    
     def test_record_error_and_retry(self):
         """Test error and retry metrics recording."""
         provider = "test_errors"
@@ -200,6 +227,7 @@ class TestBatchLogger:
         )
         
         assert fields["component"] == "batch_processing"
+        assert fields["batch_job"] is True  # Check new filter field
         assert fields["batch_job_id"] == job_id
         assert fields["provider"] == provider
         assert fields["status_transition"] == "created->submitted"
