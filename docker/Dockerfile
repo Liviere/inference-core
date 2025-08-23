@@ -38,11 +38,15 @@ COPY run.py ./
 COPY llm_config.yaml ./
 COPY .env ./
 
-# Create logs directory and set permissions
-RUN mkdir -p /app/logs
+# Create non-root user early (needed before chown of prom dir)
+RUN useradd --create-home --shell /bin/bash app
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
+# Create logs directory and set permissions
+RUN mkdir -p /app/logs && chown -R app:app /app
+
+# Create Prometheus multiprocess metrics directory (must exist before volume mount)
+RUN mkdir -p /tmp/prom_metrics && chown app:app /tmp/prom_metrics
+
 USER app
 
 # Expose port
