@@ -24,15 +24,15 @@ from app.llm.batch.registry import registry
 from app.llm.config import llm_config
 from app.observability.logging import get_batch_logger
 from app.observability.metrics import (
-    record_job_status_change,
-    record_job_duration,
-    record_poll_cycle_duration,
-    record_provider_latency,
-    time_provider_operation,
-    update_jobs_in_progress,
-    record_retry_attempt,
     record_error,
     record_item_status_change,
+    record_job_duration,
+    record_job_status_change,
+    record_poll_cycle_duration,
+    record_provider_latency,
+    record_retry_attempt,
+    time_provider_operation,
+    update_jobs_in_progress,
 )
 from app.observability.sentry import get_batch_sentry
 from app.schemas.batch import (
@@ -98,15 +98,15 @@ def batch_dispatch(self) -> Dict[str, Any]:
     per job. Lightweight – real submission logic stays in batch_submit (idempotent).
     """
     start_time = time.time()
-    
+
     # Log operation start
     batch_logger.info(
         "Starting batch dispatch cycle",
         operation="dispatch",
-        dispatch_cycle_start=start_time
+        dispatch_cycle_start=start_time,
     )
     batch_sentry.log_operation_start("dispatch")
-    
+
     redis_client = get_sync_redis()
     lock_acquired = redis_client.set(
         BATCH_DISPATCH_LOCK_KEY, "1", nx=True, ex=BATCH_DISPATCH_LOCK_TIMEOUT
@@ -132,48 +132,49 @@ def batch_dispatch(self) -> Dict[str, Any]:
                     select(BatchJob).where(BatchJob.status == BatchJobStatus.CREATED)
                 )
                 jobs = result.scalars().all()
-                
+
                 batch_logger.info(
                     f"Found {len(jobs)} jobs to dispatch",
                     operation="dispatch",
-                    jobs_found=len(jobs)
+                    jobs_found=len(jobs),
                 )
-                
+
                 for job in jobs:
                     try:
                         # Set Sentry context for this job
                         batch_sentry.set_batch_context(
-                            job_id=job.id,
-                            provider=job.provider,
-                            operation="dispatch"
+                            job_id=job.id, provider=job.provider, operation="dispatch"
                         )
-                        
+
                         batch_submit.delay(str(job.id))
                         dispatched += 1
-                        
+
                         batch_logger.debug(
                             f"Dispatched submit task for job {job.id}",
                             job_id=job.id,
                             provider=job.provider,
-                            operation="dispatch"
+                            operation="dispatch",
                         )
-                        
+
                     except Exception as e:
                         errors += 1
                         batch_logger.error(
                             f"Failed to enqueue submit for job {job.id}: {e}",
                             job_id=job.id,
-                            provider=job.provider if hasattr(job, 'provider') else None,
+                            provider=job.provider if hasattr(job, "provider") else None,
                             operation="dispatch",
-                            error_details={"error": str(e), "error_type": type(e).__name__}
+                            error_details={
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                            },
                         )
-                        
+
                         # Capture error in Sentry
                         batch_sentry.capture_batch_error(
                             e,
                             job_id=job.id,
-                            provider=job.provider if hasattr(job, 'provider') else None,
-                            operation="dispatch"
+                            provider=job.provider if hasattr(job, "provider") else None,
+                            operation="dispatch",
                         )
 
         _run_async(_dispatch())
@@ -181,21 +182,21 @@ def batch_dispatch(self) -> Dict[str, Any]:
         redis_client.delete(BATCH_DISPATCH_LOCK_KEY)
 
     duration = time.time() - start_time
-    
+
     # Log completion with metrics
     batch_logger.info(
         f"Batch dispatch completed: {dispatched} dispatched, {errors} errors",
         operation="dispatch",
         jobs_dispatched=dispatched,
         errors=errors,
-        duration_seconds=duration
+        duration_seconds=duration,
     )
-    
+
     batch_sentry.log_operation_complete(
         "dispatch",
         success=(errors == 0),
         duration_seconds=duration,
-        additional_data={"jobs_dispatched": dispatched, "errors": errors}
+        additional_data={"jobs_dispatched": dispatched, "errors": errors},
     )
 
     return {
@@ -233,7 +234,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
         batch_logger.info(
             f"Starting batch submission for job {job_id}",
             job_id=job_id,
-            operation="submit"
+            operation="submit",
         )
         batch_sentry.log_operation_start("submit", job_id=job_id)
 
@@ -247,14 +248,12 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 job = await batch_service.get_batch_job(job_uuid)
                 if not job:
                     raise ValueError(f"Batch job {job_id} not found")
-                
+
                 provider = job.provider
-                
+
                 # Set Sentry context with provider info
                 batch_sentry.set_batch_context(
-                    job_id=job.id,
-                    provider=provider,
-                    operation="submit"
+                    job_id=job.id, provider=provider, operation="submit"
                 )
 
                 # Check if already submitted
@@ -264,7 +263,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                         job_id=job_id,
                         provider=provider,
                         operation="submit",
-                        status_transition=f"{job.status}->skipped"
+                        status_transition=f"{job.status}->skipped",
                     )
                     return {
                         "job_id": job_id,
@@ -283,7 +282,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     job_id=job_id,
                     provider=provider,
                     operation="submit",
-                    item_count=len(items)
+                    item_count=len(items),
                 )
 
                 # Build provider runtime config (merge general provider + batch model info)
@@ -315,7 +314,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 @time_provider_operation(provider, "submit")
                 def submit_batch():
                     return provider_instance.submit(prepared_submission)
-                
+
                 submit_result = submit_batch()
 
                 batch_logger.info(
@@ -324,7 +323,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     provider=provider,
                     operation="submit",
                     provider_batch_id=submit_result.provider_batch_id,
-                    item_count=submit_result.item_count
+                    item_count=submit_result.item_count,
                 )
 
                 # Update job with provider batch ID and status
@@ -352,11 +351,11 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                         submitted_at=submit_result.submitted_at,
                     ),
                 )
-                
+
                 # Record metrics for status change
                 record_job_status_change(provider, "submitted")
                 update_jobs_in_progress(provider, 1)  # Job is now in progress
-                
+
                 # Log structured event
                 batch_logger.log_job_lifecycle_event(
                     "submitted",
@@ -365,9 +364,9 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     old_status="created",
                     new_status="submitted",
                     provider_batch_id=submit_result.provider_batch_id,
-                    item_counts={"item_count": submit_result.item_count}
+                    item_counts={"item_count": submit_result.item_count},
                 )
-                
+
                 # Sentry breadcrumb for status change
                 batch_sentry.log_status_change(
                     job.id,
@@ -375,9 +374,9 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     "created",
                     "submitted",
                     provider_batch_id=submit_result.provider_batch_id,
-                    additional_data={"item_count": submit_result.item_count}
+                    additional_data={"item_count": submit_result.item_count},
                 )
-                
+
                 # Create semantic event for submission (separate from status change)
                 try:
                     from app.database.sql.models.batch import BatchEventType
@@ -395,7 +394,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                         f"Failed to create SUBMITTED event for job {job_id}: {evt_err}",
                         job_id=job_id,
                         provider=provider,
-                        operation="submit"
+                        operation="submit",
                     )
 
                 batch_logger.info(
@@ -403,7 +402,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     job_id=job_id,
                     provider=provider,
                     operation="submit",
-                    provider_batch_id=submit_result.provider_batch_id
+                    provider_batch_id=submit_result.provider_batch_id,
                 )
 
                 return {
@@ -417,39 +416,36 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
 
         result = _run_async(_submit())
         duration = time.time() - start_time
-        
+
         # Log successful completion
         batch_sentry.log_operation_complete(
             "submit",
             job_id=job_id,
             provider=provider,
             success=True,
-            duration_seconds=duration
+            duration_seconds=duration,
         )
-        
+
         return result
 
     except ProviderPermanentError as e:
         duration = time.time() - start_time
-        
+
         batch_logger.error(
             f"Permanent error submitting batch job {job_id}: {e}",
             job_id=job_id,
             provider=provider,
             operation="submit",
-            error_details={"error": str(e), "error_type": "permanent"}
+            error_details={"error": str(e), "error_type": "permanent"},
         )
-        
+
         # Record error metrics
         if provider:
             record_error(provider, "permanent", "submit")
 
         # Capture in Sentry
         batch_sentry.capture_batch_error(
-            e,
-            job_id=job_id,
-            provider=provider,
-            operation="submit"
+            e, job_id=job_id, provider=provider, operation="submit"
         )
 
         # Update job status to failed
@@ -460,7 +456,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     job_uuid,
                     BatchJobUpdate(status=BatchJobStatus.FAILED, error_summary=str(e)),
                 )
-                
+
                 # Record status change
                 if provider:
                     record_job_status_change(provider, "failed")
@@ -472,7 +468,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
             job_id=job_id,
             provider=provider,
             success=False,
-            duration_seconds=duration
+            duration_seconds=duration,
         )
 
         return {
@@ -484,62 +480,63 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
 
     except ProviderTransientError as e:
         duration = time.time() - start_time
-        
+
         batch_logger.warning(
             f"Transient error submitting batch job {job_id}: {e}",
             job_id=job_id,
             provider=provider,
             operation="submit",
-            error_details={"error": str(e), "error_type": "transient", "retry_count": self.request.retries}
+            error_details={
+                "error": str(e),
+                "error_type": "transient",
+                "retry_count": self.request.retries,
+            },
         )
-        
+
         # Record retry attempt
         if provider:
             record_retry_attempt(provider, "submit", "transient_error")
             record_error(provider, "transient", "submit")
-        
+
         # Capture in Sentry
         batch_sentry.capture_batch_error(
             e,
             job_id=job_id,
             provider=provider,
             operation="submit",
-            additional_context={"retry_count": self.request.retries}
+            additional_context={"retry_count": self.request.retries},
         )
-        
+
         raise self.retry(countdown=min(2**self.request.retries, 300), exc=e)
 
     except Exception as e:
         duration = time.time() - start_time
-        
+
         batch_logger.error(
             f"Unexpected error submitting batch job {job_id}: {e}",
             job_id=job_id,
             provider=provider,
             operation="submit",
-            error_details={"error": str(e), "error_type": "unexpected"}
+            error_details={"error": str(e), "error_type": "unexpected"},
         )
-        
+
         # Record error metrics
         if provider:
             record_error(provider, "unexpected", "submit")
-        
+
         # Capture in Sentry
         batch_sentry.capture_batch_error(
-            e,
-            job_id=job_id,
-            provider=provider,
-            operation="submit"
+            e, job_id=job_id, provider=provider, operation="submit"
         )
-        
+
         batch_sentry.log_operation_complete(
             "submit",
             job_id=job_id,
             provider=provider,
             success=False,
-            duration_seconds=duration
+            duration_seconds=duration,
         )
-        
+
         return {
             "job_id": job_id,
             "status": "error",
@@ -571,9 +568,7 @@ def batch_poll(self) -> Dict[str, Any]:
 
     # Log polling cycle start
     batch_logger.info(
-        "Starting batch poll cycle",
-        operation="poll",
-        poll_cycle_start=start_time
+        "Starting batch poll cycle", operation="poll", poll_cycle_start=start_time
     )
     batch_sentry.log_operation_start("poll")
 
@@ -586,7 +581,7 @@ def batch_poll(self) -> Dict[str, Any]:
         batch_logger.info(
             "Batch poll already running, skipping",
             operation="poll",
-            skip_reason="lock_held"
+            skip_reason="lock_held",
         )
         return {
             "status": "skipped",
@@ -611,11 +606,7 @@ def batch_poll(self) -> Dict[str, Any]:
                 jobs = result.scalars().all()
 
                 if not jobs:
-                    batch_logger.info(
-                        "No jobs to poll",
-                        operation="poll",
-                        jobs_found=0
-                    )
+                    batch_logger.info("No jobs to poll", operation="poll", jobs_found=0)
                     return {
                         "status": "completed",
                         "jobs_polled": 0,
@@ -626,7 +617,7 @@ def batch_poll(self) -> Dict[str, Any]:
                 batch_logger.info(
                     f"Found {len(jobs)} jobs to poll",
                     operation="poll",
-                    jobs_found=len(jobs)
+                    jobs_found=len(jobs),
                 )
 
                 status_changes = 0
@@ -635,18 +626,22 @@ def batch_poll(self) -> Dict[str, Any]:
 
                 for job in jobs:
                     provider = job.provider
-                    
+
                     # Initialize provider stats
                     if provider not in provider_stats:
-                        provider_stats[provider] = {"polled": 0, "status_changes": 0, "errors": 0}
-                    
+                        provider_stats[provider] = {
+                            "polled": 0,
+                            "status_changes": 0,
+                            "errors": 0,
+                        }
+
                     try:
                         # Set Sentry context
                         batch_sentry.set_batch_context(
                             job_id=job.id,
                             provider=provider,
                             provider_batch_id=job.provider_batch_id,
-                            operation="poll"
+                            operation="poll",
                         )
 
                         # Get provider instance
@@ -659,9 +654,9 @@ def batch_poll(self) -> Dict[str, Any]:
                         @time_provider_operation(provider, "poll")
                         def poll_batch_status():
                             return provider_instance.poll_status(job.provider_batch_id)
-                        
+
                         provider_status = poll_batch_status()
-                        
+
                         jobs_polled += 1
                         provider_stats[provider]["polled"] += 1
 
@@ -672,7 +667,7 @@ def batch_poll(self) -> Dict[str, Any]:
                             provider_batch_id=job.provider_batch_id,
                             operation="poll",
                             provider_status=provider_status.normalized_status,
-                            current_status=job.status.value
+                            current_status=job.status.value,
                         )
 
                         # Check if status changed
@@ -680,7 +675,7 @@ def batch_poll(self) -> Dict[str, Any]:
                         if new_status != job.status:
                             status_changes += 1
                             provider_stats[provider]["status_changes"] += 1
-                            
+
                             old_status = job.status.value
 
                             # Update job status
@@ -693,32 +688,36 @@ def batch_poll(self) -> Dict[str, Any]:
                             ]:
                                 completed_at = datetime.now(timezone.utc)
                                 update_data["completed_at"] = completed_at
-                                
+
                                 # Calculate and record job duration
                                 job_start_time = job.submitted_at or job.created_at
                                 if job_start_time:
-                                    duration = (completed_at - job_start_time).total_seconds()
-                                    record_job_duration(provider, new_status.value, duration)
-                                
+                                    duration = (
+                                        completed_at - job_start_time
+                                    ).total_seconds()
+                                    record_job_duration(
+                                        provider, new_status.value, duration
+                                    )
+
                                 # Update in-progress counter
                                 update_jobs_in_progress(provider, -1)
 
                                 # For completed jobs, schedule fetch task
                                 if new_status == BatchJobStatus.COMPLETED:
                                     batch_fetch.delay(str(job.id))
-                                    
+
                                     batch_logger.debug(
                                         f"Scheduled fetch task for completed job {job.id}",
                                         job_id=job.id,
                                         provider=provider,
                                         provider_batch_id=job.provider_batch_id,
-                                        operation="poll"
+                                        operation="poll",
                                     )
 
                             await batch_service.update_batch_job(
                                 job.id, BatchJobUpdate(**update_data)
                             )
-                            
+
                             # Record metrics
                             record_job_status_change(provider, new_status.value)
 
@@ -729,16 +728,16 @@ def batch_poll(self) -> Dict[str, Any]:
                                 provider,
                                 old_status=old_status,
                                 new_status=new_status.value,
-                                provider_batch_id=job.provider_batch_id
+                                provider_batch_id=job.provider_batch_id,
                             )
-                            
+
                             # Sentry breadcrumb
                             batch_sentry.log_status_change(
                                 job.id,
                                 provider,
                                 old_status,
                                 new_status.value,
-                                provider_batch_id=job.provider_batch_id
+                                provider_batch_id=job.provider_batch_id,
                             )
 
                             batch_logger.info(
@@ -747,33 +746,33 @@ def batch_poll(self) -> Dict[str, Any]:
                                 provider=provider,
                                 provider_batch_id=job.provider_batch_id,
                                 operation="poll",
-                                status_transition=f"{old_status}->{new_status.value}"
+                                status_transition=f"{old_status}->{new_status.value}",
                             )
 
                     except ProviderPermanentError as e:
                         provider_stats[provider]["errors"] += 1
-                        
+
                         batch_logger.error(
                             f"Permanent error polling job {job.id}: {e}",
                             job_id=job.id,
                             provider=provider,
                             provider_batch_id=job.provider_batch_id,
                             operation="poll",
-                            error_details={"error": str(e), "error_type": "permanent"}
+                            error_details={"error": str(e), "error_type": "permanent"},
                         )
-                        
+
                         # Record error metrics
                         record_error(provider, "permanent", "poll")
-                        
+
                         # Capture in Sentry
                         batch_sentry.capture_batch_error(
                             e,
                             job_id=job.id,
                             provider=provider,
                             provider_batch_id=job.provider_batch_id,
-                            operation="poll"
+                            operation="poll",
                         )
-                        
+
                         # Mark job as failed
                         await batch_service.update_batch_job(
                             job.id,
@@ -783,7 +782,7 @@ def batch_poll(self) -> Dict[str, Any]:
                                 completed_at=datetime.now(timezone.utc),
                             ),
                         )
-                        
+
                         # Record status change and update counters
                         record_job_status_change(provider, "failed")
                         update_jobs_in_progress(provider, -1)
@@ -791,46 +790,46 @@ def batch_poll(self) -> Dict[str, Any]:
 
                     except ProviderTransientError as e:
                         provider_stats[provider]["errors"] += 1
-                        
+
                         batch_logger.warning(
                             f"Transient error polling job {job.id}: {e}",
                             job_id=job.id,
                             provider=provider,
                             provider_batch_id=job.provider_batch_id,
                             operation="poll",
-                            error_details={"error": str(e), "error_type": "transient"}
+                            error_details={"error": str(e), "error_type": "transient"},
                         )
-                        
+
                         # Record error metrics
                         record_error(provider, "transient", "poll")
-                        
+
                         # Continue with other jobs, don't fail the whole poll
                         continue
 
                     except Exception as e:
                         provider_stats[provider]["errors"] += 1
-                        
+
                         batch_logger.error(
                             f"Unexpected error polling job {job.id}: {e}",
                             job_id=job.id,
                             provider=provider,
                             provider_batch_id=job.provider_batch_id,
                             operation="poll",
-                            error_details={"error": str(e), "error_type": "unexpected"}
+                            error_details={"error": str(e), "error_type": "unexpected"},
                         )
-                        
+
                         # Record error metrics
                         record_error(provider, "unexpected", "poll")
-                        
+
                         # Capture in Sentry
                         batch_sentry.capture_batch_error(
                             e,
                             job_id=job.id,
                             provider=provider,
                             provider_batch_id=job.provider_batch_id,
-                            operation="poll"
+                            operation="poll",
                         )
-                        
+
                         continue
 
                 batch_logger.info(
@@ -838,7 +837,7 @@ def batch_poll(self) -> Dict[str, Any]:
                     operation="poll",
                     jobs_polled=jobs_polled,
                     status_changes=status_changes,
-                    provider_stats=provider_stats
+                    provider_stats=provider_stats,
                 )
 
                 return {
@@ -851,10 +850,10 @@ def batch_poll(self) -> Dict[str, Any]:
 
         result = _run_async(_poll())
         duration = time.time() - start_time
-        
+
         # Record poll cycle duration
         record_poll_cycle_duration(duration)
-        
+
         # Log successful completion
         batch_sentry.log_operation_complete(
             "poll",
@@ -862,30 +861,28 @@ def batch_poll(self) -> Dict[str, Any]:
             duration_seconds=duration,
             additional_data={
                 "jobs_polled": result.get("jobs_polled", 0),
-                "status_changes": result.get("status_changes", 0)
-            }
+                "status_changes": result.get("status_changes", 0),
+            },
         )
-        
+
         return result
 
     except Exception as e:
         duration = time.time() - start_time
-        
+
         batch_logger.error(
             f"Error in batch poll: {e}",
             operation="poll",
-            error_details={"error": str(e), "error_type": "unexpected"}
+            error_details={"error": str(e), "error_type": "unexpected"},
         )
-        
+
         # Capture in Sentry
         batch_sentry.capture_batch_error(e, operation="poll")
-        
+
         batch_sentry.log_operation_complete(
-            "poll",
-            success=False,
-            duration_seconds=duration
+            "poll", success=False, duration_seconds=duration
         )
-        
+
         return {
             "status": "error",
             "error": str(e),
@@ -922,9 +919,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
 
     try:
         batch_logger.info(
-            f"Starting batch fetch for job {job_id}",
-            job_id=job_id,
-            operation="fetch"
+            f"Starting batch fetch for job {job_id}", job_id=job_id, operation="fetch"
         )
         batch_sentry.log_operation_start("fetch", job_id=job_id)
 
@@ -939,13 +934,13 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     raise ValueError(f"Batch job {job_id} not found")
 
                 provider = job.provider
-                
+
                 # Set Sentry context
                 batch_sentry.set_batch_context(
                     job_id=job.id,
                     provider=provider,
                     provider_batch_id=job.provider_batch_id,
-                    operation="fetch"
+                    operation="fetch",
                 )
 
                 # Check if job is completed
@@ -956,7 +951,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                         provider=provider,
                         provider_batch_id=job.provider_batch_id,
                         operation="fetch",
-                        current_status=job.status.value
+                        current_status=job.status.value,
                     )
                     return {
                         "job_id": job_id,
@@ -982,7 +977,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                         provider_batch_id=job.provider_batch_id,
                         operation="fetch",
                         total_items=len(items),
-                        completed_items=len(completed_items)
+                        completed_items=len(completed_items),
                     )
                     return {
                         "job_id": job_id,
@@ -999,7 +994,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     operation="fetch",
                     total_items=len(items),
                     completed_items=len(completed_items),
-                    pending_items=len(items) - len(completed_items)
+                    pending_items=len(items) - len(completed_items),
                 )
 
                 # Get provider instance
@@ -1012,7 +1007,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                 @time_provider_operation(provider, "fetch")
                 def fetch_batch_results():
                     return provider_instance.fetch_results(job.provider_batch_id)
-                
+
                 results = fetch_batch_results()
 
                 batch_logger.info(
@@ -1021,7 +1016,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     provider=provider,
                     provider_batch_id=job.provider_batch_id,
                     operation="fetch",
-                    results_count=len(results)
+                    results_count=len(results),
                 )
 
                 # If provider is gemini, attempt to remap synthetic item_X ids to real UUIDs using submission_metadata
@@ -1054,22 +1049,22 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                                         pass
                                 remapped.append(r)
                             results = remapped
-                            
+
                             batch_logger.debug(
                                 f"Remapped {remapped_count} Gemini custom IDs",
                                 job_id=job_id,
                                 provider=provider,
                                 operation="fetch",
-                                remapped_count=remapped_count
+                                remapped_count=remapped_count,
                             )
-                            
+
                     except Exception as remap_err:  # pragma: no cover (defensive)
                         batch_logger.warning(
                             f"Failed to remap Gemini custom_ids for job {job.id}: {remap_err}",
                             job_id=job_id,
                             provider=provider,
                             operation="fetch",
-                            error_details={"error": str(remap_err)}
+                            error_details={"error": str(remap_err)},
                         )
 
                 # Map results to items by custom_id
@@ -1115,7 +1110,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                         success_count=success_count, error_count=error_count
                     ),
                 )
-                
+
                 # Log batch item update
                 batch_logger.log_item_batch_update(
                     job.id,
@@ -1123,9 +1118,9 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     success_count,
                     error_count,
                     len(items),
-                    provider_batch_id=job.provider_batch_id
+                    provider_batch_id=job.provider_batch_id,
                 )
-                
+
                 # Emit semantic fetch completed event
                 try:
                     from app.database.sql.models.batch import BatchEventType
@@ -1144,7 +1139,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                         f"Failed to create FETCH_COMPLETED event for job {job_id}: {evt_err}",
                         job_id=job_id,
                         provider=provider,
-                        operation="fetch"
+                        operation="fetch",
                     )
 
                 batch_logger.info(
@@ -1155,7 +1150,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     operation="fetch",
                     success_count=success_count,
                     error_count=error_count,
-                    total_items=len(items)
+                    total_items=len(items),
                 )
 
                 return {
@@ -1169,7 +1164,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
 
         result = _run_async(_fetch())
         duration = time.time() - start_time
-        
+
         # Log successful completion
         batch_sentry.log_operation_complete(
             "fetch",
@@ -1180,43 +1175,40 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
             additional_data={
                 "success_count": result.get("success_count", 0),
                 "error_count": result.get("error_count", 0),
-                "total_items": result.get("total_items", 0)
-            }
+                "total_items": result.get("total_items", 0),
+            },
         )
-        
+
         return result
 
     except ProviderPermanentError as e:
         duration = time.time() - start_time
-        
+
         batch_logger.error(
             f"Permanent error fetching batch job {job_id}: {e}",
             job_id=job_id,
             provider=provider,
             operation="fetch",
-            error_details={"error": str(e), "error_type": "permanent"}
+            error_details={"error": str(e), "error_type": "permanent"},
         )
-        
+
         # Record error metrics
         if provider:
             record_error(provider, "permanent", "fetch")
-        
+
         # Capture in Sentry
         batch_sentry.capture_batch_error(
-            e,
-            job_id=job_id,
-            provider=provider,
-            operation="fetch"
+            e, job_id=job_id, provider=provider, operation="fetch"
         )
-        
+
         batch_sentry.log_operation_complete(
             "fetch",
             job_id=job_id,
             provider=provider,
             success=False,
-            duration_seconds=duration
+            duration_seconds=duration,
         )
-        
+
         return {
             "job_id": job_id,
             "status": "failed",
@@ -1226,62 +1218,63 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
 
     except ProviderTransientError as e:
         duration = time.time() - start_time
-        
+
         batch_logger.warning(
             f"Transient error fetching batch job {job_id}: {e}",
             job_id=job_id,
             provider=provider,
             operation="fetch",
-            error_details={"error": str(e), "error_type": "transient", "retry_count": self.request.retries}
+            error_details={
+                "error": str(e),
+                "error_type": "transient",
+                "retry_count": self.request.retries,
+            },
         )
-        
+
         # Record retry attempt and error
         if provider:
             record_retry_attempt(provider, "fetch", "transient_error")
             record_error(provider, "transient", "fetch")
-        
+
         # Capture in Sentry
         batch_sentry.capture_batch_error(
             e,
             job_id=job_id,
             provider=provider,
             operation="fetch",
-            additional_context={"retry_count": self.request.retries}
+            additional_context={"retry_count": self.request.retries},
         )
-        
+
         raise self.retry(countdown=min(2**self.request.retries, 300), exc=e)
 
     except Exception as e:
         duration = time.time() - start_time
-        
+
         batch_logger.error(
             f"Unexpected error fetching batch job {job_id}: {e}",
             job_id=job_id,
             provider=provider,
             operation="fetch",
-            error_details={"error": str(e), "error_type": "unexpected"}
+            error_details={"error": str(e), "error_type": "unexpected"},
         )
-        
+
         # Record error metrics
         if provider:
             record_error(provider, "unexpected", "fetch")
-        
+
         # Capture in Sentry
         batch_sentry.capture_batch_error(
-            e,
-            job_id=job_id,
-            provider=provider,
-            operation="fetch"
+            e, job_id=job_id, provider=provider, operation="fetch"
         )
-        
+
         batch_sentry.log_operation_complete(
             "fetch",
             job_id=job_id,
             provider=provider,
             success=False,
-            duration_seconds=duration
+            duration_seconds=duration,
         )
-        
+
         return {
             "job_id": job_id,
             "status": "error",

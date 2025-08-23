@@ -2,12 +2,15 @@
 Celery Application Instance
 """
 
+import logging
 import os
 
 from celery import Celery
 
 from app.celery.config import CeleryConfig
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def create_celery_app() -> Celery:
@@ -40,17 +43,17 @@ class BaseTask(celery_app.Task):
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         """Handle task failure"""
-        print(f"Task {task_id} failed: {exc}")
+        logger.error(f"Task {task_id} failed: {exc}", exc_info=einfo)
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
     def on_success(self, retval, task_id, args, kwargs):
         """Handle task success"""
-        print(f"Task {task_id} succeeded")
+        logger.debug(f"Task {task_id} succeeded")
         super().on_success(retval, task_id, args, kwargs)
 
     def on_retry(self, exc, task_id, args, kwargs, einfo):
         """Handle task retry"""
-        print(f"Task {task_id} retrying: {exc}")
+        logger.warning(f"Task {task_id} retrying: {exc}", exc_info=einfo)
         super().on_retry(exc, task_id, args, kwargs, einfo)
 
 
