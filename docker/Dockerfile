@@ -6,7 +6,7 @@ ARG PORT=8000
 ENV PORT=${PORT}
 
 # Set working directory
-WORKDIR /app
+WORKDIR /inference_core
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -27,27 +27,28 @@ RUN poetry config virtualenvs.create false
 
 # Copy Poetry files
 COPY pyproject.toml poetry.lock* ./
+COPY README.md ./
+COPY inference_core ./inference_core
 
 # Install dependencies globally
 RUN poetry install --only=main && rm -rf $POETRY_CACHE_DIR
 
 # Copy application code
-COPY app ./app
 COPY tests ./tests
 COPY run.py ./
 COPY llm_config.yaml ./
 COPY .env ./
 
 # Create non-root user early (needed before chown of prom dir)
-RUN useradd --create-home --shell /bin/bash app
+RUN useradd --create-home --shell /bin/bash inference_core
 
 # Create logs directory and set permissions
-RUN mkdir -p /app/logs && chown -R app:app /app
+RUN mkdir -p /inference_core/logs && chown -R inference_core:inference_core /inference_core
 
 # Create Prometheus multiprocess metrics directory (must exist before volume mount)
-RUN mkdir -p /tmp/prom_metrics && chown app:app /tmp/prom_metrics
+RUN mkdir -p /tmp/prom_metrics && chown inference_core:inference_core /tmp/prom_metrics
 
-USER app
+USER inference_core
 
 # Expose port
 EXPOSE ${PORT}

@@ -34,7 +34,7 @@ ANTHROPIC_API_KEY=your_claude_api_key
 Providers are automatically registered when the batch module is imported. You can check which providers are available:
 
 ```python
-from app.llm.batch import registry
+from inference_core.llm.batch import registry
 
 # List all registered providers
 print(registry.list())  # ['openai', 'gemini', 'claude']
@@ -127,7 +127,7 @@ provider = registry.create_provider("gemini", {"api_key": "your_key"})
 ### Basic Batch Processing
 
 ```python
-from app.llm.batch import registry
+from inference_core.llm.batch import registry
 
 # Create provider
 provider = registry.create_provider("gemini", {"api_key": "your_key"})
@@ -236,7 +236,7 @@ Both providers follow consistent error handling patterns:
 - HTTP 429, 502, 503 errors
 
 ```python
-from app.llm.batch.exceptions import ProviderTransientError
+from inference_core.llm.batch.exceptions import ProviderTransientError
 
 try:
     result = provider.submit(prepared)
@@ -254,7 +254,7 @@ except ProviderTransientError as e:
 - HTTP 401, 403, 404 errors
 
 ```python
-from app.llm.batch.exceptions import ProviderPermanentError
+from inference_core.llm.batch.exceptions import ProviderPermanentError
 
 try:
     result = provider.submit(prepared)
@@ -402,7 +402,7 @@ Enable debug logging to troubleshoot issues:
 
 ```python
 import logging
-logging.getLogger('app.llm.batch.providers').setLevel(logging.DEBUG)
+logging.getLogger('inference_core.llm.batch.providers').setLevel(logging.DEBUG)
 ```
 
 ## Migration from Single Requests

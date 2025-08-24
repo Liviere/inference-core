@@ -1,7 +1,7 @@
 [project]
-name = "backend-template"
-version = "0.1.2"
-description = "A ready-to-use API template based on FastAPI."
+name = "inference-core"
+version = "0.2.0"
+description = "A ready-to-use FastAPI backend with Celery-powered background tasks and first-class LLM integration using LangChain."
 authors = [
     {name = "Tomasz Osiński"}
 ]
@@ -37,7 +37,9 @@ dependencies = [
 ]
 
 [tool.poetry]
-package-mode = false
+packages = [
+    { include = "inference_core" },
+]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"

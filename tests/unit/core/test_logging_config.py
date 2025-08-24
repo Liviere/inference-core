@@ -1,5 +1,5 @@
 """
-Unit tests for app.core.logging_config module
+Unit tests for inference_core.core.logging_config module
 
 Tests logging configuration setup with different debug settings
 and JSON formatter functionality.
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from app.core.logging_config import JsonFormatter, setup_logging
+from inference_core.core.logging_config import JsonFormatter, setup_logging
 
 
 class TestJsonFormatter:
@@ -80,15 +80,17 @@ class TestSetupLogging:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
 
-    @patch("app.core.logging_config.dictConfig")
+    @patch("inference_core.core.logging_config.dictConfig")
     def test_setup_logging_debug_mode(self, mock_dict_config):
         """Test setup_logging with debug=True sets DEBUG level"""
         # Patch the function as imported inside logging_config module
-        with patch("app.core.logging_config.get_settings") as mock_get_settings:
+        with patch(
+            "inference_core.core.logging_config.get_settings"
+        ) as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.debug = True
             mock_get_settings.return_value = mock_settings
@@ -105,11 +107,13 @@ class TestSetupLogging:
             assert config["loggers"]["app"]["level"] == "DEBUG"
             assert config["root"]["level"] == "DEBUG"
 
-    @patch("app.core.logging_config.dictConfig")
+    @patch("inference_core.core.logging_config.dictConfig")
     def test_setup_logging_production_mode(self, mock_dict_config):
         """Test setup_logging with debug=False sets INFO level"""
         # Since the logging config setup is already called, we need to isolate the test better
-        with patch("app.core.logging_config.get_settings") as mock_get_settings:
+        with patch(
+            "inference_core.core.logging_config.get_settings"
+        ) as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.debug = False
             mock_get_settings.return_value = mock_settings
@@ -126,10 +130,10 @@ class TestSetupLogging:
             assert config["loggers"]["app"]["level"] == "INFO"
             assert config["root"]["level"] == "INFO"
 
-    @patch("app.core.logging_config.dictConfig")
+    @patch("inference_core.core.logging_config.dictConfig")
     def test_setup_logging_config_structure(self, mock_dict_config):
         """Test setup_logging creates expected configuration structure"""
-        with patch("app.core.config.get_settings") as mock_get_settings:
+        with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.debug = True
             mock_get_settings.return_value = mock_settings
@@ -155,7 +159,7 @@ class TestSetupLogging:
                 config["handlers"]["file"]["class"]
                 == "logging.handlers.TimedRotatingFileHandler"
             )
-            assert config["handlers"]["file"]["filename"] == "logs/app.log"
+            assert config["handlers"]["file"]["filename"] == "logs/inference_core.log"
 
             # Check loggers
             required_loggers = ["uvicorn", "fastapi", "app"]
@@ -169,10 +173,10 @@ class TestSetupLogging:
             assert "console" in config["root"]["handlers"]
             assert "file" in config["root"]["handlers"]
 
-    @patch("app.core.logging_config.dictConfig")
+    @patch("inference_core.core.logging_config.dictConfig")
     def test_setup_logging_file_handler_config(self, mock_dict_config):
         """Test file handler configuration in setup_logging"""
-        with patch("app.core.config.get_settings") as mock_get_settings:
+        with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.debug = False
             mock_get_settings.return_value = mock_settings
@@ -183,18 +187,18 @@ class TestSetupLogging:
             file_handler = config["handlers"]["file"]
 
             assert file_handler["formatter"] == "json"
-            assert file_handler["filename"] == "logs/app.log"
+            assert file_handler["filename"] == "logs/inference_core.log"
             assert file_handler["when"] == "midnight"
             assert file_handler["interval"] == 1
             assert file_handler["backupCount"] == 30
             assert file_handler["encoding"] == "utf-8"
 
-    @patch("app.core.logging_config.dictConfig")
+    @patch("inference_core.core.logging_config.dictConfig")
     def test_setup_logging_console_handler_config(self, mock_dict_config):
         """Test console handler configuration in setup_logging"""
         import sys
 
-        with patch("app.core.config.get_settings") as mock_get_settings:
+        with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.debug = True
             mock_get_settings.return_value = mock_settings
@@ -211,7 +215,7 @@ class TestSetupLogging:
     def test_integration_with_actual_logger(self, caplog):
         """Test integration with actual logging to verify handler works"""
         # Test that logging works - caplog captures at pytest level, not handler level
-        test_logger = logging.getLogger("app.test")
+        test_logger = logging.getLogger("inference_core.test")
 
         # Test that logging works
         with caplog.at_level(logging.DEBUG):

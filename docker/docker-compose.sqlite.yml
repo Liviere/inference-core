@@ -1,21 +1,21 @@
 services:
-  # FastAPI Application
-  app:
+  # Inference Core Application
+  inference-core:
     environment:
       DATABASE_SERVICE: ${DATABASE_SERVICE:-sqlite+aiosqlite}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///./app.db}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///./inference_core.db}
 
     volumes:
-      - ./app.db:/app/app.db
+      - ./inference_core.db:/inference_core/inference_core.db
 
   # Celery Worker
   celery-worker:
     environment:
       DATABASE_SERVICE: ${DATABASE_SERVICE:-sqlite+aiosqlite}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///./app.db}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///./inference_core.db}
 
     volumes:
-      - ./app.db:/app/app.db
+      - ./inference_core.db:/inference_core/inference_core.db
 
 volumes:
   sqlite_data:

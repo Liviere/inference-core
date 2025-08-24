@@ -1,5 +1,5 @@
 """
-Unit tests for app.llm.models module with parameter policy integration
+Unit tests for inference_core.llm.models module with parameter policy integration
 
 Tests that LLMModelFactory correctly uses the centralized parameter normalization.
 """
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
-from app.llm.config import ModelConfig, ModelProvider
-from app.llm.models import LLMModelFactory
+from inference_core.llm.config import ModelConfig, ModelProvider
+from inference_core.llm.models import LLMModelFactory
 
 
 class TestLLMModelFactoryParameterNormalization:
@@ -22,8 +22,8 @@ class TestLLMModelFactoryParameterNormalization:
         self.mock_config.enable_caching = False
         self.factory = LLMModelFactory(self.mock_config)
 
-    @patch("app.llm.models.normalize_params")
-    @patch("app.llm.models.ChatOpenAI")
+    @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatOpenAI")
     def test_openai_model_uses_normalized_params(
         self, mock_chat_openai, mock_normalize
     ):
@@ -80,8 +80,8 @@ class TestLLMModelFactoryParameterNormalization:
 
         assert result == mock_model
 
-    @patch("app.llm.models.normalize_params")
-    @patch("app.llm.models.ChatGoogleGenerativeAI")
+    @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatGoogleGenerativeAI")
     def test_gemini_model_uses_normalized_params(
         self, mock_chat_gemini, mock_normalize
     ):
@@ -144,8 +144,8 @@ class TestLLMModelFactoryParameterNormalization:
 
         assert result == mock_model
 
-    @patch("app.llm.models.normalize_params")
-    @patch("app.llm.models.ChatAnthropic")
+    @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatAnthropic")
     def test_claude_model_uses_normalized_params(
         self, mock_chat_anthropic, mock_normalize
     ):
@@ -206,8 +206,8 @@ class TestLLMModelFactoryParameterNormalization:
 
         assert result == mock_model
 
-    @patch("app.llm.models.normalize_params")
-    @patch("app.llm.models.logger")
+    @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.logger")
     def test_parameter_normalization_failure(self, mock_logger, mock_normalize):
         """Test handling of parameter normalization failure"""
         # Setup
@@ -227,8 +227,8 @@ class TestLLMModelFactoryParameterNormalization:
             "Parameter normalization failed: Unsupported provider: fake_provider"
         )
 
-    @patch("app.llm.models.normalize_params")
-    @patch("app.llm.models.ChatOpenAI")
+    @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatOpenAI")
     def test_kwargs_override_config_values(self, mock_chat_openai, mock_normalize):
         """Test that kwargs override config default values before normalization"""
         # Setup
@@ -300,8 +300,8 @@ class TestProviderSpecificParameterHandling:
         self.mock_config.enable_caching = False
         self.factory = LLMModelFactory(self.mock_config)
 
-    @patch("app.llm.models.ChatGoogleGenerativeAI")
-    @patch("app.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatGoogleGenerativeAI")
+    @patch("inference_core.llm.models.normalize_params")
     def test_gemini_no_manual_parameter_mapping(self, mock_normalize, mock_chat_gemini):
         """Test that Gemini model creation doesn't do manual parameter mapping anymore"""
         # Setup
@@ -326,8 +326,8 @@ class TestProviderSpecificParameterHandling:
 
         assert result == mock_model
 
-    @patch("app.llm.models.ChatAnthropic")
-    @patch("app.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatAnthropic")
+    @patch("inference_core.llm.models.normalize_params")
     def test_claude_no_manual_parameter_filtering(
         self, mock_normalize, mock_chat_anthropic
     ):

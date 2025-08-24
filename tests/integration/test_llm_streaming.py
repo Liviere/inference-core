@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from app.main import create_application
+from inference_core.main_factory import create_application
 
 
 @pytest.fixture
@@ -28,9 +28,9 @@ async def async_test_client():
 class TestStreamingEndpoints:
     """Test streaming API endpoints"""
 
-    @patch("app.llm.streaming.get_model_factory")
-    @patch("app.llm.streaming.SQLChatMessageHistory")
-    @patch("app.llm.streaming.get_chat_prompt_template")
+    @patch("inference_core.llm.streaming.get_model_factory")
+    @patch("inference_core.llm.streaming.SQLChatMessageHistory")
+    @patch("inference_core.llm.streaming.get_chat_prompt_template")
     async def test_conversation_stream_endpoint(
         self, mock_prompt, mock_history, mock_factory, async_test_client
     ):
@@ -108,8 +108,8 @@ class TestStreamingEndpoints:
         token_events = [e for e in events if e.get("event") == "token"]
         assert len(token_events) > 0
 
-    @patch("app.llm.streaming.get_model_factory")
-    @patch("app.llm.streaming.get_chat_prompt_template")
+    @patch("inference_core.llm.streaming.get_model_factory")
+    @patch("inference_core.llm.streaming.get_chat_prompt_template")
     async def test_explain_stream_endpoint(
         self, mock_prompt, mock_factory, async_test_client
     ):
@@ -209,7 +209,7 @@ class TestStreamingEndpoints:
         # Should return validation error
         assert response.status_code == 422
 
-    @patch("app.llm.streaming.get_model_factory")
+    @patch("inference_core.llm.streaming.get_model_factory")
     async def test_conversation_stream_model_failure(
         self, mock_factory, async_test_client
     ):
@@ -248,9 +248,11 @@ class TestStreamingEndpoints:
     async def test_conversation_stream_with_model_params(self, async_test_client):
         """Test conversation streaming with additional model parameters"""
         with (
-            patch("app.llm.streaming.get_model_factory") as mock_factory,
-            patch("app.llm.streaming.SQLChatMessageHistory") as mock_history,
-            patch("app.llm.streaming.get_chat_prompt_template") as mock_prompt,
+            patch("inference_core.llm.streaming.get_model_factory") as mock_factory,
+            patch("inference_core.llm.streaming.SQLChatMessageHistory") as mock_history,
+            patch(
+                "inference_core.llm.streaming.get_chat_prompt_template"
+            ) as mock_prompt,
         ):
 
             # Mock model factory
@@ -299,7 +301,7 @@ class TestStreamingEndpoints:
 
     async def test_streaming_response_headers(self, async_test_client):
         """Test that streaming responses have correct headers"""
-        with patch("app.llm.streaming.get_model_factory") as mock_factory:
+        with patch("inference_core.llm.streaming.get_model_factory") as mock_factory:
             # Mock factory that returns None to get quick error response
             mock_factory_instance = Mock()
             mock_factory_instance.create_model.return_value = None
@@ -323,9 +325,11 @@ class TestStreamingEndpoints:
     async def test_stream_with_auto_generated_session_id(self, async_test_client):
         """Test conversation streaming with auto-generated session ID"""
         with (
-            patch("app.llm.streaming.get_model_factory") as mock_factory,
-            patch("app.llm.streaming.SQLChatMessageHistory") as mock_history,
-            patch("app.llm.streaming.get_chat_prompt_template") as mock_prompt,
+            patch("inference_core.llm.streaming.get_model_factory") as mock_factory,
+            patch("inference_core.llm.streaming.SQLChatMessageHistory") as mock_history,
+            patch(
+                "inference_core.llm.streaming.get_chat_prompt_template"
+            ) as mock_prompt,
         ):
 
             # Mock model factory
@@ -400,9 +404,9 @@ class TestStreamingAuthentication:
 class TestStreamingPerformance:
     """Test streaming performance characteristics"""
 
-    @patch("app.llm.streaming.get_model_factory")
-    @patch("app.llm.streaming.SQLChatMessageHistory")
-    @patch("app.llm.streaming.get_chat_prompt_template")
+    @patch("inference_core.llm.streaming.get_model_factory")
+    @patch("inference_core.llm.streaming.SQLChatMessageHistory")
+    @patch("inference_core.llm.streaming.get_chat_prompt_template")
     async def test_streaming_response_timing(
         self, mock_prompt, mock_history, mock_factory, async_test_client
     ):

@@ -18,9 +18,10 @@ The OpenAI Batch Provider (`OpenAIBatchProvider`) implements the `BaseBatchProvi
 ## Supported Models
 
 The provider supports OpenAI chat completion models including:
+
 - `gpt-3.5-turbo` and variants
 - `gpt-4` and variants
-- `gpt-4o` and variants  
+- `gpt-4o` and variants
 - `gpt-5` and variants
 
 Only `chat` mode is currently supported for batch processing.
@@ -30,6 +31,7 @@ Only `chat` mode is currently supported for batch processing.
 ### Environment Variables
 
 Set the following environment variable:
+
 - `OPENAI_API_KEY`: Your OpenAI API key
 
 ### Batch Configuration
@@ -53,7 +55,7 @@ batch:
 ### Basic Usage
 
 ```python
-from app.llm.batch import registry
+from inference_core.llm.batch import registry
 
 # Create provider instance
 config = {"api_key": "your-openai-api-key"}
@@ -69,7 +71,7 @@ batch_items = [
         }
     },
     {
-        "id": "request-2", 
+        "id": "request-2",
         "input_payload": {
             "messages": [{"role": "user", "content": "Explain quantum computing"}],
             "max_tokens": 150
@@ -93,15 +95,17 @@ if status.normalized_status == "completed":
 ### Batch Item Format
 
 Each batch item must have:
+
 - `id`: Unique identifier for the item (used as `custom_id`)
 - `input_payload`: The request data containing:
   - `messages`: Array of message objects for chat completion
   - Additional OpenAI parameters (optional): `max_tokens`, `temperature`, etc.
 
 Example:
+
 ```python
 batch_item = {
-    "id": "unique-request-id", 
+    "id": "unique-request-id",
     "input_payload": {
         "messages": [
             {"role": "system", "content": "You are a helpful assistant."},
@@ -117,27 +121,29 @@ batch_item = {
 
 OpenAI batch statuses are mapped to internal statuses:
 
-| OpenAI Status | Internal Status | Description |
-|---------------|-----------------|-------------|
-| `validating` | `submitted` | Batch is being validated |
-| `in_progress` | `in_progress` | Batch is being processed |
-| `finalizing` | `in_progress` | Batch is being finalized |
-| `completed` | `completed` | Batch completed successfully |
-| `failed` | `failed` | Batch failed |
-| `expired` | `failed` | Batch expired before completion |
-| `cancelled` | `cancelled` | Batch was cancelled |
+| OpenAI Status | Internal Status | Description                     |
+| ------------- | --------------- | ------------------------------- |
+| `validating`  | `submitted`     | Batch is being validated        |
+| `in_progress` | `in_progress`   | Batch is being processed        |
+| `finalizing`  | `in_progress`   | Batch is being finalized        |
+| `completed`   | `completed`     | Batch completed successfully    |
+| `failed`      | `failed`        | Batch failed                    |
+| `expired`     | `failed`        | Batch expired before completion |
+| `cancelled`   | `cancelled`     | Batch was cancelled             |
 
 ## Error Handling
 
 The provider distinguishes between two types of errors:
 
 ### Transient Errors (Retry Recommended)
+
 - Rate limiting (429 status codes)
 - Network timeouts
 - Temporary service unavailability (503, 502)
 - General network issues
 
 ### Permanent Errors (No Retry)
+
 - Invalid API key (401, 403)
 - Unsupported model
 - Malformed requests (400)
@@ -146,6 +152,7 @@ The provider distinguishes between two types of errors:
 ## Result Processing
 
 Results are returned as `ProviderResultRow` objects containing:
+
 - `custom_id`: Original batch item ID
 - `output_text`: Extracted response content (for successful requests)
 - `output_data`: Full OpenAI response data
@@ -156,6 +163,7 @@ Results are returned as `ProviderResultRow` objects containing:
 ### Partial Failures
 
 The provider properly handles scenarios where some items succeed and others fail:
+
 - Successful results are parsed from the output file
 - Failed results are parsed from the error file
 - Each result maintains its original `custom_id` for tracking
@@ -165,6 +173,7 @@ The provider properly handles scenarios where some items succeed and others fail
 ### JSONL Format
 
 Batch items are converted to OpenAI's JSONL format:
+
 ```json
 {"custom_id": "request-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4", "messages": [...]}}
 {"custom_id": "request-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4", "messages": [...]}}
@@ -179,6 +188,7 @@ Batch items are converted to OpenAI's JSONL format:
 ### Retry Logic
 
 The provider automatically determines retry behavior based on error types:
+
 - Transient errors include optional `retry_after` hints
 - Rate limit errors default to 60-second retry delay
 - Permanent errors are not retried
@@ -188,12 +198,14 @@ The provider automatically determines retry behavior based on error types:
 The provider includes comprehensive test coverage:
 
 ### Unit Tests
+
 - All provider methods with mocked OpenAI responses
 - Error handling scenarios
 - JSONL formatting validation
 - Status mapping verification
 
-### Integration Tests  
+### Integration Tests
+
 - End-to-end flow with ≥3 prompts
 - Partial failure scenarios
 - Status transition testing
@@ -202,5 +214,6 @@ The provider includes comprehensive test coverage:
 ## Context7 Sources
 
 Implementation based on:
+
 - **OpenAI Batch API**: `/v1/batches` endpoints and JSONL format requirements
 - **Files API**: `/v1/files` for upload and content retrieval

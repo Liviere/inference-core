@@ -6,7 +6,7 @@ ARG PORT=8000
 ENV PORT=${PORT}
 
 # Set working directory
-WORKDIR /app
+WORKDIR /inference_core
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -27,23 +27,24 @@ RUN poetry config virtualenvs.create false
 
 # Copy Poetry files
 COPY pyproject.toml poetry.lock* ./
+COPY README.md ./
+COPY inference_core ./inference_core
 
 # Install dependencies globally
 RUN poetry install --only=main && rm -rf $POETRY_CACHE_DIR
 
 # Copy application code
-COPY app ./app
 COPY tests ./tests
 COPY run.py ./
 COPY llm_config.yaml ./
 COPY .env.test ./.env
 
 # Create logs directory and set permissions
-RUN mkdir -p /app/logs
+RUN mkdir -p /inference_core/logs
 
 # Create non-root user
-RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
-USER app
+RUN useradd --create-home --shell /bin/bash inference_core && chown -R inference_core:inference_core /inference_core
+USER inference_core
 
 # Expose port
 EXPOSE ${PORT}

@@ -13,8 +13,8 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from app.celery.celery_main import celery_app
-from app.services.task_service import TaskService
+from inference_core.celery.celery_main import celery_app
+from inference_core.services.task_service import TaskService
 
 # Local in-memory store for eager results keyed by task_id
 _EAGER_RESULTS: Dict[str, Any] = {}
@@ -42,8 +42,8 @@ class _FakeConversationChain:
 def celery_eager():
     """Configure Celery to run tasks eagerly and store results in-memory."""
     # Force-load tasks module so Celery registers task names
-    import app.celery.tasks.llm_tasks  # noqa: F401
-    from app.celery.celery_main import celery_app
+    import inference_core.celery.tasks.llm_tasks  # noqa: F401
+    from inference_core.celery.celery_main import celery_app
 
     prev_always = celery_app.conf.task_always_eager
     prev_prop = celery_app.conf.task_eager_propagates
@@ -69,8 +69,8 @@ def celery_eager():
 @pytest.mark.asyncio
 async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
     # Stub chain factories in llm_service
-    import app.celery.tasks.llm_tasks as llm_tasks
-    import app.services.llm_service as llm_svc
+    import inference_core.celery.tasks.llm_tasks as llm_tasks
+    import inference_core.services.llm_service as llm_svc
 
     monkeypatch.setattr(
         llm_svc,
@@ -163,8 +163,8 @@ async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_e2e_conversation_task(async_test_client, monkeypatch, celery_eager):
-    import app.celery.tasks.llm_tasks as llm_tasks
-    import app.services.llm_service as llm_svc
+    import inference_core.celery.tasks.llm_tasks as llm_tasks
+    import inference_core.services.llm_service as llm_svc
 
     monkeypatch.setattr(
         llm_svc,

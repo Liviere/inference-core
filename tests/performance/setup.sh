@@ -97,7 +97,7 @@ if [ "$FASTAPI_RUNNING" = false ]; then
     echo "  poetry run fastapi run --host 0.0.0.0 --port 8000"
     echo ""
     echo "  # Alternative with uvicorn directly:"
-    echo "  poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    echo "  poetry run uvicorn inference_core.main_factory:create_application --factory --host 0.0.0.0 --port 8000 --reload"
 fi
 
 if [ "$REDIS_RUNNING" = false ]; then
@@ -115,7 +115,7 @@ fi
 
 echo ""
 echo "To start Celery worker (optional, for task monitoring endpoints):"
-echo "  poetry run celery -A app.celery.celery_main:celery_app worker --loglevel=info --queues=default"
+echo "  poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info --queues=default"
 
 echo ""
 echo "🧪 Running Performance Tests"

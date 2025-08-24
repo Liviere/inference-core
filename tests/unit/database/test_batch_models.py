@@ -5,11 +5,12 @@ Tests for BatchJob, BatchItem, and BatchEvent models including
 CRUD operations, relationships, and computed properties.
 """
 
-import pytest
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.database.sql.models.batch import (
+import pytest
+
+from inference_core.database.sql.models.batch import (
     BatchEvent,
     BatchEventType,
     BatchItem,
@@ -31,7 +32,7 @@ class TestBatchJobModel:
             mode="chat",
             request_count=10,
         )
-        
+
         assert job.provider == "openai"
         assert job.model == "gpt-4"
         assert job.status == BatchJobStatus.CREATED
@@ -51,19 +52,19 @@ class TestBatchJobModel:
             success_count=7,
             error_count=2,
         )
-        
+
         # Test completion rate: (7 + 2) / 10 * 100 = 90%
         assert job.completion_rate == 90.0
-        
+
         # Test success rate: 7 / (7 + 2) * 100 = 77.78%
         assert abs(job.success_rate - 77.77777777777779) < 0.001
-        
+
         # Test pending count: 10 - 7 - 2 = 1
         assert job.pending_count == 1
-        
+
         # Test is_complete
         assert not job.is_complete
-        
+
         job.status = BatchJobStatus.COMPLETED
         assert job.is_complete
 
@@ -105,9 +106,9 @@ class TestBatchJobModel:
             success_count=5,
             error_count=1,
         )
-        
+
         job.update_counts(success_delta=2, error_delta=1)
-        
+
         assert job.success_count == 7
         assert job.error_count == 2
 
@@ -122,7 +123,7 @@ class TestBatchJobModel:
             mode="chat",
             request_count=10,
         )
-        
+
         expected = f"<BatchJob(id={job_id}, provider=openai, status=BatchJobStatus.CREATED, requests=10)>"
         assert repr(job) == expected
 
@@ -140,7 +141,7 @@ class TestBatchItemModel:
             input_payload={"message": "test"},
             status=BatchItemStatus.QUEUED,
         )
-        
+
         assert item.batch_job_id == job_id
         assert item.sequence_index == 1
         assert item.custom_external_id == "ext-123"
@@ -150,7 +151,7 @@ class TestBatchItemModel:
     def test_batch_item_properties(self):
         """Test BatchItem computed properties"""
         job_id = uuid4()
-        
+
         # Queued item
         item = BatchItem(
             batch_job_id=job_id,
@@ -159,12 +160,12 @@ class TestBatchItemModel:
         )
         assert not item.is_completed
         assert not item.is_successful
-        
+
         # Completed item
         item.status = BatchItemStatus.COMPLETED
         assert item.is_completed
         assert item.is_successful
-        
+
         # Failed item
         item.status = BatchItemStatus.FAILED
         assert item.is_completed
@@ -180,7 +181,7 @@ class TestBatchItemModel:
             sequence_index=1,
             status=BatchItemStatus.QUEUED,
         )
-        
+
         expected = f"<BatchItem(id={item_id}, batch_job_id={job_id}, sequence=1, status=BatchItemStatus.QUEUED)>"
         assert repr(item) == expected
 
@@ -192,7 +193,7 @@ class TestBatchEventModel:
         """Test creating a BatchEvent instance"""
         job_id = uuid4()
         event_time = datetime.now(timezone.utc)
-        
+
         event = BatchEvent(
             batch_job_id=job_id,
             event_type=BatchEventType.STATUS_CHANGE,
@@ -201,7 +202,7 @@ class TestBatchEventModel:
             event_timestamp=event_time,
             event_data={"reason": "manual submission"},
         )
-        
+
         assert event.batch_job_id == job_id
         assert event.event_type == BatchEventType.STATUS_CHANGE
         assert event.old_status == "created"
@@ -214,14 +215,14 @@ class TestBatchEventModel:
         event_id = uuid4()
         job_id = uuid4()
         event_time = datetime.now(timezone.utc)
-        
+
         event = BatchEvent(
             id=event_id,
             batch_job_id=job_id,
             event_type=BatchEventType.STATUS_CHANGE,
             event_timestamp=event_time,
         )
-        
+
         expected = f"<BatchEvent(id={event_id}, batch_job_id={job_id}, type=BatchEventType.STATUS_CHANGE, timestamp={event_time})>"
         assert repr(event) == expected
 
@@ -263,7 +264,7 @@ class TestBatchModelDefaults:
             model="test-model",
             mode="test",
         )
-        
+
         # These should have defaults from the column definitions
         assert job.request_count == 0
         assert job.success_count == 0
@@ -276,7 +277,7 @@ class TestBatchModelDefaults:
             batch_job_id=job_id,
             sequence_index=1,
         )
-        
+
         # Status should default to QUEUED
         assert item.status == BatchItemStatus.QUEUED
 

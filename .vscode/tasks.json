@@ -4,7 +4,7 @@
 		{
 			"label": "Run FastAPI Server",
 			"type": "shell",
-			"command": "poetry run fastapi run",
+			"command": "uvicorn inference_core.main_factory:create_application --factory --host 0.0.0.0 --port 8000 --workers 4",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
@@ -12,7 +12,7 @@
 		{
 			"label": "Run FastAPI Development Server (Poetry)",
 			"type": "shell",
-			"command": "poetry run fastapi dev",
+			"command": "poetry run uvicorn inference_core.main_factory:create_application --factory --reload --host 0.0.0.0 --port 8000",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
@@ -20,7 +20,7 @@
 		{
 			"label": "Celery: Start Worker",
 			"type": "shell",
-			"command": "poetry run celery -A app.celery.celery_main:celery_app worker --loglevel=info",
+			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
@@ -28,7 +28,7 @@
 		{
 			"label": "Celery: Start Beat",
 			"type": "shell",
-			"command": "poetry run celery -A app.celery.celery_main:celery_app beat --loglevel=info",
+			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app beat --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
@@ -36,7 +36,7 @@
 		{
 			"label": "Celery: Start Worker (DEBUG)",
 			"type": "shell",
-			"command": "export DEBUG_CELERY=1 && poetry run celery -A app.celery.celery_main:celery_app worker --concurrency=1 --loglevel=info",
+			"command": "export DEBUG_CELERY=1 && poetry run celery -A inference_core.celery.celery_main:celery_app worker --concurrency=1 --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []

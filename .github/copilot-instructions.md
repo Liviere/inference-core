@@ -1,4 +1,4 @@
-# FastAPI Backend Template
+# Inference Core
 
 FastAPI backend template with Celery background tasks, JWT authentication, LLM integration via LangChain, and multi-database support (SQLite/PostgreSQL/MySQL). Built with Poetry for dependency management and includes comprehensive Docker deployment options.
 
@@ -120,14 +120,14 @@ docker run -d --name redis-test -p 6379:6379 redis:7-alpine
 
 ```bash
 # In a separate terminal
-poetry run celery -A app.celery.celery_main:celery_app worker --loglevel=info --queues=default
+poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info --queues=default
 ```
 
 **Start Flower Monitoring (optional):**
 
 ```bash
 # Monitor Celery tasks at http://localhost:5555
-poetry run celery -A app.celery.celery_main:celery_app flower --port=5555
+poetry run celery -A inference_core.celery.celery_main:celery_app flower --port=5555
 ```
 
 ## Validation
@@ -210,7 +210,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 ├── .env.example             # Environment variables template
 ├── llm_config.example.yaml  # LLM configuration template
 ├── run.py                   # Alternative startup script
-├── app/                     # Main application code
+├── inference_core/         # Main application code
 │   ├── main.py             # FastAPI app factory
 │   ├── api/v1/routes/      # API endpoints
 │   ├── celery/             # Background task definitions
@@ -219,7 +219,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 │   ├── llm/                # LLM integration
 │   ├── schemas/            # Pydantic schemas
 │   └── services/           # Business logic services
-├── tests/                   # Test suite
+├── tests/                  # Test suite
 │   ├── integration/        # Integration tests
 │   └── unit/               # Unit tests (fast, isolated)
 ├── logs/                   # Application logs (local runs)

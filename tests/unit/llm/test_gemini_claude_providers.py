@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.llm.batch import (
+from inference_core.llm.batch import (
     BaseBatchProvider,
     PreparedSubmission,
     ProviderPermanentError,
@@ -21,8 +21,8 @@ from app.llm.batch import (
     ProviderSubmitResult,
     ProviderTransientError,
 )
-from app.llm.batch.providers.claude_provider import ClaudeBatchProvider
-from app.llm.batch.providers.gemini_provider import GeminiBatchProvider
+from inference_core.llm.batch.providers.claude_provider import ClaudeBatchProvider
+from inference_core.llm.batch.providers.gemini_provider import GeminiBatchProvider
 
 
 class TestGeminiBatchProvider:
@@ -34,7 +34,7 @@ class TestGeminiBatchProvider:
 
         # Mock the Google GenAI client
         with patch(
-            "app.llm.batch.providers.gemini_provider.genai.Client"
+            "inference_core.llm.batch.providers.gemini_provider.genai.Client"
         ) as mock_client_class:
             self.mock_client = Mock()
             mock_client_class.return_value = self.mock_client
@@ -218,7 +218,7 @@ class TestClaudeBatchProvider:
 
         # Mock the Anthropic client
         with patch(
-            "app.llm.batch.providers.claude_provider.Anthropic"
+            "inference_core.llm.batch.providers.claude_provider.Anthropic"
         ) as mock_client_class:
             self.mock_client = Mock()
             mock_client_class.return_value = self.mock_client
@@ -504,7 +504,7 @@ class TestProviderIntegration:
 
     def test_providers_can_be_registered(self):
         """Test that new providers can be registered in the registry."""
-        from app.llm.batch.registry import BatchProviderRegistry
+        from inference_core.llm.batch.registry import BatchProviderRegistry
 
         # Create a fresh registry for testing
         test_registry = BatchProviderRegistry()
@@ -520,7 +520,7 @@ class TestProviderIntegration:
 
     def test_providers_can_be_created_from_registry(self):
         """Test that providers can be created from the registry."""
-        from app.llm.batch.registry import BatchProviderRegistry
+        from inference_core.llm.batch.registry import BatchProviderRegistry
 
         # Create a fresh registry for testing
         test_registry = BatchProviderRegistry()
@@ -530,14 +530,14 @@ class TestProviderIntegration:
         test_registry.register(ClaudeBatchProvider)
 
         # Test Gemini provider creation
-        with patch("app.llm.batch.providers.gemini_provider.genai.Client"):
+        with patch("inference_core.llm.batch.providers.gemini_provider.genai.Client"):
             gemini_provider = test_registry.create_provider(
                 "gemini", {"api_key": "test"}
             )
             assert isinstance(gemini_provider, GeminiBatchProvider)
 
         # Test Claude provider creation
-        with patch("app.llm.batch.providers.claude_provider.Anthropic"):
+        with patch("inference_core.llm.batch.providers.claude_provider.Anthropic"):
             claude_provider = test_registry.create_provider(
                 "claude", {"api_key": "test"}
             )
@@ -555,10 +555,10 @@ class TestProviderIntegration:
     def test_provider_model_support_coverage(self):
         """Test that providers support expected model patterns."""
         # Mock clients to avoid initialization errors
-        with patch("app.llm.batch.providers.gemini_provider.genai.Client"):
+        with patch("inference_core.llm.batch.providers.gemini_provider.genai.Client"):
             gemini = GeminiBatchProvider({"api_key": "test"})
 
-        with patch("app.llm.batch.providers.claude_provider.Anthropic"):
+        with patch("inference_core.llm.batch.providers.claude_provider.Anthropic"):
             claude = ClaudeBatchProvider({"api_key": "test"})
 
         # Test Gemini models

@@ -182,4 +182,4 @@ docker/tests/.env.test
 celerybeat-schedule.*
 
 # Ignore main.py if main_factory.py is used
-app/main.py
+inference_core/main.py

@@ -7,7 +7,7 @@ on:
   # Trigger on PR with specific label
   pull_request:
     types: [labeled]
-  
+
   # Manual trigger
   workflow_dispatch:
     inputs:
@@ -17,11 +17,11 @@ on:
         default: 'light'
         type: choice
         options:
-        - light
-        - medium
-        - heavy
-        - spike
-        - endurance
+          - light
+          - medium
+          - heavy
+          - spike
+          - endurance
 
 jobs:
   performance-smoke:
@@ -29,9 +29,9 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' || 
       contains(github.event.pull_request.labels.*.name, 'performance-test')
-    
+
     runs-on: ubuntu-latest
-    
+
     services:
       redis:
         image: redis:7-alpine
@@ -42,50 +42,50 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
-      
+
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
           version: latest
           virtualenvs-create: true
           virtualenvs-in-project: true
-      
+
       - name: Cache dependencies
         uses: actions/cache@v3
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-      
+
       - name: Install dependencies
         run: poetry install
-      
+
       - name: Setup environment
         run: |
           cp .env.example .env
           cp llm_config.example.yaml llm_config.yaml
-      
+
       - name: Start FastAPI application
         run: |
-          poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          poetry run uvicorn inference_core.main_factory:create_application --factory --host 0.0.0.0 --port 8000 &
           sleep 10
           # Verify app is running
           curl -f http://localhost:8000/api/v1/health/ping
-      
+
       - name: Run performance tests
         env:
           LOAD_PROFILE: ${{ github.event.inputs.profile || 'light' }}
         run: |
           cd tests/performance
-          
+
           # Determine test parameters based on profile
           case "$LOAD_PROFILE" in
             "light")
@@ -105,7 +105,7 @@ jobs:
               DURATION="1m"
               ;;
           esac
-          
+
           # Run Locust test
           poetry run locust -f locustfile.py \
             --host http://localhost:8000 \
@@ -115,7 +115,7 @@ jobs:
             --run-time $DURATION \
             --html ../../reports/performance/ci_${LOAD_PROFILE}_report.html \
             --csv ../../reports/performance/ci_${LOAD_PROFILE}_results
-      
+
       - name: Upload performance reports
         uses: actions/upload-artifact@v3
         if: always()
@@ -125,7 +125,7 @@ jobs:
             reports/performance/ci_*.html
             reports/performance/ci_*.csv
           retention-days: 30
-      
+
       - name: Comment on PR with results
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v6
@@ -133,7 +133,7 @@ jobs:
           script: |
             const fs = require('fs');
             const path = require('path');
-            
+
             // Try to read basic stats from CSV
             let summary = "Performance test completed";
             try {
@@ -149,7 +149,7 @@ jobs:
             } catch (error) {
               console.log('Could not read stats file:', error);
             }
-            
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -161,20 +161,20 @@ jobs:
   performance-baseline:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    
+
     services:
       redis:
         image: redis:7-alpine
         ports:
           - 6379:6379
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Setup Python and Poetry
         # ... same setup steps as above ...
-        
+
       - name: Run baseline performance test
         run: |
           cd tests/performance
@@ -185,7 +185,7 @@ jobs:
             --spawn-rate 1 \
             --run-time 5m \
             --html ../../reports/performance/baseline_$(date +%Y%m%d).html
-      
+
       - name: Store baseline results
         # Store results in artifact or external storage for trend analysis
         # This could be enhanced to compare against historical baselines

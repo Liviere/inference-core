@@ -217,7 +217,7 @@ To run tests with no published ports (maximum isolation):
 
 1. Remove the `ports:` sections from the compose files
 2. Run tests from within containers or using Docker network access
-3. Access services using internal hostnames (`app-test:8100`, `redis-test:6380`, etc.)
+3. Access services using internal hostnames (`inference-core-test:8100`, `redis-test:6380`, etc.)
 
 ## Troubleshooting
 

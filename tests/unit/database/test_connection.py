@@ -1,5 +1,5 @@
 """
-Unit tests for app.database.sql.connection module
+Unit tests for inference_core.database.sql.connection module
 
 Tests database engine creation, session management, and health checks.
 """
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.database.sql.connection import (
+from inference_core.database.sql.connection import (
     DatabaseManager,
     create_database_engine,
     get_engine,
@@ -23,12 +23,12 @@ class TestCreateDatabaseEngine:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
 
-    @patch("app.database.sql.connection.create_async_engine")
-    @patch("app.database.sql.connection.get_settings")
+    @patch("inference_core.database.sql.connection.create_async_engine")
+    @patch("inference_core.database.sql.connection.get_settings")
     def test_create_database_engine_with_settings(
         self, mock_get_settings, mock_create_engine
     ):
@@ -58,8 +58,8 @@ class TestCreateDatabaseEngine:
         )
         assert engine == mock_engine
 
-    @patch("app.database.sql.connection.create_async_engine")
-    @patch("app.database.sql.connection.get_settings")
+    @patch("inference_core.database.sql.connection.create_async_engine")
+    @patch("inference_core.database.sql.connection.get_settings")
     def test_create_database_engine_with_custom_url(
         self, mock_get_settings, mock_create_engine
     ):
@@ -88,15 +88,15 @@ class TestGetEngine:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
         # Clear the global engine
-        import app.database.sql.connection
+        import inference_core.database.sql.connection
 
-        app.database.sql.connection._engine = None
+        inference_core.database.sql.connection._engine = None
 
-    @patch("app.database.sql.connection.create_database_engine")
+    @patch("inference_core.database.sql.connection.create_database_engine")
     def test_get_engine_creates_singleton(self, mock_create_engine):
         """Test get_engine creates and returns singleton engine"""
         mock_engine = MagicMock()
@@ -121,17 +121,17 @@ class TestGetSessionMaker:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
         # Clear the global session maker
-        import app.database.sql.connection
+        import inference_core.database.sql.connection
 
-        app.database.sql.connection._async_session_maker = None
-        app.database.sql.connection._engine = None
+        inference_core.database.sql.connection._async_session_maker = None
+        inference_core.database.sql.connection._engine = None
 
-    @patch("app.database.sql.connection.async_sessionmaker")
-    @patch("app.database.sql.connection.get_engine")
+    @patch("inference_core.database.sql.connection.async_sessionmaker")
+    @patch("inference_core.database.sql.connection.get_engine")
     def test_get_session_maker_creates_singleton(
         self, mock_get_engine, mock_sessionmaker
     ):
@@ -171,7 +171,7 @@ class TestDatabaseManager:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
 
@@ -202,7 +202,7 @@ class TestDatabaseManager:
         assert result is False
         mock_session.execute.assert_called_once()
 
-    @patch("app.database.sql.connection.get_settings")
+    @patch("inference_core.database.sql.connection.get_settings")
     @pytest.mark.asyncio
     async def test_get_database_info_healthy(self, mock_get_settings):
         """Test get_database_info with healthy database"""
@@ -223,7 +223,7 @@ class TestDatabaseManager:
         assert info["max_overflow"] == 20
         assert info["echo"] is True
 
-    @patch("app.database.sql.connection.get_settings")
+    @patch("inference_core.database.sql.connection.get_settings")
     @pytest.mark.asyncio
     async def test_get_database_info_unhealthy(self, mock_get_settings):
         """Test get_database_info with unhealthy database"""
@@ -244,7 +244,7 @@ class TestDatabaseManager:
         assert info["max_overflow"] == 15
         assert info["echo"] is False
 
-    @patch("app.database.sql.connection.create_tables")
+    @patch("inference_core.database.sql.connection.create_tables")
     @pytest.mark.asyncio
     async def test_init_database_success(self, mock_create_tables):
         """Test init_database successfully initializes database"""
@@ -254,7 +254,7 @@ class TestDatabaseManager:
 
         mock_create_tables.assert_called_once()
 
-    @patch("app.database.sql.connection.create_tables")
+    @patch("inference_core.database.sql.connection.create_tables")
     @pytest.mark.asyncio
     async def test_init_database_failure(self, mock_create_tables):
         """Test init_database handles errors"""
@@ -265,8 +265,8 @@ class TestDatabaseManager:
 
         mock_create_tables.assert_called_once()
 
-    @patch("app.database.sql.connection.create_tables")
-    @patch("app.database.sql.connection.drop_tables")
+    @patch("inference_core.database.sql.connection.create_tables")
+    @patch("inference_core.database.sql.connection.drop_tables")
     @pytest.mark.asyncio
     async def test_reset_database_success(self, mock_drop_tables, mock_create_tables):
         """Test reset_database successfully resets database"""
@@ -278,7 +278,7 @@ class TestDatabaseManager:
         mock_drop_tables.assert_called_once()
         mock_create_tables.assert_called_once()
 
-    @patch("app.database.sql.connection.drop_tables")
+    @patch("inference_core.database.sql.connection.drop_tables")
     @pytest.mark.asyncio
     async def test_reset_database_failure(self, mock_drop_tables):
         """Test reset_database handles errors"""
@@ -296,13 +296,13 @@ class TestDatabaseEventListeners:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
 
-    @patch("app.database.sql.connection.event")
-    @patch("app.database.sql.connection.create_async_engine")
-    @patch("app.database.sql.connection.get_settings")
+    @patch("inference_core.database.sql.connection.event")
+    @patch("inference_core.database.sql.connection.create_async_engine")
+    @patch("inference_core.database.sql.connection.get_settings")
     def test_sqlite_event_listener_registered(
         self, mock_get_settings, mock_create_engine, mock_event
     ):
@@ -323,9 +323,9 @@ class TestDatabaseEventListeners:
         # Verify event listener was registered for SQLite
         mock_event.listens_for.assert_called()
 
-    @patch("app.database.sql.connection.event")
-    @patch("app.database.sql.connection.create_async_engine")
-    @patch("app.database.sql.connection.get_settings")
+    @patch("inference_core.database.sql.connection.event")
+    @patch("inference_core.database.sql.connection.create_async_engine")
+    @patch("inference_core.database.sql.connection.get_settings")
     def test_mysql_event_listener_registered(
         self, mock_get_settings, mock_create_engine, mock_event
     ):
@@ -353,18 +353,18 @@ class TestDatabaseIntegration:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
         # Clear globals
-        import app.database.sql.connection
+        import inference_core.database.sql.connection
 
-        app.database.sql.connection._engine = None
-        app.database.sql.connection._async_session_maker = None
+        inference_core.database.sql.connection._engine = None
+        inference_core.database.sql.connection._async_session_maker = None
 
-    @patch("app.database.sql.connection.create_async_engine")
-    @patch("app.database.sql.connection.async_sessionmaker")
-    @patch("app.database.sql.connection.get_settings")
+    @patch("inference_core.database.sql.connection.create_async_engine")
+    @patch("inference_core.database.sql.connection.async_sessionmaker")
+    @patch("inference_core.database.sql.connection.get_settings")
     def test_full_database_setup_flow(
         self, mock_get_settings, mock_sessionmaker, mock_create_engine
     ):

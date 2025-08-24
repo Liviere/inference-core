@@ -105,7 +105,7 @@ echo ""
 echo "6. Checking service names..."
 # Verify all services have -test suffix
 service_names=(
-    "app-test"
+    "inference-core-test"
     "celery-worker-test"
     "redis-test"
     "postgres-test"

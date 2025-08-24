@@ -1,38 +1,41 @@
 # Docker Compose for Isolated Test Environment - PostgreSQL
-# Ports: app-test:8100, redis-test:6380, postgres-test:55432
+# Ports: inference-core-test:8100, redis-test:6380, postgres-test:55432
 # Usage: docker compose -f docker/tests/docker-compose.test.postgres.yml --env-file .env.test.example up -d
 # Cleanup: docker compose -f docker/tests/docker-compose.test.postgres.yml down -v
 
-name: ${APP_NAME:-backend-template-test}-postgres
+name: ${APP_NAME:-inference-core-test}-postgres
 
 services:
-  # FastAPI Application (Test)
-  app-test:
+  # Inference Core Application (Test)
+  inference-core-test:
     build:
       context: ../..
       dockerfile: docker/tests/Dockerfile
-    container_name: ${APP_NAME:-backend-template-test}-app
+    container_name: ${APP_NAME:-inference-core-test}-api
     restart: unless-stopped
     command:
       [
-        'fastapi',
-        'run',
+        'uvicorn',
+        'inference_core.main_factory:create_application',
+        '--factory',
         '--port',
         '${PORT:-8100}',
         '--host',
         '${HOST:-0.0.0.0}',
+        '--workers',
+        '2',
       ]
     ports:
       - '${PORT:-8100}:${PORT:-8100}'
     environment:
       ENVIRONMENT: testing
-      APP_NAME: ${APP_NAME:-backend-template-test}
-      APP_DESCRIPTION: ${APP_DESCRIPTION:-Test environment for FastAPI backend}
+      APP_NAME: ${APP_NAME:-inference-core-test}
+      APP_DESCRIPTION: ${APP_DESCRIPTION:-Test environment for Inference Core backend}
       APP_VERSION: ${APP_VERSION:-1.0.0}
       DATABASE_SERVICE: postgresql+asyncpg
       DATABASE_HOST: postgres-test
       DATABASE_PORT: 5432
-      DATABASE_NAME: ${DATABASE_NAME:-app_test_db}
+      DATABASE_NAME: ${DATABASE_NAME:-test_db}
       DATABASE_USER: ${DATABASE_USER:-test_user}
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:-test_password}
       CELERY_BROKER_URL: redis://redis-test:${REDIS_PORT:-6380}/0
@@ -69,10 +72,10 @@ services:
     build:
       context: ../..
       dockerfile: docker/tests/Dockerfile
-    container_name: ${APP_NAME:-backend-template-test}-celery-worker
+    container_name: ${APP_NAME:-inference-core-test}-celery-worker
     restart: unless-stopped
     command: >
-      sh -c "poetry run celery -A app.celery.celery_main:celery_app worker 
+      sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker 
              --loglevel=info 
              --queues=default,llm_tasks
              --hostname=test-worker@%h 
@@ -84,7 +87,7 @@ services:
       DATABASE_SERVICE: postgresql+asyncpg
       DATABASE_HOST: postgres-test
       DATABASE_PORT: 5432
-      DATABASE_NAME: ${DATABASE_NAME:-app_test_db}
+      DATABASE_NAME: ${DATABASE_NAME:-test_db}
       DATABASE_USER: ${DATABASE_USER:-test_user}
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:-test_password}
       CELERY_BROKER_URL: redis://redis-test:${REDIS_PORT:-6380}/0
@@ -102,10 +105,10 @@ services:
   # PostgreSQL Database (Test)
   postgres-test:
     image: postgres:17
-    container_name: ${APP_NAME:-backend-template-test}-postgres
+    container_name: ${APP_NAME:-inference-core-test}-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DATABASE_NAME:-app_test_db}
+      POSTGRES_DB: ${DATABASE_NAME:-test_db}
       POSTGRES_USER: ${DATABASE_USER:-test_user}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-test_password}
     ports:
@@ -119,7 +122,7 @@ services:
       test:
         [
           'CMD-SHELL',
-          'pg_isready -U ${DATABASE_USER:-test_user} -d ${DATABASE_NAME:-app_test_db}',
+          'pg_isready -U ${DATABASE_USER:-test_user} -d ${DATABASE_NAME:-test_db}',
         ]
       interval: 10s
       timeout: 5s
@@ -129,7 +132,7 @@ services:
   # Redis for Celery and App Sessions (Test)
   redis-test:
     image: redis:7-alpine
-    container_name: ${APP_NAME:-backend-template-test}-redis
+    container_name: ${APP_NAME:-inference-core-test}-redis
     restart: unless-stopped
     ports:
       - '${REDIS_PORT:-6380}:${REDIS_PORT:-6380}'
@@ -149,4 +152,4 @@ services:
 networks:
   test-network:
     driver: bridge
-    name: ${APP_NAME:-backend-template-test}-postgres-network
+    name: ${APP_NAME:-inference-core-test}-postgres-network

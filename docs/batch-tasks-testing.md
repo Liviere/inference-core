@@ -5,11 +5,13 @@ This guide provides steps for manually testing the batch lifecycle Celery tasks.
 ## Prerequisites
 
 1. **Redis Running**: Start Redis using Docker
+
    ```bash
    docker run -d --name redis-test -p 6379:6379 redis:7-alpine
    ```
 
 2. **Database Migrations**: Run database migrations to create batch tables
+
    ```bash
    poetry run alembic upgrade head
    ```
@@ -23,35 +25,39 @@ This guide provides steps for manually testing the batch lifecycle Celery tasks.
 ## Starting Celery Components
 
 ### 1. Start Celery Worker
+
 ```bash
 # In terminal 1 - Start worker for batch tasks
-poetry run celery -A app.celery.celery_main:celery_app worker \
+poetry run celery -A inference_core.celery.celery_main:celery_app worker \
   --loglevel=info \
   --queues=batch_tasks \
   --concurrency=2
 ```
 
 ### 2. Start Celery Beat (Optional - for automatic polling)
+
 ```bash
 # In terminal 2 - Start beat scheduler
-poetry run celery -A app.celery.celery_main:celery_app beat \
+poetry run celery -A inference_core.celery.celery_main:celery_app beat \
   --loglevel=info
 ```
 
 ### 3. Start Flower Monitoring (Optional)
+
 ```bash
 # In terminal 3 - Start Flower for task monitoring
-poetry run celery -A app.celery.celery_main:celery_app flower \
+poetry run celery -A inference_core.celery.celery_main:celery_app flower \
   --port=5555
 ```
 
 ## Manual Task Testing
 
 ### Test 1: Redis Lock Functionality
+
 ```python
 # Test Redis connectivity and lock mechanism
-from app.core.redis_client import get_sync_redis
-from app.celery.tasks.batch_tasks import BATCH_POLL_LOCK_KEY
+from inference_core.core.redis_client import get_sync_redis
+from inference_core.celery.tasks.batch_tasks import BATCH_POLL_LOCK_KEY
 
 redis_client = get_sync_redis()
 print("Redis ping:", redis_client.ping())
@@ -66,10 +72,11 @@ redis_client.delete(BATCH_POLL_LOCK_KEY)
 ```
 
 ### Test 2: Task Registration
+
 ```python
 # Verify all batch tasks are registered
-from app.celery.celery_main import celery_app
-import app.celery.tasks.batch_tasks
+from inference_core.celery.celery_main import celery_app
+import inference_core.celery.tasks.batch_tasks
 
 print("Batch tasks registered:")
 for task in sorted(celery_app.tasks.keys()):
@@ -82,9 +89,10 @@ for name, config in celery_app.conf.beat_schedule.items():
 ```
 
 ### Test 3: Direct Task Execution
+
 ```python
 # Test task execution directly (without Celery worker)
-from app.celery.tasks.batch_tasks import batch_poll
+from inference_core.celery.tasks.batch_tasks import batch_poll
 
 # This will use Redis lock and try to query database
 result = batch_poll()
@@ -92,9 +100,10 @@ print("Poll result:", result)
 ```
 
 ### Test 4: Async Task Execution (requires running worker)
+
 ```python
 # Send tasks to Celery worker
-from app.celery.tasks.batch_tasks import batch_poll, batch_submit
+from inference_core.celery.tasks.batch_tasks import batch_poll, batch_submit
 
 # Test polling task
 poll_task = batch_poll.delay()
@@ -129,18 +138,21 @@ except Exception as e:
 ## Expected Behaviors
 
 ### Successful Execution
+
 - Tasks should log start/completion with durations
 - Redis locks should prevent duplicate polling
 - Tasks should handle database errors gracefully
 - Beat scheduler should automatically trigger polling every 30 seconds
 
 ### Error Handling
+
 - Transient errors should trigger retries with exponential backoff
 - Permanent errors should fail fast without excessive retries
 - Database errors should be logged but not crash the worker
 - Missing jobs/items should return appropriate error messages
 
 ### Idempotency
+
 - Running the same task multiple times should not corrupt state
 - Polling should safely handle jobs in any status
 - Fetching should detect already-fetched results
@@ -160,14 +172,14 @@ except Exception as e:
 
 ```bash
 # Check Celery configuration
-poetry run celery -A app.celery.celery_main:celery_app inspect conf
+poetry run celery -A inference_core.celery.celery_main:celery_app inspect conf
 
 # List active tasks
-poetry run celery -A app.celery.celery_main:celery_app inspect active
+poetry run celery -A inference_core.celery.celery_main:celery_app inspect active
 
 # Check worker stats
-poetry run celery -A app.celery.celery_main:celery_app inspect stats
+poetry run celery -A inference_core.celery.celery_main:celery_app inspect stats
 
 # Monitor task events
-poetry run celery -A app.celery.celery_main:celery_app events
+poetry run celery -A inference_core.celery.celery_main:celery_app events
 ```

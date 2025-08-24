@@ -4,7 +4,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from app.database.sql.models.batch import BatchEventType, BatchJobStatus
+from inference_core.database.sql.models.batch import BatchEventType, BatchJobStatus
 
 
 async def _get_token(client: AsyncClient) -> str:
@@ -49,7 +49,7 @@ async def test_batch_events_semantic_and_order(async_test_client: AsyncClient):
     assert resp.status_code == 201, resp.text
     job_id = resp.json()["job_id"]
 
-    from app.celery.tasks.batch_tasks import batch_fetch, batch_submit
+    from inference_core.celery.tasks.batch_tasks import batch_fetch, batch_submit
 
     batch_submit(job_id)  # direct invocation (no worker)
 

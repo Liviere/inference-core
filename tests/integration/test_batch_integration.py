@@ -8,9 +8,9 @@ using the same pattern as existing integration tests.
 import pytest
 from sqlalchemy import text
 
-from app.database.sql.models.batch import BatchJob, BatchJobStatus
-from app.schemas.batch import BatchJobCreate
-from app.services.batch_service import BatchService
+from inference_core.database.sql.models.batch import BatchJob, BatchJobStatus
+from inference_core.schemas.batch import BatchJobCreate
+from inference_core.services.batch_service import BatchService
 
 
 @pytest.mark.integration

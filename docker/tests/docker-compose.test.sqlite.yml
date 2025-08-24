@@ -1,33 +1,36 @@
 # Docker Compose for Isolated Test Environment - SQLite
-# Ports: app-test:8100, redis-test:6380, flower-test:5556 (optional)
+# Ports: inference-core-test:8100, redis-test:6380, flower-test:5556 (optional)
 # Usage: docker compose -f docker/tests/docker-compose.test.sqlite.yml --env-file .env.test.example up -d
 # Cleanup: docker compose -f docker/tests/docker-compose.test.sqlite.yml down -v
 
-name: ${APP_NAME:-backend-template-test}-sqlite
+name: ${APP_NAME:-inference-core-test}-sqlite
 
 services:
-  # FastAPI Application (Test)
-  app-test:
+  # Inference Core Application (Test)
+  inference-core-test:
     build:
       context: ../..
       dockerfile: docker/tests/Dockerfile
-    container_name: ${APP_NAME:-backend-template-test}-app
+    container_name: ${APP_NAME:-inference-core-test}-app
     restart: unless-stopped
     command:
       [
-        'fastapi',
-        'run',
+        'uvicorn',
+        'inference_core.main_factory:create_application',
+        '--factory',
         '--port',
         '${PORT:-8100}',
         '--host',
         '${HOST:-0.0.0.0}',
+        '--workers',
+        '2',
       ]
     ports:
       - '${PORT:-8100}:${PORT:-8100}'
     environment:
       ENVIRONMENT: testing
-      APP_NAME: ${APP_NAME:-backend-template-test}
-      APP_DESCRIPTION: ${APP_DESCRIPTION:-Test environment for FastAPI backend}
+      APP_NAME: ${APP_NAME:-inference-core-test}
+      APP_DESCRIPTION: ${APP_DESCRIPTION:-Test environment for Inference Core backend}
       APP_VERSION: ${APP_VERSION:-1.0.0}
       DATABASE_SERVICE: sqlite+aiosqlite
       DATABASE_URL: sqlite+aiosqlite:///tmp/app_test.db
@@ -63,10 +66,10 @@ services:
     build:
       context: ../..
       dockerfile: docker/tests/Dockerfile
-    container_name: ${APP_NAME:-backend-template-test}-celery-worker
+    container_name: ${APP_NAME:-inference-core-test}-celery-worker
     restart: unless-stopped
     command: >
-      sh -c "poetry run celery -A app.celery.celery_main:celery_app worker 
+      sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker 
              --loglevel=info 
              --queues=default,llm_tasks
              --hostname=test-worker@%h 
@@ -76,7 +79,7 @@ services:
     environment:
       ENVIRONMENT: testing
       DATABASE_SERVICE: sqlite+aiosqlite
-      DATABASE_URL: sqlite+aiosqlite:///tmp/app_test.db
+      DATABASE_URL: sqlite+aiosqlite:///tmp/inference_core_test.db
       CELERY_BROKER_URL: redis://redis-test:${REDIS_PORT:-6380}/0
       CELERY_RESULT_BACKEND: redis://redis-test:${REDIS_PORT:-6380}/1
       SECRET_KEY: ${SECRET_KEY:-test-secret-key-do-not-use-in-production}
@@ -90,7 +93,7 @@ services:
   # Redis for Celery and App Sessions (Test)
   redis-test:
     image: redis:7-alpine
-    container_name: ${APP_NAME:-backend-template-test}-redis
+    container_name: ${APP_NAME:-inference-core-test}-redis
     restart: unless-stopped
     ports:
       - '${REDIS_PORT:-6380}:${REDIS_PORT:-6380}'
@@ -110,4 +113,4 @@ services:
 networks:
   test-network:
     driver: bridge
-    name: ${APP_NAME:-backend-template-test}-sqlite-network
+    name: ${APP_NAME:-inference-core-test}-sqlite-network

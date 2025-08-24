@@ -1,6 +1,6 @@
 services:
-  # FastAPI Application
-  app:
+  # inference-core
+  inference-core:
     environment:
       DATABASE_SERVICE: ${DATABASE_SERVICE:-mysql+aiomysql}
       DATABASE_HOST: mysql
@@ -34,7 +34,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
-      - app-network
+      - inference-core-network
     healthcheck:
       test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost']
       timeout: 20s

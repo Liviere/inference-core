@@ -26,7 +26,7 @@ scrape_configs:
   - job_name: fastapi
     metrics_path: /metrics
     static_configs:
-      - targets: ['app:8000']
+      - targets: ['inference-core:8000']
 ```
 
 ### Grafana Provisioning (datasource example)
@@ -74,4 +74,4 @@ datasources:
 
 ---
 
-Generated automatically to match current metric names in `app/observability/metrics.py`.
+Generated automatically to match current metric names in `inference_core/observability/metrics.py`.

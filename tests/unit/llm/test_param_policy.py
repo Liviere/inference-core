@@ -1,5 +1,5 @@
 """
-Unit tests for app.llm.param_policy module
+Unit tests for inference_core.llm.param_policy module
 
 Tests parameter normalization and validation for all LLM providers.
 """
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.llm.config import ModelProvider
-from app.llm.param_policy import (
+from inference_core.llm.config import ModelProvider
+from inference_core.llm.param_policy import (
     POLICIES,
     ProviderParamPolicy,
     get_provider_policy,
@@ -113,7 +113,7 @@ class TestPoliciesDefinition:
 class TestNormalizeParams:
     """Test normalize_params function"""
 
-    @patch("app.llm.param_policy.logger")
+    @patch("inference_core.llm.param_policy.logger")
     def test_openai_params_passthrough(self, mock_logger):
         """Test OpenAI parameters pass through unchanged"""
         raw_params = {
@@ -132,7 +132,7 @@ class TestNormalizeParams:
         mock_logger.debug.assert_not_called()
         mock_logger.warning.assert_not_called()
 
-    @patch("app.llm.param_policy.logger")
+    @patch("inference_core.llm.param_policy.logger")
     def test_gemini_params_normalized(self, mock_logger):
         """Test Gemini parameters are correctly normalized"""
         raw_params = {
@@ -171,7 +171,7 @@ class TestNormalizeParams:
             "Parameter dropped for ModelProvider.GEMINI: request_timeout (value: 30)"
         )
 
-    @patch("app.llm.param_policy.logger")
+    @patch("inference_core.llm.param_policy.logger")
     def test_claude_params_normalized(self, mock_logger):
         """Test Claude parameters are correctly normalized"""
         raw_params = {
@@ -207,7 +207,7 @@ class TestNormalizeParams:
             "Parameter dropped for ModelProvider.CLAUDE: presence_penalty (value: 0.2)"
         )
 
-    @patch("app.llm.param_policy.logger")
+    @patch("inference_core.llm.param_policy.logger")
     def test_none_values_skipped(self, mock_logger):
         """Test that None parameter values are skipped"""
         raw_params = {"temperature": 0.7, "max_tokens": None, "frequency_penalty": None}
@@ -218,7 +218,7 @@ class TestNormalizeParams:
         mock_logger.debug.assert_not_called()
         mock_logger.warning.assert_not_called()
 
-    @patch("app.llm.param_policy.logger")
+    @patch("inference_core.llm.param_policy.logger")
     def test_unknown_parameter_warning(self, mock_logger):
         """Test warning logged for unknown parameters"""
         raw_params = {"temperature": 0.7, "unknown_param": "value"}
@@ -343,7 +343,7 @@ class TestValidateProviderParams:
 class TestParameterPolicyIntegration:
     """Test integration scenarios for parameter policy"""
 
-    @patch("app.llm.param_policy.logger")
+    @patch("inference_core.llm.param_policy.logger")
     def test_typical_gemini_workflow(self, mock_logger):
         """Test typical parameter normalization workflow for Gemini"""
         # Simulate parameters coming from service layer
@@ -367,7 +367,7 @@ class TestParameterPolicyIntegration:
         # Verify logging occurred
         assert mock_logger.debug.call_count >= 4  # 1 rename + 3 drops
 
-    @patch("app.llm.param_policy.logger")
+    @patch("inference_core.llm.param_policy.logger")
     def test_typical_claude_workflow(self, mock_logger):
         """Test typical parameter normalization workflow for Claude"""
         # Simulate parameters coming from service layer

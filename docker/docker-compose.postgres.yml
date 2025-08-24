@@ -1,6 +1,6 @@
 services:
-  # FastAPI Application
-  app:
+  # Inference Core Application
+  inference-core:
     environment:
       DATABASE_SERVICE: postgresql+asyncpg
       DATABASE_HOST: postgres
@@ -32,7 +32,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - app-network
+      - inference-core-network
     healthcheck:
       test:
         [

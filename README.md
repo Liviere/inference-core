@@ -1,6 +1,6 @@
-# backend-template
+# Inference Core
 
-A production-ready FastAPI backend template with Celery-powered background tasks and first-class LLM integration.
+A production-ready FastAPI backend template with Celery-powered background tasks and first-class LLM integration using LangChain.
 
 ## Requirements
 
@@ -21,40 +21,39 @@ poetry install
 
 ### Development
 
-This template now exposes only an application factory (`create_application`) in `app/main_factory.py`.
+This template now exposes only an application factory (`create_application`) in `inference_core/main_factory.py`.
 You can run the API using Uvicorn (recommended) with the `--factory` flag so the callable is invoked
 to create a fresh FastAPI instance.
 
 Development (auto-reload):
 
 ```bash
-poetry run uvicorn app.main_factory:create_application --factory --reload --host 0.0.0.0 --port 8000
+poetry run uvicorn inference_core.main_factory:create_application --factory --reload --host 0.0.0.0 --port 8000
 ```
 
 ### Production Run
 
 ```bash
-poetry run uvicorn app.main_factory:create_application --factory --host 0.0.0.0 --port 8000
+poetry run uvicorn inference_core.main_factory:create_application --factory --host 0.0.0.0 --port 8000
 ```
 
-Previous helper file `app/main.py` (with a module-level `app` variable) has been removed from version
-control to encourage consuming projects to instantiate the application explicitly. If you still prefer a
-single-file entrypoint locally, you can create (and keep untracked) a small `app/main.py` like:
+If you still prefer a single-file entrypoint locally, you can create (and keep untracked)
+a small `inference_core/main.py` like:
 
 ```python
-from app.main_factory import create_application
+from inference_core.main_factory import create_application
 
 app = create_application()
 ```
 
-Because `app/main.py` is now in `.gitignore`, it will not be committed—ideal for local experiments.
+Because `main.py` is now in `.gitignore`, it will not be committed—ideal for local experiments.
 
 ### Using as a Dependency (Embedding the Template)
 
 If another project depends on this template package, it can create an application instance:
 
 ```python
-from app.main_factory import create_application
+from inference_core.main_factory import create_application
 
 api = create_application()
 ```
@@ -71,7 +70,7 @@ For detailed instructions on how to deploy the application using Docker, see [do
 
 This project includes Celery for background task processing with Redis as the default broker and result backend.
 
-For detailed instructions on how to set up and use Celery, see [app/celery/README.md](app/celery/README.md).
+For detailed instructions on how to set up and use Celery, see [inference_core/celery/README.md](inference_core/celery/README.md).
 
 ## Testing
 
@@ -99,7 +98,7 @@ Alternative test environments are available for SQLite and MySQL. For detailed i
 
 ## API Endpoints (v1)
 
-This project also includes an API dedicated to working with LLM models. For details on LLM endpoints, configuration, and usage, see [app/llm/README.md](app/llm/README.md).
+This project also includes an API dedicated to working with LLM models. For details on LLM endpoints, configuration, and usage, see [inference_core/llm/README.md](inference_core/llm/README.md).
 
 ### Health Check
 
@@ -150,7 +149,7 @@ The application automatically uses the appropriate asynchronous database driver 
 
 ### SQLite (Default)
 
-For local development, the application uses SQLite by default. The database will be created in a file named `app.db` in the project root.
+For local development, the application uses SQLite by default. The database will be created in a file named `inference_core.db` in the project root.
 
 ### PostgreSQL (Recommended for Production)
 
@@ -188,58 +187,58 @@ For production environments, consider adjusting the sample rates to reduce overh
 
 ### Environment Variables
 
-| Variable                      | Description                                                      | Default                                                            | Used in             |
-| ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------- |
-| `APP_NAME`                    | Application name                                                 | "Backend Template API"                                             | API, Docker         |
-| `APP_TITLE`                   | Application title                                                | "Backend Template API"                                             | API                 |
-| `APP_DESCRIPTION`             | Application description                                          | "A production-ready FastAPI backend template with LLM integration" | API                 |
-| `APP_VERSION`                 | Application version                                              | "0.1.0"                                                            | API                 |
-| `ENVIRONMENT`                 | Application environment (development/staging/production/testing) | "development"                                                      | API, Docker         |
-| `DEBUG`                       | Debug mode                                                       | `True`                                                             | API                 |
-| `HOST`                        | Server host                                                      | "0.0.0.0"                                                          | API, Docker         |
-| `PORT`                        | Server port                                                      | 8000                                                               | API, Docker         |
-| `CORS_METHODS`                | Allowed HTTP methods (comma-separated or \*)                     | \*                                                                 | API                 |
-| `CORS_ORIGINS`                | Allowed origins (comma-separated or \*)                          | \*                                                                 | API                 |
-| `CORS_HEADERS`                | Allowed headers (comma-separated or \*)                          | \*                                                                 | API                 |
-| `SENTRY_DSN`                  | Sentry Data Source Name for error monitoring                     | None                                                               | API                 |
-| `SENTRY_TRACES_SAMPLE_RATE`   | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                                | API                 |
-| `SENTRY_PROFILES_SAMPLE_RATE` | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                                | API                 |
-| `DATABASE_URL`                | Database connection URL                                          | `sqlite+aiosqlite:///./app.db`                                     | API                 |
-| `DATABASE_ECHO`               | Echo SQL queries (development only)                              | `False`                                                            | API                 |
-| `DATABASE_POOL_SIZE`          | Database connection pool size                                    | `20`                                                               | API                 |
-| `DATABASE_MAX_OVERFLOW`       | Maximum database connection overflow                             | `30`                                                               | API                 |
-| `DATABASE_POOL_TIMEOUT`       | Pool connection timeout in seconds                               | `30`                                                               | API                 |
-| `DATABASE_POOL_RECYCLE`       | Connection recycle time in seconds                               | `3600`                                                             | API                 |
-| `DATABASE_MYSQL_CHARSET`      | MySQL character set                                              | `utf8mb4`                                                          | API, Docker         |
-| `DATABASE_MYSQL_COLLATION`    | MySQL collation                                                  | `utf8mb4_unicode_ci`                                               | Docker              |
-| `DATABASE_NAME`               | Database name                                                    | `app_db`                                                           | Docker              |
-| `DATABASE_USER`               | Database user                                                    | `db_user`                                                          | Docker              |
-| `DATABASE_PASSWORD`           | Database password                                                | `your_password`                                                    | Docker              |
-| `DATABASE_ROOT_PASSWORD`      | Database root password (MySQL only)                              | `your_root_password`                                               | Docker              |
-| `DATABASE_PORT`               | Database port                                                    | `3306` (MySQL) / `5432` (PostgreSQL)                               | Docker              |
-| `DATABASE_HOST`               | Database host                                                    | `localhost` (or service name in Docker)                            | API, Docker         |
-| `DATABASE_SERVICE`            | Database backend/driver (async)                                  | `sqlite+aiosqlite`                                                 | API, Docker         |
-| `SECRET_KEY`                  | Secret used to sign JWT tokens                                   | `change-me-in-production`                                          | Auth                |
-| `ALGORITHM`                   | JWT signing algorithm                                            | `HS256`                                                            | Auth                |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (minutes)                                  | `30`                                                               | Auth                |
-| `REFRESH_TOKEN_EXPIRE_DAYS`   | Refresh token lifetime (days)                                    | `7`                                                                | Auth                |
-| `REDIS_URL`                   | Redis URL for app sessions/locks (refresh sessions)              | `redis://localhost:6379/10`                                        | API/Auth            |
-| `REDIS_REFRESH_PREFIX`        | Key prefix for refresh sessions                                  | `auth:refresh:`                                                    | Auth                |
-| `CELERY_BROKER_URL`           | Celery broker URL                                                | `redis://localhost:6379/0`                                         | API, Celery, Docker |
-| `CELERY_RESULT_BACKEND`       | Celery result backend URL                                        | `redis://localhost:6379/1`                                         | Celery, Docker      |
-| `DEBUG_CELERY`                | Enable debugpy for Celery worker (1 to enable)                   | `0`                                                                | Celery, Docker      |
-| `REDIS_PORT`                  | Redis port (used for both host and container)                    | `6379`                                                             | Docker              |
-| `FLOWER_PORT`                 | Flower port (used for both host and container)                   | `5555`                                                             | Docker              |
-| `OPENAI_API_KEY`              | API key for OpenAI provider                                      | None                                                               | LLM                 |
-| `GOOGLE_API_KEY`              | API key for Google Gemini models                                 | None                                                               | LLM                 |
-| `ANTHROPIC_API_KEY`           | API key for Anthropic Claude models                              | None                                                               | LLM                 |
-| `LLM_EXPLAIN_MODEL`           | Override model for the 'explain' task                            | None                                                               | LLM                 |
-| `LLM_CONVERSATION_MODEL`      | Override model for the 'conversation' task                       | None                                                               | LLM                 |
-| `LLM_ENABLE_CACHING`          | Enable in-process LLM response caching (fallback mode)           | `true`                                                             | LLM                 |
-| `LLM_CACHE_TTL`               | Cache TTL in seconds (fallback mode)                             | `3600`                                                             | LLM                 |
-| `LLM_MAX_CONCURRENT`          | Max concurrent LLM requests (fallback mode)                      | `5`                                                                | LLM                 |
-| `LLM_ENABLE_MONITORING`       | Enable basic LLM monitoring hooks (fallback mode)                | `true`                                                             | LLM                 |
-| `RUN_LLM_REAL_TESTS`          | Opt-in to run real-chain tests hitting providers in CI/local     | `0`                                                                | Tests               |
+| Variable                      | Description                                                      | Default                                                      | Used in             |
+| ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------- |
+| `APP_NAME`                    | Application name                                                 | "Inference Core API"                                         | API, Docker         |
+| `APP_TITLE`                   | Application title                                                | "Inference Core API"                                         | API                 |
+| `APP_DESCRIPTION`             | Application description                                          | "A production-ready Inference Core API with LLM integration" | API                 |
+| `APP_VERSION`                 | Application version                                              | "0.1.0"                                                      | API                 |
+| `ENVIRONMENT`                 | Application environment (development/staging/production/testing) | "development"                                                | API, Docker         |
+| `DEBUG`                       | Debug mode                                                       | `True`                                                       | API                 |
+| `HOST`                        | Server host                                                      | "0.0.0.0"                                                    | API, Docker         |
+| `PORT`                        | Server port                                                      | 8000                                                         | API, Docker         |
+| `CORS_METHODS`                | Allowed HTTP methods (comma-separated or \*)                     | \*                                                           | API                 |
+| `CORS_ORIGINS`                | Allowed origins (comma-separated or \*)                          | \*                                                           | API                 |
+| `CORS_HEADERS`                | Allowed headers (comma-separated or \*)                          | \*                                                           | API                 |
+| `SENTRY_DSN`                  | Sentry Data Source Name for error monitoring                     | None                                                         | API                 |
+| `SENTRY_TRACES_SAMPLE_RATE`   | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                          | API                 |
+| `SENTRY_PROFILES_SAMPLE_RATE` | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                          | API                 |
+| `DATABASE_URL`                | Database connection URL                                          | `sqlite+aiosqlite:///./inference_core.db`                    | API                 |
+| `DATABASE_ECHO`               | Echo SQL queries (development only)                              | `False`                                                      | API                 |
+| `DATABASE_POOL_SIZE`          | Database connection pool size                                    | `20`                                                         | API                 |
+| `DATABASE_MAX_OVERFLOW`       | Maximum database connection overflow                             | `30`                                                         | API                 |
+| `DATABASE_POOL_TIMEOUT`       | Pool connection timeout in seconds                               | `30`                                                         | API                 |
+| `DATABASE_POOL_RECYCLE`       | Connection recycle time in seconds                               | `3600`                                                       | API                 |
+| `DATABASE_MYSQL_CHARSET`      | MySQL character set                                              | `utf8mb4`                                                    | API, Docker         |
+| `DATABASE_MYSQL_COLLATION`    | MySQL collation                                                  | `utf8mb4_unicode_ci`                                         | Docker              |
+| `DATABASE_NAME`               | Database name                                                    | `app_db`                                                     | Docker              |
+| `DATABASE_USER`               | Database user                                                    | `db_user`                                                    | Docker              |
+| `DATABASE_PASSWORD`           | Database password                                                | `your_password`                                              | Docker              |
+| `DATABASE_ROOT_PASSWORD`      | Database root password (MySQL only)                              | `your_root_password`                                         | Docker              |
+| `DATABASE_PORT`               | Database port                                                    | `3306` (MySQL) / `5432` (PostgreSQL)                         | Docker              |
+| `DATABASE_HOST`               | Database host                                                    | `localhost` (or service name in Docker)                      | API, Docker         |
+| `DATABASE_SERVICE`            | Database backend/driver (async)                                  | `sqlite+aiosqlite`                                           | API, Docker         |
+| `SECRET_KEY`                  | Secret used to sign JWT tokens                                   | `change-me-in-production`                                    | Auth                |
+| `ALGORITHM`                   | JWT signing algorithm                                            | `HS256`                                                      | Auth                |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (minutes)                                  | `30`                                                         | Auth                |
+| `REFRESH_TOKEN_EXPIRE_DAYS`   | Refresh token lifetime (days)                                    | `7`                                                          | Auth                |
+| `REDIS_URL`                   | Redis URL for app sessions/locks (refresh sessions)              | `redis://localhost:6379/10`                                  | API/Auth            |
+| `REDIS_REFRESH_PREFIX`        | Key prefix for refresh sessions                                  | `auth:refresh:`                                              | Auth                |
+| `CELERY_BROKER_URL`           | Celery broker URL                                                | `redis://localhost:6379/0`                                   | API, Celery, Docker |
+| `CELERY_RESULT_BACKEND`       | Celery result backend URL                                        | `redis://localhost:6379/1`                                   | Celery, Docker      |
+| `DEBUG_CELERY`                | Enable debugpy for Celery worker (1 to enable)                   | `0`                                                          | Celery, Docker      |
+| `REDIS_PORT`                  | Redis port (used for both host and container)                    | `6379`                                                       | Docker              |
+| `FLOWER_PORT`                 | Flower port (used for both host and container)                   | `5555`                                                       | Docker              |
+| `OPENAI_API_KEY`              | API key for OpenAI provider                                      | None                                                         | LLM                 |
+| `GOOGLE_API_KEY`              | API key for Google Gemini models                                 | None                                                         | LLM                 |
+| `ANTHROPIC_API_KEY`           | API key for Anthropic Claude models                              | None                                                         | LLM                 |
+| `LLM_EXPLAIN_MODEL`           | Override model for the 'explain' task                            | None                                                         | LLM                 |
+| `LLM_CONVERSATION_MODEL`      | Override model for the 'conversation' task                       | None                                                         | LLM                 |
+| `LLM_ENABLE_CACHING`          | Enable in-process LLM response caching (fallback mode)           | `true`                                                       | LLM                 |
+| `LLM_CACHE_TTL`               | Cache TTL in seconds (fallback mode)                             | `3600`                                                       | LLM                 |
+| `LLM_MAX_CONCURRENT`          | Max concurrent LLM requests (fallback mode)                      | `5`                                                          | LLM                 |
+| `LLM_ENABLE_MONITORING`       | Enable basic LLM monitoring hooks (fallback mode)                | `true`                                                       | LLM                 |
+| `RUN_LLM_REAL_TESTS`          | Opt-in to run real-chain tests hitting providers in CI/local     | `0`                                                          | Tests               |
 
 ## Features
 
@@ -275,6 +274,6 @@ except Exception as e:
 The application is configured to log information to both the console and a rotating file.
 
 - **Console Logging**: Provides real-time output during development.
-- **File Logging**: Logs are saved in JSON format to the `logs/app.log` file. The log file is rotated daily, and backups are kept for 30 days.
+- **File Logging**: Logs are saved in JSON format to the `logs/inference_core.log` file. The log file is rotated daily, and backups are kept for 30 days.
 
-This setup is handled by the configuration in `app/core/logging_config.py`.
+This setup is handled by the configuration in `inference_core/core/logging_config.py`.

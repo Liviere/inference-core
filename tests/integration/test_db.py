@@ -5,7 +5,7 @@ Integration tests for the API endpoints.
 import pytest
 from sqlalchemy import text
 
-from app.database.sql.connection import Base
+from inference_core.database.sql.connection import Base
 
 
 @pytest.mark.asyncio

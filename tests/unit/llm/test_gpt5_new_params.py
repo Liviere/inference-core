@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.llm.config import ModelConfig, ModelProvider
-from app.llm.models import LLMModelFactory
+from inference_core.llm.config import ModelConfig, ModelProvider
+from inference_core.llm.models import LLMModelFactory
 
 
 @pytest.fixture
@@ -14,8 +14,8 @@ def factory():
     return LLMModelFactory(mock_config)
 
 
-@patch("app.llm.models.normalize_params")
-@patch("app.llm.models.ChatOpenAI")
+@patch("inference_core.llm.models.normalize_params")
+@patch("inference_core.llm.models.ChatOpenAI")
 def test_gpt5_reasoning_params_pass_through(mock_chat_openai, mock_normalize, factory):
     config = ModelConfig(
         name="gpt-5",
@@ -46,11 +46,11 @@ def test_gpt5_reasoning_params_pass_through(mock_chat_openai, mock_normalize, fa
 
 def test_gpt5_legacy_param_rejected_in_service_explain(monkeypatch):
     # Use real service to trigger ValueError when legacy param used with gpt-5
-    from app.services.llm_service import LLMService
+    from inference_core.services.llm_service import LLMService
 
     svc = LLMService()
     # Patch chain factory to avoid hitting real LLM
-    from app.llm import chains
+    from inference_core.llm import chains
 
     class DummyChain:
         model_name = "gpt-5"

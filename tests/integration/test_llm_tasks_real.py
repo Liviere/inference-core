@@ -14,8 +14,11 @@ from typing import List
 import pytest
 import yaml
 
-from app.celery.tasks.llm_tasks import task_llm_conversation, task_llm_explain
-from app.llm.config import llm_config
+from inference_core.celery.tasks.llm_tasks import (
+    task_llm_conversation,
+    task_llm_explain,
+)
+from inference_core.llm.config import llm_config
 
 
 def _project_root() -> Path:

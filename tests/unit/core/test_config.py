@@ -1,5 +1,5 @@
 """
-Unit tests for app.core.config module
+Unit tests for inference_core.core.config module
 
 Tests Settings class validation, environment variable parsing,
 database URL construction, and configuration properties.
@@ -11,7 +11,11 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import ListParsingDotEnvSource, ListParsingEnvSource, Settings
+from inference_core.core.config import (
+    ListParsingDotEnvSource,
+    ListParsingEnvSource,
+    Settings,
+)
 
 
 class TestListParsingEnvSource:
@@ -132,7 +136,7 @@ class TestSettings:
     def test_set_database_url_sqlite(self):
         """Test database URL construction for SQLite"""
         settings = Settings(database_service="sqlite+aiosqlite")
-        assert settings.database_url == "sqlite+aiosqlite:///./app.db"
+        assert settings.database_url == "sqlite+aiosqlite:///./inference_core.db"
 
     def test_set_database_url_postgresql(self):
         """Test database URL construction for PostgreSQL"""
@@ -279,7 +283,7 @@ class TestSettings:
     def test_cors_origins_from_env(self):
         """Test CORS origins are parsed from environment variables"""
         # Clear the LRU cache if get_settings is cached
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
 

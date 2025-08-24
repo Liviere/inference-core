@@ -65,7 +65,7 @@ async def test_refresh_and_logout_flow(async_test_client, monkeypatch):
     tokens = login.json()
 
     # Monkeypatch RefreshSessionStore to avoid requiring Redis in tests
-    from app.services import refresh_session_store as rss
+    from inference_core.services import refresh_session_store as rss
 
     async def _true_exists(self, jti: str) -> bool:  # type: ignore
         return True
@@ -213,7 +213,7 @@ async def test_reset_password_with_valid_token(async_test_client):
     )
 
     # Create reset token using the same utility as the service
-    from app.core.security import security_manager
+    from inference_core.core.security import security_manager
 
     token = security_manager.generate_password_reset_token("frank@example.com")
 

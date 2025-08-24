@@ -15,19 +15,19 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependecies import get_db
-from app.database.sql.connection import (
+from inference_core.core.dependecies import get_db
+from inference_core.database.sql.connection import (
     Base,
     create_database_engine,
     get_non_singleton_session_maker,
 )
-from app.main import app
+from inference_core.main_factory import create_application
 
 
 @pytest_asyncio.fixture()
 async def test_settings() -> AsyncGenerator:
     """Fixture to provide application settings for tests."""
-    from app.core.config import get_settings
+    from inference_core.core.config import get_settings
 
     # Set ENVIRONMENT var to 'testing'
     os.environ["ENVIRONMENT"] = "testing"
@@ -98,6 +98,7 @@ async def async_test_client() -> AsyncGenerator[AsyncClient, None]:
             finally:
                 await session.close()
 
+    app = create_application()
     app.dependency_overrides[get_db] = override_get_db
 
     try:

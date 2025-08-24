@@ -1,5 +1,5 @@
 """
-Unit tests for app.services.auth_service module
+Unit tests for inference_core.services.auth_service module
 
 Tests AuthService for user authentication and management with mocked database operations.
 """
@@ -7,9 +7,10 @@ Tests AuthService for user authentication and management with mocked database op
 import os
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from app.services.auth_service import AuthService
+from inference_core.services.auth_service import AuthService
 
 
 class TestAuthService:
@@ -18,7 +19,8 @@ class TestAuthService:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
+
         get_settings.cache_clear()
 
     def test_init(self):
@@ -120,7 +122,7 @@ class TestAuthService:
         assert user is None
         mock_db.execute.assert_called_once()
 
-    @patch('app.services.auth_service.verify_password')
+    @patch("inference_core.services.auth_service.verify_password")
     @pytest.mark.asyncio
     async def test_authenticate_user_success_by_username(self, mock_verify_password):
         """Test authenticate_user with valid username and password"""
@@ -137,25 +139,27 @@ class TestAuthService:
         user = await service.authenticate_user("testuser", "correct_password")
 
         assert user == mock_user
-        mock_verify_password.assert_called_once_with("correct_password", "hashed_password_123")
+        mock_verify_password.assert_called_once_with(
+            "correct_password", "hashed_password_123"
+        )
 
-    @patch('app.services.auth_service.verify_password')
+    @patch("inference_core.services.auth_service.verify_password")
     @pytest.mark.asyncio
     async def test_authenticate_user_success_by_email(self, mock_verify_password):
         """Test authenticate_user with valid email and password"""
         mock_db = AsyncMock()
-        
+
         # Mock username lookup (returns None)
         mock_result_username = MagicMock()
         mock_result_username.scalar_one_or_none.return_value = None
-        
+
         # Mock email lookup (returns user)
         mock_result_email = MagicMock()
         mock_user = MagicMock()
         mock_user.email = "test@example.com"
         mock_user.hashed_password = "hashed_password_123"
         mock_result_email.scalar_one_or_none.return_value = mock_user
-        
+
         # Configure mock to return different results for username vs email queries
         mock_db.execute.side_effect = [mock_result_username, mock_result_email]
         mock_verify_password.return_value = True
@@ -165,9 +169,11 @@ class TestAuthService:
 
         assert user == mock_user
         assert mock_db.execute.call_count == 2  # Once for username, once for email
-        mock_verify_password.assert_called_once_with("correct_password", "hashed_password_123")
+        mock_verify_password.assert_called_once_with(
+            "correct_password", "hashed_password_123"
+        )
 
-    @patch('app.services.auth_service.verify_password')
+    @patch("inference_core.services.auth_service.verify_password")
     @pytest.mark.asyncio
     async def test_authenticate_user_wrong_password(self, mock_verify_password):
         """Test authenticate_user with wrong password"""
@@ -184,7 +190,9 @@ class TestAuthService:
         user = await service.authenticate_user("testuser", "wrong_password")
 
         assert user is None
-        mock_verify_password.assert_called_once_with("wrong_password", "hashed_password_123")
+        mock_verify_password.assert_called_once_with(
+            "wrong_password", "hashed_password_123"
+        )
 
     @pytest.mark.asyncio
     async def test_authenticate_user_not_found(self):
@@ -201,13 +209,13 @@ class TestAuthService:
         # Should try both username and email lookups
         assert mock_db.execute.call_count == 2
 
-    @patch('app.services.auth_service.get_password_hash')
+    @patch("inference_core.services.auth_service.get_password_hash")
     @pytest.mark.asyncio
     async def test_create_user_success(self, mock_get_password_hash):
         """Test create_user successfully creates user"""
         mock_db = AsyncMock()
         mock_get_password_hash.return_value = "hashed_password_123"
-        
+
         # Mock the user that gets created
         mock_user = MagicMock()
         mock_user.id = uuid.uuid4()
@@ -223,17 +231,17 @@ class TestAuthService:
             last_name="User",
             is_active=True,
             is_superuser=False,
-            is_verified=False
+            is_verified=False,
         )
 
         # Verify password was hashed
         mock_get_password_hash.assert_called_once_with("password123")
-        
+
         # Verify database operations
         mock_db.add.assert_called_once()
         mock_db.commit.assert_called_once()
         mock_db.refresh.assert_called_once()
-        
+
         # Verify the user object that was added
         added_user = mock_db.add.call_args[0][0]
         assert added_user.username == "newuser"
@@ -245,7 +253,7 @@ class TestAuthService:
         assert added_user.is_superuser is False
         assert added_user.is_verified is False
 
-    @patch('app.services.auth_service.get_password_hash')
+    @patch("inference_core.services.auth_service.get_password_hash")
     @pytest.mark.asyncio
     async def test_create_user_with_defaults(self, mock_get_password_hash):
         """Test create_user with default values"""
@@ -254,9 +262,7 @@ class TestAuthService:
 
         service = AuthService(mock_db)
         user = await service.create_user(
-            username="basicuser",
-            email="basic@example.com",
-            password="password123"
+            username="basicuser", email="basic@example.com", password="password123"
         )
 
         # Verify the user object with defaults
@@ -287,7 +293,7 @@ class TestAuthService:
             user_id="user-123",
             first_name="New",
             last_name="Name",
-            email="new@example.com"
+            email="new@example.com",
         )
 
         assert updated_user == mock_user
@@ -295,7 +301,7 @@ class TestAuthService:
         assert mock_user.first_name == "New"
         assert mock_user.last_name == "Name"
         assert mock_user.email == "new@example.com"
-        
+
         mock_db.commit.assert_called_once()
         mock_db.refresh.assert_called_once_with(mock_user)
 
@@ -315,7 +321,7 @@ class TestAuthService:
         service = AuthService(mock_db)
         updated_user = await service.update_user_profile(
             user_id="user-123",
-            first_name="Updated"
+            first_name="Updated",
             # Only updating first name
         )
 
@@ -336,14 +342,13 @@ class TestAuthService:
 
         service = AuthService(mock_db)
         updated_user = await service.update_user_profile(
-            user_id="nonexistent",
-            first_name="New"
+            user_id="nonexistent", first_name="New"
         )
 
         assert updated_user is None
         mock_db.commit.assert_not_called()
 
-    @patch('app.services.auth_service.get_password_hash')
+    @patch("inference_core.services.auth_service.get_password_hash")
     @pytest.mark.asyncio
     async def test_update_user_password_success(self, mock_get_password_hash):
         """Test update_user_password successfully updates password"""
@@ -377,7 +382,7 @@ class TestAuthService:
         assert result is False
         mock_db.commit.assert_not_called()
 
-    @patch('app.services.auth_service.security_manager')
+    @patch("inference_core.services.auth_service.security_manager")
     @pytest.mark.asyncio
     async def test_request_password_reset_user_exists(self, mock_security_manager):
         """Test request_password_reset when user exists"""
@@ -387,15 +392,19 @@ class TestAuthService:
         mock_user.email = "test@example.com"
         mock_result.scalar_one_or_none.return_value = mock_user
         mock_db.execute.return_value = mock_result
-        mock_security_manager.generate_password_reset_token.return_value = "reset_token_123"
+        mock_security_manager.generate_password_reset_token.return_value = (
+            "reset_token_123"
+        )
 
         service = AuthService(mock_db)
         result = await service.request_password_reset("test@example.com")
 
         assert result is True
-        mock_security_manager.generate_password_reset_token.assert_called_once_with("test@example.com")
+        mock_security_manager.generate_password_reset_token.assert_called_once_with(
+            "test@example.com"
+        )
 
-    @patch('app.services.auth_service.security_manager')
+    @patch("inference_core.services.auth_service.security_manager")
     @pytest.mark.asyncio
     async def test_request_password_reset_user_not_found(self, mock_security_manager):
         """Test request_password_reset when user doesn't exist (no info leak)"""
@@ -412,10 +421,12 @@ class TestAuthService:
         # Should not generate token for non-existent user
         mock_security_manager.generate_password_reset_token.assert_not_called()
 
-    @patch('app.services.auth_service.get_password_hash')
-    @patch('app.services.auth_service.security_manager')
+    @patch("inference_core.services.auth_service.get_password_hash")
+    @patch("inference_core.services.auth_service.security_manager")
     @pytest.mark.asyncio
-    async def test_reset_password_success(self, mock_security_manager, mock_get_password_hash):
+    async def test_reset_password_success(
+        self, mock_security_manager, mock_get_password_hash
+    ):
         """Test reset_password with valid token"""
         mock_db = AsyncMock()
         mock_result = MagicMock()
@@ -423,8 +434,10 @@ class TestAuthService:
         mock_user.email = "test@example.com"
         mock_result.scalar_one_or_none.return_value = mock_user
         mock_db.execute.return_value = mock_result
-        
-        mock_security_manager.verify_password_reset_token.return_value = "test@example.com"
+
+        mock_security_manager.verify_password_reset_token.return_value = (
+            "test@example.com"
+        )
         mock_get_password_hash.return_value = "new_hashed_password"
 
         service = AuthService(mock_db)
@@ -432,11 +445,13 @@ class TestAuthService:
 
         assert result is True
         assert mock_user.hashed_password == "new_hashed_password"
-        mock_security_manager.verify_password_reset_token.assert_called_once_with("valid_token")
+        mock_security_manager.verify_password_reset_token.assert_called_once_with(
+            "valid_token"
+        )
         mock_get_password_hash.assert_called_once_with("new_password")
         mock_db.commit.assert_called_once()
 
-    @patch('app.services.auth_service.security_manager')
+    @patch("inference_core.services.auth_service.security_manager")
     @pytest.mark.asyncio
     async def test_reset_password_invalid_token(self, mock_security_manager):
         """Test reset_password with invalid token"""
@@ -450,7 +465,7 @@ class TestAuthService:
         mock_db.execute.assert_not_called()
         mock_db.commit.assert_not_called()
 
-    @patch('app.services.auth_service.security_manager')
+    @patch("inference_core.services.auth_service.security_manager")
     @pytest.mark.asyncio
     async def test_reset_password_user_not_found(self, mock_security_manager):
         """Test reset_password when user doesn't exist"""
@@ -458,7 +473,9 @@ class TestAuthService:
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
-        mock_security_manager.verify_password_reset_token.return_value = "test@example.com"
+        mock_security_manager.verify_password_reset_token.return_value = (
+            "test@example.com"
+        )
 
         service = AuthService(mock_db)
         result = await service.reset_password("valid_token", "new_password")
@@ -537,34 +554,35 @@ class TestAuthServiceIntegration:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
+
         get_settings.cache_clear()
 
-    @patch('app.services.auth_service.get_password_hash')
-    @patch('app.services.auth_service.verify_password')
+    @patch("inference_core.services.auth_service.get_password_hash")
+    @patch("inference_core.services.auth_service.verify_password")
     @pytest.mark.asyncio
-    async def test_user_registration_and_authentication_flow(self, mock_verify_password, mock_get_password_hash):
+    async def test_user_registration_and_authentication_flow(
+        self, mock_verify_password, mock_get_password_hash
+    ):
         """Test complete user registration and authentication flow"""
         mock_db = AsyncMock()
         mock_get_password_hash.return_value = "hashed_password_123"
-        
+
         # Mock user creation
         service = AuthService(mock_db)
-        
+
         # Create user
         await service.create_user(
-            username="testuser",
-            email="test@example.com",
-            password="password123"
+            username="testuser", email="test@example.com", password="password123"
         )
-        
+
         # Verify user was added to database
         mock_db.add.assert_called_once()
         created_user = mock_db.add.call_args[0][0]
         assert created_user.username == "testuser"
         assert created_user.email == "test@example.com"
         assert created_user.hashed_password == "hashed_password_123"
-        
+
         # Mock authentication
         mock_result = MagicMock()
         mock_user = MagicMock()
@@ -573,9 +591,11 @@ class TestAuthServiceIntegration:
         mock_result.scalar_one_or_none.return_value = mock_user
         mock_db.execute.return_value = mock_result
         mock_verify_password.return_value = True
-        
+
         # Authenticate user
         authenticated_user = await service.authenticate_user("testuser", "password123")
-        
+
         assert authenticated_user == mock_user
-        mock_verify_password.assert_called_once_with("password123", "hashed_password_123")
+        mock_verify_password.assert_called_once_with(
+            "password123", "hashed_password_123"
+        )

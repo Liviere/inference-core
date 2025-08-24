@@ -9,12 +9,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.database.sql.models.batch import (
+from inference_core.database.sql.models.batch import (
     BatchEventType,
     BatchItemStatus,
     BatchJobStatus,
 )
-from app.schemas.batch import (
+from inference_core.schemas.batch import (
     BatchEventCreate,
     BatchItemCreate,
     BatchItemUpdate,
@@ -22,7 +22,7 @@ from app.schemas.batch import (
     BatchJobQuery,
     BatchJobUpdate,
 )
-from app.services.batch_service import BatchService
+from inference_core.services.batch_service import BatchService
 
 
 @pytest.mark.integration

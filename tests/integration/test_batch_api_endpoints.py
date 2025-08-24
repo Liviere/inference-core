@@ -11,7 +11,7 @@ import pytest
 from fastapi import status
 from httpx import AsyncClient
 
-from app.database.sql.models.batch import BatchItemStatus, BatchJobStatus
+from inference_core.database.sql.models.batch import BatchItemStatus, BatchJobStatus
 
 
 @pytest.mark.asyncio

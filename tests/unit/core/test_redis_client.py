@@ -1,5 +1,5 @@
 """
-Unit tests for app.core.redis_client module
+Unit tests for inference_core.core.redis_client module
 
 Tests Redis connection management and health check functionality.
 """
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import redis.asyncio as aioredis
 
-from app.core.redis_client import ensure_redis_connection, get_redis
+from inference_core.core.redis_client import ensure_redis_connection, get_redis
 
 
 class TestGetRedis:
@@ -19,13 +19,13 @@ class TestGetRedis:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
         # Clear the LRU cache for get_redis
         get_redis.cache_clear()
 
-    @patch("app.core.redis_client.get_settings")
+    @patch("inference_core.core.redis_client.get_settings")
     @patch("redis.asyncio.from_url")
     def test_get_redis_creates_connection(self, mock_from_url, mock_get_settings):
         """Test get_redis creates Redis connection with correct URL"""
@@ -49,7 +49,7 @@ class TestGetRedis:
         mock_redis = MagicMock()
         mock_from_url.return_value = mock_redis
 
-        with patch("app.core.config.get_settings") as mock_get_settings:
+        with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.redis_url = "redis://localhost:6379/0"
             mock_get_settings.return_value = mock_settings
@@ -63,7 +63,7 @@ class TestGetRedis:
             mock_from_url.assert_called_once()
             assert result1 == result2 == result3 == mock_redis
 
-    @patch("app.core.redis_client.get_settings")
+    @patch("inference_core.core.redis_client.get_settings")
     @patch("redis.asyncio.from_url")
     def test_get_redis_with_custom_url(self, mock_from_url, mock_get_settings):
         """Test get_redis with custom Redis URL"""
@@ -88,12 +88,12 @@ class TestEnsureRedisConnection:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
         get_redis.cache_clear()
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_ensure_redis_connection_success(self, mock_get_redis):
         """Test ensure_redis_connection returns True when ping succeeds"""
@@ -106,7 +106,7 @@ class TestEnsureRedisConnection:
         assert result is True
         mock_redis.ping.assert_called_once()
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_ensure_redis_connection_ping_false(self, mock_get_redis):
         """Test ensure_redis_connection returns False when ping returns False"""
@@ -119,7 +119,7 @@ class TestEnsureRedisConnection:
         assert result is False
         mock_redis.ping.assert_called_once()
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_ensure_redis_connection_ping_none(self, mock_get_redis):
         """Test ensure_redis_connection returns False when ping returns None"""
@@ -132,7 +132,7 @@ class TestEnsureRedisConnection:
         assert result is False
         mock_redis.ping.assert_called_once()
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_ensure_redis_connection_exception(self, mock_get_redis):
         """Test ensure_redis_connection returns False when exception occurs"""
@@ -145,7 +145,7 @@ class TestEnsureRedisConnection:
         assert result is False
         mock_redis.ping.assert_called_once()
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_ensure_redis_connection_redis_error(self, mock_get_redis):
         """Test ensure_redis_connection handles Redis-specific errors"""
@@ -158,7 +158,7 @@ class TestEnsureRedisConnection:
         assert result is False
         mock_redis.ping.assert_called_once()
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_ensure_redis_connection_timeout_error(self, mock_get_redis):
         """Test ensure_redis_connection handles timeout errors"""
@@ -171,7 +171,7 @@ class TestEnsureRedisConnection:
         assert result is False
         mock_redis.ping.assert_called_once()
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_ensure_redis_connection_async_timeout(self, mock_get_redis):
         """Test ensure_redis_connection handles asyncio timeout"""
@@ -193,7 +193,7 @@ class TestRedisClientIntegration:
     @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
     def setup_method(self, method):
         """Setup test environment"""
-        from app.core.config import get_settings
+        from inference_core.core.config import get_settings
 
         get_settings.cache_clear()
         get_redis.cache_clear()
@@ -206,7 +206,7 @@ class TestRedisClientIntegration:
         mock_redis.ping.return_value = True
         mock_from_url.return_value = mock_redis
 
-        with patch("app.core.config.get_settings") as mock_get_settings:
+        with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.redis_url = "redis://localhost:6379/10"
             mock_get_settings.return_value = mock_settings
@@ -232,7 +232,7 @@ class TestRedisClientIntegration:
         mock_redis.ping.side_effect = aioredis.ConnectionError("Cannot connect")
         mock_from_url.return_value = mock_redis
 
-        with patch("app.core.config.get_settings") as mock_get_settings:
+        with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.redis_url = "redis://nonexistent:6379/0"
             mock_get_settings.return_value = mock_settings
@@ -245,7 +245,7 @@ class TestRedisClientIntegration:
             is_connected = await ensure_redis_connection()
             assert is_connected is False
 
-    @patch("app.core.redis_client.get_redis")
+    @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
     async def test_multiple_health_checks(self, mock_get_redis):
         """Test multiple health checks use same Redis instance"""

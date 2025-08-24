@@ -19,7 +19,7 @@ Implement `BaseBatchProvider` strategy interface and a registry mechanism to dyn
 
 ## Technical Notes
 
-- Keep provider modules under `app/llm/batch/providers/`.
+- Keep provider modules under `inference_core/llm/batch/providers/`.
 - Add `PROVIDER_NAME` constant per provider.
 
 ## Risks
