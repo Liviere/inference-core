@@ -169,7 +169,7 @@ def setup_routers(app: FastAPI) -> None:
 
     # Include main API router
     app.include_router(api_v1)
-    
+
     # Add metrics endpoint at root level (outside API versioning)
     app.include_router(metrics.router)
 
@@ -203,7 +203,3 @@ def setup_middleware(app: FastAPI, settings) -> None:
                 settings.cors_origins if settings.cors_origins != ["*"] else ["*"]
             ),
         )
-
-
-# Create app instance
-app = create_application()

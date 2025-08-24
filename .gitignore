@@ -176,3 +176,6 @@ reports/
 # Test environment file (excluded from repo)
 docker/tests/.env.test
 *.env.test
+
+# Ignore main.py if main_factory.py is used
+app/main.py

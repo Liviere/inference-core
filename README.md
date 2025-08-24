@@ -21,17 +21,45 @@ poetry install
 
 ### Development
 
-To start the development server, run:
+This template now exposes only an application factory (`create_application`) in `app/main_factory.py`.
+You can run the API using Uvicorn (recommended) with the `--factory` flag so the callable is invoked
+to create a fresh FastAPI instance.
+
+Development (auto-reload):
 
 ```bash
-poetry run fastapi dev
+poetry run uvicorn app.main_factory:create_application --factory --reload --host 0.0.0.0 --port 8000
 ```
 
-### Serve the application
+### Production Run
 
 ```bash
-poetry run fastapi run
+poetry run uvicorn app.main_factory:create_application --factory --host 0.0.0.0 --port 8000
 ```
+
+Previous helper file `app/main.py` (with a module-level `app` variable) has been removed from version
+control to encourage consuming projects to instantiate the application explicitly. If you still prefer a
+single-file entrypoint locally, you can create (and keep untracked) a small `app/main.py` like:
+
+```python
+from app.main_factory import create_application
+
+app = create_application()
+```
+
+Because `app/main.py` is now in `.gitignore`, it will not be committed—ideal for local experiments.
+
+### Using as a Dependency (Embedding the Template)
+
+If another project depends on this template package, it can create an application instance:
+
+```python
+from app.main_factory import create_application
+
+api = create_application()
+```
+
+Then mount it (for example) inside a larger ASGI app or serve directly with Uvicorn as shown above.
 
 ## Docker Deployment
 
