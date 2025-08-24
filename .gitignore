@@ -183,3 +183,6 @@ celerybeat-schedule.*
 
 # Ignore main.py if main_factory.py is used
 inference_core/main.py
+
+# Poetry lock file
+poetry.lock
