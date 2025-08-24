@@ -177,5 +177,9 @@ reports/
 docker/tests/.env.test
 *.env.test
 
+
+# Celery beat schedule files
+celerybeat-schedule.*
+
 # Ignore main.py if main_factory.py is used
 app/main.py
