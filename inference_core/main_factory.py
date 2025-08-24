@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
             logging.error(f"❌ Failed to close database connections: {e}")
 
 
-def create_application() -> FastAPI:
+def create_application(external_routers: Dict[str, APIRouter] = None) -> FastAPI:
     """
     Create and configure FastAPI application
 
@@ -118,18 +118,15 @@ def create_application() -> FastAPI:
     ###################################
 
     # Configure API routers explicitly
-    setup_routers(app)
+    setup_routers(app, external_routers)
 
     # Mount simple static test assets (only in debug/development) for LLM streaming manual QA
     # These assets provide a lightweight in-browser UI to exercise SSE streaming endpoints.
     try:
         if settings.debug:
-            from importlib import resources
-
-            frontend_dir = resources.files("inference_core").joinpath("frontend")
             app.mount(
                 "/static",
-                StaticFiles(directory=str(frontend_dir), html=True),
+                StaticFiles(directory="app/frontend", html=True),
                 name="static",
             )
     except Exception as e:
@@ -153,7 +150,7 @@ def create_application() -> FastAPI:
     return app
 
 
-def setup_routers(app: FastAPI) -> None:
+def setup_routers(app: FastAPI, external_routers: Dict[str, APIRouter] = None) -> None:
     """
     Setup all application routers explicitly
 
@@ -179,6 +176,11 @@ def setup_routers(app: FastAPI) -> None:
     # Future: Add other API versions here
     # api_v2 = APIRouter(prefix="/api/v2")
     # app.include_router(api_v2)
+
+    # Include any external routers passed to the function
+    if external_routers:
+        for prefix, router in external_routers.items():
+            app.include_router(router, prefix=prefix)
 
 
 def setup_middleware(app: FastAPI, settings) -> None:
