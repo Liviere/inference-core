@@ -260,7 +260,11 @@ class AuthUserFlow(BaseUser):
                 try:
                     data = response.json()
                     access_token = data.get("access_token")
-                    self.refresh_token = data.get("refresh_token")
+                    
+                    # Extract refresh token from cookies instead of JSON response
+                    refresh_token_cookie = response.cookies.get("refresh_token")
+                    if refresh_token_cookie:
+                        self.refresh_token = refresh_token_cookie
 
                     if access_token:
                         self.auth_headers = {"Authorization": f"Bearer {access_token}"}
@@ -372,11 +376,10 @@ class AuthUserFlow(BaseUser):
         if not self.refresh_token:
             return False
 
-        refresh_data = {"refresh_token": self.refresh_token}
-
+        # Set refresh token as cookie instead of JSON body
         with self.client.post(
             "/api/v1/auth/refresh",
-            json=refresh_data,
+            cookies={"refresh_token": self.refresh_token},
             catch_response=True,
             name="Auth - Refresh Tokens",
         ) as response:
@@ -384,12 +387,14 @@ class AuthUserFlow(BaseUser):
                 try:
                     data = response.json()
                     access_token = data.get("access_token")
-                    new_refresh_token = data.get("refresh_token")
+                    
+                    # Extract new refresh token from cookies
+                    new_refresh_token_cookie = response.cookies.get("refresh_token")
+                    if new_refresh_token_cookie:
+                        self.refresh_token = new_refresh_token_cookie
 
                     if access_token:
                         self.auth_headers = {"Authorization": f"Bearer {access_token}"}
-                        if new_refresh_token:
-                            self.refresh_token = new_refresh_token
                         return True
                     else:
                         response.failure("No access token in refresh response")
@@ -406,11 +411,10 @@ class AuthUserFlow(BaseUser):
         if not self.refresh_token:
             return True  # Already logged out
 
-        logout_data = {"refresh_token": self.refresh_token}
-
+        # Use cookie instead of JSON body for logout
         with self.client.post(
             "/api/v1/auth/logout",
-            json=logout_data,
+            cookies={"refresh_token": self.refresh_token},
             catch_response=True,
             name="Auth - Logout",
         ) as response:
