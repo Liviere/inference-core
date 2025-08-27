@@ -7,7 +7,7 @@ and session management.
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPBearer
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from inference_core.core.security import (
     verify_password,
 )
 from inference_core.schemas.auth import (
+    AccessToken,
     LoginRequest,
     PasswordChange,
     PasswordResetConfirm,
@@ -84,17 +85,20 @@ async def register(
     return UserProfile.model_validate(user)
 
 
-@router.post("/login", response_model=Token)
-async def login(login_data: LoginRequest, db: AsyncSession = Depends(get_db)) -> Token:
+@router.post("/login", response_model=AccessToken)
+async def login(
+    login_data: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
+) -> AccessToken:
     """
-    Login user and return access tokens
+    Login user and return access token (refresh token set as HttpOnly cookie)
 
     Args:
         login_data: Login credentials
+        response: FastAPI response object for setting cookies
         db: Database session
 
     Returns:
-        Access and refresh tokens
+        Access token only (refresh token in cookie)
 
     Raises:
         HTTPException: If credentials are invalid
@@ -142,9 +146,18 @@ async def login(login_data: LoginRequest, db: AsyncSession = Depends(get_db)) ->
         # If Redis unavailable, we still return tokens (session-less fallback)
         pass
 
-    return Token(
-        access_token=access_token, refresh_token=refresh_token, token_type="bearer"
+    # Set refresh token as HttpOnly cookie
+    response.set_cookie(
+        key=settings.refresh_cookie_name,
+        value=refresh_token,
+        max_age=settings.refresh_cookie_max_age,
+        path=settings.refresh_cookie_path,
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
     )
+
+    return AccessToken(access_token=access_token, token_type="bearer")
 
 
 @router.get("/me", response_model=UserProfile)
@@ -296,19 +309,28 @@ async def reset_password(
     )
 
 
-@router.post("/refresh", response_model=Token)
+@router.post("/refresh", response_model=AccessToken)
 async def refresh_tokens(
-    payload: TokenRefresh,
-) -> Token:
+    request: Request, response: Response
+) -> AccessToken:
     """
-    Exchange a refresh token for a new access token and rotated refresh token.
+    Exchange a refresh token (from cookie) for a new access token and rotated refresh token.
     """
     settings = get_settings()
     store = RefreshSessionStore()
+    
+    # Extract refresh token from cookie
+    refresh_token = request.cookies.get(settings.refresh_cookie_name)
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Refresh token not found in cookie"
+        )
+    
     # Decode and validate that session exists
     try:
         decoded = jwt.decode(
-            payload.refresh_token,
+            refresh_token,
             settings.secret_key,
             algorithms=[settings.algorithm],
         )
@@ -349,30 +371,50 @@ async def refresh_tokens(
     except Exception:
         pass
 
-    return Token(
-        access_token=access_token, refresh_token=new_refresh, token_type="bearer"
+    # Set new refresh token as HttpOnly cookie
+    response.set_cookie(
+        key=settings.refresh_cookie_name,
+        value=new_refresh,
+        max_age=settings.refresh_cookie_max_age,
+        path=settings.refresh_cookie_path,
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
     )
+
+    return AccessToken(access_token=access_token, token_type="bearer")
 
 
 @router.post("/logout", response_model=SuccessResponse)
-async def logout(payload: TokenRefresh) -> SuccessResponse:
+async def logout(request: Request, response: Response) -> SuccessResponse:
     """
-    Logout current user
+    Logout current user by revoking refresh token session and clearing cookie
 
     Returns:
         Success response
     """
     settings = get_settings()
     store = RefreshSessionStore()
-    # Best-effort revoke of provided refresh token
-    try:
-        decoded = jwt.decode(
-            payload.refresh_token, settings.secret_key, algorithms=[settings.algorithm]
-        )
-        if decoded.get("type") == "refresh" and decoded.get("jti"):
-            await store.revoke(decoded["jti"])
-    except Exception:
-        pass
+    
+    # Extract refresh token from cookie
+    refresh_token = request.cookies.get(settings.refresh_cookie_name)
+    
+    # Best-effort revoke of refresh token if present
+    if refresh_token:
+        try:
+            decoded = jwt.decode(
+                refresh_token, settings.secret_key, algorithms=[settings.algorithm]
+            )
+            if decoded.get("type") == "refresh" and decoded.get("jti"):
+                await store.revoke(decoded["jti"])
+        except Exception:
+            pass
+    
+    # Clear the refresh token cookie
+    response.delete_cookie(
+        key=settings.refresh_cookie_name,
+        path=settings.refresh_cookie_path
+    )
 
     return SuccessResponse(
         success=True,

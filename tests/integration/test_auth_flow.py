@@ -27,12 +27,20 @@ async def test_register_login_me_requires_access_token(async_test_client):
     )
     assert login.status_code == 200
     tokens = login.json()
-    assert "access_token" in tokens and "refresh_token" in tokens
+    assert "access_token" in tokens
+    assert "refresh_token" not in tokens  # Should not be in JSON response anymore
+    assert tokens["token_type"] == "bearer"
+    
+    # Verify refresh token is set as cookie
+    cookies = login.cookies
+    assert "refresh_token" in cookies
 
-    # Calling /me with refresh token should fail (type enforcement)
+    # Calling /me with refresh token should fail (type enforcement) 
+    # Extract refresh token from cookie for this test
+    refresh_token_cookie = cookies["refresh_token"]
     r = await async_test_client.get(
         "/api/v1/auth/me",
-        headers={"Authorization": f"Bearer {tokens['refresh_token']}"},
+        headers={"Authorization": f"Bearer {refresh_token_cookie}"},
     )
     assert r.status_code == 401
 
@@ -62,7 +70,17 @@ async def test_refresh_and_logout_flow(async_test_client, monkeypatch):
         json={"username": "bob", "password": "Password123"},
     )
     assert login.status_code == 200
+    
+    # Verify login response structure (new cookie-based flow)
     tokens = login.json()
+    assert "access_token" in tokens
+    assert "refresh_token" not in tokens  # Should not be in response anymore
+    assert tokens["token_type"] == "bearer"
+    
+    # Verify refresh token is set as cookie
+    cookies = login.cookies
+    assert "refresh_token" in cookies
+    refresh_token_cookie = cookies["refresh_token"]
 
     # Monkeypatch RefreshSessionStore to avoid requiring Redis in tests
     from inference_core.services import refresh_session_store as rss
@@ -77,22 +95,45 @@ async def test_refresh_and_logout_flow(async_test_client, monkeypatch):
     monkeypatch.setattr(rss.RefreshSessionStore, "add", _noop)
     monkeypatch.setattr(rss.RefreshSessionStore, "revoke", _noop)
 
-    # Refresh
+    # Test refresh without cookie should fail (using a fresh client without cookies)
+    from httpx import AsyncClient, ASGITransport
+    app = async_test_client._transport.app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as fresh_client:
+        ref_no_cookie = await fresh_client.post("/api/v1/auth/refresh")
+        assert ref_no_cookie.status_code == 401
+        assert "Refresh token not found in cookie" in ref_no_cookie.json()["detail"]
+
+    # Refresh using cookie (no JSON body)
     ref = await async_test_client.post(
         "/api/v1/auth/refresh",
-        json={"refresh_token": tokens["refresh_token"]},
+        cookies={"refresh_token": refresh_token_cookie}
     )
     assert ref.status_code == 200
     new_tokens = ref.json()
-    assert new_tokens["access_token"] and new_tokens["refresh_token"]
+    assert "access_token" in new_tokens
+    assert "refresh_token" not in new_tokens  # Should not be in response
+    assert new_tokens["token_type"] == "bearer"
+    
+    # Verify new refresh token is set as cookie
+    new_refresh_cookies = ref.cookies
+    assert "refresh_token" in new_refresh_cookies
+    new_refresh_token_cookie = new_refresh_cookies["refresh_token"]
+    
+    # Verify token rotation (new token should be different)
+    assert new_refresh_token_cookie != refresh_token_cookie
 
-    # Logout (best-effort)
+    # Logout using cookie (no JSON body)
     lo = await async_test_client.post(
         "/api/v1/auth/logout",
-        json={"refresh_token": new_tokens["refresh_token"]},
+        cookies={"refresh_token": new_refresh_token_cookie}
     )
     assert lo.status_code == 200
     assert lo.json()["success"] is True
+    
+    # Test logout without cookie should still succeed (best-effort)
+    lo_no_cookie = await async_test_client.post("/api/v1/auth/logout")
+    assert lo_no_cookie.status_code == 200
+    assert lo_no_cookie.json()["success"] is True
 
 
 @pytest.mark.asyncio

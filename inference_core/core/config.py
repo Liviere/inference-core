@@ -247,6 +247,17 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(
         default=7, description="Refresh token expiration in days"
     )
+    
+    # Cookie settings for refresh tokens
+    refresh_cookie_name: str = Field(
+        default="refresh_token", description="Name of the refresh token cookie"
+    )
+    refresh_cookie_path: str = Field(
+        default="/api/v1/auth", description="Path scope for refresh token cookie"
+    )
+    refresh_cookie_samesite: str = Field(
+        default="lax", description="SameSite setting for refresh token cookie"
+    )
 
     ###################################
     #              REDIS              #
@@ -273,6 +284,16 @@ class Settings(BaseSettings):
     @property
     def is_testing(self) -> bool:
         return self.environment == "testing"
+
+    @property
+    def refresh_cookie_secure(self) -> bool:
+        """Determine if refresh token cookie should be secure (HTTPS only)"""
+        return self.is_production
+
+    @property
+    def refresh_cookie_max_age(self) -> int:
+        """Calculate max age for refresh token cookie in seconds"""
+        return self.refresh_token_expire_days * 24 * 60 * 60
 
     @property
     def is_sqlite(self) -> bool:

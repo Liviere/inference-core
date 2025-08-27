@@ -25,6 +25,13 @@ class Token(BaseModel):
     token_type: str = Field(default="bearer", description="Token type")
 
 
+class AccessToken(BaseModel):
+    """Access token only response schema (for cookie-based refresh token flow)"""
+
+    access_token: str = Field(..., description="Access token")
+    token_type: str = Field(default="bearer", description="Token type")
+
+
 class TokenRefresh(BaseModel):
     """Token refresh request schema"""
 
