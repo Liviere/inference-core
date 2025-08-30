@@ -32,6 +32,22 @@ class AccessToken(BaseModel):
     token_type: str = Field(default="bearer", description="Token type")
 
 
+class RefreshIntrospection(BaseModel):
+    """Result of a non-rotating refresh token introspection.
+
+    Provides minimal session information to allow frontend middleware / SSR
+    decisions without triggering rotation (avoids race conditions when multiple
+    concurrent requests hit /auth/refresh).
+    """
+
+    active: bool = Field(..., description="Whether the refresh token session is valid")
+    user_id: Optional[str] = Field(None, description="User ID if valid")
+    expires_at: Optional[int] = Field(
+        None,
+        description="Unix timestamp (seconds) when refresh token expires (if available)",
+    )
+
+
 class TokenRefresh(BaseModel):
     """Token refresh request schema"""
 

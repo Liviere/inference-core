@@ -247,13 +247,13 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(
         default=7, description="Refresh token expiration in days"
     )
-    
+
     # Cookie settings for refresh tokens
     refresh_cookie_name: str = Field(
         default="refresh_token", description="Name of the refresh token cookie"
     )
     refresh_cookie_path: str = Field(
-        default="/api/v1/auth", description="Path scope for refresh token cookie"
+        default="/", description="Path scope for refresh token cookie"
     )
     refresh_cookie_samesite: str = Field(
         default="lax", description="SameSite setting for refresh token cookie"

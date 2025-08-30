@@ -25,9 +25,8 @@ from inference_core.schemas.auth import (
     PasswordChange,
     PasswordResetConfirm,
     PasswordResetRequest,
+    RefreshIntrospection,
     RegisterRequest,
-    Token,
-    TokenRefresh,
     UserProfile,
     UserProfileUpdate,
 )
@@ -310,23 +309,21 @@ async def reset_password(
 
 
 @router.post("/refresh", response_model=AccessToken)
-async def refresh_tokens(
-    request: Request, response: Response
-) -> AccessToken:
+async def refresh_tokens(request: Request, response: Response) -> AccessToken:
     """
     Exchange a refresh token (from cookie) for a new access token and rotated refresh token.
     """
     settings = get_settings()
     store = RefreshSessionStore()
-    
+
     # Extract refresh token from cookie
     refresh_token = request.cookies.get(settings.refresh_cookie_name)
     if not refresh_token:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Refresh token not found in cookie"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token not found in cookie",
         )
-    
+
     # Decode and validate that session exists
     try:
         decoded = jwt.decode(
@@ -385,6 +382,41 @@ async def refresh_tokens(
     return AccessToken(access_token=access_token, token_type="bearer")
 
 
+@router.get("/introspect", response_model=RefreshIntrospection)
+async def introspect_refresh_token(request: Request) -> RefreshIntrospection:
+    """Validate refresh token cookie WITHOUT rotating it.
+
+    Returns a minimal payload indicating whether the refresh token session is
+    active. Does NOT issue new tokens or revoke the existing one – safe for
+    high-frequency middleware / SSR checks.
+    """
+    settings = get_settings()
+    store = RefreshSessionStore()
+
+    refresh_token = request.cookies.get(settings.refresh_cookie_name)
+    if not refresh_token:
+        return RefreshIntrospection(active=False)
+
+    try:
+        decoded = jwt.decode(
+            refresh_token,
+            settings.secret_key,
+            algorithms=[settings.algorithm],
+        )
+        if decoded.get("type") != "refresh":
+            return RefreshIntrospection(active=False)
+        jti = decoded.get("jti")
+        sub = decoded.get("sub")
+        exp = decoded.get("exp")
+        if not jti or not sub or not exp:
+            return RefreshIntrospection(active=False)
+        if not await store.exists(jti):
+            return RefreshIntrospection(active=False)
+        return RefreshIntrospection(active=True, user_id=str(sub), expires_at=int(exp))
+    except Exception:
+        return RefreshIntrospection(active=False)
+
+
 @router.post("/logout", response_model=SuccessResponse)
 async def logout(request: Request, response: Response) -> SuccessResponse:
     """
@@ -395,10 +427,10 @@ async def logout(request: Request, response: Response) -> SuccessResponse:
     """
     settings = get_settings()
     store = RefreshSessionStore()
-    
+
     # Extract refresh token from cookie
     refresh_token = request.cookies.get(settings.refresh_cookie_name)
-    
+
     # Best-effort revoke of refresh token if present
     if refresh_token:
         try:
@@ -409,11 +441,10 @@ async def logout(request: Request, response: Response) -> SuccessResponse:
                 await store.revoke(decoded["jti"])
         except Exception:
             pass
-    
+
     # Clear the refresh token cookie
     response.delete_cookie(
-        key=settings.refresh_cookie_name,
-        path=settings.refresh_cookie_path
+        key=settings.refresh_cookie_name, path=settings.refresh_cookie_path
     )
 
     return SuccessResponse(
