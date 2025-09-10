@@ -1,0 +1,20 @@
+email:
+  default_host: test
+  hosts:
+    test:
+      host: smtp.example.com
+      port: 587
+      use_ssl: false
+      use_starttls: true
+      username: test@example.com
+      password_env: TEST_SMTP_PASSWORD
+      from_email: no-reply@example.com
+      from_name: Test Service
+      timeout: 10
+      verify_hostname: true
+      rate_limit_per_minute: 60
+      max_attachment_mb: 10
+
+settings:
+  app_public_url: http://localhost:8000
+  template_directory: templates/email
