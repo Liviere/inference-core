@@ -6,6 +6,7 @@ import logging
 import os
 
 from celery import Celery
+from dotenv import load_dotenv
 
 from inference_core.celery.config import CeleryConfig
 from inference_core.core.config import get_settings
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 def create_celery_app() -> Celery:
     """Create and configure Celery application"""
+    load_dotenv()
+    load_dotenv("../../.env", override=True)
     settings = get_settings()
 
     celery_app = Celery(settings.app_name)
