@@ -4,11 +4,16 @@ Authentication Service
 Business logic for user authentication, registration, and session management.
 """
 
+import logging
+import threading
+from pathlib import Path
 from typing import Optional
 
+import jinja2
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.core.config import get_settings
 from inference_core.core.security import (
     get_password_hash,
     security_manager,
@@ -16,6 +21,16 @@ from inference_core.core.security import (
 )
 from inference_core.database.sql.models.user import User
 from inference_core.schemas.auth import RegisterRequest
+
+# Import email functionality with fallback
+try:
+    from inference_core.celery.tasks.email_tasks import send_email_async, encode_attachment
+    from inference_core.services.email_service import get_email_service
+    EMAIL_AVAILABLE = True
+except ImportError:
+    EMAIL_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -212,11 +227,115 @@ class AuthService:
         # Generate reset token
         reset_token = security_manager.generate_password_reset_token(email)
 
-        # In a real application, send email with reset link
-        # For now, just log the token (remove in production)
-        print(f"Password reset token for {email}: {reset_token}")
+        # Send password reset email
+        try:
+            await self._send_password_reset_email(email, reset_token)
+            logger.info(f"Password reset email sent to {email}")
+        except Exception as e:
+            logger.error(f"Failed to send password reset email to {email}: {e}")
+            # Still return True to not reveal if email exists
+            # In production, you might want to retry or alert admins
 
         return True
+
+    async def _send_password_reset_email(self, email: str, reset_token: str):
+        """
+        Send password reset email using email service
+        
+        Args:
+            email: User email address
+            reset_token: Password reset token
+        """
+        if not EMAIL_AVAILABLE:
+            logger.warning("Email functionality not available, logging reset token instead")
+            print(f"Password reset token for {email}: {reset_token}")
+            return
+
+        # Build reset URL
+        settings = get_settings()
+        app_url = getattr(settings, 'app_public_url', 'http://localhost:8000')
+        reset_url = f"{app_url}/reset-password?token={reset_token}"
+        
+        # Template variables
+        template_vars = {
+            'reset_url': reset_url,
+            'expiry_hours': 24,  # Based on token expiration in security.py
+            'email': email,
+        }
+        
+        # Render email templates
+        text_content = self._render_template('reset_password.txt', template_vars)
+        html_content = self._render_template('reset_password.html', template_vars)
+        
+        # Try to send via Celery first (async), fallback to direct sending
+        try:
+            if EMAIL_AVAILABLE:
+                # Send asynchronously via Celery
+                task = send_email_async(
+                    to=email,
+                    subject="Password Reset Request - Inference Core",
+                    text=text_content,
+                    html=html_content,
+                )
+                logger.info(f"Password reset email task queued: {task.id}")
+            else:
+                raise ImportError("Email functionality not available")
+                
+        except Exception as e:
+            logger.warning(f"Failed to queue email via Celery: {e}, trying direct send")
+            
+            # Fallback: send email directly in a thread to avoid blocking
+            email_service = get_email_service()
+            if email_service:
+                def send_direct():
+                    try:
+                        message_id = email_service.send_email(
+                            to=email,
+                            subject="Password Reset Request - Inference Core",
+                            text=text_content,
+                            html=html_content,
+                        )
+                        logger.info(f"Password reset email sent directly: {message_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to send password reset email directly: {e}")
+                
+                thread = threading.Thread(target=send_direct, daemon=True)
+                thread.start()
+            else:
+                logger.warning("Email service not available, logging reset token instead")
+                print(f"Password reset token for {email}: {reset_token}")
+    
+    def _render_template(self, template_name: str, variables: dict) -> str:
+        """
+        Render email template with Jinja2
+        
+        Args:
+            template_name: Template file name
+            variables: Template variables
+            
+        Returns:
+            Rendered template content
+        """
+        try:
+            # Get template directory
+            template_dir = Path(__file__).parent.parent.parent / "templates" / "email"
+            
+            # Set up Jinja2 environment
+            env = jinja2.Environment(
+                loader=jinja2.FileSystemLoader(template_dir),
+                autoescape=jinja2.select_autoescape(['html', 'xml'])
+            )
+            
+            # Load and render template
+            template = env.get_template(template_name)
+            return template.render(**variables)
+            
+        except Exception as e:
+            logger.error(f"Failed to render email template {template_name}: {e}")
+            # Fallback to basic text
+            if 'reset_url' in variables:
+                return f"Password reset link: {variables['reset_url']}"
+            return "Password reset requested. Please check with administrator."
 
     async def reset_password(self, token: str, new_password: str) -> bool:
         """

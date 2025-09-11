@@ -72,6 +72,101 @@ This project includes Celery for background task processing with Redis as the de
 
 For detailed instructions on how to set up and use Celery, see [inference_core/celery/README.md](inference_core/celery/README.md).
 
+## Email Delivery Service
+
+The application includes a production-grade email delivery service built on Python's `smtplib` with Celery for asynchronous processing. It supports:
+
+- **Multiple SMTP providers** with fallback support (Gmail, Office 365, Mailgun, custom)
+- **Secure transport** (SSL/STARTTLS) with hostname verification
+- **HTML and text email** with Jinja2 templating
+- **File attachments** with configurable size limits
+- **Celery task queuing** with retry/backoff on transient failures
+- **Environment-based secrets** (no passwords in configuration files)
+
+### Quick Setup
+
+1. **Copy email configuration template:**
+   ```bash
+   cp email_config.example.yaml email_config.yaml
+   ```
+
+2. **Configure SMTP credentials in `.env`:**
+   ```bash
+   # Primary SMTP (e.g., Gmail)
+   SMTP_PRIMARY_USERNAME=your-email@gmail.com
+   SMTP_PRIMARY_PASSWORD=your-app-password
+   
+   # Public URL for email links
+   APP_PUBLIC_URL=https://yourdomain.com
+   ```
+
+3. **Start mail queue worker:**
+   ```bash
+   # In a separate terminal
+   poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info --queues=mail
+   ```
+
+### Email Configuration
+
+Edit `email_config.yaml` to configure SMTP hosts. The configuration supports:
+
+- **Multi-host setup** with primary/backup providers
+- **Environment variable resolution** for usernames: `${SMTP_USERNAME}`
+- **Secure password handling** via environment variables only
+- **Per-host settings** (timeouts, rate limits, attachment limits)
+
+Example minimal configuration:
+```yaml
+email:
+  default_host: primary
+  hosts:
+    primary:
+      host: smtp.gmail.com
+      port: 465
+      use_ssl: true
+      username: ${SMTP_PRIMARY_USERNAME}
+      password_env: SMTP_PRIMARY_PASSWORD
+      from_email: no-reply@example.com
+      from_name: Your App Name
+```
+
+### Usage Examples
+
+**Programmatic email sending:**
+```python
+from inference_core.services.email_service import get_email_service
+
+email_service = get_email_service()
+if email_service:
+    message_id = email_service.send_email(
+        to="user@example.com",
+        subject="Welcome!",
+        text="Welcome to our service.",
+        html="<p>Welcome to our service.</p>"
+    )
+```
+
+**Asynchronous via Celery:**
+```python
+from inference_core.celery.tasks.email_tasks import send_email_async
+
+task = send_email_async(
+    to="user@example.com",
+    subject="Password Reset",
+    text="Click here to reset your password: ...",
+    html="<p>Click <a href='...'>here</a> to reset your password.</p>"
+)
+```
+
+**Password reset emails** are automatically sent when users request password resets via the `/auth/reset-password` endpoint.
+
+### Monitoring
+
+- **Structured logging** with message IDs, recipient counts, and timing
+- **Celery task monitoring** via Flower: http://localhost:5555
+- **Error tracking** with automatic retry on transient failures
+- **Sentry integration** for error reporting and performance monitoring
+
 ## Testing
 
 The project includes a test suite with fixtures for database testing and API integration testing.
@@ -239,6 +334,14 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `LLM_MAX_CONCURRENT`          | Max concurrent LLM requests (fallback mode)                      | `5`                                                          | LLM                 |
 | `LLM_ENABLE_MONITORING`       | Enable basic LLM monitoring hooks (fallback mode)                | `true`                                                       | LLM                 |
 | `RUN_LLM_REAL_TESTS`          | Opt-in to run real-chain tests hitting providers in CI/local     | `0`                                                          | Tests               |
+| `APP_PUBLIC_URL`              | Public URL for email links (password reset, etc.)                | `http://localhost:8000`                                     | Email               |
+| `EMAIL_CONFIG_PATH`           | Path to email configuration YAML file                            | `email_config.yaml`                                         | Email               |
+| `SMTP_PRIMARY_USERNAME`       | Primary SMTP username (supports ${} env var syntax)              | None                                                         | Email               |
+| `SMTP_PRIMARY_PASSWORD`       | Primary SMTP password                                            | None                                                         | Email               |
+| `SMTP_BACKUP_USERNAME`        | Backup SMTP username                                             | None                                                         | Email               |
+| `SMTP_BACKUP_PASSWORD`        | Backup SMTP password                                             | None                                                         | Email               |
+| `SMTP_O365_USERNAME`          | Office 365 SMTP username                                        | None                                                         | Email               |
+| `SMTP_O365_PASSWORD`          | Office 365 SMTP password                                        | None                                                         | Email               |
 
 ## Features
 

@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     debug: bool = Field(default=True, description="Debug mode")
     host: str = Field(default="0.0.0.0", description="Server host")
     port: int = Field(default=8000, description="Server port")
+    app_public_url: str = Field(
+        default="http://localhost:8000", 
+        description="Public URL for the application (used in emails)"
+    )
 
     ###################################
     #           CORS SETTINGS         #

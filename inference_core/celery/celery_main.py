@@ -30,6 +30,7 @@ def create_celery_app() -> Celery:
         include=[
             "inference_core.celery.tasks.llm_tasks",
             "inference_core.celery.tasks.batch_tasks",
+            "inference_core.celery.tasks.email_tasks",
         ]
     )
 

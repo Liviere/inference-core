@@ -383,26 +383,64 @@ class TestAuthService:
         mock_db.commit.assert_not_called()
 
     @patch("inference_core.services.auth_service.security_manager")
+    @patch("inference_core.services.auth_service.send_email_async")
+    @patch("inference_core.services.auth_service.get_settings")
     @pytest.mark.asyncio
-    async def test_request_password_reset_user_exists(self, mock_security_manager):
-        """Test request_password_reset when user exists"""
+    async def test_request_password_reset_user_exists_with_email(self, mock_get_settings, mock_send_email, mock_security_manager):
+        """Test request_password_reset when user exists and email is available"""
         mock_db = AsyncMock()
         mock_result = MagicMock()
         mock_user = MagicMock()
         mock_user.email = "test@example.com"
         mock_result.scalar_one_or_none.return_value = mock_user
         mock_db.execute.return_value = mock_result
-        mock_security_manager.generate_password_reset_token.return_value = (
-            "reset_token_123"
-        )
+        mock_security_manager.generate_password_reset_token.return_value = "reset_token_123"
+        
+        # Mock settings
+        mock_settings = MagicMock()
+        mock_settings.app_public_url = "http://localhost:8000"
+        mock_get_settings.return_value = mock_settings
+        
+        # Mock email task
+        mock_task = MagicMock()
+        mock_task.id = "task-123"
+        mock_send_email.return_value = mock_task
 
         service = AuthService(mock_db)
         result = await service.request_password_reset("test@example.com")
 
         assert result is True
-        mock_security_manager.generate_password_reset_token.assert_called_once_with(
-            "test@example.com"
-        )
+        mock_security_manager.generate_password_reset_token.assert_called_once_with("test@example.com")
+        
+        # Verify email was sent
+        mock_send_email.assert_called_once()
+        call_args = mock_send_email.call_args
+        assert call_args.kwargs["to"] == "test@example.com"
+        assert "Password Reset Request" in call_args.kwargs["subject"]
+        assert "reset_token_123" in call_args.kwargs["text"]
+
+    @patch("inference_core.services.auth_service.security_manager")
+    @patch("inference_core.services.auth_service.EMAIL_AVAILABLE", False)
+    @pytest.mark.asyncio
+    async def test_request_password_reset_user_exists_no_email(self, mock_security_manager, capsys):
+        """Test request_password_reset when user exists but email not available"""
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_user = MagicMock()
+        mock_user.email = "test@example.com"
+        mock_result.scalar_one_or_none.return_value = mock_user
+        mock_db.execute.return_value = mock_result
+        mock_security_manager.generate_password_reset_token.return_value = "reset_token_123"
+
+        service = AuthService(mock_db)
+        result = await service.request_password_reset("test@example.com")
+
+        assert result is True
+        mock_security_manager.generate_password_reset_token.assert_called_once_with("test@example.com")
+        
+        # Should print token when email not available
+        captured = capsys.readouterr()
+        assert "reset_token_123" in captured.out
 
     @patch("inference_core.services.auth_service.security_manager")
     @pytest.mark.asyncio

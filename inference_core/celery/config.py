@@ -44,6 +44,7 @@ class CeleryConfig:
     task_routes = {
         "inference_core.celery.tasks.llm_tasks.*": {"queue": "llm_tasks"},
         "inference_core.celery.tasks.batch_tasks.*": {"queue": "batch_tasks"},
+        "inference_core.celery.tasks.email_tasks.*": {"queue": "mail"},
     }
 
     task_default_queue = "default"
@@ -51,6 +52,7 @@ class CeleryConfig:
         Queue("default", Exchange("default"), routing_key="default"),
         Queue("llm_tasks", Exchange("llm_tasks"), routing_key="llm_tasks"),
         Queue("batch_tasks", Exchange("batch_tasks"), routing_key="batch_tasks"),
+        Queue("mail", Exchange("mail"), routing_key="mail"),
     ]
 
     # Monitoring
