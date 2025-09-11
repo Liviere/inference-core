@@ -141,6 +141,7 @@ def create_application(external_routers: Dict[str, APIRouter] = None) -> FastAPI
             "app_name": settings.app_name,
             "app_description": settings.app_description,
             "app_title": settings.app_title,
+            "app_public_url": settings.app_public_url,
             "version": settings.app_version,
             "environment": settings.environment,
             "debug": settings.debug,
