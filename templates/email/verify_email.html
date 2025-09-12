@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Verification</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .content {
+            margin-bottom: 30px;
+        }
+        .button {
+            display: inline-block;
+            background-color: #27ae60;
+            color: white;
+            text-decoration: none;
+            padding: 12px 30px;
+            border-radius: 5px;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+        .button:hover {
+            background-color: #229954;
+        }
+        .warning {
+            background-color: #e8f5e8;
+            border: 1px solid #c3e6c3;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+            color: #2d5a2d;
+        }
+        .footer {
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+            margin-top: 30px;
+            border-top: 1px solid #eee;
+            padding-top: 20px;
+        }
+        .security-note {
+            font-size: 14px;
+            color: #666;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">Inference Core</div>
+            <h1>Welcome! Please verify your email</h1>
+        </div>
+        
+        <div class="content">
+            <p>Hello {{ user_name }},</p>
+            
+            <p>Welcome to Inference Core! Please verify your email address to complete your account setup and start using our services.</p>
+            
+            <p>To verify your email, please click the button below:</p>
+            
+            <div style="text-align: center;">
+                <a href="{{ verify_url }}" class="button">Verify My Email Address</a>
+            </div>
+            
+            <p>Or copy and paste this link into your browser:</p>
+            <p style="word-break: break-all; background-color: #f8f9fa; padding: 10px; border-radius: 4px; font-family: monospace;">{{ verify_url }}</p>
+            
+            <div class="warning">
+                <strong>Important:</strong> This link will expire in {{ expiry_minutes }} minutes for your security.
+            </div>
+            
+            <div class="security-note">
+                <p><strong>Didn't create this account?</strong> If you did not create this account, please ignore this email.</p>
+                
+                <p><strong>Security tip:</strong> For your protection, please do not reply to this email or share this link with anyone.</p>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>This email was sent automatically by Inference Core.</p>
+            <p>Please do not reply to this email.</p>
+        </div>
+    </div>
+</body>
+</html>

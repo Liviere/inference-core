@@ -99,8 +99,8 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0", description="Server host")
     port: int = Field(default=8000, description="Server port")
     app_public_url: str = Field(
-        default="http://localhost:8000", 
-        description="Public URL for the application (used in emails)"
+        default="http://localhost:8000",
+        description="Public URL for the application (used in emails)",
     )
 
     ###################################
@@ -261,6 +261,32 @@ class Settings(BaseSettings):
     )
     refresh_cookie_samesite: str = Field(
         default="lax", description="SameSite setting for refresh token cookie"
+    )
+
+    # User activation and verification settings
+    auth_register_default_active: bool = Field(
+        default=True,
+        description="If false, newly registered users are inactive by default",
+    )
+    auth_send_verification_email_on_register: bool = Field(
+        default=False, description="If true, send verification email after registration"
+    )
+    auth_login_require_active: bool = Field(
+        default=True, description="If true, login is denied for inactive users"
+    )
+    auth_login_require_verified: bool = Field(
+        default=False, description="If true, login is denied for unverified users"
+    )
+    auth_email_verification_token_ttl_minutes: int = Field(
+        default=60, description="Token lifetime for email verification links in minutes"
+    )
+    auth_email_verification_url_base: Optional[str] = Field(
+        default=None,
+        description="Base URL for verification links (if not set, use backend endpoint)",
+    )
+    auth_email_verification_makes_active: bool = Field(
+        default=True,
+        description="If true, verifying email also activates the user",
     )
 
     ###################################

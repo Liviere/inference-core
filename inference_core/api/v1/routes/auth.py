@@ -5,6 +5,7 @@ FastAPI endpoints for user authentication, registration,
 and session management.
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -21,6 +22,8 @@ from inference_core.core.security import (
 )
 from inference_core.schemas.auth import (
     AccessToken,
+    EmailVerificationRequest,
+    EmailVerificationConfirm,
     LoginRequest,
     PasswordChange,
     PasswordResetConfirm,
@@ -36,6 +39,7 @@ from inference_core.services.refresh_session_store import RefreshSessionStore
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
+logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -73,13 +77,24 @@ async def register(
         )
 
     # Create new user
+    settings = get_settings()
     user = await auth_service.create_user(
         username=user_data.username,
         email=user_data.email,
         password=user_data.password,
         first_name=user_data.first_name,
         last_name=user_data.last_name,
+        is_active=settings.auth_register_default_active,  # Use config setting
     )
+
+    # Send verification email if enabled
+    if settings.auth_send_verification_email_on_register:
+        try:
+            verification_token = auth_service.create_email_verification_token(str(user.id))
+            await auth_service.send_verification_email(user, verification_token)
+        except Exception as e:
+            # Log error but don't fail registration
+            logger.error(f"Failed to send verification email during registration: {e}")
 
     return UserProfile.model_validate(user)
 
@@ -117,9 +132,16 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not user.is_active:
+    # Check if user is active (existing behavior, now configurable)
+    if settings.auth_login_require_active and not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user"
+        )
+    
+    # Check if user email is verified (new behavior)
+    if settings.auth_login_require_verified and not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email not verified"
         )
 
     # Create access token
@@ -450,5 +472,66 @@ async def logout(request: Request, response: Response) -> SuccessResponse:
     return SuccessResponse(
         success=True,
         message="Logged out successfully",
+        timestamp=str(datetime.now(UTC).isoformat()),
+    )
+
+
+@router.post("/verify-email/request", response_model=SuccessResponse)
+async def request_verification_email(
+    request_data: EmailVerificationRequest, db: AsyncSession = Depends(get_db)
+) -> SuccessResponse:
+    """
+    Request email verification for user
+
+    Args:
+        request_data: Email verification request data
+        db: Database session
+
+    Returns:
+        Success response
+    """
+    auth_service = AuthService(db)
+
+    # Send verification email
+    await auth_service.request_verification_email(request_data.email)
+
+    return SuccessResponse(
+        success=True,
+        message="Verification email sent if account exists",
+        timestamp=str(datetime.now(UTC).isoformat()),
+    )
+
+
+@router.post("/verify-email", response_model=SuccessResponse)
+async def verify_email(
+    verification_data: EmailVerificationConfirm, db: AsyncSession = Depends(get_db)
+) -> SuccessResponse:
+    """
+    Verify user email with token
+
+    Args:
+        verification_data: Email verification confirmation data
+        db: Database session
+
+    Returns:
+        Success response
+
+    Raises:
+        HTTPException: If token is invalid or expired
+    """
+    auth_service = AuthService(db)
+
+    # Verify email
+    success = await auth_service.verify_email_with_token(verification_data.token)
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
+    return SuccessResponse(
+        success=True,
+        message="Email verified successfully",
         timestamp=str(datetime.now(UTC).isoformat()),
     )

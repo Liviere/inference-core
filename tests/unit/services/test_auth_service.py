@@ -637,3 +637,163 @@ class TestAuthServiceIntegration:
         mock_verify_password.assert_called_once_with(
             "password123", "hashed_password_123"
         )
+
+    def test_create_email_verification_token(self):
+        """Test email verification token creation"""
+        mock_db = AsyncMock()
+        service = AuthService(mock_db)
+        
+        user_id = "12345"
+        token = service.create_email_verification_token(user_id)
+        
+        assert isinstance(token, str)
+        assert len(token) > 0
+
+    @patch("inference_core.services.auth_service.security_manager")
+    @pytest.mark.asyncio
+    async def test_verify_email_with_token_success(self, mock_security_manager):
+        """Test successful email verification with valid token"""
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = "12345"
+        mock_user.is_verified = False
+        mock_result.scalar_one_or_none.return_value = mock_user
+        mock_db.execute.return_value = mock_result
+        mock_security_manager.verify_email_verification_token.return_value = "12345"
+
+        service = AuthService(mock_db)
+        result = await service.verify_email_with_token("valid_token")
+
+        assert result is True
+        assert mock_user.is_verified is True
+        mock_db.commit.assert_called_once()
+
+    @patch("inference_core.services.auth_service.security_manager")
+    @pytest.mark.asyncio
+    async def test_verify_email_with_token_invalid_token(self, mock_security_manager):
+        """Test email verification with invalid token"""
+        mock_db = AsyncMock()
+        mock_security_manager.verify_email_verification_token.return_value = None
+
+        service = AuthService(mock_db)
+        result = await service.verify_email_with_token("invalid_token")
+
+        assert result is False
+        mock_db.execute.assert_not_called()
+
+    @patch("inference_core.services.auth_service.security_manager")
+    @pytest.mark.asyncio
+    async def test_verify_email_with_token_user_not_found(self, mock_security_manager):
+        """Test email verification when user doesn't exist"""
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+        mock_security_manager.verify_email_verification_token.return_value = "12345"
+
+        service = AuthService(mock_db)
+        result = await service.verify_email_with_token("valid_token")
+
+        assert result is False
+        mock_db.commit.assert_not_called()
+
+    @patch("inference_core.services.auth_service.security_manager")
+    @pytest.mark.asyncio
+    async def test_verify_email_with_token_idempotent(self, mock_security_manager):
+        """Test that email verification is idempotent (no error if already verified)"""
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = "12345"
+        mock_user.is_verified = True  # Already verified
+        mock_result.scalar_one_or_none.return_value = mock_user
+        mock_db.execute.return_value = mock_result
+        mock_security_manager.verify_email_verification_token.return_value = "12345"
+
+        service = AuthService(mock_db)
+        result = await service.verify_email_with_token("valid_token")
+
+        assert result is True
+        assert mock_user.is_verified is True
+        mock_db.commit.assert_called_once()
+
+    @patch("inference_core.services.auth_service.send_email_async")
+    @patch("inference_core.services.auth_service.get_settings")
+    @patch("inference_core.services.auth_service.EMAIL_AVAILABLE", True)
+    @pytest.mark.asyncio
+    async def test_send_verification_email_with_frontend_url(self, mock_get_settings, mock_send_email):
+        """Test sending verification email with frontend URL configured"""
+        mock_db = AsyncMock()
+        mock_user = MagicMock()
+        mock_user.email = "test@example.com"
+        mock_user.full_name = "Test User"
+        
+        mock_settings = MagicMock()
+        mock_settings.auth_email_verification_url_base = "https://example.com/verify"
+        mock_settings.auth_email_verification_token_ttl_minutes = 60
+        mock_get_settings.return_value = mock_settings
+        
+        mock_task = MagicMock()
+        mock_send_email.return_value = mock_task
+
+        service = AuthService(mock_db)
+        await service.send_verification_email(mock_user, "verification_token_123")
+
+        mock_send_email.assert_called_once()
+        call_args = mock_send_email.call_args
+        assert call_args.kwargs["to"] == "test@example.com"
+        assert "Verify your email address" in call_args.kwargs["subject"]
+        assert "https://example.com/verify?token=verification_token_123" in call_args.kwargs["text"]
+
+    @patch("inference_core.services.auth_service.get_settings")
+    @patch("inference_core.services.auth_service.EMAIL_AVAILABLE", False)
+    @pytest.mark.asyncio
+    async def test_send_verification_email_no_email_service(self, mock_get_settings, capsys):
+        """Test sending verification email when email service not available"""
+        mock_db = AsyncMock()
+        mock_user = MagicMock()
+        mock_user.email = "test@example.com"
+        mock_user.full_name = "Test User"
+
+        service = AuthService(mock_db)
+        await service.send_verification_email(mock_user, "verification_token_123")
+
+        # Should print token when email not available
+        captured = capsys.readouterr()
+        assert "verification_token_123" in captured.out
+
+    @pytest.mark.asyncio
+    async def test_request_verification_email_user_exists(self):
+        """Test requesting verification email when user exists"""
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = "12345"
+        mock_user.email = "test@example.com"
+        mock_result.scalar_one_or_none.return_value = mock_user
+        mock_db.execute.return_value = mock_result
+
+        service = AuthService(mock_db)
+        # Mock the send_verification_email method to avoid actual email sending
+        service.send_verification_email = AsyncMock()
+        service.create_email_verification_token = MagicMock(return_value="token_123")
+
+        result = await service.request_verification_email("test@example.com")
+
+        assert result is True
+        service.create_email_verification_token.assert_called_once_with("12345")
+        service.send_verification_email.assert_called_once_with(mock_user, "token_123")
+
+    @pytest.mark.asyncio
+    async def test_request_verification_email_user_not_found(self):
+        """Test requesting verification email when user doesn't exist (no info leak)"""
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        service = AuthService(mock_db)
+        result = await service.request_verification_email("nonexistent@example.com")
+
+        assert result is True  # Always returns True to not leak user existence

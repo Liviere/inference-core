@@ -1,0 +1,18 @@
+Email Verification
+
+Hello {{ user_name }},
+
+Welcome to Inference Core! Please verify your email address to complete your account setup.
+
+To verify your email, please click the following link or copy it into your browser:
+
+{{ verify_url }}
+
+This link will expire in {{ expiry_minutes }} minutes.
+
+If you did not create this account, please ignore this email.
+
+For security reasons, please do not reply to this email.
+
+---
+Inference Core Team

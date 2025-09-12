@@ -264,6 +264,94 @@ class TestSecurityManager:
 
         assert str1 != str2
 
+    def test_generate_email_verification_token_structure(self):
+        """Test email verification token generation structure"""
+        user_id = "12345"
+        token = self.security_manager.generate_email_verification_token(user_id)
+
+        payload = jwt.decode(
+            token,
+            self.security_manager.settings.secret_key,
+            algorithms=[self.security_manager.settings.algorithm],
+        )
+
+        assert payload["sub"] == user_id
+        assert payload["type"] == "email_verify"
+        assert "exp" in payload
+        assert "nbf" in payload
+
+    def test_verify_email_verification_token_valid(self):
+        """Test email verification token verification with valid token"""
+        user_id = "12345"
+        token = self.security_manager.generate_email_verification_token(user_id)
+
+        verified_user_id = self.security_manager.verify_email_verification_token(token)
+
+        assert verified_user_id == user_id
+
+    def test_verify_email_verification_token_wrong_type(self):
+        """Test email verification token verification with wrong token type"""
+        # Create access token instead of email verification token
+        data = {"sub": "12345"}
+        access_token = self.security_manager.create_access_token(data)
+
+        verified_user_id = self.security_manager.verify_email_verification_token(access_token)
+
+        assert verified_user_id is None
+
+    def test_verify_email_verification_token_invalid(self):
+        """Test email verification token verification with invalid token"""
+        invalid_token = "invalid.token.here"
+
+        verified_user_id = self.security_manager.verify_email_verification_token(
+            invalid_token
+        )
+
+        assert verified_user_id is None
+
+    def test_verify_email_verification_token_expired(self):
+        """Test email verification token verification with expired token"""
+        # Create expired token
+        past_time = datetime.now(UTC) - timedelta(hours=2)
+        payload = {
+            "sub": "12345",
+            "type": "email_verify",
+            "exp": int(past_time.timestamp()),
+            "nbf": int((past_time - timedelta(minutes=5)).timestamp()),
+        }
+        expired_token = jwt.encode(
+            payload,
+            self.security_manager.settings.secret_key,
+            algorithm=self.security_manager.settings.algorithm,
+        )
+
+        verified_user_id = self.security_manager.verify_email_verification_token(
+            expired_token
+        )
+
+        assert verified_user_id is None
+
+    def test_email_verification_token_ttl(self):
+        """Test email verification token TTL configuration"""
+        user_id = "12345"
+        
+        # Generate token and decode to check expiration
+        token = self.security_manager.generate_email_verification_token(user_id)
+        payload = jwt.decode(
+            token,
+            self.security_manager.settings.secret_key,
+            algorithms=[self.security_manager.settings.algorithm],
+        )
+        
+        # Check that expiration is approximately the configured TTL
+        now = datetime.now(UTC)
+        exp_time = datetime.fromtimestamp(payload["exp"], tz=UTC)
+        ttl_delta = exp_time - now
+        
+        # Should be approximately 60 minutes (default setting) with some tolerance
+        expected_seconds = self.security_manager.settings.auth_email_verification_token_ttl_minutes * 60
+        assert abs(ttl_delta.total_seconds() - expected_seconds) < 10  # 10 second tolerance
+
 
 class TestSecurityFunctions:
     """Test module-level convenience functions"""

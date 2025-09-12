@@ -86,16 +86,18 @@ The application includes a production-grade email delivery service built on Pyth
 ### Quick Setup
 
 1. **Copy email configuration template:**
+
    ```bash
    cp email_config.example.yaml email_config.yaml
    ```
 
 2. **Configure SMTP credentials in `.env`:**
+
    ```bash
    # Primary SMTP (e.g., Gmail)
    SMTP_PRIMARY_USERNAME=your-email@gmail.com
    SMTP_PRIMARY_PASSWORD=your-app-password
-   
+
    # Public URL for email links
    APP_PUBLIC_URL=https://yourdomain.com
    ```
@@ -116,6 +118,7 @@ Edit `email_config.yaml` to configure SMTP hosts. The configuration supports:
 - **Per-host settings** (timeouts, rate limits, attachment limits)
 
 Example minimal configuration:
+
 ```yaml
 email:
   default_host: primary
@@ -133,6 +136,7 @@ email:
 ### Usage Examples
 
 **Programmatic email sending:**
+
 ```python
 from inference_core.services.email_service import get_email_service
 
@@ -147,6 +151,7 @@ if email_service:
 ```
 
 **Asynchronous via Celery:**
+
 ```python
 from inference_core.celery.tasks.email_tasks import send_email_async
 
@@ -213,11 +218,38 @@ Built-in authentication supports JWT access tokens and stateful refresh tokens s
   - `POST /api/v1/auth/logout` — revoke provided refresh token (best-effort)
 
 - User endpoints
+
   - `GET /api/v1/auth/me` — current profile (requires access token)
   - `PUT /api/v1/auth/me` — update profile (requires access token)
   - `POST /api/v1/auth/change-password` — change password (requires access token)
   - `POST /api/v1/auth/forgot-password` — request reset (always returns success)
   - `POST /api/v1/auth/reset-password` — set new password with reset token
+
+- Email verification endpoints
+  - `POST /api/v1/auth/verify-email/request` — request verification email (always returns success)
+  - `POST /api/v1/auth/verify-email` — verify email with token
+
+#### Email Verification Configuration
+
+User activation and email verification behavior is configurable via environment variables:
+
+| Variable                                    | Description                                     | Default | Effect                                                          |
+| ------------------------------------------- | ----------------------------------------------- | ------- | --------------------------------------------------------------- |
+| `AUTH_REGISTER_DEFAULT_ACTIVE`              | Whether new users are active by default         | `true`  | If `false`, users are inactive until manually activated         |
+| `AUTH_SEND_VERIFICATION_EMAIL_ON_REGISTER`  | Send verification email on registration         | `false` | If `true`, sends email with verification link                   |
+| `AUTH_LOGIN_REQUIRE_ACTIVE`                 | Require active user for login                   | `true`  | If `false`, inactive users can login                            |
+| `AUTH_LOGIN_REQUIRE_VERIFIED`               | Require verified email for login                | `false` | If `true`, unverified users cannot login                        |
+| 'AUTH_EMAIL_VERIFICATION_MAKES_ACTIVE'      | Whether verifying email also activates the user | `true`  | If `true`, verifying email sets `is_active = true`              |
+| `AUTH_EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | Verification token lifetime                     | `60`    | Token expires after this many minutes                           |
+| `AUTH_EMAIL_VERIFICATION_URL_BASE`          | Base URL for verification links                 | `null`  | If set, creates frontend links; otherwise uses backend endpoint |
+
+**Example verification flow:**
+
+1. User registers with `AUTH_SEND_VERIFICATION_EMAIL_ON_REGISTER=true`
+2. System sends email with verification link/token
+3. User clicks link or posts token to `/auth/verify-email`
+4. User's `is_verified` status becomes `true`
+5. User can login if `AUTH_LOGIN_REQUIRE_VERIFIED=true`
 
 Notes
 
@@ -282,66 +314,72 @@ For production environments, consider adjusting the sample rates to reduce overh
 
 ### Environment Variables
 
-| Variable                      | Description                                                      | Default                                                      | Used in             |
-| ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------- |
-| `APP_NAME`                    | Application name                                                 | "Inference Core API"                                         | API, Docker         |
-| `APP_TITLE`                   | Application title                                                | "Inference Core API"                                         | API                 |
-| `APP_DESCRIPTION`             | Application description                                          | "A production-ready Inference Core API with LLM integration" | API                 |
-| `APP_VERSION`                 | Application version                                              | "0.1.0"                                                      | API                 |
-| `ENVIRONMENT`                 | Application environment (development/staging/production/testing) | "development"                                                | API, Docker         |
-| `DEBUG`                       | Debug mode                                                       | `True`                                                       | API                 |
-| `HOST`                        | Server host                                                      | "0.0.0.0"                                                    | API, Docker         |
-| `PORT`                        | Server port                                                      | 8000                                                         | API, Docker         |
-| `CORS_METHODS`                | Allowed HTTP methods (comma-separated or \*)                     | \*                                                           | API                 |
-| `CORS_ORIGINS`                | Allowed origins (comma-separated or \*)                          | \*                                                           | API                 |
-| `CORS_HEADERS`                | Allowed headers (comma-separated or \*)                          | \*                                                           | API                 |
-| `SENTRY_DSN`                  | Sentry Data Source Name for error monitoring                     | None                                                         | API                 |
-| `SENTRY_TRACES_SAMPLE_RATE`   | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                          | API                 |
-| `SENTRY_PROFILES_SAMPLE_RATE` | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                          | API                 |
-| `DATABASE_URL`                | Database connection URL                                          | `sqlite+aiosqlite:///./inference_core.db`                    | API                 |
-| `DATABASE_ECHO`               | Echo SQL queries (development only)                              | `False`                                                      | API                 |
-| `DATABASE_POOL_SIZE`          | Database connection pool size                                    | `20`                                                         | API                 |
-| `DATABASE_MAX_OVERFLOW`       | Maximum database connection overflow                             | `30`                                                         | API                 |
-| `DATABASE_POOL_TIMEOUT`       | Pool connection timeout in seconds                               | `30`                                                         | API                 |
-| `DATABASE_POOL_RECYCLE`       | Connection recycle time in seconds                               | `3600`                                                       | API                 |
-| `DATABASE_MYSQL_CHARSET`      | MySQL character set                                              | `utf8mb4`                                                    | API, Docker         |
-| `DATABASE_MYSQL_COLLATION`    | MySQL collation                                                  | `utf8mb4_unicode_ci`                                         | Docker              |
-| `DATABASE_NAME`               | Database name                                                    | `app_db`                                                     | Docker              |
-| `DATABASE_USER`               | Database user                                                    | `db_user`                                                    | Docker              |
-| `DATABASE_PASSWORD`           | Database password                                                | `your_password`                                              | Docker              |
-| `DATABASE_ROOT_PASSWORD`      | Database root password (MySQL only)                              | `your_root_password`                                         | Docker              |
-| `DATABASE_PORT`               | Database port                                                    | `3306` (MySQL) / `5432` (PostgreSQL)                         | Docker              |
-| `DATABASE_HOST`               | Database host                                                    | `localhost` (or service name in Docker)                      | API, Docker         |
-| `DATABASE_SERVICE`            | Database backend/driver (async)                                  | `sqlite+aiosqlite`                                           | API, Docker         |
-| `SECRET_KEY`                  | Secret used to sign JWT tokens                                   | `change-me-in-production`                                    | Auth                |
-| `ALGORITHM`                   | JWT signing algorithm                                            | `HS256`                                                      | Auth                |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (minutes)                                  | `30`                                                         | Auth                |
-| `REFRESH_TOKEN_EXPIRE_DAYS`   | Refresh token lifetime (days)                                    | `7`                                                          | Auth                |
-| `REDIS_URL`                   | Redis URL for app sessions/locks (refresh sessions)              | `redis://localhost:6379/10`                                  | API/Auth            |
-| `REDIS_REFRESH_PREFIX`        | Key prefix for refresh sessions                                  | `auth:refresh:`                                              | Auth                |
-| `CELERY_BROKER_URL`           | Celery broker URL                                                | `redis://localhost:6379/0`                                   | API, Celery, Docker |
-| `CELERY_RESULT_BACKEND`       | Celery result backend URL                                        | `redis://localhost:6379/1`                                   | Celery, Docker      |
-| `DEBUG_CELERY`                | Enable debugpy for Celery worker (1 to enable)                   | `0`                                                          | Celery, Docker      |
-| `REDIS_PORT`                  | Redis port (used for both host and container)                    | `6379`                                                       | Docker              |
-| `FLOWER_PORT`                 | Flower port (used for both host and container)                   | `5555`                                                       | Docker              |
-| `OPENAI_API_KEY`              | API key for OpenAI provider                                      | None                                                         | LLM                 |
-| `GOOGLE_API_KEY`              | API key for Google Gemini models                                 | None                                                         | LLM                 |
-| `ANTHROPIC_API_KEY`           | API key for Anthropic Claude models                              | None                                                         | LLM                 |
-| `LLM_EXPLAIN_MODEL`           | Override model for the 'explain' task                            | None                                                         | LLM                 |
-| `LLM_CONVERSATION_MODEL`      | Override model for the 'conversation' task                       | None                                                         | LLM                 |
-| `LLM_ENABLE_CACHING`          | Enable in-process LLM response caching (fallback mode)           | `true`                                                       | LLM                 |
-| `LLM_CACHE_TTL`               | Cache TTL in seconds (fallback mode)                             | `3600`                                                       | LLM                 |
-| `LLM_MAX_CONCURRENT`          | Max concurrent LLM requests (fallback mode)                      | `5`                                                          | LLM                 |
-| `LLM_ENABLE_MONITORING`       | Enable basic LLM monitoring hooks (fallback mode)                | `true`                                                       | LLM                 |
-| `RUN_LLM_REAL_TESTS`          | Opt-in to run real-chain tests hitting providers in CI/local     | `0`                                                          | Tests               |
-| `APP_PUBLIC_URL`              | Public URL for email links (password reset, etc.)                | `http://localhost:8000`                                     | Email               |
-| `EMAIL_CONFIG_PATH`           | Path to email configuration YAML file                            | `email_config.yaml`                                         | Email               |
-| `SMTP_PRIMARY_USERNAME`       | Primary SMTP username (supports ${} env var syntax)              | None                                                         | Email               |
-| `SMTP_PRIMARY_PASSWORD`       | Primary SMTP password                                            | None                                                         | Email               |
-| `SMTP_BACKUP_USERNAME`        | Backup SMTP username                                             | None                                                         | Email               |
-| `SMTP_BACKUP_PASSWORD`        | Backup SMTP password                                             | None                                                         | Email               |
-| `SMTP_O365_USERNAME`          | Office 365 SMTP username                                        | None                                                         | Email               |
-| `SMTP_O365_PASSWORD`          | Office 365 SMTP password                                        | None                                                         | Email               |
+| Variable                                    | Description                                                      | Default                                                      | Used in             |
+| ------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------- |
+| `APP_NAME`                                  | Application name                                                 | "Inference Core API"                                         | API, Docker         |
+| `APP_TITLE`                                 | Application title                                                | "Inference Core API"                                         | API                 |
+| `APP_DESCRIPTION`                           | Application description                                          | "A production-ready Inference Core API with LLM integration" | API                 |
+| `APP_VERSION`                               | Application version                                              | "0.1.0"                                                      | API                 |
+| `ENVIRONMENT`                               | Application environment (development/staging/production/testing) | "development"                                                | API, Docker         |
+| `DEBUG`                                     | Debug mode                                                       | `True`                                                       | API                 |
+| `HOST`                                      | Server host                                                      | "0.0.0.0"                                                    | API, Docker         |
+| `PORT`                                      | Server port                                                      | 8000                                                         | API, Docker         |
+| `CORS_METHODS`                              | Allowed HTTP methods (comma-separated or \*)                     | \*                                                           | API                 |
+| `CORS_ORIGINS`                              | Allowed origins (comma-separated or \*)                          | \*                                                           | API                 |
+| `CORS_HEADERS`                              | Allowed headers (comma-separated or \*)                          | \*                                                           | API                 |
+| `SENTRY_DSN`                                | Sentry Data Source Name for error monitoring                     | None                                                         | API                 |
+| `SENTRY_TRACES_SAMPLE_RATE`                 | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                          | API                 |
+| `SENTRY_PROFILES_SAMPLE_RATE`               | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                          | API                 |
+| `DATABASE_URL`                              | Database connection URL                                          | `sqlite+aiosqlite:///./inference_core.db`                    | API                 |
+| `DATABASE_ECHO`                             | Echo SQL queries (development only)                              | `False`                                                      | API                 |
+| `DATABASE_POOL_SIZE`                        | Database connection pool size                                    | `20`                                                         | API                 |
+| `DATABASE_MAX_OVERFLOW`                     | Maximum database connection overflow                             | `30`                                                         | API                 |
+| `DATABASE_POOL_TIMEOUT`                     | Pool connection timeout in seconds                               | `30`                                                         | API                 |
+| `DATABASE_POOL_RECYCLE`                     | Connection recycle time in seconds                               | `3600`                                                       | API                 |
+| `DATABASE_MYSQL_CHARSET`                    | MySQL character set                                              | `utf8mb4`                                                    | API, Docker         |
+| `DATABASE_MYSQL_COLLATION`                  | MySQL collation                                                  | `utf8mb4_unicode_ci`                                         | Docker              |
+| `DATABASE_NAME`                             | Database name                                                    | `app_db`                                                     | Docker              |
+| `DATABASE_USER`                             | Database user                                                    | `db_user`                                                    | Docker              |
+| `DATABASE_PASSWORD`                         | Database password                                                | `your_password`                                              | Docker              |
+| `DATABASE_ROOT_PASSWORD`                    | Database root password (MySQL only)                              | `your_root_password`                                         | Docker              |
+| `DATABASE_PORT`                             | Database port                                                    | `3306` (MySQL) / `5432` (PostgreSQL)                         | Docker              |
+| `DATABASE_HOST`                             | Database host                                                    | `localhost` (or service name in Docker)                      | API, Docker         |
+| `DATABASE_SERVICE`                          | Database backend/driver (async)                                  | `sqlite+aiosqlite`                                           | API, Docker         |
+| `SECRET_KEY`                                | Secret used to sign JWT tokens                                   | `change-me-in-production`                                    | Auth                |
+| `ALGORITHM`                                 | JWT signing algorithm                                            | `HS256`                                                      | Auth                |
+| `ACCESS_TOKEN_EXPIRE_MINUTES`               | Access token lifetime (minutes)                                  | `30`                                                         | Auth                |
+| `REFRESH_TOKEN_EXPIRE_DAYS`                 | Refresh token lifetime (days)                                    | `7`                                                          | Auth                |
+| `AUTH_REGISTER_DEFAULT_ACTIVE`              | Whether new users are active by default                          | `true`                                                       | Auth                |
+| `AUTH_SEND_VERIFICATION_EMAIL_ON_REGISTER`  | Send verification email on registration                          | `false`                                                      | Auth                |
+| `AUTH_LOGIN_REQUIRE_ACTIVE`                 | Require active user for login                                    | `true`                                                       | Auth                |
+| `AUTH_LOGIN_REQUIRE_VERIFIED`               | Require verified email for login                                 | `false`                                                      | Auth                |
+| `AUTH_EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | Verification token lifetime (minutes)                            | `60`                                                         | Auth                |
+| `AUTH_EMAIL_VERIFICATION_URL_BASE`          | Base URL for verification links                                  | `null`                                                       | Auth                |
+| `REDIS_URL`                                 | Redis URL for app sessions/locks (refresh sessions)              | `redis://localhost:6379/10`                                  | API/Auth            |
+| `REDIS_REFRESH_PREFIX`                      | Key prefix for refresh sessions                                  | `auth:refresh:`                                              | Auth                |
+| `CELERY_BROKER_URL`                         | Celery broker URL                                                | `redis://localhost:6379/0`                                   | API, Celery, Docker |
+| `CELERY_RESULT_BACKEND`                     | Celery result backend URL                                        | `redis://localhost:6379/1`                                   | Celery, Docker      |
+| `DEBUG_CELERY`                              | Enable debugpy for Celery worker (1 to enable)                   | `0`                                                          | Celery, Docker      |
+| `REDIS_PORT`                                | Redis port (used for both host and container)                    | `6379`                                                       | Docker              |
+| `FLOWER_PORT`                               | Flower port (used for both host and container)                   | `5555`                                                       | Docker              |
+| `OPENAI_API_KEY`                            | API key for OpenAI provider                                      | None                                                         | LLM                 |
+| `GOOGLE_API_KEY`                            | API key for Google Gemini models                                 | None                                                         | LLM                 |
+| `ANTHROPIC_API_KEY`                         | API key for Anthropic Claude models                              | None                                                         | LLM                 |
+| `LLM_EXPLAIN_MODEL`                         | Override model for the 'explain' task                            | None                                                         | LLM                 |
+| `LLM_CONVERSATION_MODEL`                    | Override model for the 'conversation' task                       | None                                                         | LLM                 |
+| `LLM_ENABLE_CACHING`                        | Enable in-process LLM response caching (fallback mode)           | `true`                                                       | LLM                 |
+| `LLM_CACHE_TTL`                             | Cache TTL in seconds (fallback mode)                             | `3600`                                                       | LLM                 |
+| `LLM_MAX_CONCURRENT`                        | Max concurrent LLM requests (fallback mode)                      | `5`                                                          | LLM                 |
+| `LLM_ENABLE_MONITORING`                     | Enable basic LLM monitoring hooks (fallback mode)                | `true`                                                       | LLM                 |
+| `RUN_LLM_REAL_TESTS`                        | Opt-in to run real-chain tests hitting providers in CI/local     | `0`                                                          | Tests               |
+| `APP_PUBLIC_URL`                            | Public URL for email links (password reset, etc.)                | `http://localhost:8000`                                      | Email               |
+| `EMAIL_CONFIG_PATH`                         | Path to email configuration YAML file                            | `email_config.yaml`                                          | Email               |
+| `SMTP_PRIMARY_USERNAME`                     | Primary SMTP username (supports ${} env var syntax)              | None                                                         | Email               |
+| `SMTP_PRIMARY_PASSWORD`                     | Primary SMTP password                                            | None                                                         | Email               |
+| `SMTP_BACKUP_USERNAME`                      | Backup SMTP username                                             | None                                                         | Email               |
+| `SMTP_BACKUP_PASSWORD`                      | Backup SMTP password                                             | None                                                         | Email               |
+| `SMTP_O365_USERNAME`                        | Office 365 SMTP username                                         | None                                                         | Email               |
+| `SMTP_O365_PASSWORD`                        | Office 365 SMTP password                                         | None                                                         | Email               |
 
 ## Features
 
