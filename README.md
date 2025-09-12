@@ -219,6 +219,30 @@ Built-in authentication supports JWT access tokens and stateful refresh tokens s
   - `POST /api/v1/auth/forgot-password` — request reset (always returns success)
   - `POST /api/v1/auth/reset-password` — set new password with reset token
 
+- Email verification endpoints
+  - `POST /api/v1/auth/verify-email/request` — request verification email (always returns success)
+  - `POST /api/v1/auth/verify-email` — verify email with token
+
+#### Email Verification Configuration
+
+User activation and email verification behavior is configurable via environment variables:
+
+| Variable | Description | Default | Effect |
+|----------|-------------|---------|--------|
+| `AUTH_REGISTER_DEFAULT_ACTIVE` | Whether new users are active by default | `true` | If `false`, users are inactive until manually activated |
+| `AUTH_SEND_VERIFICATION_EMAIL_ON_REGISTER` | Send verification email on registration | `false` | If `true`, sends email with verification link |
+| `AUTH_LOGIN_REQUIRE_ACTIVE` | Require active user for login | `true` | If `false`, inactive users can login |
+| `AUTH_LOGIN_REQUIRE_VERIFIED` | Require verified email for login | `false` | If `true`, unverified users cannot login |
+| `AUTH_EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | Verification token lifetime | `60` | Token expires after this many minutes |
+| `AUTH_EMAIL_VERIFICATION_URL_BASE` | Base URL for verification links | `null` | If set, creates frontend links; otherwise uses backend endpoint |
+
+**Example verification flow:**
+1. User registers with `AUTH_SEND_VERIFICATION_EMAIL_ON_REGISTER=true`
+2. System sends email with verification link/token
+3. User clicks link or posts token to `/auth/verify-email`
+4. User's `is_verified` status becomes `true`
+5. User can login if `AUTH_LOGIN_REQUIRE_VERIFIED=true`
+
 Notes
 
 - Access tokens are short-lived and must include type `access`.
@@ -317,6 +341,12 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `ALGORITHM`                   | JWT signing algorithm                                            | `HS256`                                                      | Auth                |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (minutes)                                  | `30`                                                         | Auth                |
 | `REFRESH_TOKEN_EXPIRE_DAYS`   | Refresh token lifetime (days)                                    | `7`                                                          | Auth                |
+| `AUTH_REGISTER_DEFAULT_ACTIVE` | Whether new users are active by default                          | `true`                                                       | Auth                |
+| `AUTH_SEND_VERIFICATION_EMAIL_ON_REGISTER` | Send verification email on registration                           | `false`                                                      | Auth                |
+| `AUTH_LOGIN_REQUIRE_ACTIVE`   | Require active user for login                                    | `true`                                                       | Auth                |
+| `AUTH_LOGIN_REQUIRE_VERIFIED` | Require verified email for login                                 | `false`                                                      | Auth                |
+| `AUTH_EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | Verification token lifetime (minutes)                            | `60`                                                         | Auth                |
+| `AUTH_EMAIL_VERIFICATION_URL_BASE` | Base URL for verification links                                   | `null`                                                       | Auth                |
 | `REDIS_URL`                   | Redis URL for app sessions/locks (refresh sessions)              | `redis://localhost:6379/10`                                  | API/Auth            |
 | `REDIS_REFRESH_PREFIX`        | Key prefix for refresh sessions                                  | `auth:refresh:`                                              | Auth                |
 | `CELERY_BROKER_URL`           | Celery broker URL                                                | `redis://localhost:6379/0`                                   | API, Celery, Docker |
