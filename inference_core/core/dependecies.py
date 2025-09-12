@@ -5,11 +5,12 @@ Common dependencies for FastAPI endpoints including database,
 authentication, pagination, and other shared functionality.
 """
 
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, List, Optional
 
 from fastapi import Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.core.config import get_settings
 from inference_core.core.security import get_current_user_token
 from inference_core.database.sql.connection import get_async_session
 from inference_core.database.sql.models.user import User
@@ -134,3 +135,27 @@ async def get_current_superuser(current_user: dict = Depends(get_current_user)) 
             status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
         )
     return current_user
+
+
+def get_llm_router_dependencies() -> List[Depends]:
+    """
+    Get router-level dependencies for LLM endpoints based on access mode configuration.
+    
+    Returns:
+        List of FastAPI dependencies based on the LLM_API_ACCESS_MODE setting:
+        - "public": No dependencies (no authentication required)
+        - "user": Requires authenticated active user
+        - "superuser": Requires superuser privileges (default)
+    """
+    settings = get_settings()
+    access_mode = settings.llm_api_access_mode
+    
+    if access_mode == "public":
+        return []
+    elif access_mode == "user":
+        return [Depends(get_current_active_user)]
+    elif access_mode == "superuser":
+        return [Depends(get_current_superuser)]
+    else:
+        # This should not happen due to Literal typing, but handle gracefully
+        return [Depends(get_current_superuser)]

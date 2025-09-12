@@ -257,6 +257,52 @@ Notes
 - Refresh tokens are stored/validated in Redis and rotated on `/auth/refresh`.
 - On `/auth/logout`, the provided refresh token is revoked in Redis when available.
 
+### LLM API Access Control
+
+All LLM endpoints under `/api/v1/llm/*` (including batch processing at `/api/v1/llm/batch/*`) support configurable access control via the `LLM_API_ACCESS_MODE` environment variable.
+
+**Access Modes:**
+
+- **`superuser`** (default): Only superusers can access LLM endpoints. Returns 403 for non-superuser or unauthenticated requests.
+- **`user`**: Any authenticated active user can access LLM endpoints. Returns 401 for unauthenticated requests.
+- **`public`**: No authentication required. All LLM endpoints are publicly accessible.
+
+**Security Considerations:**
+
+⚠️ **Production Warning**: Public mode exposes LLM endpoints without authentication, which can lead to:
+- Unauthorized usage and increased costs
+- Potential data exposure through conversation history
+- Resource abuse and service degradation
+
+**Recommended settings:**
+- **Production**: `LLM_API_ACCESS_MODE=superuser` (default)
+- **Internal staging**: `LLM_API_ACCESS_MODE=user`
+- **Local development/demos**: `LLM_API_ACCESS_MODE=public` (with compensating controls)
+
+**Examples:**
+
+```bash
+# Production (default)
+LLM_API_ACCESS_MODE=superuser
+
+# Internal staging
+LLM_API_ACCESS_MODE=user
+
+# Local development only
+LLM_API_ACCESS_MODE=public
+```
+
+**Protected Endpoints:**
+- All `/api/v1/llm/*` endpoints (explain, conversation, models, health, stats, streaming)
+- All `/api/v1/llm/batch/*` endpoints (create, get, list, cancel)
+
+**Unaffected Endpoints:**
+- General health check (`/api/v1/health/`)
+- Authentication endpoints (`/api/v1/auth/*`)
+- Root endpoint (`/`)
+
+Changes take effect immediately upon application restart.
+
 ## Configuration
 
 The application uses environment variables for configuration. You can set them directly or create a `.env` file in the project root.
@@ -355,6 +401,7 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `AUTH_LOGIN_REQUIRE_VERIFIED`               | Require verified email for login                                 | `false`                                                      | Auth                |
 | `AUTH_EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | Verification token lifetime (minutes)                            | `60`                                                         | Auth                |
 | `AUTH_EMAIL_VERIFICATION_URL_BASE`          | Base URL for verification links                                  | `null`                                                       | Auth                |
+| `LLM_API_ACCESS_MODE`                       | Access control mode for LLM endpoints (public/user/superuser)    | `superuser`                                                  | Auth/LLM            |
 | `REDIS_URL`                                 | Redis URL for app sessions/locks (refresh sessions)              | `redis://localhost:6379/10`                                  | API/Auth            |
 | `REDIS_REFRESH_PREFIX`                      | Key prefix for refresh sessions                                  | `auth:refresh:`                                              | Auth                |
 | `CELERY_BROKER_URL`                         | Celery broker URL                                                | `redis://localhost:6379/0`                                   | API, Celery, Docker |
