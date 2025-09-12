@@ -263,6 +263,32 @@ class Settings(BaseSettings):
         default="lax", description="SameSite setting for refresh token cookie"
     )
 
+    # User activation and verification settings
+    auth_register_default_active: bool = Field(
+        default=True, 
+        description="If false, newly registered users are inactive by default"
+    )
+    auth_send_verification_email_on_register: bool = Field(
+        default=False,
+        description="If true, send verification email after registration"
+    )
+    auth_login_require_active: bool = Field(
+        default=True,
+        description="If true, login is denied for inactive users"
+    )
+    auth_login_require_verified: bool = Field(
+        default=False,
+        description="If true, login is denied for unverified users"
+    )
+    auth_email_verification_token_ttl_minutes: int = Field(
+        default=60,
+        description="Token lifetime for email verification links in minutes"
+    )
+    auth_email_verification_url_base: Optional[str] = Field(
+        default=None,
+        description="Base URL for verification links (if not set, use backend endpoint)"
+    )
+
     ###################################
     #              REDIS              #
     ###################################

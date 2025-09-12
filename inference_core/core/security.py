@@ -198,6 +198,51 @@ class SecurityManager:
         except JWTError:
             return None
 
+    def generate_email_verification_token(self, user_id: str) -> str:
+        """
+        Generate email verification token
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            Email verification token
+        """
+        delta = timedelta(minutes=self.settings.auth_email_verification_token_ttl_minutes)
+        now = datetime.now(UTC)
+        expires = now + delta
+        # Use integer numeric dates for compatibility
+        exp = int(expires.timestamp())
+        nbf = int(now.timestamp())
+        encoded_jwt = jwt.encode(
+            {"exp": exp, "nbf": nbf, "sub": user_id, "type": "email_verify"},
+            self.settings.secret_key,
+            algorithm=self.settings.algorithm,
+        )
+        return encoded_jwt
+
+    def verify_email_verification_token(self, token: str) -> Optional[str]:
+        """
+        Verify email verification token
+
+        Args:
+            token: Email verification token
+
+        Returns:
+            User ID if token is valid, None otherwise
+        """
+        try:
+            decoded_token = jwt.decode(
+                token, self.settings.secret_key, algorithms=[self.settings.algorithm]
+            )
+
+            if decoded_token.get("type") != "email_verify":
+                return None
+
+            return decoded_token["sub"]
+        except JWTError:
+            return None
+
     @staticmethod
     def generate_random_string(length: int = 32) -> str:
         """

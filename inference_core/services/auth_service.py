@@ -398,3 +398,110 @@ class AuthService:
         await self.db.commit()
 
         return True
+
+    def create_email_verification_token(self, user_id: str) -> str:
+        """
+        Create email verification token for user
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            Email verification token
+        """
+        return security_manager.generate_email_verification_token(user_id)
+
+    async def verify_email_with_token(self, token: str) -> bool:
+        """
+        Verify user email with verification token
+
+        Args:
+            token: Email verification token
+
+        Returns:
+            True if verification successful, False otherwise
+        """
+        user_id = security_manager.verify_email_verification_token(token)
+        if not user_id:
+            return False
+
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return False
+
+        # Set user as verified (idempotent - no error if already verified)
+        user.is_verified = True
+        await self.db.commit()
+
+        return True
+
+    async def send_verification_email(self, user, verification_token: str):
+        """
+        Send email verification email using email service
+        
+        Args:
+            user: User object with email and name fields
+            verification_token: Email verification token
+        """
+        if not EMAIL_AVAILABLE:
+            logger.warning("Email functionality not available, logging verification token instead")
+            print(f"Email verification token for {user.email}: {verification_token}")
+            return
+
+        # Build verification URL
+        settings = get_settings()
+        if settings.auth_email_verification_url_base:
+            # Use frontend URL if configured
+            verify_url = f"{settings.auth_email_verification_url_base}?token={verification_token}"
+        else:
+            # Use backend endpoint if no frontend URL configured
+            app_url = getattr(settings, 'app_public_url', 'http://localhost:8000')
+            verify_url = f"{app_url}/api/v1/auth/verify-email?token={verification_token}"
+        
+        # Template variables
+        template_vars = {
+            'verify_url': verify_url,
+            'user_name': user.full_name,
+            'email': user.email,
+            'expiry_minutes': settings.auth_email_verification_token_ttl_minutes,
+        }
+        
+        # Render email templates
+        text_content = self._render_template('verify_email.txt', template_vars)
+        html_content = self._render_template('verify_email.html', template_vars)
+        
+        # Send email via Celery task
+        await send_email_async.delay(
+            to_email=user.email,
+            subject="Verify your email address",
+            text_content=text_content,
+            html_content=html_content,
+        )
+
+    async def request_verification_email(self, email: str) -> bool:
+        """
+        Request verification email for user by email address
+
+        Args:
+            email: User email address
+
+        Returns:
+            True if verification email sent (always returns True to not reveal if email exists)
+        """
+        user = await self.get_user_by_email(email)
+        if not user:
+            # Don't reveal if email exists
+            return True
+
+        # Generate verification token
+        verification_token = self.create_email_verification_token(str(user.id))
+
+        # Send verification email
+        try:
+            await self.send_verification_email(user, verification_token)
+            logger.info(f"Email verification email sent to {email}")
+        except Exception as e:
+            logger.error(f"Failed to send verification email to {email}: {e}")
+            # Still return True to not reveal if email exists
+
+        return True
