@@ -8,6 +8,7 @@ import logging
 import threading
 from pathlib import Path
 from typing import Optional
+from uuid import UUID
 
 import jinja2
 from sqlalchemy import select
@@ -39,16 +40,25 @@ class AuthService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_user_by_id(self, user_id: str) -> Optional[User]:
+    async def get_user_by_id(self, user_id) -> Optional[User]:
         """
         Get user by ID
 
         Args:
-            user_id: User ID
+            user_id: User ID (string or UUID)
 
         Returns:
             User instance or None
         """
+        # Convert to UUID if string (for SQLAlchemy compatibility)
+        if isinstance(user_id, str):
+            try:
+                user_id = UUID(user_id)
+            except ValueError:
+                # If it's not a valid UUID string, still try the query to maintain backward compatibility
+                # This handles cases like "nonexistent-id" which tests expect to be passed to the database
+                pass
+                
         result = await self.db.execute(
             select(User).where(User.id == user_id, User.is_deleted == False)
         )
@@ -421,11 +431,11 @@ class AuthService:
         Returns:
             True if verification successful, False otherwise
         """
-        user_id = security_manager.verify_email_verification_token(token)
-        if not user_id:
+        user_id_str = security_manager.verify_email_verification_token(token)
+        if not user_id_str:
             return False
 
-        user = await self.get_user_by_id(user_id)
+        user = await self.get_user_by_id(user_id_str)
         if not user:
             return False
 
@@ -471,11 +481,11 @@ class AuthService:
         html_content = self._render_template('verify_email.html', template_vars)
         
         # Send email via Celery task
-        await send_email_async.delay(
-            to_email=user.email,
+        send_email_async(
+            to=user.email,
             subject="Verify your email address",
-            text_content=text_content,
-            html_content=html_content,
+            text=text_content,
+            html=html_content,
         )
 
     async def request_verification_email(self, email: str) -> bool:
