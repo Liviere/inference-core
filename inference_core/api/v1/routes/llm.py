@@ -12,13 +12,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from inference_core.core.dependecies import get_llm_router_dependencies
 from inference_core.schemas.tasks_responses import TaskResponse
 from inference_core.services.llm_service import get_llm_service
 from inference_core.services.task_service import TaskService, get_task_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/llm", tags=["LLM"])
+router = APIRouter(
+    prefix="/llm", 
+    tags=["LLM"], 
+    dependencies=get_llm_router_dependencies()
+)
 
 
 class BaseLLMRequest(BaseModel):

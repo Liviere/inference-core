@@ -1,6 +1,6 @@
 import os
 from functools import lru_cache
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
@@ -250,6 +250,12 @@ class Settings(BaseSettings):
     )
     refresh_token_expire_days: int = Field(
         default=7, description="Refresh token expiration in days"
+    )
+
+    # LLM API Access Control
+    llm_api_access_mode: Literal["public", "user", "superuser"] = Field(
+        default="superuser",
+        description="Access control mode for LLM API endpoints. 'public' allows no authentication, 'user' requires authenticated active users, 'superuser' requires superuser privileges. Default: 'superuser' for security.",
     )
 
     # Cookie settings for refresh tokens
