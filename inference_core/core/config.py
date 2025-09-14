@@ -23,7 +23,7 @@ class ListParsingEnvSource(EnvSettingsSource):
         self, field_name: str, field: FieldInfo, value: Any, value_is_complex: bool
     ) -> Any:
         """
-        Parse comma-separated strings into lists for specific CORS fields
+        Parse comma-separated strings into lists for specific CORS and ALLOWED_HOSTS fields
         """
 
         # Handle CORS list fields
@@ -31,6 +31,7 @@ class ListParsingEnvSource(EnvSettingsSource):
             "cors_methods",
             "cors_origins",
             "cors_headers",
+            "allowed_hosts",
         ) and isinstance(value, str):
             # Handle special case of "*" which should remain as single item
             if value.strip() == "*":
@@ -117,9 +118,9 @@ class Settings(BaseSettings):
     ###################################
 
     allowed_hosts: Optional[List[str]] = Field(
-        default=None, 
+        default=None,
         description="Trusted hosts for TrustedHostMiddleware (separate from CORS). "
-                   "If not set, will derive from cors_origins by normalizing hostnames."
+        "If not set, will derive from cors_origins by normalizing hostnames.",
     )
 
     ###################################
@@ -399,7 +400,7 @@ class Settings(BaseSettings):
     def _normalize_hostname(self, url_or_hostname: str) -> str:
         """
         Extract hostname from a URL or return hostname as-is.
-        
+
         Examples:
             "https://app.example.com:8080" -> "app.example.com"
             "http://localhost:3000" -> "localhost"
@@ -408,15 +409,15 @@ class Settings(BaseSettings):
         """
         if url_or_hostname == "*":
             return "*"
-            
+
         # Remove scheme if present
         if "://" in url_or_hostname:
             url_or_hostname = url_or_hostname.split("://", 1)[1]
-        
+
         # Remove path if present (do this before port handling)
         if "/" in url_or_hostname:
             url_or_hostname = url_or_hostname.split("/", 1)[0]
-        
+
         # Remove port if present
         if ":" in url_or_hostname:
             # Split only on the first colon to handle cases like IPv6
@@ -427,38 +428,38 @@ class Settings(BaseSettings):
                 if port_part.isdigit():
                     url_or_hostname = hostname
                 # For non-numeric or complex cases, keep as is for now
-            
+
         return url_or_hostname.strip()
 
     def get_effective_allowed_hosts(self) -> List[str]:
         """
         Get the effective allowed hosts for TrustedHostMiddleware.
-        
+
         If allowed_hosts is explicitly set, use it.
         Otherwise, derive hostnames from cors_origins.
-        
+
         Returns:
             List of hostnames/IPs for TrustedHostMiddleware
         """
         if self.allowed_hosts is not None and len(self.allowed_hosts) > 0:
             return self.allowed_hosts
-            
+
         # Fallback: derive from cors_origins
         if self.cors_origins == ["*"]:
             return ["*"]
-            
+
         normalized_hosts = []
         for origin in self.cors_origins:
             normalized = self._normalize_hostname(origin)
             if normalized and normalized not in normalized_hosts:
                 normalized_hosts.append(normalized)
-                
+
         # Always include localhost/127.0.0.1 for local development and health checks
         if not self.is_production:
             for local_host in ["localhost", "127.0.0.1"]:
                 if local_host not in normalized_hosts:
                     normalized_hosts.append(local_host)
-                    
+
         return normalized_hosts if normalized_hosts else ["*"]
 
     model_config = SettingsConfigDict(
