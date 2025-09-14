@@ -373,6 +373,7 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `CORS_METHODS`                              | Allowed HTTP methods (comma-separated or \*)                     | \*                                                           | API                 |
 | `CORS_ORIGINS`                              | Allowed origins (comma-separated or \*)                          | \*                                                           | API                 |
 | `CORS_HEADERS`                              | Allowed headers (comma-separated or \*)                          | \*                                                           | API                 |
+| `ALLOWED_HOSTS`                             | Trusted hosts for TrustedHostMiddleware (comma-separated or \*)   | Derived from CORS_ORIGINS                                    | API                 |
 | `SENTRY_DSN`                                | Sentry Data Source Name for error monitoring                     | None                                                         | API                 |
 | `SENTRY_TRACES_SAMPLE_RATE`                 | Sentry performance monitoring sample rate (0.0 to 1.0)           | 1.0                                                          | API                 |
 | `SENTRY_PROFILES_SAMPLE_RATE`               | Sentry profiling sample rate (0.0 to 1.0)                        | 1.0                                                          | API                 |
@@ -427,6 +428,50 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `SMTP_BACKUP_PASSWORD`                      | Backup SMTP password                                             | None                                                         | Email               |
 | `SMTP_O365_USERNAME`                        | Office 365 SMTP username                                         | None                                                         | Email               |
 | `SMTP_O365_PASSWORD`                        | Office 365 SMTP password                                         | None                                                         | Email               |
+
+### CORS vs Trusted Hosts Configuration
+
+The application separates browser CORS policy from server host header validation for better security and Kubernetes compatibility:
+
+#### CORS (Cross-Origin Resource Sharing)
+- **Purpose**: Controls which browser origins can make cross-origin requests to your API
+- **Configuration**: `CORS_ORIGINS`, `CORS_METHODS`, `CORS_HEADERS`
+- **Example**: `CORS_ORIGINS=https://app.example.com,https://admin.example.com`
+- **Security**: Should be strict in production (avoid `*` wildcards)
+
+#### Trusted Hosts (TrustedHostMiddleware)
+- **Purpose**: Validates the `Host` header to prevent Host header injection attacks
+- **Configuration**: `ALLOWED_HOSTS` (optional, falls back to normalized `CORS_ORIGINS`)
+- **Example**: `ALLOWED_HOSTS=app.example.com,api.example.com,127.0.0.1`
+- **Kubernetes**: Automatically includes `localhost` and `127.0.0.1` in non-production for health probes
+
+#### Why Separate Them?
+
+**Problem**: Kubernetes health probes and internal services may not send proper browser-like `Host` headers, causing 400 errors when hosts are restricted.
+
+**Solution**: 
+- Keep CORS strict for browser security: `CORS_ORIGINS=https://app.example.com`
+- Allow necessary hosts for infrastructure: `ALLOWED_HOSTS=app.example.com,127.0.0.1,localhost`
+
+#### Configuration Examples
+
+**Development (default)**:
+```bash
+# CORS and hosts allow everything - convenient for local development
+CORS_ORIGINS=*
+# ALLOWED_HOSTS automatically derived, includes localhost/127.0.0.1
+```
+
+**Production (recommended)**:
+```bash
+# Strict CORS for browser security
+CORS_ORIGINS=https://app.example.com,https://admin.example.com
+
+# Trusted hosts for server validation (includes health probe addresses)
+ALLOWED_HOSTS=app.example.com,admin.example.com,127.0.0.1,localhost
+```
+
+**If not set**: `ALLOWED_HOSTS` will be automatically derived from `CORS_ORIGINS` by extracting hostnames (stripping schemes, ports, and paths).
 
 ## Features
 
