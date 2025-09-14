@@ -73,6 +73,19 @@ class TestListParsingDotEnvSource:
             )
             assert env_result == dotenv_result
 
+    def test_allowed_hosts_field_parsing(self):
+        """Test allowed_hosts field parsing works same as cors_origins"""
+        dotenv_source = ListParsingDotEnvSource(Settings)
+        field = None
+
+        # Test wildcard
+        result = dotenv_source.prepare_field_value("allowed_hosts", field, "*", False)
+        assert result == ["*"]
+
+        # Test comma-separated
+        result = dotenv_source.prepare_field_value("allowed_hosts", field, "a.com,b.com", False)
+        assert result == ["a.com", "b.com"]
+
 
 class TestSettings:
     """Test Settings class and its validation logic"""
@@ -302,3 +315,141 @@ class TestSettings:
         assert settings.environment == "testing"
         assert settings.is_testing is True
         assert settings.debug is False
+
+
+class TestAllowedHostsSettings:
+    """Test ALLOWED_HOSTS setting and hostname normalization"""
+
+    def test_allowed_hosts_default(self):
+        """Test allowed_hosts defaults to None"""
+        settings = Settings()
+        assert settings.allowed_hosts is None
+
+    def test_allowed_hosts_explicit_setting(self):
+        """Test allowed_hosts can be set explicitly"""
+        settings = Settings(allowed_hosts=["example.com", "api.example.com"])
+        assert settings.allowed_hosts == ["example.com", "api.example.com"]
+
+    def test_normalize_hostname_with_scheme_and_port(self):
+        """Test hostname normalization removes scheme and port"""
+        settings = Settings()
+        
+        # HTTPS with port
+        assert settings._normalize_hostname("https://app.example.com:8080") == "app.example.com"
+        
+        # HTTP with default port
+        assert settings._normalize_hostname("http://localhost:3000") == "localhost"
+        
+        # HTTPS without port
+        assert settings._normalize_hostname("https://api.example.com") == "api.example.com"
+
+    def test_normalize_hostname_with_path(self):
+        """Test hostname normalization removes path"""
+        settings = Settings()
+        
+        assert settings._normalize_hostname("https://app.example.com/api/v1") == "app.example.com"
+        assert settings._normalize_hostname("localhost:8000/health") == "localhost"
+
+    def test_normalize_hostname_plain_hostname(self):
+        """Test hostname normalization with plain hostnames"""
+        settings = Settings()
+        
+        assert settings._normalize_hostname("example.com") == "example.com"
+        assert settings._normalize_hostname("localhost") == "localhost"
+        assert settings._normalize_hostname("127.0.0.1") == "127.0.0.1"
+
+    def test_normalize_hostname_wildcard(self):
+        """Test hostname normalization preserves wildcard"""
+        settings = Settings()
+        assert settings._normalize_hostname("*") == "*"
+
+    def test_normalize_hostname_with_port_only(self):
+        """Test hostname normalization with port but no scheme"""
+        settings = Settings()
+        
+        assert settings._normalize_hostname("example.com:8080") == "example.com"
+        assert settings._normalize_hostname("localhost:3000") == "localhost"
+
+    def test_normalize_hostname_edge_cases(self):
+        """Test hostname normalization edge cases"""
+        settings = Settings()
+        
+        # Non-numeric port (should be preserved)
+        assert settings._normalize_hostname("example.com:abc") == "example.com:abc"
+        
+        # Multiple colons - only first numeric port removed
+        assert settings._normalize_hostname("example.com:8080:extra") == "example.com:8080:extra"
+
+    def test_get_effective_allowed_hosts_explicit_setting(self):
+        """Test get_effective_allowed_hosts with explicit allowed_hosts"""
+        settings = Settings(
+            allowed_hosts=["example.com", "api.example.com"],
+            cors_origins=["https://app.example.com"]
+        )
+        
+        # Should use explicit allowed_hosts, ignore cors_origins
+        result = settings.get_effective_allowed_hosts()
+        assert result == ["example.com", "api.example.com"]
+
+    def test_get_effective_allowed_hosts_from_cors_wildcard(self):
+        """Test get_effective_allowed_hosts derives from cors_origins wildcard"""
+        settings = Settings(cors_origins=["*"])
+        
+        result = settings.get_effective_allowed_hosts()
+        assert result == ["*"]
+
+    def test_get_effective_allowed_hosts_from_cors_development(self):
+        """Test get_effective_allowed_hosts in development environment"""
+        settings = Settings(
+            environment="development",
+            cors_origins=["https://app.example.com:8080", "http://localhost:3000"]
+        )
+        
+        result = settings.get_effective_allowed_hosts()
+        
+        # Should normalize cors_origins and add localhost/127.0.0.1
+        expected = ["app.example.com", "localhost", "127.0.0.1"]
+        assert all(host in result for host in expected)
+        # localhost should not be duplicated
+        assert result.count("localhost") == 1
+
+    def test_get_effective_allowed_hosts_from_cors_production(self):
+        """Test get_effective_allowed_hosts in production environment"""
+        settings = Settings(
+            environment="production",
+            cors_origins=["https://app.example.com", "https://api.example.com:8443"]
+        )
+        
+        result = settings.get_effective_allowed_hosts()
+        
+        # Should normalize cors_origins but NOT add localhost/127.0.0.1 in production
+        assert result == ["app.example.com", "api.example.com"]
+        assert "localhost" not in result
+        assert "127.0.0.1" not in result
+
+    def test_get_effective_allowed_hosts_empty_fallback(self):
+        """Test get_effective_allowed_hosts with empty cors_origins"""
+        settings = Settings(environment="production", cors_origins=[])
+        
+        result = settings.get_effective_allowed_hosts()
+        
+        # Should fallback to wildcard when no origins and no normalized hosts
+        assert result == ["*"]
+
+    def test_get_effective_allowed_hosts_duplicates_removed(self):
+        """Test get_effective_allowed_hosts removes duplicates"""
+        settings = Settings(
+            environment="development",
+            cors_origins=[
+                "https://app.example.com:8080",
+                "http://app.example.com:3000",  # Same hostname
+                "https://localhost:8000",       # Will be deduplicated
+            ]
+        )
+        
+        result = settings.get_effective_allowed_hosts()
+        
+        # Should have unique hostnames
+        assert result.count("app.example.com") == 1
+        assert result.count("localhost") == 1
+        assert "127.0.0.1" in result

@@ -205,7 +205,5 @@ def setup_middleware(app: FastAPI, settings) -> None:
     if settings.is_production:
         app.add_middleware(
             TrustedHostMiddleware,
-            allowed_hosts=(
-                settings.cors_origins if settings.cors_origins != ["*"] else ["*"]
-            ),
+            allowed_hosts=settings.get_effective_allowed_hosts(),
         )
