@@ -280,6 +280,9 @@ class Settings(BaseSettings):
     refresh_cookie_samesite: str = Field(
         default="lax", description="SameSite setting for refresh token cookie"
     )
+    refresh_cookie_domain: Optional[str] = Field(
+        default=None, description="Domain for refresh token cookie"
+    )
 
     # User activation and verification settings
     auth_register_default_active: bool = Field(

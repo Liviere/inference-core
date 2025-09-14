@@ -22,8 +22,8 @@ from inference_core.core.security import (
 )
 from inference_core.schemas.auth import (
     AccessToken,
-    EmailVerificationRequest,
     EmailVerificationConfirm,
+    EmailVerificationRequest,
     LoginRequest,
     PasswordChange,
     PasswordResetConfirm,
@@ -90,7 +90,9 @@ async def register(
     # Send verification email if enabled
     if settings.auth_send_verification_email_on_register:
         try:
-            verification_token = auth_service.create_email_verification_token(str(user.id))
+            verification_token = auth_service.create_email_verification_token(
+                str(user.id)
+            )
             await auth_service.send_verification_email(user, verification_token)
         except Exception as e:
             # Log error but don't fail registration
@@ -137,7 +139,7 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user"
         )
-    
+
     # Check if user email is verified (new behavior)
     if settings.auth_login_require_verified and not user.is_verified:
         raise HTTPException(
@@ -176,6 +178,7 @@ async def login(
         httponly=True,
         secure=settings.refresh_cookie_secure,
         samesite=settings.refresh_cookie_samesite,
+        domain=settings.refresh_cookie_domain,
     )
 
     return AccessToken(access_token=access_token, token_type="bearer")
@@ -399,6 +402,7 @@ async def refresh_tokens(request: Request, response: Response) -> AccessToken:
         httponly=True,
         secure=settings.refresh_cookie_secure,
         samesite=settings.refresh_cookie_samesite,
+        domain=settings.refresh_cookie_domain,
     )
 
     return AccessToken(access_token=access_token, token_type="bearer")
@@ -466,7 +470,9 @@ async def logout(request: Request, response: Response) -> SuccessResponse:
 
     # Clear the refresh token cookie
     response.delete_cookie(
-        key=settings.refresh_cookie_name, path=settings.refresh_cookie_path
+        key=settings.refresh_cookie_name,
+        path=settings.refresh_cookie_path,
+        domain=settings.refresh_cookie_domain,
     )
 
     return SuccessResponse(
