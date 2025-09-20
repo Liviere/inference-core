@@ -296,3 +296,134 @@ def reset_metrics() -> None:
     except Exception:
         # If reset fails, it's not critical for normal operation
         pass
+
+
+# ----------------------------------------------------------------------------
+# Vector Store Metrics
+# ----------------------------------------------------------------------------
+
+# Vector store operation metrics
+vector_similarity_search_seconds = Histogram(
+    "vector_similarity_search_seconds",
+    "Time spent on vector similarity search",
+    ["backend", "collection"],
+)
+
+vector_ingest_batch_seconds = Histogram(
+    "vector_ingest_batch_seconds",
+    "Time spent on batch document ingestion",
+    ["backend", "collection"],
+)
+
+vector_documents_ingested_total = Counter(
+    "vector_documents_ingested_total",
+    "Total number of documents ingested",
+    ["backend", "collection"],
+)
+
+vector_query_requests_total = Counter(
+    "vector_query_requests_total",
+    "Total number of vector query requests",
+    ["backend", "collection", "status"],
+)
+
+vector_collections_total = Gauge(
+    "vector_collections_total",
+    "Total number of vector collections",
+    ["backend"],
+    multiprocess_mode="livesum",
+)
+
+vector_documents_total = Gauge(
+    "vector_documents_total",
+    "Total number of documents in all collections",
+    ["backend", "collection"],
+    multiprocess_mode="livesum",
+)
+
+
+def record_vector_search(backend: str, collection: str, duration_seconds: float, success: bool = True) -> None:
+    """Record vector similarity search metrics.
+    
+    Args:
+        backend: Vector store backend (qdrant, memory, etc.)
+        collection: Collection name
+        duration_seconds: Time taken for the search
+        success: Whether the search was successful
+    """
+    vector_similarity_search_seconds.labels(backend=backend, collection=collection).observe(duration_seconds)
+    status = "success" if success else "error"
+    vector_query_requests_total.labels(backend=backend, collection=collection, status=status).inc()
+
+
+def record_vector_ingestion(backend: str, collection: str, document_count: int, duration_seconds: float) -> None:
+    """Record vector document ingestion metrics.
+    
+    Args:
+        backend: Vector store backend (qdrant, memory, etc.)
+        collection: Collection name
+        document_count: Number of documents ingested
+        duration_seconds: Time taken for ingestion
+    """
+    vector_ingest_batch_seconds.labels(backend=backend, collection=collection).observe(duration_seconds)
+    vector_documents_ingested_total.labels(backend=backend, collection=collection).inc(document_count)
+
+
+def update_vector_collection_stats(backend: str, collection: str, document_count: int) -> None:
+    """Update vector collection statistics.
+    
+    Args:
+        backend: Vector store backend (qdrant, memory, etc.)
+        collection: Collection name
+        document_count: Total number of documents in the collection
+    """
+    vector_documents_total.labels(backend=backend, collection=collection).set(document_count)
+
+
+def time_vector_operation(backend: str, collection: str, operation: str):
+    """Decorator to automatically time vector store operations.
+    
+    Args:
+        backend: Vector store backend name
+        collection: Collection name
+        operation: Type of operation (search, ingest)
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = func(*args, **kwargs)
+                duration = time.time() - start_time
+                if operation == "search":
+                    record_vector_search(backend, collection, duration, success=True)
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+                if operation == "search":
+                    record_vector_search(backend, collection, duration, success=False)
+                raise
+
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = await func(*args, **kwargs)
+                duration = time.time() - start_time
+                if operation == "search":
+                    record_vector_search(backend, collection, duration, success=True)
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+                if operation == "search":
+                    record_vector_search(backend, collection, duration, success=False)
+                raise
+
+        # Return the appropriate wrapper based on whether the function is a coroutine
+        import asyncio
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return wrapper
+
+    return decorator

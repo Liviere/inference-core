@@ -6,10 +6,12 @@ Provides business logic layer over vector store providers.
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Sequence
 
 from langchain_core.retrievers import BaseRetriever
 
+from ..observability.metrics import record_vector_ingestion, record_vector_search, update_vector_collection_stats
 from ..vectorstores.base import BaseVectorStoreProvider, VectorStoreDocument, CollectionStats
 from ..vectorstores.factory import get_vector_store_provider
 
@@ -102,15 +104,35 @@ class VectorStoreService:
         # Ensure collection exists
         await self.ensure_collection(collection)
         
-        # Add texts
-        doc_ids = await self.provider.add_texts(
-            texts=texts,
-            metadatas=metadatas,
-            ids=ids,
-            collection=collection,
-        )
+        # Add texts with metrics
+        start_time = time.time()
+        try:
+            doc_ids = await self.provider.add_texts(
+                texts=texts,
+                metadatas=metadatas,
+                ids=ids,
+                collection=collection,
+            )
+            
+            # Record metrics
+            duration = time.time() - start_time
+            backend = getattr(self.provider, '__class__', type(self.provider)).__name__.replace('Provider', '').lower()
+            record_vector_ingestion(backend, collection, len(texts), duration)
+            
+            # Update collection stats
+            try:
+                stats = await self.get_collection_stats(collection)
+                update_vector_collection_stats(backend, collection, stats.count)
+            except Exception:
+                # Don't fail if we can't update stats
+                pass
         
-        logger.info(f"Added {len(texts)} texts to collection '{collection}'")
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"Vector ingestion failed after {duration:.2f}s: {e}")
+            raise
+        
+        logger.info(f"Added {len(texts)} texts to collection '{collection}' in {duration:.2f}s")
         return doc_ids
 
     async def similarity_search(
@@ -153,15 +175,30 @@ class VectorStoreService:
         if filters:
             filters = self._sanitize_metadata(filters)
         
-        results = await self.provider.similarity_search(
-            query=query,
-            k=k,
-            collection=collection,
-            filters=filters,
-            **kwargs,
-        )
+        # Perform similarity search with metrics
+        start_time = time.time()
+        try:
+            results = await self.provider.similarity_search(
+                query=query,
+                k=k,
+                collection=collection,
+                filters=filters,
+                **kwargs,
+            )
+            
+            # Record metrics
+            duration = time.time() - start_time
+            backend = getattr(self.provider, '__class__', type(self.provider)).__name__.replace('Provider', '').lower()
+            record_vector_search(backend, collection, duration, success=True)
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            backend = getattr(self.provider, '__class__', type(self.provider)).__name__.replace('Provider', '').lower()
+            record_vector_search(backend, collection, duration, success=False)
+            logger.error(f"Vector search failed after {duration:.2f}s: {e}")
+            raise
         
-        logger.debug(f"Found {len(results)} similar documents for query in collection '{collection}'")
+        logger.debug(f"Found {len(results)} similar documents for query in collection '{collection}' in {duration:.2f}s")
         return results
 
     async def get_retriever(

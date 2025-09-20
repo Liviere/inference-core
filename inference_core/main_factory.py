@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .api.v1.routes import auth, batch, health, llm, metrics, tasks
+from .api.v1.routes import auth, batch, health, llm, metrics, tasks, vector
 from .core.config import get_settings
 from .core.logging_config import setup_logging
 from .database.sql.connection import close_database, create_tables
@@ -167,6 +167,7 @@ def setup_routers(app: FastAPI, external_routers: Dict[str, APIRouter] = None) -
     api_v1.include_router(tasks.router)
     api_v1.include_router(llm.router)
     api_v1.include_router(batch.router)
+    api_v1.include_router(vector.router)
 
     # Include main API router
     app.include_router(api_v1)
@@ -207,3 +208,7 @@ def setup_middleware(app: FastAPI, settings) -> None:
             TrustedHostMiddleware,
             allowed_hosts=settings.get_effective_allowed_hosts(),
         )
+
+
+# Create app instance for ASGI servers
+app = create_application()

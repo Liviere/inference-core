@@ -292,10 +292,11 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
             """Simple in-memory retriever implementation"""
             
             def __init__(self, provider: "InMemoryVectorStoreProvider", collection: str, search_kwargs: Dict[str, Any]):
-                super().__init__()
-                self.provider = provider
-                self.collection = collection
-                self.search_kwargs = search_kwargs or {}
+                # Don't call super().__init__() to avoid Pydantic validation issues
+                # Set attributes directly
+                object.__setattr__(self, 'provider', provider)
+                object.__setattr__(self, 'collection', collection)  
+                object.__setattr__(self, 'search_kwargs', search_kwargs or {})
 
             def _get_relevant_documents(
                 self, query: str, *, run_manager: CallbackManagerForRetrieverRun
