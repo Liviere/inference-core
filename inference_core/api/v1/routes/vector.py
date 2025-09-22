@@ -6,17 +6,14 @@ similarity search, and collection management.
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from inference_core.core.dependecies import get_current_active_user, get_db, get_llm_router_dependencies
+from inference_core.core.dependecies import get_llm_router_dependencies
 from inference_core.schemas.vector import (
     CollectionStatsResponse,
     ErrorResponse,
     IngestRequest,
-    IngestResponse,
     IngestTaskResponse,
     QueryRequest,
     QueryResponse,
@@ -54,21 +51,24 @@ async def get_vector_service():
 async def get_vector_store_health():
     """
     Get vector store health status.
-    
+
     Returns health information about the vector store backend,
     including connectivity status and available collections.
     """
     try:
         service = get_vector_store_service()
         health_info = await service.health_check()
-        
+
         return VectorStoreHealthResponse(
             status=health_info.get("status", "unknown"),
             backend=health_info.get("backend"),
             message=health_info.get("message"),
             collections=health_info.get("collections"),
-            details={k: v for k, v in health_info.items() 
-                    if k not in ("status", "backend", "message", "collections")},
+            details={
+                k: v
+                for k, v in health_info.items()
+                if k not in ("status", "backend", "message", "collections")
+            },
         )
     except Exception as e:
         logger.error(f"Vector store health check failed: {e}", exc_info=True)
@@ -85,18 +85,18 @@ async def ingest_documents(
 ):
     """
     Ingest documents into vector store.
-    
+
     Accepts a list of texts with optional metadata and IDs.
     Documents are processed asynchronously by default, returning a task ID for tracking.
-    
-    For synchronous processing (not recommended for large batches), 
+
+    For synchronous processing (not recommended for large batches),
     set async_mode=False in the request.
     """
     try:
         if request.async_mode:
             # Asynchronous processing via Celery
             from inference_core.celery.tasks.vector_tasks import ingest_documents_task
-            
+
             # Submit task to Celery
             task = ingest_documents_task.delay(
                 texts=request.texts,
@@ -104,16 +104,18 @@ async def ingest_documents(
                 ids=request.ids,
                 collection=request.collection,
             )
-            
-            actual_collection = request.collection or service.provider.get_default_collection()
-            
+
+            actual_collection = (
+                request.collection or service.provider.get_default_collection()
+            )
+
             return IngestTaskResponse(
                 task_id=task.id,
                 message="Document ingestion task submitted successfully",
                 collection=actual_collection,
                 estimated_count=len(request.texts),
             )
-        
+
         else:
             # Synchronous processing (not recommended for large batches)
             if len(request.texts) > 100:
@@ -121,23 +123,25 @@ async def ingest_documents(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Synchronous processing is limited to 100 documents. Use async_mode=True for larger batches.",
                 )
-            
+
             document_ids = await service.add_texts(
                 texts=request.texts,
                 metadatas=request.metadatas,
                 ids=request.ids,
                 collection=request.collection,
             )
-            
-            actual_collection = request.collection or service.provider.get_default_collection()
-            
+
+            actual_collection = (
+                request.collection or service.provider.get_default_collection()
+            )
+
             return IngestTaskResponse(
                 task_id="synchronous",
                 message="Documents ingested successfully",
                 collection=actual_collection,
                 estimated_count=len(document_ids),
             )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -155,7 +159,7 @@ async def query_documents(
 ):
     """
     Query documents using similarity search.
-    
+
     Finds documents similar to the provided query text and returns them
     ranked by similarity score.
     """
@@ -167,7 +171,7 @@ async def query_documents(
             collection=request.collection,
             filters=request.filters,
         )
-        
+
         # Convert to response format
         retrieved_docs = [
             RetrievedDocument(
@@ -178,9 +182,11 @@ async def query_documents(
             )
             for doc in documents
         ]
-        
-        actual_collection = request.collection or service.provider.get_default_collection()
-        
+
+        actual_collection = (
+            request.collection or service.provider.get_default_collection()
+        )
+
         # Get collection stats for total count (optional)
         total_in_collection = None
         try:
@@ -189,7 +195,7 @@ async def query_documents(
         except Exception:
             # Don't fail the query if we can't get stats
             pass
-        
+
         return QueryResponse(
             documents=retrieved_docs,
             query=request.query,
@@ -197,7 +203,7 @@ async def query_documents(
             count=len(retrieved_docs),
             total_in_collection=total_in_collection,
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -215,20 +221,20 @@ async def get_collection_stats(
 ):
     """
     Get statistics for a specific collection.
-    
+
     Returns information about the collection including document count,
     vector dimension, and distance metric.
     """
     try:
         stats = await service.get_collection_stats(collection)
-        
+
         return CollectionStatsResponse(
             name=stats.name,
             count=stats.count,
             dimension=stats.dimension,
             distance_metric=stats.distance_metric,
         )
-    
+
     except ValueError as e:
         # Collection doesn't exist
         raise HTTPException(
@@ -250,13 +256,13 @@ async def delete_collection(
 ):
     """
     Delete a collection and all its documents.
-    
+
     **Warning**: This operation is irreversible and will delete all documents
     in the specified collection.
     """
     try:
         deleted = await service.delete_collection(collection)
-        
+
         if deleted:
             return {"message": f"Collection '{collection}' deleted successfully"}
         else:
@@ -264,7 +270,7 @@ async def delete_collection(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Collection '{collection}' not found",
             )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -277,6 +283,7 @@ async def delete_collection(
 
 # Optional endpoints for development/debugging
 
+
 @router.post("/collections/{collection}/ensure")
 async def ensure_collection(
     collection: str,
@@ -284,17 +291,17 @@ async def ensure_collection(
 ):
     """
     Ensure a collection exists, creating it if necessary.
-    
+
     This endpoint is mainly for development and testing purposes.
     """
     try:
         created = await service.ensure_collection(collection)
-        
+
         if created:
             return {"message": f"Collection '{collection}' created successfully"}
         else:
             return {"message": f"Collection '{collection}' already exists"}
-    
+
     except Exception as e:
         logger.error(f"Failed to ensure collection: {e}", exc_info=True)
         raise HTTPException(
