@@ -34,6 +34,7 @@ def create_celery_app() -> Celery:
             "inference_core.celery.tasks.llm_tasks",
             "inference_core.celery.tasks.batch_tasks",
             "inference_core.celery.tasks.email_tasks",
+            "inference_core.celery.tasks.vector_tasks",
         ]
     )
 
