@@ -270,6 +270,46 @@ class Settings(BaseSettings):
         description="Access control mode for LLM API endpoints. 'public' allows no authentication, 'user' requires authenticated active users, 'superuser' requires superuser privileges. Default: 'superuser' for security.",
     )
 
+    ###################################
+    #        VECTOR STORE             #
+    ###################################
+    vector_backend: Optional[Literal["qdrant", "memory"]] = Field(
+        default=None,
+        description="Vector store backend. None disables vector store features. 'qdrant' for production, 'memory' for testing/development.",
+    )
+    vector_collection_default: str = Field(
+        default="default_documents",
+        description="Default collection name for vector storage",
+    )
+    qdrant_url: str = Field(
+        default="http://localhost:6333",
+        description="Qdrant server URL",
+    )
+    qdrant_api_key: Optional[str] = Field(
+        default=None,
+        description="Qdrant API key for authentication (optional)",
+    )
+    vector_distance: Literal["cosine", "euclidean", "dot"] = Field(
+        default="cosine",
+        description="Distance metric for vector similarity",
+    )
+    vector_embedding_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        description="Embedding model for text vectorization",
+    )
+    vector_dim: int = Field(
+        default=384,
+        description="Vector dimension size - must match embedding model output",
+        ge=1,
+        le=4096,
+    )
+    vector_ingest_max_batch_size: int = Field(
+        default=1000,
+        description="Maximum batch size for vector ingestion",
+        ge=1,
+        le=10000,
+    )
+
     # Cookie settings for refresh tokens
     refresh_cookie_name: str = Field(
         default="refresh_token", description="Name of the refresh token cookie"
@@ -464,6 +504,11 @@ class Settings(BaseSettings):
                     normalized_hosts.append(local_host)
 
         return normalized_hosts if normalized_hosts else ["*"]
+    
+    @property
+    def is_vector_store_enabled(self) -> bool:
+        """Check if vector store is enabled"""
+        return self.vector_backend is not None
 
     model_config = SettingsConfigDict(
         env_file=".env.test" if os.getenv("ENVIRONMENT") == "testing" else ".env",

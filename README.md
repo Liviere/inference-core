@@ -428,6 +428,14 @@ For production environments, consider adjusting the sample rates to reduce overh
 | `SMTP_BACKUP_PASSWORD`                      | Backup SMTP password                                             | None                                                         | Email               |
 | `SMTP_O365_USERNAME`                        | Office 365 SMTP username                                         | None                                                         | Email               |
 | `SMTP_O365_PASSWORD`                        | Office 365 SMTP password                                         | None                                                         | Email               |
+| `VECTOR_BACKEND`                            | Vector store backend (`qdrant`, `memory`, or blank to disable)   | None                                                         | Vector Store        |
+| `VECTOR_COLLECTION_DEFAULT`                 | Default collection name for documents                            | `default_documents`                                          | Vector Store        |
+| `QDRANT_URL`                                | Qdrant server URL                                                | `http://localhost:6333`                                     | Vector Store        |
+| `QDRANT_API_KEY`                            | Qdrant API key (optional)                                        | None                                                         | Vector Store        |
+| `VECTOR_DISTANCE`                           | Distance metric (`cosine`, `euclidean`, `dot`)                   | `cosine`                                                     | Vector Store        |
+| `VECTOR_EMBEDDING_MODEL`                    | Sentence Transformers model for embeddings                       | `sentence-transformers/all-MiniLM-L6-v2`                    | Vector Store        |
+| `VECTOR_DIM`                                | Vector dimension (must match embedding model)                    | `384`                                                        | Vector Store        |
+| `VECTOR_INGEST_MAX_BATCH_SIZE`              | Maximum batch size for document ingestion                        | `1000`                                                       | Vector Store        |
 
 ### CORS vs Trusted Hosts Configuration
 
@@ -474,6 +482,28 @@ ALLOWED_HOSTS=app.example.com,admin.example.com,127.0.0.1,localhost
 **If not set**: `ALLOWED_HOSTS` will be automatically derived from `CORS_ORIGINS` by extracting hostnames (stripping schemes, ports, and paths).
 
 ## Features
+
+### Vector Store & Semantic Search
+
+The application includes a comprehensive vector store system for semantic document storage and retrieval:
+
+- **Pluggable Backends**: Support for Qdrant (production) and in-memory (development/testing)
+- **RESTful API**: Endpoints for document ingestion and similarity search
+- **Async Processing**: Celery-powered batch document ingestion
+- **Embedding Models**: Integration with Sentence Transformers
+- **Metrics**: Prometheus monitoring of operations
+- **Authentication**: Integrated with existing access control system
+
+Quick setup:
+```bash
+# Enable vector store (in .env)
+VECTOR_BACKEND=memory  # or 'qdrant' for production
+
+# Start Qdrant for production use
+docker run -p 6333:6333 qdrant/qdrant:latest
+```
+
+See [Vector Store Guide](docs/vector-store.md) for detailed documentation.
 
 ### Error Monitoring & Performance Tracking
 
