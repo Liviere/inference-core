@@ -33,7 +33,11 @@ def public_access_client():
     
     # Override auth dependencies to allow public access
     async def override_no_auth():
-        return {"id": "public-user", "username": "public", "is_superuser": True}
+        return {
+            "id": "12345678-1234-5678-9012-123456789012",  # Valid UUID format
+            "username": "public", 
+            "is_superuser": True
+        }
     
     # Override both user and superuser dependencies to allow access
     app.dependency_overrides[get_current_active_user] = override_no_auth
@@ -48,11 +52,43 @@ def public_access_client():
 @pytest.fixture
 async def public_access_async_client():
     """Async test client with public LLM access mode (no auth required)."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from inference_core.database.sql.connection import (
+        Base,
+        create_database_engine,
+        get_non_singleton_session_maker,
+    )
+    from inference_core.core.dependecies import get_db
+    
+    # Create engine and session maker like async_test_client does
+    engine = create_database_engine()
+    # Ensure tables exist for endpoints that interact with DB
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_maker = get_non_singleton_session_maker(engine=engine)
+
+    async def override_get_db() -> AsyncSession:
+        async with session_maker() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
+
     app = create_application()
+    
+    # Override database dependency
+    app.dependency_overrides[get_db] = override_get_db
     
     # Override auth dependencies to allow public access
     async def override_no_auth():
-        return {"id": "public-user", "username": "public", "is_superuser": True}
+        return {
+            "id": "12345678-1234-5678-9012-123456789012",  # Valid UUID format
+            "username": "public", 
+            "is_superuser": True
+        }
     
     # Override both user and superuser dependencies to allow access
     app.dependency_overrides[get_current_active_user] = override_no_auth
@@ -63,6 +99,14 @@ async def public_access_async_client():
             yield client
     finally:
         app.dependency_overrides.clear()
+        # Drop tables after tests to keep environment clean
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+        except Exception:
+            # Best-effort cleanup; ignore if DB not reachable
+            pass
+        await engine.dispose()
 
 
 @pytest.fixture  

@@ -44,25 +44,57 @@ class TestLLMEndpointAccessControl:
             yield settings
 
     @pytest.fixture
-    def client_public(self, mock_settings_public):
+    def client_public(self):
         """Test client with public access mode"""
-        with patch('inference_core.core.dependecies.get_settings', return_value=mock_settings_public):
-            app = create_application()
-            return TestClient(app)
+        from inference_core.core.dependecies import get_current_active_user, get_current_superuser
+        
+        app = create_application()
+        
+        # Override auth dependencies to allow public access
+        async def override_no_auth():
+            return {
+                "id": "12345678-1234-5678-9012-123456789012", 
+                "username": "public", 
+                "is_superuser": True
+            }
+        
+        app.dependency_overrides[get_current_active_user] = override_no_auth
+        app.dependency_overrides[get_current_superuser] = override_no_auth
+        
+        return TestClient(app)
 
     @pytest.fixture
-    def client_user(self, mock_settings_user):
-        """Test client with user access mode"""
-        with patch('inference_core.core.dependecies.get_settings', return_value=mock_settings_user):
-            app = create_application()
-            return TestClient(app)
+    def client_user(self):
+        """Test client with user access mode (no superuser access)"""
+        from inference_core.core.dependecies import get_current_active_user, get_current_superuser
+        from fastapi import HTTPException, status
+        
+        app = create_application()
+        
+        # Override to provide regular user but fail on superuser
+        async def override_regular_user():
+            return {
+                "id": "12345678-1234-5678-9012-123456789012", 
+                "username": "regular_user", 
+                "is_superuser": False
+            }
+        
+        async def override_superuser_fail():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Superuser privileges required"
+            )
+        
+        app.dependency_overrides[get_current_active_user] = override_regular_user
+        app.dependency_overrides[get_current_superuser] = override_superuser_fail
+        
+        return TestClient(app)
 
     @pytest.fixture
-    def client_superuser(self, mock_settings_superuser):
-        """Test client with superuser access mode"""
-        with patch('inference_core.core.dependecies.get_settings', return_value=mock_settings_superuser):
-            app = create_application()
-            return TestClient(app)
+    def client_superuser(self):
+        """Test client with superuser access mode (default behavior)"""
+        app = create_application()
+        return TestClient(app)
 
     def test_llm_explain_endpoint_public_mode(self, client_public):
         """Test /api/v1/llm/explain endpoint in public mode (no auth required)"""

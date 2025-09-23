@@ -19,7 +19,7 @@ from inference_core.database.sql.models.batch import BatchItemStatus, BatchJobSt
 class TestBatchAPIEndpoints:
     """Test batch API endpoints"""
 
-    async def get_auth_token(self, async_test_client: AsyncClient) -> str:
+    async def get_auth_token(self, public_access_async_client: AsyncClient) -> str:
         """Helper to get an auth token for testing"""
         import uuid
 
@@ -29,7 +29,7 @@ class TestBatchAPIEndpoints:
         email = f"test{unique_id}@example.com"
 
         # Register a test user
-        reg_response = await async_test_client.post(
+        reg_response = await public_access_async_client.post(
             "/api/v1/auth/register",
             json={
                 "username": username,
@@ -42,7 +42,7 @@ class TestBatchAPIEndpoints:
         assert reg_response.status_code == status.HTTP_201_CREATED
 
         # Login to get token
-        login_response = await async_test_client.post(
+        login_response = await public_access_async_client.post(
             "/api/v1/auth/login",
             json={"username": username, "password": "SecurePass123!"},
         )
@@ -108,13 +108,13 @@ class TestBatchAPIEndpoints:
         return data["job_id"]
 
     async def test_create_batch_job_validation_errors(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         """Test batch job creation validation errors"""
         auth_token = await self.get_auth_token(async_test_client)
 
         # Test empty items
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={"provider": "openai", "model": "gpt-4o-mini", "items": []},
             headers={"Authorization": f"Bearer {auth_token}"},
@@ -122,7 +122,7 @@ class TestBatchAPIEndpoints:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
         # Test missing required fields
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -134,7 +134,7 @@ class TestBatchAPIEndpoints:
         )
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    async def test_get_batch_job_success(self, async_test_client: AsyncClient):
+    async def test_get_batch_job_success(self, public_access_async_client: AsyncClient):
         """Test getting batch job details"""
         # Use single user for create + read
         auth_token = await self.get_auth_token(async_test_client)
@@ -153,7 +153,7 @@ class TestBatchAPIEndpoints:
             ],
             "params": {"mode": "chat", "temperature": 0.7},
         }
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json=create_payload,
             headers={"Authorization": f"Bearer {auth_token}"},
@@ -162,7 +162,7 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         # Then get it
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -182,12 +182,12 @@ class TestBatchAPIEndpoints:
         assert "events" in data
         assert len(data["events"]) >= 1  # Should have at least creation event
 
-    async def test_get_batch_job_not_found(self, async_test_client: AsyncClient):
+    async def test_get_batch_job_not_found(self, public_access_async_client: AsyncClient):
         """Test getting non-existent batch job"""
         auth_token = await self.get_auth_token(async_test_client)
         fake_uuid = "12345678-1234-5678-9012-123456789012"
 
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{fake_uuid}",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -202,10 +202,10 @@ class TestBatchAPIEndpoints:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    async def test_get_batch_items_success(self, async_test_client: AsyncClient):
+    async def test_get_batch_items_success(self, public_access_async_client: AsyncClient):
         """Test getting batch items"""
         auth_token = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -227,7 +227,7 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         # Then get its items
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}/items",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -259,11 +259,11 @@ class TestBatchAPIEndpoints:
         assert "is_successful" in item
 
     async def test_get_batch_items_with_status_filter(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         """Test getting batch items with status filter"""
         auth_token = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -285,7 +285,7 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         # Get items with queued status
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}/items?item_status=queued",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -295,7 +295,7 @@ class TestBatchAPIEndpoints:
         assert data["total"] == 2
 
         # Get items with completed status (should be empty)
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}/items?item_status=completed",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -305,10 +305,10 @@ class TestBatchAPIEndpoints:
         assert data["total"] == 0
         assert len(data["items"]) == 0
 
-    async def test_get_batch_items_pagination(self, async_test_client: AsyncClient):
+    async def test_get_batch_items_pagination(self, public_access_async_client: AsyncClient):
         """Test batch items pagination"""
         auth_token = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -330,7 +330,7 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         # Get first page with limit 1
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}/items?limit=1&offset=0",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -344,7 +344,7 @@ class TestBatchAPIEndpoints:
         assert data["has_more"] is True
 
         # Get second page
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}/items?limit=1&offset=1",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -357,10 +357,10 @@ class TestBatchAPIEndpoints:
         assert data["offset"] == 1
         assert data["has_more"] is False
 
-    async def test_cancel_batch_job_success(self, async_test_client: AsyncClient):
+    async def test_cancel_batch_job_success(self, public_access_async_client: AsyncClient):
         """Test cancelling a batch job"""
         auth_token = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -382,7 +382,7 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         # Then cancel it
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             f"/api/v1/llm/batch/{job_id}/cancel",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -396,7 +396,7 @@ class TestBatchAPIEndpoints:
         assert "message" in data
 
         # Verify job is actually cancelled
-        response = await async_test_client.get(
+        response = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -406,11 +406,11 @@ class TestBatchAPIEndpoints:
         assert job_data["status"] == "cancelled"
 
     async def test_cancel_batch_job_already_cancelled(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         """Test cancelling an already cancelled job"""
         auth_token = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -432,14 +432,14 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         # Cancel it first time
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             f"/api/v1/llm/batch/{job_id}/cancel",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert response.status_code == status.HTTP_200_OK
 
         # Try to cancel again
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             f"/api/v1/llm/batch/{job_id}/cancel",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -449,12 +449,12 @@ class TestBatchAPIEndpoints:
         assert data["cancelled"] is False
         assert "already cancelled" in data["message"]
 
-    async def test_cancel_batch_job_not_found(self, async_test_client: AsyncClient):
+    async def test_cancel_batch_job_not_found(self, public_access_async_client: AsyncClient):
         """Test cancelling non-existent batch job"""
         auth_token = await self.get_auth_token(async_test_client)
         fake_uuid = "12345678-1234-5678-9012-123456789012"
 
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             f"/api/v1/llm/batch/{fake_uuid}/cancel",
             headers={"Authorization": f"Bearer {auth_token}"},
         )
@@ -470,12 +470,12 @@ class TestBatchAPIEndpoints:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     async def test_get_batch_job_other_user_not_found(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         """User B should not see User A's job (returns 404 to avoid info leak)"""
         # User A creates job
         token_user_a = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -498,18 +498,18 @@ class TestBatchAPIEndpoints:
 
         # User B attempts to fetch
         token_user_b = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.get(
+        resp = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}",
             headers={"Authorization": f"Bearer {token_user_b}"},
         )
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_get_batch_items_other_user_not_found(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         """User B should not list User A's items (404)"""
         token_user_a = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -531,18 +531,18 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         token_user_b = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.get(
+        resp = await public_access_async_client.get(
             f"/api/v1/llm/batch/{job_id}/items",
             headers={"Authorization": f"Bearer {token_user_b}"},
         )
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_cancel_batch_job_other_user_not_found(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         """User B should not cancel User A's job (404)"""
         token_user_a = await self.get_auth_token(async_test_client)
-        create_resp = await async_test_client.post(
+        create_resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -564,13 +564,13 @@ class TestBatchAPIEndpoints:
         job_id = create_resp.json()["job_id"]
 
         token_user_b = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.post(
+        resp = await public_access_async_client.post(
             f"/api/v1/llm/batch/{job_id}/cancel",
             headers={"Authorization": f"Bearer {token_user_b}"},
         )
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
-    async def test_batch_job_input_size_limits(self, async_test_client: AsyncClient):
+    async def test_batch_job_input_size_limits(self, public_access_async_client: AsyncClient):
         """Test batch job input size limits"""
         auth_token = await self.get_auth_token(async_test_client)
 
@@ -586,7 +586,7 @@ class TestBatchAPIEndpoints:
                 }
             )
 
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={"provider": "openai", "model": "gpt-4o-mini", "items": large_items},
             headers={"Authorization": f"Bearer {auth_token}"},
@@ -595,33 +595,33 @@ class TestBatchAPIEndpoints:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
     async def test_batch_endpoints_require_authentication(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         """Test that all batch endpoints require authentication"""
         fake_uuid = "12345678-1234-5678-9012-123456789012"
 
         # Test create endpoint
-        response = await async_test_client.post("/api/v1/llm/batch/", json={})
+        response = await public_access_async_client.post("/api/v1/llm/batch/", json={})
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
         # Test get job endpoint
-        response = await async_test_client.get(f"/api/v1/llm/batch/{fake_uuid}")
+        response = await public_access_async_client.get(f"/api/v1/llm/batch/{fake_uuid}")
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
         # Test get items endpoint
-        response = await async_test_client.get(f"/api/v1/llm/batch/{fake_uuid}/items")
+        response = await public_access_async_client.get(f"/api/v1/llm/batch/{fake_uuid}/items")
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
         # Test cancel endpoint
-        response = await async_test_client.post(f"/api/v1/llm/batch/{fake_uuid}/cancel")
+        response = await public_access_async_client.post(f"/api/v1/llm/batch/{fake_uuid}/cancel")
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     # --- Provider / Model Validation Tests ---
     async def test_create_batch_job_unknown_provider(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         token = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.post(
+        resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "nope",
@@ -633,9 +633,9 @@ class TestBatchAPIEndpoints:
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "Unknown provider" in resp.text
 
-    async def test_create_batch_job_unknown_model(self, async_test_client: AsyncClient):
+    async def test_create_batch_job_unknown_model(self, public_access_async_client: AsyncClient):
         token = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.post(
+        resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -648,10 +648,10 @@ class TestBatchAPIEndpoints:
         assert "Unknown model" in resp.text
 
     async def test_create_batch_job_model_provider_mismatch(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         token = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.post(
+        resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -664,10 +664,10 @@ class TestBatchAPIEndpoints:
         assert "belongs to provider" in resp.text
 
     async def test_create_batch_job_provider_not_batch_enabled(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         token = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.post(
+        resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "custom_openai_compatible",
@@ -680,10 +680,10 @@ class TestBatchAPIEndpoints:
         assert "not enabled for batch" in resp.text
 
     async def test_create_batch_job_model_not_batch_enabled(
-        self, async_test_client: AsyncClient
+        self, public_access_async_client: AsyncClient
     ):
         token = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.post(
+        resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -695,9 +695,9 @@ class TestBatchAPIEndpoints:
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "not configured for batch" in resp.text
 
-    async def test_create_batch_job_mode_mismatch(self, async_test_client: AsyncClient):
+    async def test_create_batch_job_mode_mismatch(self, public_access_async_client: AsyncClient):
         token = await self.get_auth_token(async_test_client)
-        resp = await async_test_client.post(
+        resp = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
