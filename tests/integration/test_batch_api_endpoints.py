@@ -501,8 +501,9 @@ class TestBatchAPIEndpoints:
         self, async_test_client: AsyncClient
     ):
         """User B should not list User A's items (404)"""
-        
-        create_resp = await public_access_async_client.post(
+        # User A creates job
+        token_user_a = await self.get_auth_token(async_test_client)
+        create_resp = await async_test_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -518,15 +519,16 @@ class TestBatchAPIEndpoints:
                     },
                 ],
             },
-            
+            headers={"Authorization": f"******"},
         )
         assert create_resp.status_code == status.HTTP_201_CREATED
         job_id = create_resp.json()["job_id"]
 
+        # User B attempts to list items
         token_user_b = await self.get_auth_token(async_test_client)
-        resp = await public_access_async_client.get(
+        resp = await async_test_client.get(
             f"/api/v1/llm/batch/{job_id}/items",
-            headers={"Authorization": f"Bearer {token_user_b}"},
+            headers={"Authorization": f"******"},
         )
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
@@ -534,8 +536,9 @@ class TestBatchAPIEndpoints:
         self, async_test_client: AsyncClient
     ):
         """User B should not cancel User A's job (404)"""
-        
-        create_resp = await public_access_async_client.post(
+        # User A creates job
+        token_user_a = await self.get_auth_token(async_test_client)
+        create_resp = await async_test_client.post(
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
@@ -551,15 +554,16 @@ class TestBatchAPIEndpoints:
                     },
                 ],
             },
-            
+            headers={"Authorization": f"******"},
         )
         assert create_resp.status_code == status.HTTP_201_CREATED
         job_id = create_resp.json()["job_id"]
 
+        # User B attempts to cancel
         token_user_b = await self.get_auth_token(async_test_client)
-        resp = await public_access_async_client.post(
+        resp = await async_test_client.post(
             f"/api/v1/llm/batch/{job_id}/cancel",
-            headers={"Authorization": f"Bearer {token_user_b}"},
+            headers={"Authorization": f"******"},
         )
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 

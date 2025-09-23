@@ -31,9 +31,8 @@ async def _get_token(client: AsyncClient) -> str:
 
 
 @pytest.mark.asyncio
-async def test_batch_events_semantic_and_order(async_test_client: AsyncClient):
-    token = await _get_token(async_test_client)
-    headers = {"Authorization": f"Bearer {token}"}
+async def test_batch_events_semantic_and_order(public_access_async_client: AsyncClient):
+    # Use public access for functionality testing
     create_payload = {
         "provider": "openai",
         "model": "gpt-5-mini",
@@ -43,8 +42,8 @@ async def test_batch_events_semantic_and_order(async_test_client: AsyncClient):
         ],
         "params": {"mode": "chat"},
     }
-    resp = await async_test_client.post(
-        "/api/v1/llm/batch/", json=create_payload, headers=headers
+    resp = await public_access_async_client.post(
+        "/api/v1/llm/batch/", json=create_payload
     )
     assert resp.status_code == 201, resp.text
     job_id = resp.json()["job_id"]
@@ -55,8 +54,8 @@ async def test_batch_events_semantic_and_order(async_test_client: AsyncClient):
 
     # Poll for submission
     for _ in range(15):
-        detail = await async_test_client.get(
-            f"/api/v1/llm/batch/{job_id}", headers=headers
+        detail = await public_access_async_client.get(
+            f"/api/v1/llm/batch/{job_id}"
         )
         assert detail.status_code == 200
         data = detail.json()
@@ -70,7 +69,7 @@ async def test_batch_events_semantic_and_order(async_test_client: AsyncClient):
 
     batch_fetch(job_id)
 
-    detail = await async_test_client.get(f"/api/v1/llm/batch/{job_id}", headers=headers)
+    detail = await public_access_async_client.get(f"/api/v1/llm/batch/{job_id}")
     assert detail.status_code == 200
     data = detail.json()
     events = data["events"]
