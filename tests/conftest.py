@@ -23,6 +23,9 @@ from inference_core.database.sql.connection import (
 )
 from inference_core.main_factory import create_application
 
+# Import access control fixtures
+from tests.fixtures.access_control import *
+
 
 @pytest_asyncio.fixture()
 async def test_settings() -> AsyncGenerator:

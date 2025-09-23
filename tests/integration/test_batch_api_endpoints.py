@@ -69,10 +69,9 @@ class TestBatchAPIEndpoints:
         # FastAPI returns 403 when no credentials provided to dependency that requires auth
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    async def test_create_batch_job_success(self, async_test_client: AsyncClient):
-        """Test creating batch job successfully"""
-        auth_token = await self.get_auth_token(async_test_client)
-
+    async def test_create_batch_job_success(self, public_access_async_client: AsyncClient):
+        """Test creating batch job successfully with public access mode"""
+        # In public mode, no auth needed for LLM endpoints
         request_data = {
             "provider": "openai",
             "model": "gpt-5-mini",
@@ -89,10 +88,9 @@ class TestBatchAPIEndpoints:
             "params": {"mode": "chat", "temperature": 0.7},
         }
 
-        response = await async_test_client.post(
+        response = await public_access_async_client.post(
             "/api/v1/llm/batch/",
             json=request_data,
-            headers={"Authorization": f"Bearer {auth_token}"},
         )
 
         assert response.status_code == status.HTTP_201_CREATED
