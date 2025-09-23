@@ -67,7 +67,7 @@ def celery_eager():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
+async def test_e2e_explain_task(public_access_async_client, monkeypatch, celery_eager):
     # Stub chain factories in llm_service
     import inference_core.celery.tasks.llm_tasks as llm_tasks
     import inference_core.services.llm_service as llm_svc
@@ -135,7 +135,7 @@ async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
     monkeypatch.setattr(TaskService, "get_task_status", _get_task_status, raising=True)
 
     # Submit task via API
-    resp = await async_test_client.post(
+    resp = await public_access_async_client.post(
         "/api/v1/llm/explain",
         json={"question": "What is E2E?", "model_name": "demo-e2e"},
     )
@@ -144,7 +144,7 @@ async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
     assert task["task_id"] and task["status"] == "PENDING"
 
     # Fetch result via API with timeout to avoid blocking on errors
-    res = await async_test_client.get(
+    res = await public_access_async_client.get(
         f"/api/v1/tasks/{task['task_id']}/result", params={"timeout": 10.0}
     )
     assert res.status_code == 200
@@ -162,7 +162,7 @@ async def test_e2e_explain_task(async_test_client, monkeypatch, celery_eager):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_e2e_conversation_task(async_test_client, monkeypatch, celery_eager):
+async def test_e2e_conversation_task(public_access_async_client, monkeypatch, celery_eager):
     import inference_core.celery.tasks.llm_tasks as llm_tasks
     import inference_core.services.llm_service as llm_svc
 
@@ -239,7 +239,7 @@ async def test_e2e_conversation_task(async_test_client, monkeypatch, celery_eage
     # Submit task via API
     session_id = "e2e-session-42"
     user_input = "Hi E2E"
-    resp = await async_test_client.post(
+    resp = await public_access_async_client.post(
         "/api/v1/llm/conversation",
         json={
             "session_id": session_id,
@@ -252,13 +252,13 @@ async def test_e2e_conversation_task(async_test_client, monkeypatch, celery_eage
     assert task["task_id"] and task["status"] == "PENDING"
 
     # Fetch status (should be SUCCESS in eager mode)
-    status_res = await async_test_client.get(f"/api/v1/tasks/{task['task_id']}/status")
+    status_res = await public_access_async_client.get(f"/api/v1/tasks/{task['task_id']}/status")
     assert status_res.status_code == 200
     status_payload = status_res.json()
     assert status_payload["status"] in {"SUCCESS", "PENDING", "STARTED", "RETRY"}
 
     # Fetch final result with timeout to avoid blocking
-    res = await async_test_client.get(
+    res = await public_access_async_client.get(
         f"/api/v1/tasks/{task['task_id']}/result", params={"timeout": 10.0}
     )
     assert res.status_code == 200
