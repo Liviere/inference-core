@@ -37,7 +37,6 @@ class VectorStoreService:
     def __init__(self):
         self._provider: Optional[BaseVectorStoreProvider] = None
         self._retrievers_cache: Dict[str, BaseRetriever] = {}
-        self.initialize_provider()
 
     @property
     def provider(self) -> Optional[BaseVectorStoreProvider]:
@@ -415,4 +414,5 @@ def get_vector_store_service() -> VectorStoreService:
     global _vector_store_service
     if _vector_store_service is None:
         _vector_store_service = VectorStoreService()
+        _vector_store_service.initialize_provider()
     return _vector_store_service
