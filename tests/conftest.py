@@ -6,15 +6,15 @@ at class definition time (model_config env_file decision), leading to mixed valu
 """
 
 import os
-from typing import AsyncGenerator
 
-# Ensure test environment flag is present before importing app.* modules
 os.environ.setdefault("ENVIRONMENT", "testing")
+from typing import AsyncGenerator
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.core.config import Settings
 from inference_core.core.dependecies import get_db
 from inference_core.database.sql.connection import (
     Base,
@@ -22,6 +22,9 @@ from inference_core.database.sql.connection import (
     get_non_singleton_session_maker,
 )
 from inference_core.main_factory import create_application
+from tests.fixtures.access_control import *
+
+# Ensure test environment flag is present before importing app.* modules
 
 
 @pytest_asyncio.fixture()
@@ -29,8 +32,7 @@ async def test_settings() -> AsyncGenerator:
     """Fixture to provide application settings for tests."""
     from inference_core.core.config import get_settings
 
-    # Set ENVIRONMENT var to 'testing'
-    os.environ["ENVIRONMENT"] = "testing"
+    os.environ.setdefault("ENVIRONMENT", "testing")
 
     settings = get_settings()
     yield settings
@@ -117,3 +119,35 @@ async def async_test_client() -> AsyncGenerator[AsyncClient, None]:
             # Best-effort cleanup; ignore if DB not reachable
             pass
         await engine.dispose()
+
+
+@pytest_asyncio.fixture()
+def async_test_client_factory():
+    async def _factory(**overrides) -> AsyncGenerator[AsyncClient, None]:
+        engine = create_database_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        session_maker = get_non_singleton_session_maker(engine=engine)
+
+        async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+            async with session_maker() as session:
+                yield session
+
+        # Initialize app with custom settings
+        settings = Settings(**overrides)
+        app = create_application(custom_settings=settings)
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_settings] = lambda: settings
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            yield client
+
+        # cleanup
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
+
+    return _factory

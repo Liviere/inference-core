@@ -13,7 +13,7 @@ from fastapi.security import HTTPBearer
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from inference_core.core.config import get_settings
+from inference_core.core.config import Settings, get_settings
 from inference_core.core.dependecies import get_current_active_user, get_db
 from inference_core.core.security import (
     create_access_token,
@@ -46,7 +46,9 @@ logger = logging.getLogger(__name__)
     "/register", response_model=UserProfile, status_code=status.HTTP_201_CREATED
 )
 async def register(
-    user_data: RegisterRequest, db: AsyncSession = Depends(get_db)
+    user_data: RegisterRequest,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> UserProfile:
     """
     Register a new user
@@ -77,7 +79,6 @@ async def register(
         )
 
     # Create new user
-    settings = get_settings()
     user = await auth_service.create_user(
         username=user_data.username,
         email=user_data.email,
@@ -103,7 +104,10 @@ async def register(
 
 @router.post("/login", response_model=AccessToken)
 async def login(
-    login_data: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
+    login_data: LoginRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> AccessToken:
     """
     Login user and return access token (refresh token set as HttpOnly cookie)
@@ -120,7 +124,6 @@ async def login(
         HTTPException: If credentials are invalid
     """
     auth_service = AuthService(db)
-    settings = get_settings()
 
     # Authenticate user
     user = await auth_service.authenticate_user(
@@ -334,11 +337,14 @@ async def reset_password(
 
 
 @router.post("/refresh", response_model=AccessToken)
-async def refresh_tokens(request: Request, response: Response) -> AccessToken:
+async def refresh_tokens(
+    request: Request,
+    response: Response,
+    settings: Settings = Depends(get_settings),
+) -> AccessToken:
     """
     Exchange a refresh token (from cookie) for a new access token and rotated refresh token.
     """
-    settings = get_settings()
     store = RefreshSessionStore()
 
     # Extract refresh token from cookie
@@ -409,14 +415,15 @@ async def refresh_tokens(request: Request, response: Response) -> AccessToken:
 
 
 @router.get("/introspect", response_model=RefreshIntrospection)
-async def introspect_refresh_token(request: Request) -> RefreshIntrospection:
+async def introspect_refresh_token(
+    request: Request, settings: Settings = Depends(get_settings)
+) -> RefreshIntrospection:
     """Validate refresh token cookie WITHOUT rotating it.
 
     Returns a minimal payload indicating whether the refresh token session is
     active. Does NOT issue new tokens or revoke the existing one – safe for
     high-frequency middleware / SSR checks.
     """
-    settings = get_settings()
     store = RefreshSessionStore()
 
     refresh_token = request.cookies.get(settings.refresh_cookie_name)
@@ -444,14 +451,17 @@ async def introspect_refresh_token(request: Request) -> RefreshIntrospection:
 
 
 @router.post("/logout", response_model=SuccessResponse)
-async def logout(request: Request, response: Response) -> SuccessResponse:
+async def logout(
+    request: Request,
+    response: Response,
+    settings: Settings = Depends(get_settings),
+) -> SuccessResponse:
     """
     Logout current user by revoking refresh token session and clearing cookie
 
     Returns:
         Success response
     """
-    settings = get_settings()
     store = RefreshSessionStore()
 
     # Extract refresh token from cookie

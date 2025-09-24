@@ -20,9 +20,7 @@ from inference_core.services.task_service import TaskService, get_task_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/llm", 
-    tags=["LLM"], 
-    dependencies=get_llm_router_dependencies()
+    prefix="/llm", tags=["LLM"], dependencies=get_llm_router_dependencies()
 )
 
 
@@ -337,18 +335,21 @@ async def health_check(llm_service=Depends(get_llm_service_dependency)):
 
 
 # Debug endpoint for parameter policies (only available in DEBUG mode)
-from inference_core.core.config import get_settings
+from inference_core.core.config import Settings, get_settings
 
 
 @router.get("/param-policy/{provider}")
-async def get_param_policy(provider: str, model: Optional[str] = None):
+async def get_param_policy(
+    provider: str,
+    model: Optional[str] = None,
+    settings: Settings = Depends(get_settings),
+):
     """
     Get parameter policy for a specific LLM provider.
 
     Only available when DEBUG=True in settings.
     Useful for inspecting parameter normalization rules.
     """
-    settings = get_settings()
     if not settings.debug:
         raise HTTPException(
             status_code=404, detail="Debug endpoints are only available in DEBUG mode"

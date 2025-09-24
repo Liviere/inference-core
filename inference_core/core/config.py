@@ -504,7 +504,7 @@ class Settings(BaseSettings):
                     normalized_hosts.append(local_host)
 
         return normalized_hosts if normalized_hosts else ["*"]
-    
+
     @property
     def is_vector_store_enabled(self) -> bool:
         """Check if vector store is enabled"""
@@ -554,3 +554,72 @@ def get_settings() -> Settings:
         Settings instance
     """
     return Settings()
+
+
+# -------------------------------------------------------------
+# Helpers for tests / scenarios requiring pure default settings
+# -------------------------------------------------------------
+class PureDefaultsSettings(Settings):  # type: ignore
+    """Settings variant ignoring ENV, .env and secrets.
+
+    Used in tests to obtain pure defaults (with validators) and
+    to create instances with overrides that go through full validation.
+    """
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Only use init_settings source – no ENV, no .env, no secrets
+        return (init_settings,)
+
+
+def get_settings_pure_defaults() -> Settings:
+    """Return instance with default values only (validators active, no ENV/.env)."""
+    return PureDefaultsSettings()
+
+
+def build_pure_defaults_with_overrides(**overrides: Any) -> Settings:
+    """Create PureDefaultsSettings instance with overrides, all validated."""
+    return PureDefaultsSettings(**overrides)
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def isolated_settings_environment(clear: bool = True):
+    """Test context isolating ENV and get_settings cache.
+
+    Usage:
+        with isolated_settings_environment():
+            s = get_settings_pure_defaults()
+            ... assertions ...
+
+    Args:
+        clear: if True, removes all existing environment variables (restored after exit)
+    """
+    from copy import deepcopy
+
+    original_env = deepcopy(os.environ)
+    try:
+        if clear:
+            os.environ.clear()
+        # Clear cache so get_settings() does not return a stale instance
+        try:
+            get_settings.cache_clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+        try:
+            get_settings.cache_clear()  # refresh after exit
+        except Exception:
+            pass
