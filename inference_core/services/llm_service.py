@@ -18,6 +18,8 @@ from inference_core.llm.chains import (
 )
 from inference_core.llm.config import llm_config
 from inference_core.llm.models import get_model_factory
+from inference_core.llm.usage_logging import UsageLogger
+from inference_core.services.llm_usage_service import get_llm_usage_service
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,7 @@ class LLMService:
     def __init__(self):
         self.config = llm_config
         self.model_factory = get_model_factory()
+        self.usage_logger = UsageLogger(self.config.usage_logging)
         self._usage_stats = {
             "requests_count": 0,
             "total_tokens": 0,
@@ -76,6 +79,23 @@ class LLMService:
             Explanation string
         """
         self._log_request("explain", {"question": question, "model_name": model_name})
+        
+        # Start usage logging session
+        resolved_model_name = model_name or self.config.get_task_model("explain")
+        model_config = self.config.models.get(resolved_model_name)
+        provider = model_config.provider if model_config else "unknown"
+        
+        usage_session = self.usage_logger.start_session(
+            task_type="explain",
+            request_mode="sync",
+            model_name=resolved_model_name,
+            provider=provider,
+            pricing_config=model_config.pricing if model_config else None,
+            # user_id=None,  # TODO: Extract from request context when auth is available
+            # session_id=None,
+            # request_id=None,
+        )
+        
         try:
             # Deprecation guard for GPT-5 family: classic sampling params removed
             if model_name and model_name.startswith("gpt-5"):
@@ -106,6 +126,12 @@ class LLMService:
             chain = create_explanation_chain(model_name=model_name, **model_params)
             answer = await chain.generate_story(question=question)
 
+            # Try to extract usage metadata from the chain/model
+            usage_metadata = {}
+            if hasattr(chain, '_chain') and hasattr(chain._chain, 'last_run'):
+                # This is a future enhancement - for now we'll log without usage data
+                pass
+            
             result = LLMResponse(
                 result={"answer": answer},
                 metadata=LLMMetadata(
@@ -115,9 +141,26 @@ class LLMService:
             )
 
             self._update_usage_stats()
+            
+            # Finalize usage logging
+            await usage_session.finalize(
+                success=True,
+                final_usage=usage_metadata,
+                streamed=False,
+                partial=False,
+            )
+            
             return result
         except Exception as e:
             self._handle_error("explain", e)
+            
+            # Finalize usage logging with error
+            await usage_session.finalize(
+                success=False,
+                error=e,
+                streamed=False,
+                partial=False,
+            )
             raise e
 
     async def converse(
@@ -153,6 +196,23 @@ class LLMService:
                 "model_name": model_name,
             },
         )
+        
+        # Start usage logging session  
+        resolved_model_name = model_name or self.config.get_task_model("conversation")
+        model_config = self.config.models.get(resolved_model_name)
+        provider = model_config.provider if model_config else "unknown"
+        
+        usage_session = self.usage_logger.start_session(
+            task_type="conversation",
+            request_mode="sync",
+            model_name=resolved_model_name,
+            provider=provider,
+            pricing_config=model_config.pricing if model_config else None,
+            session_id=session_id,
+            # user_id=None,  # TODO: Extract from request context when auth is available
+            # request_id=None,
+        )
+        
         try:
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -184,6 +244,12 @@ class LLMService:
             chain = create_conversation_chain(model_name=model_name, **model_params)
             reply = await chain.chat(session_id=session_id, user_input=user_input)
 
+            # Try to extract usage metadata from the chain/model
+            usage_metadata = {}
+            if hasattr(chain, '_chain') and hasattr(chain._chain, 'last_run'):
+                # This is a future enhancement - for now we'll log without usage data
+                pass
+
             result = LLMResponse(
                 result={"reply": reply, "session_id": session_id},
                 metadata=LLMMetadata(
@@ -192,9 +258,26 @@ class LLMService:
                 ),
             )
             self._update_usage_stats()
+            
+            # Finalize usage logging
+            await usage_session.finalize(
+                success=True,
+                final_usage=usage_metadata,
+                streamed=False,
+                partial=False,
+            )
+            
             return result
         except Exception as e:
             self._handle_error("conversation", e)
+            
+            # Finalize usage logging with error
+            await usage_session.finalize(
+                success=False,
+                error=e,
+                streamed=False,
+                partial=False,
+            )
             raise e
 
     async def stream_conversation(
@@ -370,9 +453,24 @@ class LLMService:
         result = self.model_factory.get_available_models()
         return cast(Dict[str, bool], result)
 
-    def get_usage_stats(self) -> Dict[str, Any]:
-        """Get usage statistics"""
+    async def get_usage_stats(self) -> Dict[str, Any]:
+        """Get usage statistics including cost information"""
+        # Get legacy stats for backward compatibility
         result = self._usage_stats.copy()
+        
+        # Get enhanced stats from usage logging service
+        if self.config.usage_logging.enabled:
+            try:
+                usage_service = get_llm_usage_service()
+                enhanced_stats = await usage_service.get_usage_stats()
+                
+                # Merge enhanced stats while maintaining backward compatibility
+                result.update(enhanced_stats)
+                
+            except Exception as e:
+                logger.error(f"Failed to get enhanced usage stats: {e}")
+                # Fall back to legacy stats only
+        
         return cast(Dict[str, Any], result)
 
     def _log_request(self, operation: str, params: Dict[str, Any]):

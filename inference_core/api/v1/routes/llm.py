@@ -292,10 +292,10 @@ async def get_llm_statistics(llm_service=Depends(get_llm_service_dependency)):
     """
     Get LLM usage statistics.
 
-    Returns usage metrics including request counts, tokens used, and error rates.
+    Returns usage metrics including request counts, tokens used, cost information, and error rates.
     """
     try:
-        stats = llm_service.get_usage_stats()
+        stats = await llm_service.get_usage_stats()
         return LLMStatsResponse(stats=stats)
 
     except Exception as e:

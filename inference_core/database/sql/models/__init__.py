@@ -6,13 +6,15 @@ registered with SQLAlchemy metadata for table creation.
 """
 
 # Import all models here so SQLAlchemy can discover them
-# from .batch import BatchEvent, BatchItem, BatchJob
-# from .user import User
+from .batch import BatchEvent, BatchItem, BatchJob
+from .user import User  
+from .llm_request_log import LLMRequestLog
 
 # Export all models for easy importing
-# __all__ = [
-#     "User",
-#     "BatchJob",
-#     "BatchItem",
-#     "BatchEvent",
-# ]
+__all__ = [
+    "User",
+    "BatchJob", 
+    "BatchItem",
+    "BatchEvent",
+    "LLMRequestLog",
+]
