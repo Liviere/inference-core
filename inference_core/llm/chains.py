@@ -46,13 +46,21 @@ class BaseChain:
             raise ValueError(f"Could not create model for task: {task}")
         return model
 
-    async def arun(self, **kwargs) -> str:
-        """Run the chain asynchronously"""
+    async def arun(self, callbacks=None, **kwargs) -> str:
+        """Run the chain asynchronously with optional callbacks.
+
+        The callbacks parameter (list[BaseCallbackHandler]) is propagated via
+        the Runnable config so that provider-level LLM calls emit token usage
+        events to our custom handler.
+        """
         if not self._chain:
             raise NotImplementedError("Chain not implemented")
 
         try:
-            result = await self._chain.ainvoke(kwargs)
+            config = {}
+            if callbacks:
+                config = {"callbacks": callbacks}
+            result = await self._chain.ainvoke(kwargs, config=config)
             return result
         except Exception as e:
             logger.error(f"Chain execution failed: {str(e)}")
@@ -78,9 +86,11 @@ class ExplanationChain(BaseChain):
     async def generate_story(
         self,
         question: str,
+        callbacks=None,
     ) -> str:
         """Generate a answer to a question"""
         return await self.arun(
+            callbacks=callbacks,
             question=question,
         )
 
@@ -135,20 +145,21 @@ class ConversationChain(BaseChain):
             history_messages_key="history",
         )
 
-    async def chat(self, session_id: str, user_input: str) -> str:
+    async def chat(self, session_id: str, user_input: str, callbacks=None) -> str:
         """Send a user message within a session and get assistant reply"""
         if not self._chain:
             raise NotImplementedError("Conversation chain not initialized")
 
         try:
-            # Pass session_id via config.configurable per RunnableWithMessageHistory contract
-            # Use sync invoke in a worker thread to match SQLChatMessageHistory sync mode
+            config = {"configurable": {"session_id": session_id}}
+            if callbacks:
+                config["callbacks"] = callbacks
+            # Use sync invoke in a worker thread due to SQLChatMessageHistory sync operations
             result = await asyncio.to_thread(
                 self._chain.invoke,
                 {"user_input": user_input},
-                config={"configurable": {"session_id": session_id}},
+                config=config,
             )
-            # If we didn't parse to str, result is usually an AIMessage
             return getattr(result, "content", str(result))
         except Exception as e:
             logger.error(f"Conversation execution failed: {str(e)}")

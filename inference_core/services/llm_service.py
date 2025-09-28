@@ -12,6 +12,7 @@ from typing import Any, AsyncGenerator, Dict, Optional, cast
 from fastapi import Request
 from pydantic import BaseModel
 
+from inference_core.llm.callbacks import LLMUsageCallbackHandler
 from inference_core.llm.chains import (
     create_conversation_chain,
     create_explanation_chain,
@@ -79,12 +80,12 @@ class LLMService:
             Explanation string
         """
         self._log_request("explain", {"question": question, "model_name": model_name})
-        
+
         # Start usage logging session
         resolved_model_name = model_name or self.config.get_task_model("explain")
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
-        
+
         usage_session = self.usage_logger.start_session(
             task_type="explain",
             request_mode="sync",
@@ -95,7 +96,15 @@ class LLMService:
             # session_id=None,
             # request_id=None,
         )
-        
+        callbacks = []
+        if self.config.usage_logging.enabled:
+            callbacks.append(
+                LLMUsageCallbackHandler(
+                    usage_session=usage_session,
+                    pricing_config=model_config.pricing if model_config else None,
+                )
+            )
+
         try:
             # Deprecation guard for GPT-5 family: classic sampling params removed
             if model_name and model_name.startswith("gpt-5"):
@@ -124,14 +133,11 @@ class LLMService:
                 if v is not None
             }
             chain = create_explanation_chain(model_name=model_name, **model_params)
-            answer = await chain.generate_story(question=question)
+            answer = await chain.generate_story(question=question, callbacks=callbacks)
 
-            # Try to extract usage metadata from the chain/model
-            usage_metadata = {}
-            if hasattr(chain, '_chain') and hasattr(chain._chain, 'last_run'):
-                # This is a future enhancement - for now we'll log without usage data
-                pass
-            
+            # Usage already accumulated by callback handler
+            usage_metadata = usage_session.accumulated_usage
+
             result = LLMResponse(
                 result={"answer": answer},
                 metadata=LLMMetadata(
@@ -141,7 +147,7 @@ class LLMService:
             )
 
             self._update_usage_stats()
-            
+
             # Finalize usage logging
             await usage_session.finalize(
                 success=True,
@@ -149,11 +155,11 @@ class LLMService:
                 streamed=False,
                 partial=False,
             )
-            
+
             return result
         except Exception as e:
             self._handle_error("explain", e)
-            
+
             # Finalize usage logging with error
             await usage_session.finalize(
                 success=False,
@@ -196,12 +202,12 @@ class LLMService:
                 "model_name": model_name,
             },
         )
-        
-        # Start usage logging session  
+
+        # Start usage logging session
         resolved_model_name = model_name or self.config.get_task_model("conversation")
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
-        
+
         usage_session = self.usage_logger.start_session(
             task_type="conversation",
             request_mode="sync",
@@ -212,7 +218,15 @@ class LLMService:
             # user_id=None,  # TODO: Extract from request context when auth is available
             # request_id=None,
         )
-        
+        callbacks = []
+        if self.config.usage_logging.enabled:
+            callbacks.append(
+                LLMUsageCallbackHandler(
+                    usage_session=usage_session,
+                    pricing_config=model_config.pricing if model_config else None,
+                )
+            )
+
         try:
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -242,13 +256,11 @@ class LLMService:
             }
 
             chain = create_conversation_chain(model_name=model_name, **model_params)
-            reply = await chain.chat(session_id=session_id, user_input=user_input)
+            reply = await chain.chat(
+                session_id=session_id, user_input=user_input, callbacks=callbacks
+            )
 
-            # Try to extract usage metadata from the chain/model
-            usage_metadata = {}
-            if hasattr(chain, '_chain') and hasattr(chain._chain, 'last_run'):
-                # This is a future enhancement - for now we'll log without usage data
-                pass
+            usage_metadata = usage_session.accumulated_usage
 
             result = LLMResponse(
                 result={"reply": reply, "session_id": session_id},
@@ -258,7 +270,7 @@ class LLMService:
                 ),
             )
             self._update_usage_stats()
-            
+
             # Finalize usage logging
             await usage_session.finalize(
                 success=True,
@@ -266,11 +278,11 @@ class LLMService:
                 streamed=False,
                 partial=False,
             )
-            
+
             return result
         except Exception as e:
             self._handle_error("conversation", e)
-            
+
             # Finalize usage logging with error
             await usage_session.finalize(
                 success=False,
@@ -457,20 +469,20 @@ class LLMService:
         """Get usage statistics including cost information"""
         # Get legacy stats for backward compatibility
         result = self._usage_stats.copy()
-        
+
         # Get enhanced stats from usage logging service
         if self.config.usage_logging.enabled:
             try:
                 usage_service = get_llm_usage_service()
                 enhanced_stats = await usage_service.get_usage_stats()
-                
+
                 # Merge enhanced stats while maintaining backward compatibility
                 result.update(enhanced_stats)
-                
+
             except Exception as e:
                 logger.error(f"Failed to get enhanced usage stats: {e}")
                 # Fall back to legacy stats only
-        
+
         return cast(Dict[str, Any], result)
 
     def _log_request(self, operation: str, params: Dict[str, Any]):
