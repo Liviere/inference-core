@@ -20,7 +20,7 @@ class LLMRequestLog(Base, TimestampMixin):
 
     Attributes:
         id: Unique identifier (UUID)
-        created_at: Request timestamp 
+        created_at: Request timestamp
         user_id: Optional user association (nullable FK)
         session_id: Optional session identifier
         task_type: Type of task (explain, conversation, batch, etc.)
@@ -32,32 +32,32 @@ class LLMRequestLog(Base, TimestampMixin):
         success: Whether request completed successfully
         error_type: Error classification if failed
         error_message: Truncated error message if failed
-        
+
         # Core token dimensions (first-class columns)
         input_tokens: Input token count
-        output_tokens: Output token count  
+        output_tokens: Output token count
         total_tokens: Total token count (computed server-side)
-        
+
         # Flexible token dimensions (JSON)
         extra_tokens: Additional token types (reasoning, cache, etc.)
-        
+
         # Audit and transparency
         usage_raw: Full raw usage response from provider
-        pricing_snapshot: Pricing configuration used for calculation
-        
+    pricing_snapshot_id: FK to pricing snapshot row (deduplicated pricing config)
+
         # Core cost fields
         cost_input_usd: Input token cost in USD
         cost_output_usd: Output token cost in USD
         cost_extras_usd: Sum of extra dimension costs in USD
         cost_total_usd: Total cost in USD
-        
+
         # Flexible cost breakdown (JSON)
         extra_costs: Detailed cost breakdown for extra dimensions
-        
+
         # Cost metadata
         cost_estimated: True if some tokens were unpriced
         context_multiplier: Context tier multiplier applied
-        
+
         # Request characteristics
         streamed: Whether request used streaming
         partial: Whether request was aborted/incomplete
@@ -85,7 +85,10 @@ class LLMRequestLog(Base, TimestampMixin):
         String(255), nullable=True, doc="Session identifier"
     )
     task_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, index=True, doc="Task type (explain, conversation, etc.)"
+        String(50),
+        nullable=False,
+        index=True,
+        doc="Task type (explain, conversation, etc.)",
     )
     request_mode: Mapped[str] = mapped_column(
         String(20), nullable=False, doc="Request mode (sync, async, streaming)"
@@ -138,10 +141,11 @@ class LLMRequestLog(Base, TimestampMixin):
         nullable=False,
         doc="Full raw usage response from provider",
     )
-    pricing_snapshot: Mapped[dict] = mapped_column(
-        SmartJSON(),
-        nullable=False,
-        doc="Pricing configuration used for calculation",
+    pricing_snapshot_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("llm_pricing_snapshots.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+        doc="Reference to pricing snapshot",
     )
 
     # Core cost fields (high precision for financial data)
@@ -178,14 +182,17 @@ class LLMRequestLog(Base, TimestampMixin):
         Boolean, nullable=False, default=False, doc="Whether request used streaming"
     )
     partial: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, doc="Whether request was aborted/incomplete"
+        Boolean,
+        nullable=False,
+        default=False,
+        doc="Whether request was aborted/incomplete",
     )
 
     # Indexes for common query patterns
     __table_args__ = (
         Index("ix_llm_logs_created_at", "created_at"),
         Index("ix_llm_logs_user_created", "user_id", "created_at"),
-        Index("ix_llm_logs_model_created", "model_name", "created_at"), 
+        Index("ix_llm_logs_model_created", "model_name", "created_at"),
         Index("ix_llm_logs_task_success", "task_type", "success"),
         Index("ix_llm_logs_provider_model", "provider", "model_name"),
     )
