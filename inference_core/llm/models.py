@@ -60,8 +60,9 @@ class LLMModelFactory:
             if model and kwargs.get("callbacks") and hasattr(model, "streaming"):
                 try:
                     setattr(model, "streaming", True)
+                    setattr(model, "stream_usage", True)
                 except Exception:
-                    pass
+                    logger.debug("Failed to set streaming attributes on model instance")
             if model and self.config.enable_caching:
                 self._model_cache[cache_key] = model
             return model

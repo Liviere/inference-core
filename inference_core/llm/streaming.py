@@ -24,8 +24,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import LLMResult
 
 from inference_core.llm.chains import ConversationChain
+from inference_core.llm.config import llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.prompts import get_chat_prompt_template, get_prompt_template
+from inference_core.llm.usage_logging import UsageLogger
 
 logger = logging.getLogger(__name__)
 
@@ -238,14 +240,50 @@ async def stream_conversation(
     token_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     handler = StreamingForwarderHandler(token_queue)
 
+    # --- Usage logging session (streaming) ---
+    usage_logger: Optional[UsageLogger] = None
+    usage_session = None
+    finalized = False
+    try:
+        if llm_config.usage_logging.enabled:
+            usage_logger = UsageLogger(llm_config.usage_logging)
+    except Exception:
+        usage_logger = None  # fail open
+
     try:
         # Get model factory and create streaming model
         factory = get_model_factory()
         default_model_name = factory.config.get_task_model("conversation")
 
+        # Resolve model / provider for usage logging
+        resolved_model_name = model_name or default_model_name
+        model_cfg = (
+            factory.config.models.get(resolved_model_name)
+            if factory and factory.config
+            else None
+        )
+        provider = getattr(model_cfg, "provider", "unknown")
+
+        # Start usage session BEFORE model call so latency includes queueing/history load
+        if usage_logger and model_cfg:
+            try:
+                usage_session = usage_logger.start_session(
+                    task_type="conversation",
+                    request_mode="streaming",
+                    model_name=resolved_model_name,
+                    provider=provider,
+                    pricing_config=getattr(model_cfg, "pricing", None),
+                    session_id=session_id,
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.error(
+                    f"Failed to start usage session (conversation stream): {e}"
+                )
+                usage_session = None
+
         # Create model with streaming enabled and callback handler
         model = factory.create_model(
-            model_name or default_model_name,
+            resolved_model_name,
             streaming=True,
             callbacks=[handler],
             **model_params,
@@ -267,6 +305,7 @@ async def stream_conversation(
             or default_model_name,
             "session_id": session_id,
         }
+        # Correct indentation: yield inside try block
         yield format_sse(start_data)
 
         # Load conversation history (can be I/O heavy) AFTER start was sent
@@ -372,11 +411,9 @@ async def stream_conversation(
                                 ):
                                     md = output.usage_metadata
                                     usage = {
-                                        "input_tokens": getattr(md, "input_tokens", 0),
-                                        "output_tokens": getattr(
-                                            md, "output_tokens", 0
-                                        ),
-                                        "total_tokens": getattr(md, "total_tokens", 0),
+                                        "input_tokens": md.get("input_tokens", 0),
+                                        "output_tokens": md.get("output_tokens", 0),
+                                        "total_tokens": md.get("total_tokens", 0),
                                     }
                                 if usage:
                                     try:
@@ -457,6 +494,12 @@ async def stream_conversation(
                     yield format_sse(token_data)
 
                 elif chunk.type == "usage" and chunk.usage:
+                    # Accumulate usage into session (single snapshot or potential deltas)
+                    if usage_session:
+                        try:
+                            usage_session.accumulate(chunk.usage)
+                        except Exception as e:  # pragma: no cover
+                            logger.warning(f"Failed to accumulate streaming usage: {e}")
                     usage_data = {"event": "usage", "usage": chunk.usage}
                     yield format_sse(usage_data)
 
@@ -480,12 +523,41 @@ async def stream_conversation(
 
                     end_data = {"event": "end"}
                     yield format_sse(end_data)
+                    # Finalize usage logging (success)
+                    if usage_session and not finalized:
+                        try:
+                            await usage_session.finalize(
+                                success=True,
+                                final_usage=usage_session.accumulated_usage,
+                                streamed=True,
+                                partial=False,
+                            )
+                        except Exception as e:  # pragma: no cover
+                            logger.error(
+                                f"Usage finalize (conversation stream) failed: {e}"
+                            )
+                        finally:
+                            finalized = True
                     break
 
             except Exception as e:
                 logger.error(f"Error processing stream chunk: {str(e)}")
                 error_data = {"event": "error", "message": "Stream processing error"}
                 yield format_sse(error_data)
+                # Finalize as failure if not yet
+                if usage_session and not finalized:
+                    try:
+                        await usage_session.finalize(
+                            success=False,
+                            error=e,
+                            final_usage=usage_session.accumulated_usage,
+                            streamed=True,
+                            partial=True,
+                        )
+                    except Exception as fe:  # pragma: no cover
+                        logger.error(f"Usage finalize (error) failed: {fe}")
+                    finally:
+                        finalized = True
                 break
 
         # Ensure streaming task is cancelled
@@ -502,6 +574,17 @@ async def stream_conversation(
         yield format_sse(error_data)
 
     finally:
+        # Client disconnect path (loop break without end usage finalize)
+        if usage_session and not finalized:
+            try:
+                await usage_session.finalize(
+                    success=False,
+                    final_usage=usage_session.accumulated_usage,
+                    streamed=True,
+                    partial=True,
+                )
+            except Exception as e:  # pragma: no cover
+                logger.error(f"Usage finalize (disconnect) failed: {e}")
         logger.info(f"Conversation stream ended for session {session_id}")
 
 
@@ -529,14 +612,46 @@ async def stream_explanation(
     token_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     handler = StreamingForwarderHandler(token_queue)
 
+    # Usage logging
+    usage_logger: Optional[UsageLogger] = None
+    usage_session = None
+    finalized = False
+    try:
+        if llm_config.usage_logging.enabled:
+            usage_logger = UsageLogger(llm_config.usage_logging)
+    except Exception:
+        usage_logger = None
+
     try:
         # Get model factory and create streaming model
         factory = get_model_factory()
         default_model_name = factory.config.get_task_model("explain")
 
+        # Resolve model/provider
+        resolved_model_name = model_name or default_model_name
+        model_cfg = (
+            factory.config.models.get(resolved_model_name)
+            if factory and factory.config
+            else None
+        )
+        provider = getattr(model_cfg, "provider", "unknown")
+
+        if usage_logger and model_cfg:
+            try:
+                usage_session = usage_logger.start_session(
+                    task_type="explain",
+                    request_mode="streaming",
+                    model_name=resolved_model_name,
+                    provider=provider,
+                    pricing_config=getattr(model_cfg, "pricing", None),
+                )
+            except Exception as e:  # pragma: no cover
+                logger.error(f"Failed to start usage session (explain stream): {e}")
+                usage_session = None
+
         # Create model with streaming enabled and callback handler
         model = factory.create_model(
-            model_name or default_model_name,
+            resolved_model_name,
             streaming=True,
             callbacks=[handler],
             **model_params,
@@ -627,11 +742,9 @@ async def stream_explanation(
                                 ):
                                     md = output.usage_metadata
                                     usage = {
-                                        "input_tokens": getattr(md, "input_tokens", 0),
-                                        "output_tokens": getattr(
-                                            md, "output_tokens", 0
-                                        ),
-                                        "total_tokens": getattr(md, "total_tokens", 0),
+                                        "input_tokens": md.get("input_tokens", 0),
+                                        "output_tokens": md.get("output_tokens", 0),
+                                        "total_tokens": md.get("total_tokens", 0),
                                     }
                                 if usage:
                                     try:
@@ -703,12 +816,48 @@ async def stream_explanation(
                 if chunk.type == "token" and chunk.content:
                     yield format_sse({"event": "token", "content": chunk.content})
                 elif chunk.type == "usage" and chunk.usage:
+                    if usage_session:
+                        try:
+                            usage_session.accumulate(chunk.usage)
+                        except Exception as e:  # pragma: no cover
+                            logger.warning(
+                                f"Failed to accumulate explain streaming usage: {e}"
+                            )
                     yield format_sse({"event": "usage", "usage": chunk.usage})
                 elif chunk.type == "error":
                     yield format_sse({"event": "error", "message": chunk.message})
+                    if usage_session and not finalized:
+                        try:
+                            await usage_session.finalize(
+                                success=False,
+                                error=(
+                                    Exception(chunk.message) if chunk.message else None
+                                ),
+                                final_usage=usage_session.accumulated_usage,
+                                streamed=True,
+                                partial=True,
+                            )
+                        except Exception as fe:  # pragma: no cover
+                            logger.error(f"Usage finalize (explain error) failed: {fe}")
+                        finally:
+                            finalized = True
                     break
                 elif chunk.type == "end":
                     yield format_sse({"event": "end"})
+                    if usage_session and not finalized:
+                        try:
+                            await usage_session.finalize(
+                                success=True,
+                                final_usage=usage_session.accumulated_usage,
+                                streamed=True,
+                                partial=False,
+                            )
+                        except Exception as fe:  # pragma: no cover
+                            logger.error(
+                                f"Usage finalize (explain success) failed: {fe}"
+                            )
+                        finally:
+                            finalized = True
                     break
             except Exception as e:
                 logger.error(f"Error processing stream chunk: {str(e)}")
@@ -730,4 +879,14 @@ async def stream_explanation(
         yield format_sse(error_data)
 
     finally:
+        if usage_session and not finalized:
+            try:
+                await usage_session.finalize(
+                    success=False,
+                    final_usage=usage_session.accumulated_usage,
+                    streamed=True,
+                    partial=True,
+                )
+            except Exception as e:  # pragma: no cover
+                logger.error(f"Usage finalize (explain disconnect) failed: {e}")
         logger.info("Explanation stream ended")
