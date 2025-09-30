@@ -14,8 +14,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from inference_core.core.dependecies import (
-    get_current_user,
     get_llm_router_dependencies,
+    get_optional_current_user,
 )
 from inference_core.schemas.tasks_responses import TaskResponse
 from inference_core.services.llm_service import get_llm_service
@@ -117,7 +117,7 @@ def get_llm_service_dependency():
 async def explain(
     request: ExplainRequest,
     task_service: TaskService = Depends(get_task_service),
-    current_user: Optional[dict] = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ) -> TaskResponse:
     """
     Generate an explanation for a given question using the specified model.
@@ -157,7 +157,7 @@ async def explain(
 async def conversation(
     request: ConversationRequest,
     task_service: TaskService = Depends(get_task_service),
-    current_user: Optional[dict] = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ) -> TaskResponse:
     """Submit a conversation turn as a Celery task.
 
@@ -191,7 +191,7 @@ async def conversation_stream(
     request: ConversationRequest,
     http_request: Request,
     llm_service=Depends(get_llm_service_dependency),
-    current_user: Optional[dict] = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
     """
     Stream a conversation turn using Server-Sent Events.
@@ -257,7 +257,7 @@ async def explain_stream(
     request: ExplainRequest,
     http_request: Request,
     llm_service=Depends(get_llm_service_dependency),
-    current_user: Optional[dict] = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
     """
     Stream an explanation using Server-Sent Events.
