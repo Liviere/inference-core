@@ -7,12 +7,16 @@ Provides endpoints for story generation, analysis, and other LLM-powered feature
 
 import logging
 from typing import Any, Dict, Optional
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from inference_core.core.dependecies import get_llm_router_dependencies
+from inference_core.core.dependecies import (
+    get_current_user,
+    get_llm_router_dependencies,
+)
 from inference_core.schemas.tasks_responses import TaskResponse
 from inference_core.services.llm_service import get_llm_service
 from inference_core.services.task_service import TaskService, get_task_service
@@ -60,6 +64,12 @@ class BaseLLMRequest(BaseModel):
         default=None,
         description="Verbosity of the response (e.g., low|medium|high)",
     )
+    as_user_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Optional user ID to impersonate (requires superuser). If provided and caller is superuser, usage will be logged under this user."
+        ),
+    )
 
 
 class ExplainRequest(BaseLLMRequest):
@@ -105,7 +115,9 @@ def get_llm_service_dependency():
 
 @router.post("/explain", response_model=TaskResponse)
 async def explain(
-    request: ExplainRequest, task_service: TaskService = Depends(get_task_service)
+    request: ExplainRequest,
+    task_service: TaskService = Depends(get_task_service),
+    current_user: Optional[dict] = Depends(get_current_user),
 ) -> TaskResponse:
     """
     Generate an explanation for a given question using the specified model.
@@ -118,9 +130,15 @@ async def explain(
         TaskResponse with task ID and status
     """
     try:
-        task_id = await task_service.explain_submit_async(
-            **request.model_dump(exclude_none=True)
-        )
+        payload = request.model_dump(exclude_none=True)
+        effective_user_id: Optional[str] = None
+        if current_user:
+            effective_user_id = current_user.get("id")
+            if request.as_user_id and current_user.get("is_superuser"):
+                effective_user_id = str(request.as_user_id)
+        if effective_user_id:
+            payload["user_id"] = effective_user_id
+        task_id = await task_service.explain_submit_async(**payload)
 
         return TaskResponse(
             task_id=task_id,
@@ -137,7 +155,9 @@ async def explain(
 
 @router.post("/conversation", response_model=TaskResponse)
 async def conversation(
-    request: ConversationRequest, task_service: TaskService = Depends(get_task_service)
+    request: ConversationRequest,
+    task_service: TaskService = Depends(get_task_service),
+    current_user: Optional[dict] = Depends(get_current_user),
 ) -> TaskResponse:
     """Submit a conversation turn as a Celery task.
 
@@ -146,6 +166,11 @@ async def conversation(
     try:
         # Build kwargs for Celery task
         kwargs: Dict[str, Any] = {**request.model_dump(exclude_none=True)}
+        if current_user:
+            effective_user_id = current_user.get("id")
+            if request.as_user_id and current_user.get("is_superuser"):
+                effective_user_id = str(request.as_user_id)
+            kwargs["user_id"] = effective_user_id
         task_id = await task_service.conversation_submit_async(**kwargs)
 
         return TaskResponse(
@@ -166,6 +191,7 @@ async def conversation_stream(
     request: ConversationRequest,
     http_request: Request,
     llm_service=Depends(get_llm_service_dependency),
+    current_user: Optional[dict] = Depends(get_current_user),
 ):
     """
     Stream a conversation turn using Server-Sent Events.
@@ -190,11 +216,21 @@ async def conversation_stream(
             if field not in ["session_id", "user_input", "model_name"]:
                 stream_kwargs[field] = value
 
+        effective_user_id: Optional[str] = None
+        if current_user:
+            effective_user_id = current_user.get("id")
+            if request.as_user_id and current_user.get("is_superuser"):
+                effective_user_id = str(request.as_user_id)
+
+        request_id = http_request.headers.get("X-Request-ID") or str(uuid4())
+
         async_generator = llm_service.stream_conversation(
             session_id=request.session_id,
             user_input=request.user_input,
             model_name=request.model_name,
             request=http_request,
+            user_id=effective_user_id,
+            request_id=request_id,
             **stream_kwargs,
         )
 
@@ -221,6 +257,7 @@ async def explain_stream(
     request: ExplainRequest,
     http_request: Request,
     llm_service=Depends(get_llm_service_dependency),
+    current_user: Optional[dict] = Depends(get_current_user),
 ):
     """
     Stream an explanation using Server-Sent Events.
@@ -244,10 +281,20 @@ async def explain_stream(
             if field not in ["question", "model_name"]:
                 stream_kwargs[field] = value
 
+        effective_user_id: Optional[str] = None
+        if current_user:
+            effective_user_id = current_user.get("id")
+            if request.as_user_id and current_user.get("is_superuser"):
+                effective_user_id = str(request.as_user_id)
+
+        request_id = http_request.headers.get("X-Request-ID") or str(uuid4())
+
         async_generator = llm_service.stream_explanation(
             question=request.question,
             model_name=request.model_name,
             request=http_request,
+            user_id=effective_user_id,
+            request_id=request_id,
             **stream_kwargs,
         )
 

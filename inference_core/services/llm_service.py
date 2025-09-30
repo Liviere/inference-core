@@ -6,6 +6,7 @@ This is the primary entry point for the API to interact with LLM capabilities.
 """
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any, AsyncGenerator, Dict, Optional, cast
 
@@ -68,6 +69,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> LLMResponse:
         """
         Generate an explanation for a given question using the specified model.
@@ -92,9 +95,8 @@ class LLMService:
             model_name=resolved_model_name,
             provider=provider,
             pricing_config=model_config.pricing if model_config else None,
-            # user_id=None,  # TODO: Extract from request context when auth is available
-            # session_id=None,
-            # request_id=None,
+            user_id=uuid.UUID(user_id) if user_id else None,
+            request_id=request_id,
         )
         callbacks = []
         if self.config.usage_logging.enabled:
@@ -183,6 +185,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> LLMResponse:
         """Engage in a multi-turn conversation within a session.
 
@@ -215,8 +219,8 @@ class LLMService:
             provider=provider,
             pricing_config=model_config.pricing if model_config else None,
             session_id=session_id,
-            # user_id=None,  # TODO: Extract from request context when auth is available
-            # request_id=None,
+            user_id=uuid.UUID(user_id) if user_id else None,
+            request_id=request_id,
         )
         callbacks = []
         if self.config.usage_logging.enabled:
@@ -307,6 +311,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Stream a conversation response using Server-Sent Events.
 
@@ -369,6 +375,8 @@ class LLMService:
                 user_input=user_input,
                 model_name=model_name,
                 request=request,
+                user_id=user_id,
+                request_id=request_id,
                 **model_params,
             ):
                 yield chunk
@@ -392,6 +400,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Stream an explanation response using Server-Sent Events.
 
@@ -451,6 +461,8 @@ class LLMService:
                 question=question,
                 model_name=model_name,
                 request=request,
+                user_id=user_id,
+                request_id=request_id,
                 **model_params,
             ):
                 yield chunk

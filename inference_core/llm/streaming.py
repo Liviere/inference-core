@@ -116,6 +116,8 @@ async def stream_conversation(
     user_input: str,
     model_name: Optional[str] = None,
     request: Optional[Request] = None,
+    user_id: Optional[str] = None,
+    request_id: Optional[str] = None,
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
@@ -174,6 +176,8 @@ async def stream_conversation(
                     provider=provider,
                     pricing_config=getattr(model_cfg, "pricing", None),
                     session_id=session_id,
+                    user_id=(uuid.UUID(user_id) if user_id else None),
+                    request_id=request_id,
                 )
             except Exception as e:  # pragma: no cover - defensive
                 logger.error(
@@ -486,6 +490,8 @@ async def stream_explanation(
     question: str,
     model_name: Optional[str] = None,
     request: Optional[Request] = None,
+    user_id: Optional[str] = None,
+    request_id: Optional[str] = None,
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
@@ -537,6 +543,8 @@ async def stream_explanation(
                     model_name=resolved_model_name,
                     provider=provider,
                     pricing_config=getattr(model_cfg, "pricing", None),
+                    user_id=(uuid.UUID(user_id) if user_id else None),
+                    request_id=request_id,
                 )
             except Exception as e:  # pragma: no cover
                 logger.error(f"Failed to start usage session (explain stream): {e}")
