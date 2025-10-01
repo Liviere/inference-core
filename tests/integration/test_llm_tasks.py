@@ -17,7 +17,7 @@ class _FakeExplanationChain:
         self.model_name = model_name or "fake-explain-model"
         self.model_params = model_params
 
-    async def generate_story(self, *, question: str) -> str:
+    async def generate_story(self, *, question: str, callbacks=None) -> str:
         return f"[explained:{self.model_name}] {question}"
 
 
@@ -28,7 +28,7 @@ class _FakeConversationChain:
         self.model_name = model_name or "fake-conv-model"
         self.model_params = model_params
 
-    async def chat(self, *, session_id: str, user_input: str) -> str:
+    async def chat(self, *, session_id: str, user_input: str, callbacks=None) -> str:
         return f"[reply:{self.model_name}:{session_id}] {user_input}"
 
 

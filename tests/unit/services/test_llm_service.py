@@ -74,13 +74,15 @@ class TestLLMService:
     @patch("inference_core.services.llm_service.llm_config")
     @pytest.mark.asyncio
     async def test_explain_success(
-        self, mock_llm_config, mock_get_model_factory, mock_create_chain
+        self,
+        mock_llm_config,
+        mock_get_model_factory,
+        mock_create_chain,
     ):
         """Test explain method successful execution"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_config.enable_monitoring = False
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -101,7 +103,9 @@ class TestLLMService:
         assert service._usage_stats["requests_count"] == 1
 
         mock_create_chain.assert_called_once_with(model_name=None)
-        mock_chain.generate_story.assert_called_once_with(question="What is AI?")
+        mock_chain.generate_story.assert_called_once_with(
+            question="What is AI?", callbacks=[]
+        )
 
     @patch("inference_core.services.llm_service.create_explanation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
@@ -112,9 +116,8 @@ class TestLLMService:
     ):
         """Test explain method with custom model parameters"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_config.enable_monitoring = False
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -182,9 +185,8 @@ class TestLLMService:
     ):
         """Test converse method successful execution"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_config.enable_monitoring = False
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -207,7 +209,7 @@ class TestLLMService:
 
         mock_create_chain.assert_called_once_with(model_name=None)
         mock_chain.chat.assert_called_once_with(
-            session_id="session-123", user_input="Hello"
+            session_id="session-123", user_input="Hello", callbacks=[]
         )
 
     @patch("inference_core.services.llm_service.create_conversation_chain")
@@ -219,9 +221,8 @@ class TestLLMService:
     ):
         """Test converse method with custom model parameters"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_config.enable_monitoring = False
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -262,9 +263,8 @@ class TestLLMService:
     ):
         """Test converse method when chain raises error"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_config.enable_monitoring = False
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -288,8 +288,8 @@ class TestLLMService:
     def test_get_available_models(self, mock_llm_config, mock_get_model_factory):
         """Test get_available_models method"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -307,11 +307,11 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.llm_config")
-    def test_get_usage_stats(self, mock_llm_config, mock_get_model_factory):
+    async def test_get_usage_stats(self, mock_llm_config, mock_get_model_factory):
         """Test get_usage_stats method"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -324,7 +324,7 @@ class TestLLMService:
         service._usage_stats["errors_count"] = 1
         service._usage_stats["last_request"] = "2023-01-01T00:00:00Z"
 
-        stats = service.get_usage_stats()
+        stats = await service.get_usage_stats()
 
         assert stats["requests_count"] == 5
         assert stats["errors_count"] == 1
@@ -342,9 +342,8 @@ class TestLLMService:
     ):
         """Test _log_request method with monitoring enabled"""
         # Mock configuration with monitoring enabled
-        mock_config = MagicMock()
-        mock_config.enable_monitoring = True
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=True)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -382,8 +381,8 @@ class TestLLMService:
     def test_update_usage_stats_success(self, mock_llm_config, mock_get_model_factory):
         """Test _update_usage_stats method for successful operation"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -404,8 +403,8 @@ class TestLLMService:
     def test_update_usage_stats_failure(self, mock_llm_config, mock_get_model_factory):
         """Test _update_usage_stats method for failed operation"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -426,8 +425,8 @@ class TestLLMService:
     def test_handle_error(self, mock_llm_config, mock_get_model_factory, mock_logger):
         """Test _handle_error method"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -487,9 +486,8 @@ class TestLLMServiceIntegration:
     ):
         """Test that multiple operations update usage statistics correctly"""
         # Mock configuration
-        mock_config = MagicMock()
-        mock_config.enable_monitoring = False
-        mock_llm_config = mock_config
+        mock_llm_config.configure_mock(enable_monitoring=False)
+        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -521,7 +519,7 @@ class TestLLMServiceIntegration:
             pass  # Expected
 
         # Check usage statistics
-        stats = service.get_usage_stats()
+        stats = await service.get_usage_stats()
         assert stats["requests_count"] == 3
         assert stats["errors_count"] == 1
         assert stats["last_request"] is not None
