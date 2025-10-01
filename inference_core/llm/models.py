@@ -50,18 +50,38 @@ class LLMModelFactory:
             return None
 
         try:
+            user_callbacks = kwargs.get("callbacks")
             # Ensure streaming flag is preserved (some providers require 'streaming=True' at init)
             if "streaming" not in kwargs:
-                kwargs["streaming"] = True if kwargs.get("callbacks") else False
+                kwargs["streaming"] = True if user_callbacks else False
 
             model = self._create_model_instance(model_config, **kwargs)
 
-            # Force-enable attribute if it exists but got lost
-            if model and kwargs.get("callbacks") and hasattr(model, "streaming"):
+            # Some providers (or our param normalization) may strip callbacks; re-attach if missing
+            if model and user_callbacks:
+                try:
+                    # If underlying constructor accepted callbacks they are already active.
+                    # For safety, if model has 'callbacks' attr and it's empty, assign ours.
+                    existing = getattr(model, "callbacks", None)
+                    if existing is None or (
+                        isinstance(existing, list) and not existing
+                    ):
+                        setattr(model, "callbacks", list(user_callbacks))
+                except Exception:
+                    logger.debug(
+                        "Could not introspect/assign callbacks on model instance"
+                    )
+
+            # Force-enable streaming attributes if present
+            if model and hasattr(model, "streaming"):
                 try:
                     setattr(model, "streaming", True)
+                    # Some LangChain chat models honor stream_usage for per-chunk usage
+                    if not getattr(model, "stream_usage", False):
+                        setattr(model, "stream_usage", True)
                 except Exception:
-                    pass
+                    logger.debug("Failed to set streaming attributes on model instance")
+
             if model and self.config.enable_caching:
                 self._model_cache[cache_key] = model
             return model

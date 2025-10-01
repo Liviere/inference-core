@@ -38,6 +38,24 @@ models:
     description: 'Most capable model for complex tasks'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from OpenAI pricing page)
+    # Source: https://platform.openai.com/docs/pricing (values shown are per 1M tokens)
+    # Converted here to cost_per_1k by dividing per-1M values by 1000.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00125 # $1.25 per 1M tokens -> $0.00125 per 1k
+      output:
+        cost_per_1k: 0.01000 # $10.00 per 1M tokens -> $0.01000 per 1k
+      extras:
+        cache_read_token:
+          cost_per_1k: 0.000125 # cached input $0.125 per 1M -> $0.000125 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cached_input: cache_read_token
+      rounding:
+        decimals: 6
 
   gpt-5-mini:
     provider: 'openai'
@@ -45,6 +63,23 @@ models:
     description: 'Affordable and intelligent small model'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from OpenAI pricing page)
+    # Converted to per-1k values from per-1M table.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00025 # $0.25 per 1M -> $0.00025 per 1k
+      output:
+        cost_per_1k: 0.00200 # $2.00 per 1M -> $0.00200 per 1k
+      extras:
+        cache_read_token:
+          cost_per_1k: 0.000025 # cached input $0.025 per 1M -> $0.000025 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cached_input: cache_read_token
+      rounding:
+        decimals: 6
 
   gpt-5-nano:
     provider: 'openai'
@@ -52,6 +87,22 @@ models:
     description: 'Fast and efficient for most tasks'
     max_tokens: 4096
     temperature: 0.7
+    # Pricing (sourced from OpenAI pricing page)
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00005 # $0.05 per 1M -> $0.00005 per 1k
+      output:
+        cost_per_1k: 0.00040 # $0.40 per 1M -> $0.00040 per 1k
+      extras:
+        cache_read_token:
+          cost_per_1k: 0.000005 # cached input $0.005 per 1M -> $0.000005 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cached_input: cache_read_token
+      rounding:
+        decimals: 6
 
   gpt-4.1:
     provider: 'openai'
@@ -59,6 +110,22 @@ models:
     description: 'Legacy model with advanced capabilities'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from OpenAI pricing page)
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00200 # $2.00 per 1M -> $0.00200 per 1k
+      output:
+        cost_per_1k: 0.00800 # $8.00 per 1M -> $0.00800 per 1k
+      extras:
+        cache_read_token:
+          cost_per_1k: 0.00050 # cached input $0.50 per 1M -> $0.00050 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cached_input: cache_read_token
+      rounding:
+        decimals: 6
 
   # Gemini Models
   gemini-2.5-flash: # Fast multimodal
@@ -67,6 +134,24 @@ models:
     description: 'Fast Gemini model for general tasks'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from Google Gemini pricing page)
+    # Source: https://ai.google.dev/gemini-api/docs/pricing (captured 2025-09-27)
+    # Values shown on the page are per 1M tokens; converted here to cost_per_1k by dividing by 1000.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00030 # $0.30 per 1M tokens -> $0.00030 per 1k (text/image/video)
+      output:
+        cost_per_1k: 0.00250 # $2.50 per 1M tokens -> $0.00250 per 1k
+      extras:
+        cache_read_token:
+          cost_per_1k: 0.000075 # context caching $0.075 per 1M -> $0.000075 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cached_input: cache_read_token
+      rounding:
+        decimals: 6
 
   gemini-2.5-pro: # Higher quality reasoning
     provider: 'gemini'
@@ -74,6 +159,32 @@ models:
     description: 'High quality Gemini model for complex reasoning'
     max_tokens: 8192
     temperature: 0.6
+    # Pricing (sourced from Google Gemini pricing page)
+    # Source: https://ai.google.dev/gemini-api/docs/pricing (captured 2025-09-27)
+    # Values shown on the page are per 1M tokens; converted here to cost_per_1k by dividing by 1000.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00125 # $1.25 per 1M tokens -> $0.00125 per 1k
+      output:
+        cost_per_1k: 0.01000 # $10.00 per 1M tokens -> $0.01000 per 1k
+      extras:
+        cache_read_token:
+          cost_per_1k: 0.00031 # context caching $0.31 per 1M -> $0.00031 per 1k (see page for tiered values)
+      # Gemini 2.5 Pro uses tiered pricing depending on prompt/context size (notably around 200k tokens).
+      # The public pricing page lists different paid-tier prices for prompts <= 200k tokens vs other sizes.
+      # We model this using `context_tiers`. Adjust multipliers as needed to match exact per-dimension rules.
+      context_tiers:
+        - max_context: 200000
+          multiplier: 1.0 # baseline tier (<= 200k). The source shows special per-dimension prices for small prompts.
+        - max_context: 1000000
+          multiplier: 2 # larger-context multiplier (applies up to 1M tokens)
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cached_input: cache_read_token
+      rounding:
+        decimals: 6
 
   # Claude Models
   claude-opus-4-1-20250805:
@@ -82,6 +193,27 @@ models:
     description: 'Latest Claude model with the most advanced capabilities'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from Claude pricing page)
+    # Source: https://claude.com/pricing#api (captured live)
+    # Values shown on the page are per MTok (1,000,000 tokens); converted here to cost_per_1k by dividing by 1000.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.01500 # $15 / MTok -> $0.015 per 1k
+      output:
+        cost_per_1k: 0.07500 # $75 / MTok -> $0.075 per 1k
+      extras:
+        cache_write_token:
+          cost_per_1k: 0.01875 # $18.75 / MTok -> $0.01875 per 1k
+        cache_read_token:
+          cost_per_1k: 0.00150 # $1.50 / MTok -> $0.00150 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cache_write: cache_write_token
+        cache_read: cache_read_token
+      rounding:
+        decimals: 6
 
   claude-sonnet-4-20250514:
     provider: 'claude'
@@ -89,6 +221,44 @@ models:
     description: 'Claude Sonnet 4 model for high performance'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from Claude pricing page)
+    # Sonnet 4 uses tiered pricing depending on prompt size (<=200K tokens vs >200K tokens)
+    # Values on the page are per MTok; converted to per-1k below.
+    pricing:
+      currency: USD
+      # base prices correspond to the <=200K prompt tier
+      input:
+        cost_per_1k: 0.00300 # $3 / MTok -> $0.003 per 1k (prompts <= 200k)
+      output:
+        cost_per_1k: 0.01500 # $15 / MTok -> $0.015 per 1k (prompts <= 200k)
+      extras:
+        cache_write_token:
+          cost_per_1k: 0.00375 # $3.75 / MTok -> $0.00375 per 1k (<=200k)
+        cache_read_token:
+          cost_per_1k: 0.00030 # $0.30 / MTok -> $0.00030 per 1k (<=200k)
+      # context_tiers allow per-context multipliers; Sonnet's >200K tier uses different multipliers per-dimension
+      context_tiers:
+        - max_context: 200000
+          multipliers:
+            input: 1.0
+            output: 1.0
+            extras:
+              cache_write_token: 1.0
+              cache_read_token: 1.0
+        - max_context: 1000000
+          multipliers:
+            input: 2.0 # input doubles: $6 / MTok -> multiplier 2.0
+            output: 1.5 # output increases by 1.5x: $22.50 / MTok
+            extras:
+              cache_write_token: 2.0
+              cache_read_token: 2.0
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cache_write: cache_write_token
+        cache_read: cache_read_token
+      rounding:
+        decimals: 6
 
   claude-3-7-sonnet-latest:
     provider: 'claude'
@@ -96,6 +266,26 @@ models:
     description: 'Balanced performance Claude model'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from Claude pricing page - legacy models section)
+    # Values are per MTok; converted to per-1k.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00300 # $3 / MTok -> $0.003 per 1k
+      output:
+        cost_per_1k: 0.01500 # $15 / MTok -> $0.015 per 1k
+      extras:
+        cache_write_token:
+          cost_per_1k: 0.00375 # $3.75 / MTok -> $0.00375 per 1k
+        cache_read_token:
+          cost_per_1k: 0.00030 # $0.30 / MTok -> $0.00030 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cache_write: cache_write_token
+        cache_read: cache_read_token
+      rounding:
+        decimals: 6
 
   claude-3-5-haiku-latest:
     provider: 'claude'
@@ -103,6 +293,26 @@ models:
     description: 'Fast Claude model for lower latency tasks'
     max_tokens: 8192
     temperature: 0.7
+    # Pricing (sourced from Claude pricing page)
+    # Values per MTok; converted to per-1k.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1k: 0.00080 # $0.80 / MTok -> $0.00080 per 1k
+      output:
+        cost_per_1k: 0.00400 # $4 / MTok -> $0.00400 per 1k
+      extras:
+        cache_write_token:
+          cost_per_1k: 0.00100 # $1 / MTok -> $0.00100 per 1k
+        cache_read_token:
+          cost_per_1k: 0.00008 # $0.08 / MTok -> $0.00008 per 1k
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+        cache_write: cache_write_token
+        cache_read: cache_read_token
+      rounding:
+        decimals: 6
 
   # Custom OpenAI Compatible Models
   meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8:

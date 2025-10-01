@@ -8,10 +8,11 @@ authentication, pagination, and other shared functionality.
 from typing import AsyncGenerator, List, Optional
 
 from fastapi import Depends, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inference_core.core.config import get_settings
-from inference_core.core.security import get_current_user_token
+from inference_core.core.security import get_current_user_token, security_manager
 from inference_core.database.sql.connection import get_async_session
 from inference_core.database.sql.models.user import User
 from inference_core.schemas.auth import TokenData
@@ -95,6 +96,50 @@ async def get_current_user(
     }
 
 
+# Optional auth (public mode support) ------------------------------------
+_optional_http_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_http_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[dict]:
+    """Return current user if Authorization header present & valid, else None.
+
+    Does NOT raise on missing/invalid token (soft-fail for public endpoints).
+    """
+    if not credentials:
+        return None
+    try:
+        token_data = security_manager.verify_token(credentials.credentials)
+        if token_data is None:
+            return None
+        # Reuse logic from get_current_user (duplicated intentionally to avoid hard coupling)
+        import uuid
+
+        from sqlalchemy import select
+
+        user_uuid = uuid.UUID(token_data.user_id)
+        result = await db.execute(select(User).where(User.id == user_uuid))
+        user: User | None = result.scalar_one_or_none()
+        if not user:
+            return None
+        return {
+            "id": str(user.id),
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "is_active": user.is_active,
+            "is_superuser": user.is_superuser,
+            "is_verified": user.is_verified,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+        }
+    except Exception:
+        return None
+
+
 async def get_current_active_user(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
@@ -140,7 +185,7 @@ async def get_current_superuser(current_user: dict = Depends(get_current_user)) 
 def get_llm_router_dependencies() -> List[Depends]:
     """
     Get router-level dependencies for LLM endpoints based on access mode configuration.
-    
+
     Returns:
         List of FastAPI dependencies based on the LLM_API_ACCESS_MODE setting:
         - "public": No dependencies (no authentication required)
@@ -149,7 +194,7 @@ def get_llm_router_dependencies() -> List[Depends]:
     """
     settings = get_settings()
     access_mode = settings.llm_api_access_mode
-    
+
     if access_mode == "public":
         return []
     elif access_mode == "user":

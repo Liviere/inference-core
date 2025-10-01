@@ -6,18 +6,22 @@ This is the primary entry point for the API to interact with LLM capabilities.
 """
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any, AsyncGenerator, Dict, Optional, cast
 
 from fastapi import Request
 from pydantic import BaseModel
 
+from inference_core.llm.callbacks import LLMUsageCallbackHandler
 from inference_core.llm.chains import (
     create_conversation_chain,
     create_explanation_chain,
 )
 from inference_core.llm.config import llm_config
 from inference_core.llm.models import get_model_factory
+from inference_core.llm.usage_logging import UsageLogger
+from inference_core.services.llm_usage_service import get_llm_usage_service
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,7 @@ class LLMService:
     def __init__(self):
         self.config = llm_config
         self.model_factory = get_model_factory()
+        self.usage_logger = UsageLogger(self.config.usage_logging)
         self._usage_stats = {
             "requests_count": 0,
             "total_tokens": 0,
@@ -64,6 +69,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> LLMResponse:
         """
         Generate an explanation for a given question using the specified model.
@@ -76,6 +83,30 @@ class LLMService:
             Explanation string
         """
         self._log_request("explain", {"question": question, "model_name": model_name})
+
+        # Start usage logging session
+        resolved_model_name = model_name or self.config.get_task_model("explain")
+        model_config = self.config.models.get(resolved_model_name)
+        provider = model_config.provider if model_config else "unknown"
+
+        usage_session = self.usage_logger.start_session(
+            task_type="explain",
+            request_mode="sync",
+            model_name=resolved_model_name,
+            provider=provider,
+            pricing_config=model_config.pricing if model_config else None,
+            user_id=uuid.UUID(user_id) if user_id else None,
+            request_id=request_id,
+        )
+        callbacks = []
+        if self.config.usage_logging.enabled:
+            callbacks.append(
+                LLMUsageCallbackHandler(
+                    usage_session=usage_session,
+                    pricing_config=model_config.pricing if model_config else None,
+                )
+            )
+
         try:
             # Deprecation guard for GPT-5 family: classic sampling params removed
             if model_name and model_name.startswith("gpt-5"):
@@ -104,7 +135,10 @@ class LLMService:
                 if v is not None
             }
             chain = create_explanation_chain(model_name=model_name, **model_params)
-            answer = await chain.generate_story(question=question)
+            answer = await chain.generate_story(question=question, callbacks=callbacks)
+
+            # Usage already accumulated by callback handler
+            usage_metadata = usage_session.accumulated_usage
 
             result = LLMResponse(
                 result={"answer": answer},
@@ -115,9 +149,26 @@ class LLMService:
             )
 
             self._update_usage_stats()
+
+            # Finalize usage logging
+            await usage_session.finalize(
+                success=True,
+                final_usage=usage_metadata,
+                streamed=False,
+                partial=False,
+            )
+
             return result
         except Exception as e:
             self._handle_error("explain", e)
+
+            # Finalize usage logging with error
+            await usage_session.finalize(
+                success=False,
+                error=e,
+                streamed=False,
+                partial=False,
+            )
             raise e
 
     async def converse(
@@ -134,6 +185,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> LLMResponse:
         """Engage in a multi-turn conversation within a session.
 
@@ -153,6 +206,31 @@ class LLMService:
                 "model_name": model_name,
             },
         )
+
+        # Start usage logging session
+        resolved_model_name = model_name or self.config.get_task_model("conversation")
+        model_config = self.config.models.get(resolved_model_name)
+        provider = model_config.provider if model_config else "unknown"
+
+        usage_session = self.usage_logger.start_session(
+            task_type="conversation",
+            request_mode="sync",
+            model_name=resolved_model_name,
+            provider=provider,
+            pricing_config=model_config.pricing if model_config else None,
+            session_id=session_id,
+            user_id=uuid.UUID(user_id) if user_id else None,
+            request_id=request_id,
+        )
+        callbacks = []
+        if self.config.usage_logging.enabled:
+            callbacks.append(
+                LLMUsageCallbackHandler(
+                    usage_session=usage_session,
+                    pricing_config=model_config.pricing if model_config else None,
+                )
+            )
+
         try:
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -182,7 +260,11 @@ class LLMService:
             }
 
             chain = create_conversation_chain(model_name=model_name, **model_params)
-            reply = await chain.chat(session_id=session_id, user_input=user_input)
+            reply = await chain.chat(
+                session_id=session_id, user_input=user_input, callbacks=callbacks
+            )
+
+            usage_metadata = usage_session.accumulated_usage
 
             result = LLMResponse(
                 result={"reply": reply, "session_id": session_id},
@@ -192,9 +274,26 @@ class LLMService:
                 ),
             )
             self._update_usage_stats()
+
+            # Finalize usage logging
+            await usage_session.finalize(
+                success=True,
+                final_usage=usage_metadata,
+                streamed=False,
+                partial=False,
+            )
+
             return result
         except Exception as e:
             self._handle_error("conversation", e)
+
+            # Finalize usage logging with error
+            await usage_session.finalize(
+                success=False,
+                error=e,
+                streamed=False,
+                partial=False,
+            )
             raise e
 
     async def stream_conversation(
@@ -212,6 +311,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Stream a conversation response using Server-Sent Events.
 
@@ -274,6 +375,8 @@ class LLMService:
                 user_input=user_input,
                 model_name=model_name,
                 request=request,
+                user_id=user_id,
+                request_id=request_id,
                 **model_params,
             ):
                 yield chunk
@@ -297,6 +400,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Stream an explanation response using Server-Sent Events.
 
@@ -356,6 +461,8 @@ class LLMService:
                 question=question,
                 model_name=model_name,
                 request=request,
+                user_id=user_id,
+                request_id=request_id,
                 **model_params,
             ):
                 yield chunk
@@ -370,9 +477,24 @@ class LLMService:
         result = self.model_factory.get_available_models()
         return cast(Dict[str, bool], result)
 
-    def get_usage_stats(self) -> Dict[str, Any]:
-        """Get usage statistics"""
+    async def get_usage_stats(self) -> Dict[str, Any]:
+        """Get usage statistics including cost information"""
+        # Get legacy stats for backward compatibility
         result = self._usage_stats.copy()
+
+        # Get enhanced stats from usage logging service
+        if self.config.usage_logging.enabled:
+            try:
+                usage_service = get_llm_usage_service()
+                enhanced_stats = await usage_service.get_usage_stats()
+
+                # Merge enhanced stats while maintaining backward compatibility
+                result.update(enhanced_stats)
+
+            except Exception as e:
+                logger.error(f"Failed to get enhanced usage stats: {e}")
+                # Fall back to legacy stats only
+
         return cast(Dict[str, Any], result)
 
     def _log_request(self, operation: str, params: Dict[str, Any]):
