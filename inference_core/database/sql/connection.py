@@ -218,10 +218,14 @@ class DatabaseManager:
             True if database is healthy
         """
         try:
-            if session is None:
-                session = await get_async_session()
-            result = await session.execute(text("SELECT 1"))
-            return result.scalar() == 1
+            if session is not None:
+                # External session provided – just use it
+                result = await session.execute(text("SELECT 1"))
+                return result.scalar() == 1
+            # Create and cleanup our own session via context manager
+            async with get_async_session() as own_session:  # type: ignore
+                result = await own_session.execute(text("SELECT 1"))
+                return result.scalar() == 1
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             return False
