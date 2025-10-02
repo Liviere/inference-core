@@ -74,8 +74,7 @@ def lifespan(settings: Settings):
         # --- Resource Warm-Up & Health Probes (Startup) ---
         if not settings.is_testing:
             try:
-                init_status = await init_resources(settings)
-                logging.debug(f"Resource initialization status: {init_status}")
+                await init_resources(settings)
             except Exception:
                 # init_resources already logged critical failure; re-raise to abort startup
                 raise

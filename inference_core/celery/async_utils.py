@@ -23,9 +23,9 @@ def run_in_worker_loop(coro: Coroutine[Any, Any, T]) -> T:
     Fallback: if loop is missing/closed (shouldn't occur if signals configured),
     create a temporary loop just for this execution.
     """
-    from inference_core.celery.celery_main import _worker_loop  # type: ignore
+    from inference_core.celery.celery_main import get_worker_loop
 
-    loop = _worker_loop
+    loop = get_worker_loop()
     if loop is None or loop.is_closed():  # Fallback
         tmp_loop = asyncio.new_event_loop()
         try:
