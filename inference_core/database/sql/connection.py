@@ -185,6 +185,28 @@ async def close_database():
     logger.info("Database connections closed")
 
 
+async def dispose_current_engine():
+    """Dispose the currently held async engine (if any) without clearing session maker.
+
+    Used in forked worker processes (e.g. Celery) to ensure inherited engine
+    connections are not reused unsafely. After disposal, a new engine will be
+    lazily created on next access via get_engine().
+    """
+    global _engine
+    if _engine is not None:
+        try:
+            await _engine.dispose()
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"Failed disposing inherited engine: {e}")
+        finally:
+            _engine = None
+
+
+def has_engine() -> bool:
+    """Return True if an engine instance currently exists."""
+    return _engine is not None
+
+
 class DatabaseManager:
     """Database management utilities"""
 
