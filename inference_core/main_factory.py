@@ -12,7 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from .api.v1.routes import auth, batch, health, llm, metrics, tasks, vector
 from .core.config import Settings, get_settings
 from .core.logging_config import setup_logging
-from .database.sql.connection import close_database, create_tables
+from .core.redis_client import ensure_redis_connection, get_redis
+from .database.sql.connection import close_database, create_tables, get_engine
+from .services.vector_store_service import get_vector_store_service
 
 ###################################
 #            Functions            #
@@ -71,25 +73,75 @@ def lifespan(settings: Settings):
             else:
                 logging.warning("Sentry DSN not configured for production environment")
 
-        # Create database tables
+        # --- Resource Warm-Up & Health Probes (Startup) ---
         if not settings.is_testing:
+            # Warm database engine & create tables (ensures pool ready)
             try:
+                get_engine()  # instantiate engine early (warm pool)
                 await create_tables()
-                logging.info("✅ Database tables created successfully")
+                logging.info("✅ Database ready (engine initialized & tables ensured)")
             except Exception as e:
-                logging.error(f"❌ Failed to create database tables: {e}")
+                logging.error(f"❌ Database initialization failed: {e}")
                 raise
+
+            # Ping Redis to ensure availability
+            try:
+                ok = await ensure_redis_connection()
+                if ok:
+                    logging.info("✅ Redis ping successful (connection warm)")
+                else:
+                    logging.warning("⚠️ Redis ping failed (continuing; tasks may error)")
+            except Exception as e:
+                logging.warning(f"⚠️ Redis warm-up failed: {e}")
+
+            # Initialize vector store (Qdrant) if configured
+            if settings.vector_backend == "qdrant":
+                try:
+                    vs_service = get_vector_store_service()
+                    if vs_service.provider:
+                        health = await vs_service.health_check()
+                        if health.get("status") == "healthy":
+                            logging.info(
+                                "✅ Qdrant vector store healthy: %s", health.get("url")
+                            )
+                        else:
+                            logging.warning(
+                                "⚠️ Qdrant reported unhealthy status: %s",
+                                health.get("error") or health,
+                            )
+                except Exception as e:
+                    logging.warning(f"⚠️ Qdrant initialization/health check failed: {e}")
 
         yield
         # Shutdown
         logging.info("🛑 Shutting down FastAPI application...")
 
         if not settings.is_testing:
+            # Graceful shutdown of vector store (Qdrant)
+            if settings.vector_backend == "qdrant":
+                try:
+                    vs_service = get_vector_store_service()
+                    if vs_service.provider and hasattr(vs_service.provider, "close"):
+                        await vs_service.provider.close()  # type: ignore
+                        logging.info("✅ Qdrant connections closed")
+                except Exception as e:
+                    logging.warning(f"⚠️ Failed to close Qdrant provider: {e}")
+
+            # Close database engine / pool
             try:
                 await close_database()
                 logging.info("✅ Database connections closed successfully")
             except Exception as e:
                 logging.error(f"❌ Failed to close database connections: {e}")
+
+            # Attempt to close Redis connections (aioredis auto-closes on GC; explicit close optional)
+            try:
+                redis_client = get_redis()
+                await redis_client.close()  # type: ignore[attr-defined]
+                logging.info("✅ Redis client closed")
+            except Exception:
+                # Silent / not critical
+                pass
 
     return _lifespan
 
