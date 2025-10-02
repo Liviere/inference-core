@@ -13,6 +13,7 @@ keeps `main_factory` focused on assembling the ASGI app.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Dict
 
@@ -110,21 +111,31 @@ async def shutdown_resources(settings: Settings) -> None:
         except Exception as e:  # pragma: no cover
             logger.error(f"❌ Failed to close database connections: {e}")
 
-    # Redis shutdown (optional; aioredis auto handles, but explicit close is tidy)
-    try:
-        redis_client = get_redis()
-        # Some redis clients expose .close() coroutine, others require .close() + .wait_closed()
-        close_method = getattr(redis_client, "close", None)
-        if callable(close_method):
-            result = close_method()
-            # If coroutine await it
-            try:
-                import inspect
+    await _shutdown_redis()
 
-                if inspect.iscoroutine(result):  # type: ignore
-                    await result  # type: ignore
-            except Exception:
+
+async def _shutdown_redis() -> None:
+    """Close Redis client if possible (best-effort, silent on failure)."""
+    try:
+        rc = get_redis()
+        close_method = getattr(rc, "close", None)
+        if callable(close_method):
+            maybe = close_method()
+            if inspect.isawaitable(maybe):  # type: ignore[arg-type]
+                try:
+                    await maybe  # type: ignore[misc]
+                except Exception:  # pragma: no cover
+                    pass
+        # Optionally disconnect pool (redis-py 5.x async pool has disconnect())
+        pool = getattr(rc, "connection_pool", None)
+        if pool and hasattr(pool, "disconnect"):
+            try:
+                res = pool.disconnect()
+                if inspect.isawaitable(res):  # type: ignore[arg-type]
+                    await res  # type: ignore[misc]
+            except Exception:  # pragma: no cover
                 pass
         logger.info("✅ Redis client closed (or no-op)")
     except Exception:  # pragma: no cover
+        # Silent by design; Redis cleanup shouldn't block shutdown
         pass
