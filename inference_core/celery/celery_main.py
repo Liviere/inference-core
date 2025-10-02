@@ -132,6 +132,11 @@ class BaseTask(celery_app.Task):
         super().on_retry(exc, task_id, args, kwargs, einfo)
 
 
+def get_worker_loop():
+    """Get the dedicated event loop for the current worker process"""
+    return _worker_loop
+
+
 # Set the base task class
 celery_app.Task = BaseTask
 
