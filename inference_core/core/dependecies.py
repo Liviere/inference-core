@@ -45,10 +45,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         AsyncSession: Database session
     """
     async with get_async_session() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+        # Session lifecycle (commit/rollback/close) handled in get_async_session
+        yield session
 
 
 # Authentication dependencies

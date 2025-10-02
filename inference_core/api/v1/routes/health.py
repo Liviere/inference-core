@@ -17,6 +17,7 @@ from inference_core.core.dependecies import get_db
 from inference_core.database.sql.connection import db_manager
 from inference_core.services.llm_service import LLMService, get_llm_service
 from inference_core.services.task_service import TaskService, get_task_service
+from inference_core.services.vector_store_service import get_vector_store_service
 
 router = APIRouter(prefix="/health", tags=["Health Check"])
 
@@ -118,15 +119,39 @@ async def health_check(
             "checked_at": timestamp,
         }
 
+    # Vector store health (optional / can be disabled)
+    try:
+        vs_service = get_vector_store_service()
+        vector_health = await vs_service.health_check()
+        # Normalize into component shape
+        vector_component = {
+            **vector_health,
+            "checked_at": timestamp,
+        }
+    except Exception as e:  # pragma: no cover (defensive)
+        vector_component = {
+            "status": "unhealthy",
+            "error": str(e),
+            "checked_at": timestamp,
+        }
+
     # Compute overall status with DB and LLM as critical
     if not db_healthy:
         overall_status = "unhealthy"
     else:
         llm_status_value = llm_component.get("status")
+        vector_status_value = vector_component.get("status")
         if llm_status_value == "unhealthy":
             overall_status = "unhealthy"
         elif llm_status_value == "degraded":
             overall_status = "degraded"
+        elif vector_status_value == "unhealthy":
+            # Vector store unhealthy degrades whole system unless it's disabled
+            overall_status = (
+                "degraded"
+                if vector_component.get("backend") not in (None, "disabled")
+                else "healthy"
+            )
         else:
             overall_status = "healthy"
 
@@ -143,6 +168,7 @@ async def health_check(
         },
         "tasks": tasks_component,
         "llm": llm_component,
+        "vector_store": vector_component,
     }
 
     return HealthCheckResponse(

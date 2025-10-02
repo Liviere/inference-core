@@ -55,35 +55,8 @@ batch_logger = get_batch_logger()
 batch_sentry = get_batch_sentry()
 
 
-# ---------------------------------------------------------------------------
-# Async event loop management
-# ---------------------------------------------------------------------------
-# Problem: Using asyncio.run() inside Celery (prefork) tasks creates a brand new
-# event loop for every invocation and closes it afterwards. SQLAlchemy async
-# engine / asyncpg connections become bound to the original loop they were
-# created on. Reusing pooled connections across new loops then triggers errors:
-#   "Future <...> attached to a different loop" or "Event loop is closed".
-# Solution: Maintain a persistent event loop per worker process and run all
-# coroutines via that loop (run_until_complete). Each Celery worker process
-# executes tasks sequentially, so this is safe. If concurrency changes to allow
-# parallel execution in the same process, a more robust queue/loop thread would
-# be needed.
-
-_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _run_async(coro):
-    """Run an async coroutine on a persistent event loop.
-
-    Ensures a single event loop per process preventing cross-loop attachment
-    issues with asyncpg / SQLAlchemy.
-    """
-    global _loop
-    if _loop is None or _loop.is_closed():
-        _loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_loop)
-    return _loop.run_until_complete(coro)
-
+# Async execution helper (shared worker event loop)
+from inference_core.celery.async_utils import run_in_worker_loop
 
 # Redis lock keys
 BATCH_POLL_LOCK_KEY = "batch_poll:lock"
@@ -184,7 +157,8 @@ def batch_dispatch(self) -> Dict[str, Any]:
                             operation="dispatch",
                         )
 
-        _run_async(_dispatch())
+        # Execute async dispatch logic in worker loop
+        run_in_worker_loop(_dispatch())
     finally:
         redis_client.delete(BATCH_DISPATCH_LOCK_KEY)
 
@@ -421,10 +395,10 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        result = _run_async(_submit())
+        # Execute async submission logic and capture result
+        result = run_in_worker_loop(_submit())
         duration = time.time() - start_time
 
-        # Log successful completion
         batch_sentry.log_operation_complete(
             "submit",
             job_id=job_id,
@@ -468,7 +442,8 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 if provider:
                     record_job_status_change(provider, "failed")
 
-        _run_async(_mark_failed())
+        # Persist failed state asynchronously
+        run_in_worker_loop(_mark_failed())
 
         batch_sentry.log_operation_complete(
             "submit",
@@ -855,13 +830,12 @@ def batch_poll(self) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        result = _run_async(_poll())
+        # Execute async polling logic
+        result = run_in_worker_loop(_poll())
         duration = time.time() - start_time
 
-        # Record poll cycle duration
         record_poll_cycle_duration(duration)
 
-        # Log successful completion
         batch_sentry.log_operation_complete(
             "poll",
             success=True,
@@ -1169,10 +1143,10 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        result = _run_async(_fetch())
+        # Execute async fetch logic
+        result = run_in_worker_loop(_fetch())
         duration = time.time() - start_time
 
-        # Log successful completion
         batch_sentry.log_operation_complete(
             "fetch",
             job_id=job_id,
@@ -1378,7 +1352,7 @@ def batch_retry_failed(self, job_id: str) -> Dict[str, Any]:
                     "duration": time.time() - start_time,
                 }
 
-        return _run_async(_retry())
+        return run_in_worker_loop(_retry())
 
     except Exception as e:
         logger.error(f"Error retrying failed items from job {job_id}: {e}")

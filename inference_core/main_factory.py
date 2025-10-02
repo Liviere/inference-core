@@ -1,16 +1,18 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.v1.routes import auth, batch, health, llm, metrics, tasks, vector
 from .core.config import Settings, get_settings
+from .core.lifecycle import init_resources, shutdown_resources
 from .core.logging_config import setup_logging
-from .database.sql.connection import close_database, create_tables
 
 ###################################
 #            Functions            #
@@ -69,25 +71,23 @@ def lifespan(settings: Settings):
             else:
                 logging.warning("Sentry DSN not configured for production environment")
 
-        # Create database tables
+        # --- Resource Warm-Up & Health Probes (Startup) ---
         if not settings.is_testing:
             try:
-                await create_tables()
-                logging.info("✅ Database tables created successfully")
-            except Exception as e:
-                logging.error(f"❌ Failed to create database tables: {e}")
+                await init_resources(settings)
+            except Exception:
+                # init_resources already logged critical failure; re-raise to abort startup
                 raise
 
         yield
         # Shutdown
         logging.info("🛑 Shutting down FastAPI application...")
 
-        if not settings.is_testing:
-            try:
-                await close_database()
-                logging.info("✅ Database connections closed successfully")
-            except Exception as e:
-                logging.error(f"❌ Failed to close database connections: {e}")
+        try:
+            await shutdown_resources(settings)
+        except Exception:
+            # shutdown_resources is defensive; swallow to not mask original shutdown reasons
+            pass
 
     return _lifespan
 
@@ -131,13 +131,35 @@ def create_application(
 
     # Mount simple static test assets (only in debug/development) for LLM streaming manual QA
     # These assets provide a lightweight in-browser UI to exercise SSE streaming endpoints.
+    test_frontend_url = None
     try:
         if settings.debug:
+            frontend_dir = Path(__file__).parent / "frontend"
             app.mount(
-                "/static",
-                StaticFiles(directory="app/frontend", html=True),
+                "/static/frontend/",
+                StaticFiles(directory=str(frontend_dir), html=True),
                 name="static",
             )
+            logging.info("✅ Mounted static test assets at /static/frontend/")
+            # Decide what the public test frontend URL should be.
+            index_exists = (frontend_dir / "index.html").exists()
+            stream_exists = (frontend_dir / "stream.html").exists()
+
+            if index_exists:
+                test_frontend_url = f"{settings.app_public_url}/static/frontend/"
+            elif stream_exists:
+                # If there is no index.html but there is stream.html, expose a small
+                # redirect so `/static/frontend/` opens the actual page.
+                @app.get("/static/frontend/", include_in_schema=False)
+                async def _frontend_index_redirect():
+                    return RedirectResponse("/static/frontend/stream.html")
+
+                test_frontend_url = (
+                    f"{settings.app_public_url}/static/frontend/stream.html"
+                )
+            else:
+                # No obvious entry point found
+                test_frontend_url = None
     except Exception as e:
         logging.warning(f"Could not mount static test assets: {e}")
 
@@ -155,6 +177,7 @@ def create_application(
             "environment": settings.environment,
             "debug": settings.debug,
             "docs": "/docs" if not settings.is_production else "disabled",
+            "test_frontend": test_frontend_url,
         }
 
     return app
