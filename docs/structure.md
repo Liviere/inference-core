@@ -1,6 +1,6 @@
-# Struktura katalogów projektu
+# Repository Structure Snapshot
 
-Poniżej znajduje się aktualny schemat plików i katalogów (snapshot). Wygenerowano: 2025-08-24.
+Snapshot date: 2025-10-02 (Phase 1 documentation refactor)
 
 ```text
 inference_core/
@@ -16,7 +16,7 @@ inference_core/
 ├── test_observability.py
 ├── inference_core/
 │   ├── __init__.py
-│   ├── main.py
+│   ├── main_factory.py
 │   ├── api/
 │   │   └── v1/
 │   ├── celery/
@@ -28,7 +28,7 @@ inference_core/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── config.py
-│   │   ├── dependecies.py
+│   │   ├── dependecies.py  # NOTE: filename contains a typo; planned rename to dependencies.py
 │   │   ├── logging_config.py
 │   │   ├── redis_client.py
 │   │   └── security.py
@@ -95,35 +95,33 @@ inference_core/
 └── __pycache__/ (artefakty Pythona)
 ```
 
-## Legenda (kluczowe katalogi)
+## Legend (key directories)
 
-- `app/` – główny kod aplikacji (API, logika biznesowa, integracje)
-- `app/core/` – konfiguracja, DI, bezpieczeństwo, logowanie
-- `app/celery/` – definicje i konfiguracja zadań asynchronicznych (Celery)
-- `app/llm/` – integracje z modelami językowymi (LangChain, polityki parametrów, prompt engineering)
-- `app/observability/` – metryki, logowanie, Sentry
-- `app/schemas/` – schematy Pydantic (walidacja/request/response)
-- `app/services/` – warstwa usługowa (biznesowa) nad modelami/infrastrukturą
-- `docs/` – dokumentacja projektowa i techniczna
-- `docker/` – pliki uruchomienia w kontenerach / compose
-- `tests/` – testy (unit, integration, performance)
-- `logs/` – logi runtime (lokalne)
-- `observability/` – konfiguracje monitoringu (Prometheus, Grafana)
-- `reports/` – raporty np. wydajnościowe
-- `scripts/` – (miejsce na) skrypty pomocnicze
+- `inference_core/` – application core (API, business logic, integrations)
+- `inference_core/core/` – configuration, DI, security, logging
+- `inference_core/celery/` – Celery app & task definitions
+- `inference_core/llm/` – LLM integration (LangChain, parameter policies, prompts, batch)
+- `inference_core/observability/` – metrics, structured logging, Sentry integration
+- `inference_core/schemas/` – Pydantic schemas (request/response/data models)
+- `inference_core/services/` – service layer abstractions
+- `inference_core/vectorstores/` – vector store backends & logic
+- `docs/` – technical & design documentation
+- `docker/` – container & compose definitions
+- `tests/` – unit, integration, performance tests
+- `logs/` – runtime logs (local dev)
+- `observability/` – Prometheus & Grafana infra configs
+- `reports/` – performance or analytics reports
+- `scripts/` – helper scripts (future)
 
-## Notatki
+## Notes
 
-1. Katalogi puste (bez plików) mogą nie być pokazane w niektórych listowaniach.
-2. Pliki tymczasowe (`*.pyc`, `__pycache__/`, walidacje Celery beat) są artefaktami runtime.
-3. Aktualizacja tego pliku jest manualna – rozważ wygenerowanie automatyczne (np. skrypt `tree` z filtrem) jeśli struktura często się zmienia.
+1. Some directories may be omitted if empty.
+2. Runtime artifacts: `__pycache__/`, `*.pyc`, Celery beat schedule files, local SQLite DB.
+3. This snapshot is currently maintained manually. Goal: auto-generate via a script in Phase 2.
 
-### Propozycja automatycznej aktualizacji (opcjonalnie)
-
-Możesz dodać do README fragment komendy:
+### Planned automation (example command)
 
 ```bash
-# Linux/macOS – wygeneruj aktualne drzewo (ignorując wybrane katalogi)\n\n tree -I '__pycache__|*.pyc|*.log|logs|app.db*|celerybeat-schedule*' -a -F > docs/structure.md
+# Example (to be scripted) – generate tree excluding transient paths
+tree -I '__pycache__|*.pyc|*.log|logs|*.db|celerybeat-schedule*' -a -F > docs/structure.md
 ```
-
-Jeśli chcesz inną formę (JSON, tylko katalogi, filtrowanie), daj znać.
