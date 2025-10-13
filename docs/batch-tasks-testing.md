@@ -31,7 +31,8 @@ This guide provides steps for manually testing the batch lifecycle Celery tasks.
 poetry run celery -A inference_core.celery.celery_main:celery_app worker \
   --loglevel=info \
   --queues=batch_tasks \
-  --concurrency=2
+  --pool=gevent
+  --autoscale=200,10
 ```
 
 ### 2. Start Celery Beat (Optional - for automatic polling)

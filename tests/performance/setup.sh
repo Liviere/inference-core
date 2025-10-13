@@ -115,7 +115,7 @@ fi
 
 echo ""
 echo "To start Celery worker (optional, for task monitoring endpoints):"
-echo "  poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info --queues=default"
+echo "  poetry run celery -A inference_core.celery.celery_main:celery_app worker --pool=gevent --autoscale=200,10 --loglevel=info --queues=default"
 
 echo ""
 echo "🧪 Running Performance Tests"

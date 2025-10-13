@@ -1,6 +1,10 @@
 if __name__ == "__main__":
     import os
 
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     import uvicorn
 
     from inference_core.main_factory import create_application

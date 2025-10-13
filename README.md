@@ -76,7 +76,7 @@ poetry run uvicorn inference_core.main_factory:create_application --factory --re
 
 # (Optional) Start Redis & Celery for background + batch
 docker run -d --name redis -p 6379:6379 redis:7-alpine
-poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info
+poetry run celery -A inference_core.celery.celery_main:celery_app worker --pool=gevent --autoscale=200,10 --loglevel=info
 ```
 
 Visit: http://localhost:8000/docs (dev only)  

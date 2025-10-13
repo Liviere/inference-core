@@ -36,7 +36,7 @@ Before running performance tests, ensure these services are running:
 
 3. **Celery Worker** (required for task monitoring endpoints):
    ```bash
-   poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info --queues=default
+   poetry run celery -A inference_core.celery.celery_main:celery_app worker --pool=gevent --autoscale=200,10 --loglevel=info --queues=default
    ```
 
 ### Environment Setup

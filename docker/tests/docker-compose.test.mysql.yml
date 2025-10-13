@@ -79,9 +79,8 @@ services:
              --loglevel=info 
              --queues=default,llm_tasks
              --hostname=test-worker@%h 
-             --max-tasks-per-child=50 
-             --time-limit=180 
-             --soft-time-limit=150"
+             --pool=gevent
+             --autoscale=200,10"
     environment:
       ENVIRONMENT: testing
       DATABASE_SERVICE: mysql+aiomysql
