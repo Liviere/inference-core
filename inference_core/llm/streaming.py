@@ -21,7 +21,7 @@ from fastapi import Request
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core.messages import AIMessage, HumanMessage
 
-from inference_core.llm.config import llm_config
+from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.prompts import get_chat_prompt_template, get_prompt_template
 from inference_core.llm.usage_logging import UsageLogger
@@ -146,6 +146,7 @@ async def stream_conversation(
     usage_logger: Optional[UsageLogger] = None
     usage_session = None
     finalized = False
+    llm_config = get_llm_config()
     try:
         if llm_config.usage_logging.enabled:
             usage_logger = UsageLogger(llm_config.usage_logging)
@@ -515,6 +516,7 @@ async def stream_explanation(
     usage_logger: Optional[UsageLogger] = None
     usage_session = None
     finalized = False
+    llm_config = get_llm_config()
     try:
         if llm_config.usage_logging.enabled:
             usage_logger = UsageLogger(llm_config.usage_logging)

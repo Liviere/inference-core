@@ -18,7 +18,7 @@ from inference_core.llm.chains import (
     create_conversation_chain,
     create_explanation_chain,
 )
-from inference_core.llm.config import llm_config
+from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.usage_logging import UsageLogger
 from inference_core.services.llm_usage_service import get_llm_usage_service
@@ -46,7 +46,7 @@ class LLMService:
     """
 
     def __init__(self):
-        self.config = llm_config
+        self.config = get_llm_config()
         self.model_factory = get_model_factory()
         self.usage_logger = UsageLogger(self.config.usage_logging)
         self._usage_stats = {

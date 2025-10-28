@@ -136,7 +136,11 @@ def _ensure_dynamic_loaded():
     if _DYNAMIC_LOADED:
         return
     try:
-        from .config import llm_config  # Local import to avoid circular at module load
+        from .config import (  # Local import to avoid circular at module load
+            get_llm_config,
+        )
+
+        llm_config = get_llm_config()
 
         yaml_cfg = getattr(llm_config, "_yaml_config", None)
         if not yaml_cfg:

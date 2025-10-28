@@ -159,74 +159,75 @@ class BatchConfig(BaseModel):
 
 class DimensionPrice(BaseModel):
     """Pricing configuration for a token dimension"""
-    
+
     cost_per_1k: float = Field(..., ge=0.0, description="Cost per 1,000 tokens")
 
 
 class ContextTier(BaseModel):
     """Context tier configuration for pricing multipliers"""
-    
-    max_context: int = Field(..., ge=1, description="Maximum context length for this tier")
-    multiplier: float = Field(default=1.0, ge=0.0, description="Pricing multiplier for this tier")
+
+    max_context: int = Field(
+        ..., ge=1, description="Maximum context length for this tier"
+    )
+    multiplier: float = Field(
+        default=1.0, ge=0.0, description="Pricing multiplier for this tier"
+    )
 
 
 class RoundingConfig(BaseModel):
     """Configuration for cost rounding"""
-    
-    decimals: int = Field(default=6, ge=0, le=10, description="Number of decimal places for rounding")
+
+    decimals: int = Field(
+        default=6, ge=0, le=10, description="Number of decimal places for rounding"
+    )
 
 
 class ExtrasPolicy(BaseModel):
     """Policy for handling extra token dimensions"""
-    
+
     passthrough_unpriced: bool = Field(
-        default=True, 
-        description="Whether to store counts for unpriced dimensions"
+        default=True, description="Whether to store counts for unpriced dimensions"
     )
 
 
 class PricingConfig(BaseModel):
     """Pricing configuration for a model"""
-    
+
     currency: str = Field(default="USD", description="Currency for pricing")
     input: DimensionPrice = Field(..., description="Input token pricing (required)")
     output: DimensionPrice = Field(..., description="Output token pricing (required)")
     extras: Dict[str, DimensionPrice] = Field(
-        default_factory=dict, 
-        description="Extra dimension pricing (reasoning, cache, etc.)"
+        default_factory=dict,
+        description="Extra dimension pricing (reasoning, cache, etc.)",
     )
     key_aliases: Dict[str, str] = Field(
         default_factory=dict,
-        description="Mapping from provider keys to normalized keys"
+        description="Mapping from provider keys to normalized keys",
     )
     context_tiers: List[ContextTier] = Field(
-        default_factory=list,
-        description="Context tier multipliers"
+        default_factory=list, description="Context tier multipliers"
     )
     rounding: Optional[RoundingConfig] = Field(
-        default=None,
-        description="Rounding configuration"
+        default=None, description="Rounding configuration"
     )
     extras_policy: ExtrasPolicy = Field(
-        default_factory=ExtrasPolicy,
-        description="Policy for handling extra dimensions"
+        default_factory=ExtrasPolicy, description="Policy for handling extra dimensions"
     )
 
 
 class UsageLoggingConfig(BaseModel):
     """Configuration for LLM usage logging"""
-    
+
     enabled: bool = Field(default=True, description="Whether usage logging is enabled")
-    base_currency: str = Field(default="USD", description="Base currency for cost calculations")
+    base_currency: str = Field(
+        default="USD", description="Base currency for cost calculations"
+    )
     fail_open: bool = Field(
-        default=True, 
-        description="Whether to continue on logging errors instead of failing requests"
+        default=True,
+        description="Whether to continue on logging errors instead of failing requests",
     )
     default_rounding_decimals: int = Field(
-        default=6, 
-        ge=0, 
-        le=10, 
-        description="Default decimal places for cost rounding"
+        default=6, ge=0, le=10, description="Default decimal places for cost rounding"
     )
 
 
@@ -243,7 +244,9 @@ class ModelConfig(BaseModel):
     frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     timeout: int = Field(default=60, ge=1)
-    pricing: Optional[PricingConfig] = Field(default=None, description="Pricing configuration")
+    pricing: Optional[PricingConfig] = Field(
+        default=None, description="Pricing configuration"
+    )
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -263,7 +266,9 @@ class LLMConfig:
         self.retry_attempts: int = 3
         self.retry_delay: float = 1.0
         self.batch_config: BatchConfig = BatchConfig()  # Initialize with defaults
-        self.usage_logging: UsageLoggingConfig = UsageLoggingConfig()  # Initialize with defaults
+        self.usage_logging: UsageLoggingConfig = (
+            UsageLoggingConfig()
+        )  # Initialize with defaults
         self._load_config()
 
     def _load_config(self):
@@ -324,27 +329,27 @@ class LLMConfig:
                     # Parse dimension prices
                     input_price = DimensionPrice(**pricing_data["input"])
                     output_price = DimensionPrice(**pricing_data["output"])
-                    
+
                     # Parse extra dimensions
                     extras = {}
                     for key, price_data in pricing_data.get("extras", {}).items():
                         extras[key] = DimensionPrice(**price_data)
-                    
+
                     # Parse context tiers
                     context_tiers = []
                     for tier_data in pricing_data.get("context_tiers", []):
                         context_tiers.append(ContextTier(**tier_data))
-                    
+
                     # Parse rounding config
                     rounding = None
                     rounding_data = pricing_data.get("rounding")
                     if rounding_data:
                         rounding = RoundingConfig(**rounding_data)
-                    
+
                     # Parse extras policy
                     extras_policy_data = pricing_data.get("extras_policy", {})
                     extras_policy = ExtrasPolicy(**extras_policy_data)
-                    
+
                     pricing_config = PricingConfig(
                         currency=pricing_data.get("currency", "USD"),
                         input=input_price,
@@ -353,7 +358,7 @@ class LLMConfig:
                         key_aliases=pricing_data.get("key_aliases", {}),
                         context_tiers=context_tiers,
                         rounding=rounding,
-                        extras_policy=extras_policy
+                        extras_policy=extras_policy,
                     )
                 except Exception as e:
                     logging.error(f"Error parsing pricing config for {model_name}: {e}")
@@ -400,7 +405,7 @@ class LLMConfig:
 
         # Parse batch configuration
         self._load_batch_config(yaml_config)
-        
+
         # Parse usage logging configuration
         self._load_usage_logging_config(yaml_config)
 
@@ -475,16 +480,26 @@ class LLMConfig:
         """Load and validate usage logging configuration from YAML"""
         settings = yaml_config.get("settings", {})
         usage_logging_data = settings.get("usage_logging", {})
-        
+
         # Support environment variable overrides
         enabled = os.getenv("LLM_USAGE_LOGGING_ENABLED")
         if enabled is not None:
-            usage_logging_data["enabled"] = enabled.lower() in ("true", "1", "yes", "on")
-            
+            usage_logging_data["enabled"] = enabled.lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+            )
+
         fail_open = os.getenv("LLM_USAGE_FAIL_OPEN")
         if fail_open is not None:
-            usage_logging_data["fail_open"] = fail_open.lower() in ("true", "1", "yes", "on")
-        
+            usage_logging_data["fail_open"] = fail_open.lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+            )
+
         try:
             self.usage_logging = UsageLoggingConfig(**usage_logging_data)
         except Exception as e:
@@ -694,5 +709,15 @@ class LLMConfig:
         return debug_info
 
 
+def get_llm_config() -> LLMConfig:
+    """Get the global LLM configuration instance"""
+    global llm_config
+    if llm_config is None:
+        logging.info("Initializing global LLM configuration")
+        llm_config = LLMConfig()
+
+    return llm_config
+
+
 # Global configuration instance
-llm_config = LLMConfig()
+llm_config = None

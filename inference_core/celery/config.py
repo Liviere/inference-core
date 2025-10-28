@@ -73,7 +73,9 @@ class CeleryConfig:
 def get_beat_schedule():
     """Get the beat schedule configuration with dynamic polling interval"""
     try:
-        from inference_core.llm.config import llm_config
+        from inference_core.llm.config import get_llm_config
+
+        llm_config = get_llm_config()
 
         poll_interval = llm_config.batch_config.default_poll_interval_seconds
     except Exception:

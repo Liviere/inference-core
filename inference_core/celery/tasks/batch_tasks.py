@@ -6,7 +6,6 @@ Includes concurrency controls and error handling with exponential backoff.
 Enhanced with observability metrics, structured logging, and optional Sentry integration.
 """
 
-import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -28,7 +27,7 @@ from inference_core.llm.batch.exceptions import (
     ProviderTransientError,
 )
 from inference_core.llm.batch.registry import registry
-from inference_core.llm.config import llm_config
+from inference_core.llm.config import get_llm_config
 from inference_core.observability.logging import get_batch_logger
 from inference_core.observability.metrics import (
     record_error,
@@ -36,7 +35,6 @@ from inference_core.observability.metrics import (
     record_job_duration,
     record_job_status_change,
     record_poll_cycle_duration,
-    record_provider_latency,
     record_retry_attempt,
     time_provider_operation,
     update_jobs_in_progress,
@@ -265,6 +263,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                     operation="submit",
                     item_count=len(items),
                 )
+                llm_config = get_llm_config()
 
                 # Build provider runtime config (merge general provider + batch model info)
                 provider_start_time = time.time()
@@ -625,6 +624,7 @@ def batch_poll(self) -> Dict[str, Any]:
                             provider_batch_id=job.provider_batch_id,
                             operation="poll",
                         )
+                        llm_config = get_llm_config()
 
                         # Get provider instance
                         provider_instance = registry.create_provider(
@@ -977,6 +977,8 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
                     completed_items=len(completed_items),
                     pending_items=len(items) - len(completed_items),
                 )
+
+                llm_config = get_llm_config()
 
                 # Get provider instance
                 provider_instance = registry.create_provider(

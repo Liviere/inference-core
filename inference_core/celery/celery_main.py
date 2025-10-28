@@ -7,9 +7,13 @@ import asyncio
 import logging
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+load_dotenv("../../.env", override=True)
+
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown
-from dotenv import load_dotenv
 
 from inference_core.celery.config import CeleryConfig
 from inference_core.core import redis_client
