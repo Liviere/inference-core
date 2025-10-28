@@ -270,6 +270,8 @@ class TestBaseVectorStoreProvider:
                 pass
             async def health_check(self):
                 pass
+            async def list_documents(self, collection, filters=None, limit=50, offset=0, order_by=None, order="desc", include_scores=False):
+                pass
         
         provider = TestProvider(config)
         
@@ -293,6 +295,8 @@ class TestBaseVectorStoreProvider:
             async def delete_collection(self, collection):
                 pass
             async def health_check(self):
+                pass
+            async def list_documents(self, collection, filters=None, limit=50, offset=0, order_by=None, order="desc", include_scores=False):
                 pass
         
         provider = TestProvider({})

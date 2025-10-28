@@ -257,6 +257,140 @@ class TestVectorStoreService:
         
         assert service_with_provider._retrievers_cache == {}
 
+    @pytest.mark.asyncio
+    async def test_list_documents(self, service_with_provider, mock_provider):
+        """Test listing documents with filters"""
+        mock_documents = [
+            VectorStoreDocument(
+                id="1",
+                content="Document 1",
+                metadata={"session_id": "s-123", "created_at": "2024-01-01"},
+                score=None,
+            ),
+            VectorStoreDocument(
+                id="2",
+                content="Document 2",
+                metadata={"session_id": "s-123", "created_at": "2024-01-02"},
+                score=None,
+            ),
+        ]
+        mock_provider.list_documents.return_value = (mock_documents, 2)
+        
+        with patch('inference_core.services.vector_store_service.time.time') as mock_time, \
+             patch('inference_core.services.vector_store_service.record_vector_search') as mock_record:
+            mock_time.side_effect = [0, 0.5, 0.5]
+            
+            documents, total = await service_with_provider.list_documents(
+                collection="test_collection",
+                filters={"session_id": "s-123"},
+                limit=10,
+                offset=0,
+            )
+        
+        assert len(documents) == 2
+        assert total == 2
+        assert documents[0].id == "1"
+        assert documents[1].id == "2"
+        mock_provider.list_documents.assert_called_once()
+        mock_record.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_list_documents_validation(self, service_with_provider):
+        """Test validation in list_documents"""
+        # Invalid limit (too low)
+        with pytest.raises(ValueError, match="limit must be between 1 and 1000"):
+            await service_with_provider.list_documents(limit=0)
+        
+        # Invalid limit (too high)
+        with pytest.raises(ValueError, match="limit must be between 1 and 1000"):
+            await service_with_provider.list_documents(limit=1001)
+        
+        # Invalid offset
+        with pytest.raises(ValueError, match="offset must be >= 0"):
+            await service_with_provider.list_documents(offset=-1)
+        
+        # Invalid order
+        with pytest.raises(ValueError, match="order must be 'asc' or 'desc'"):
+            await service_with_provider.list_documents(order="invalid")
+
+    @pytest.mark.asyncio
+    async def test_list_documents_no_provider(self):
+        """Test list_documents without provider"""
+        service = VectorStoreService()
+        
+        with pytest.raises(RuntimeError, match="Vector store is not available"):
+            await service.list_documents()
+
+    @pytest.mark.asyncio
+    async def test_list_documents_pagination(self, service_with_provider, mock_provider):
+        """Test listing documents with pagination"""
+        mock_documents = [
+            VectorStoreDocument(
+                id=f"{i}",
+                content=f"Document {i}",
+                metadata={"index": i},
+                score=None,
+            )
+            for i in range(5)
+        ]
+        mock_provider.list_documents.return_value = (mock_documents, 100)
+        
+        with patch('inference_core.services.vector_store_service.time.time') as mock_time, \
+             patch('inference_core.services.vector_store_service.record_vector_search'):
+            mock_time.side_effect = [0, 0.3, 0.3]
+            
+            documents, total = await service_with_provider.list_documents(
+                collection="test_collection",
+                limit=5,
+                offset=10,
+            )
+        
+        assert len(documents) == 5
+        assert total == 100
+        # Check that list_documents was called with correct arguments
+        assert mock_provider.list_documents.call_count == 1
+        call_kwargs = mock_provider.list_documents.call_args[1]
+        assert call_kwargs["collection"] == "test_collection"
+        assert call_kwargs["limit"] == 5
+        assert call_kwargs["offset"] == 10
+        assert call_kwargs["order_by"] is None
+        assert call_kwargs["order"] == "desc"
+        assert call_kwargs["include_scores"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_documents_with_ordering(self, service_with_provider, mock_provider):
+        """Test listing documents with ordering"""
+        mock_documents = [
+            VectorStoreDocument(
+                id="1",
+                content="Document 1",
+                metadata={"created_at": "2024-01-02"},
+                score=None,
+            ),
+            VectorStoreDocument(
+                id="2",
+                content="Document 2",
+                metadata={"created_at": "2024-01-01"},
+                score=None,
+            ),
+        ]
+        mock_provider.list_documents.return_value = (mock_documents, 2)
+        
+        with patch('inference_core.services.vector_store_service.time.time') as mock_time, \
+             patch('inference_core.services.vector_store_service.record_vector_search'):
+            mock_time.side_effect = [0, 0.4, 0.4]
+            
+            documents, total = await service_with_provider.list_documents(
+                order_by="created_at",
+                order="asc",
+            )
+        
+        assert len(documents) == 2
+        mock_provider.list_documents.assert_called_once()
+        call_kwargs = mock_provider.list_documents.call_args[1]
+        assert call_kwargs["order_by"] == "created_at"
+        assert call_kwargs["order"] == "asc"
+
 
 class TestGetVectorStoreService:
     """Test get_vector_store_service function"""

@@ -15,6 +15,8 @@ from inference_core.schemas.vector import (
     ErrorResponse,
     IngestRequest,
     IngestTaskResponse,
+    ListRequest,
+    ListResponse,
     QueryRequest,
     QueryResponse,
     RetrievedDocument,
@@ -211,6 +213,69 @@ async def query_documents(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Document query failed: {str(e)}",
+        )
+
+
+@router.post("/list", response_model=ListResponse)
+async def list_documents(
+    request: ListRequest,
+    service=Depends(get_vector_service),
+):
+    """
+    List documents by metadata filters without a text query.
+    
+    Retrieves documents based on metadata filters with pagination support.
+    Useful for listing all documents in a session, by user, or other metadata criteria.
+    """
+    try:
+        # Perform filter-only listing
+        documents, total_count = await service.list_documents(
+            collection=request.collection,
+            filters=request.filters,
+            limit=request.limit,
+            offset=request.offset,
+            order_by=request.order_by,
+            order=request.order,
+            include_scores=False,
+        )
+
+        # Convert to response format
+        retrieved_docs = [
+            RetrievedDocument(
+                id=doc.id,
+                content=doc.content,
+                metadata=doc.metadata,
+                score=doc.score,
+            )
+            for doc in documents
+        ]
+
+        actual_collection = (
+            request.collection or service.provider.get_default_collection()
+        )
+
+        return ListResponse(
+            documents=retrieved_docs,
+            count=len(retrieved_docs),
+            total=total_count,
+            collection=actual_collection,
+            limit=request.limit,
+            offset=request.offset,
+        )
+
+    except ValueError as e:
+        # Validation errors
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Document listing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Document listing failed: {str(e)}",
         )
 
 

@@ -202,22 +202,8 @@ class QdrantProvider(BaseVectorStoreProvider):
         # Generate query embedding
         query_embedding = self._embed_texts([query])[0]
 
-        # Prepare search filter if provided
-        search_filter = None
-        if filters:
-            # Convert simple dict filters to Qdrant filter format
-            # For now, support simple key-value matching
-            conditions = []
-            for key, value in filters.items():
-                if key != "_text":  # Skip internal text field
-                    conditions.append(
-                        models.FieldCondition(
-                            key=key, match=models.MatchValue(value=value)
-                        )
-                    )
-
-            if conditions:
-                search_filter = models.Filter(must=conditions)
+        # Prepare search filter if provided (supports nested dictionaries)
+        search_filter = self._build_qdrant_filter(filters) if filters else None
 
         # Perform search
         search_result = await client.search(
@@ -382,6 +368,211 @@ class QdrantProvider(BaseVectorStoreProvider):
                 "error": str(e),
                 "embedding_model": self.embedding_model_name,
             }
+
+    async def list_documents(
+        self,
+        collection: str,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        order: str = "desc",
+        include_scores: bool = False,
+    ) -> tuple[List[VectorStoreDocument], int]:
+        """List documents by metadata filters using Qdrant scroll API"""
+        client = await self._get_async_client()
+
+        # Prepare filter if provided (supports nested dictionaries)
+        search_filter = self._build_qdrant_filter(filters) if filters else None
+
+        # Get total count with the filter
+        try:
+            count_result = await client.count(
+                collection_name=collection,
+                count_filter=search_filter,
+                exact=True,
+            )
+            total_count = count_result.count if hasattr(count_result, "count") else 0
+        except (ResponseHandlingException, UnexpectedResponse):
+            # Collection doesn't exist
+            return ([], 0)
+
+        # Use scroll to get documents with pagination
+        # Qdrant scroll doesn't support direct offset, so we need to scroll through
+        documents = []
+        scroll_offset = None
+        current_offset = 0
+
+        # Keep scrolling until we reach the desired offset + limit
+        while len(documents) < limit and (
+            current_offset < offset + limit or total_count == 0
+        ):
+            try:
+                scroll_result = await client.scroll(
+                    collection_name=collection,
+                    scroll_filter=search_filter,
+                    limit=min(100, offset + limit - current_offset),  # Fetch in batches
+                    offset=scroll_offset,
+                    with_payload=True,
+                    with_vectors=False,  # We don't need vectors for listing
+                )
+
+                points, next_offset = scroll_result
+
+                if not points:
+                    break
+
+                # Process points and add to results if past offset
+                for point in points:
+                    if current_offset >= offset:
+                        # Extract text from payload
+                        content = point.payload.get("_text", "")
+                        # Create metadata without internal fields
+                        metadata = {
+                            k: v
+                            for k, v in point.payload.items()
+                            if not k.startswith("_")
+                        }
+
+                        doc = VectorStoreDocument(
+                            id=str(point.id),
+                            content=content,
+                            metadata=metadata,
+                            score=None if not include_scores else 0.0,
+                        )
+                        documents.append(doc)
+
+                        if len(documents) >= limit:
+                            break
+
+                    current_offset += 1
+
+                # Update scroll offset for next iteration
+                scroll_offset = next_offset
+                if next_offset is None:
+                    break
+
+            except (ResponseHandlingException, UnexpectedResponse) as e:
+                self.logger.error(f"Error scrolling collection '{collection}': {e}")
+                break
+
+        # Note: Qdrant scroll doesn't natively support ordering by metadata fields
+        # If order_by is specified, we sort in memory (not ideal for large datasets)
+        if order_by and documents:
+
+            def get_sort_key(doc: VectorStoreDocument):
+                value = doc.metadata.get(order_by)
+                # Handle None values by placing them at the end
+                if value is None:
+                    return ("", "") if order == "asc" else ("~", "~")
+                return value
+
+            try:
+                documents = sorted(
+                    documents,
+                    key=get_sort_key,
+                    reverse=(order == "desc"),
+                )
+            except Exception as e:
+                # If sorting fails, keep original order
+                self.logger.warning(
+                    f"Failed to sort by {order_by}, using insertion order: {e}"
+                )
+
+        self.logger.debug(
+            f"Listed {len(documents)} documents (total: {total_count}) from Qdrant collection '{collection}'"
+        )
+        return (documents, total_count)
+
+    # --------------------
+    # Helpers
+    # --------------------
+    def _build_qdrant_filter(self, filters: Dict[str, Any]) -> Optional[models.Filter]:
+        """Build a Qdrant models.Filter from a (possibly nested) dict.
+
+        Rules:
+        - Scalar values (str/int/float/bool) -> FieldCondition(key, MatchValue(value))
+        - Empty dict value -> presence check: require key to exist (implemented as Nested with no conditions is not supported; we mimic by not adding a condition to avoid 400s)
+        - Dict value with scalars -> Nested(key=<parent>, filter=Filter(must=[FieldCondition(...)]))
+        - Deeply nested dict -> recursive Nested for each level
+
+        Note: Qdrant supports Nested(key=..., filter=Filter(...)) for JSON objects.
+        """
+        if not filters:
+            return None
+
+        must_conditions: List[Any] = []
+
+        for key, value in filters.items():
+            if key == "_text":
+                # never filter on internal field
+                continue
+
+            cond = self._build_condition_for_key(key, value)
+            if cond is None:
+                # Skip unsupported/empty presence checks to avoid validation errors
+                continue
+            # Support single condition or list of conditions
+            if isinstance(cond, list):
+                must_conditions.extend(cond)
+            else:
+                must_conditions.append(cond)
+
+        if not must_conditions:
+            return None
+
+        return models.Filter(must=must_conditions)
+
+    def _build_condition_for_key(self, key: str, value: Any):
+        """Recursively build FieldCondition or Nested for a key/value."""
+        # Presence check: treat {} as "key exists" by skipping (no-op filter)
+        if isinstance(value, dict) and len(value) == 0:
+            return None
+
+        # Scalar -> simple match
+        if isinstance(value, (str, int, float, bool)):
+            return models.FieldCondition(key=key, match=models.MatchValue(value=value))
+
+        # Dict with scalar sub-keys -> Nested
+        if isinstance(value, dict):
+            # Split one level: build inner conditions
+            inner_must: List[Any] = []
+            for sub_key, sub_val in value.items():
+                # If nested deeper, recurse by creating nested with combined path
+                if isinstance(sub_val, dict):
+                    nested_cond = self._build_condition_for_key(
+                        f"{key}.{sub_key}", sub_val
+                    )
+                    if nested_cond is not None:
+                        # When we already expanded to a dotted path, it returns FieldCondition/Nested
+                        # Wrap as must element directly
+                        inner_must.append(nested_cond)
+                elif isinstance(sub_val, (str, int, float, bool)):
+                    inner_must.append(
+                        models.FieldCondition(
+                            key=f"{key}.{sub_key}",
+                            match=models.MatchValue(value=sub_val),
+                        )
+                    )
+
+            if not inner_must:
+                return None
+
+            # Two implementation options: Nested or dot-path FieldConditions.
+            # Using dot-path is sufficient here since we already expanded keys as key.sub_key
+            # Return a Filter grouping via should/must is not necessary; caller will wrap in Filter(must=[...]).
+            # Therefore, return a models.Filter is not accepted as a condition; we return a models.Nested for clarity.
+            try:
+                # Prefer NestedCondition when available in the installed qdrant-client
+                return models.NestedCondition(
+                    key=key, filter=models.Filter(must=inner_must)
+                )
+            except Exception:
+                # Fallback: flatten into top-level FieldConditions with dotted keys
+                return inner_must
+
+        # Unsupported value type -> skip
+        return None
 
     async def close(self):
         """Close connections to Qdrant"""
