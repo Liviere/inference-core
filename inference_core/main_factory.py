@@ -19,7 +19,7 @@ from .core.logging_config import setup_logging
 ###################################
 
 
-def lifespan(settings: Settings):
+def lifespan(settings: Settings, external_on_startup=None, external_on_shutdown=None):
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
         """
@@ -79,12 +79,17 @@ def lifespan(settings: Settings):
                 # init_resources already logged critical failure; re-raise to abort startup
                 raise
 
+        if external_on_startup:
+            await external_on_startup(app)
+
         yield
         # Shutdown
         logging.info("🛑 Shutting down FastAPI application...")
 
         try:
             await shutdown_resources(settings)
+            if external_on_shutdown:
+                await external_on_shutdown(app)
         except Exception:
             # shutdown_resources is defensive; swallow to not mask original shutdown reasons
             pass
@@ -93,7 +98,10 @@ def lifespan(settings: Settings):
 
 
 def create_application(
-    external_routers: Dict[str, APIRouter] = None, custom_settings: Settings = None
+    external_routers: Dict[str, APIRouter] = None,
+    custom_settings: Settings = None,
+    external_on_startup=None,
+    external_on_shutdown=None,
 ) -> FastAPI:
     """
     Create and configure FastAPI application
@@ -113,7 +121,7 @@ def create_application(
         description=settings.app_description,
         version=settings.app_version,
         debug=settings.debug,
-        lifespan=lifespan(settings),
+        lifespan=lifespan(settings, external_on_startup, external_on_shutdown),
         docs_url="/docs" if not settings.is_production else None,
         redoc_url="/redoc" if not settings.is_production else None,
         openapi_url="/openapi.json" if not settings.is_production else None,
