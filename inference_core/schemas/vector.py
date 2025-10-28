@@ -172,6 +172,61 @@ class QueryResponse(BaseModel):
     )
 
 
+class ListRequest(BaseModel):
+    """Request schema for listing documents by metadata filters"""
+
+    collection: Optional[str] = Field(
+        default=None,
+        description="Collection name (uses default if not provided)",
+        max_length=100,
+    )
+    filters: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional metadata filters to apply",
+    )
+    limit: int = Field(
+        default=50,
+        description="Maximum number of results to return",
+        ge=1,
+        le=1000,
+    )
+    offset: int = Field(
+        default=0,
+        description="Number of results to skip (for pagination)",
+        ge=0,
+    )
+    order_by: Optional[str] = Field(
+        default=None,
+        description="Field to order by (e.g., 'created_at')",
+    )
+    order: str = Field(
+        default="desc",
+        description="Sort order",
+    )
+
+    @field_validator("order")
+    @classmethod
+    def validate_order(cls, v):
+        """Validate order value"""
+        if v not in ("asc", "desc"):
+            raise ValueError("order must be 'asc' or 'desc'")
+        return v
+
+
+class ListResponse(BaseModel):
+    """Response schema for listing documents"""
+
+    documents: List[RetrievedDocument] = Field(..., description="Retrieved documents")
+    count: int = Field(..., description="Number of documents returned")
+    total: Optional[int] = Field(
+        default=None,
+        description="Total number of matching documents",
+    )
+    collection: str = Field(..., description="Collection name used")
+    limit: int = Field(..., description="Limit used for pagination")
+    offset: int = Field(..., description="Offset used for pagination")
+
+
 class CollectionStatsResponse(BaseModel):
     """Response schema for collection statistics"""
 

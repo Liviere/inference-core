@@ -355,6 +355,92 @@ class VectorStoreService:
 
         return await self.provider.health_check()
 
+    async def list_documents(
+        self,
+        collection: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        order: str = "desc",
+        include_scores: bool = False,
+    ) -> tuple[List[VectorStoreDocument], int]:
+        """
+        List documents by metadata filters without a text query.
+        
+        Args:
+            collection: Collection name (uses default if None)
+            filters: Optional metadata filters to apply
+            limit: Maximum number of results to return (1-1000)
+            offset: Number of results to skip (for pagination)
+            order_by: Field to order by (e.g., 'created_at', provider-specific)
+            order: Sort order ('asc' or 'desc')
+            include_scores: Whether to include scores (may not be supported)
+            
+        Returns:
+            Tuple of (documents, total_count) where total_count is the total matching items
+            
+        Raises:
+            RuntimeError: If vector store is not available
+            ValueError: If input validation fails
+        """
+        if not self.is_available:
+            raise RuntimeError("Vector store is not available")
+
+        # Validate limit and offset
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+
+        # Validate order
+        if order not in ("asc", "desc"):
+            raise ValueError("order must be 'asc' or 'desc'")
+
+        collection = collection or self.provider.get_default_collection()
+
+        # Sanitize filters
+        if filters:
+            filters = self._sanitize_metadata(filters)
+
+        # Perform listing with metrics
+        start_time = time.time()
+        try:
+            documents, total_count = await self.provider.list_documents(
+                collection=collection,
+                filters=filters,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+                order=order,
+                include_scores=include_scores,
+            )
+
+            # Record metrics (reuse search metric with success=True)
+            duration = time.time() - start_time
+            backend = (
+                getattr(self.provider, "__class__", type(self.provider))
+                .__name__.replace("Provider", "")
+                .lower()
+            )
+            record_vector_search(backend, collection, duration, success=True)
+
+        except Exception as e:
+            duration = time.time() - start_time
+            backend = (
+                getattr(self.provider, "__class__", type(self.provider))
+                .__name__.replace("Provider", "")
+                .lower()
+            )
+            record_vector_search(backend, collection, duration, success=False)
+            logger.error(f"Vector listing failed after {duration:.2f}s: {e}")
+            raise
+
+        logger.debug(
+            f"Listed {len(documents)} documents (total: {total_count}) from collection '{collection}' in {duration:.2f}s"
+        )
+        return (documents, total_count)
+
     def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
         Sanitize metadata to ensure it's safe for storage.

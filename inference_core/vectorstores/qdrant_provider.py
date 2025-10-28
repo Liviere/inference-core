@@ -383,6 +383,129 @@ class QdrantProvider(BaseVectorStoreProvider):
                 "embedding_model": self.embedding_model_name,
             }
 
+    async def list_documents(
+        self,
+        collection: str,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        order: str = "desc",
+        include_scores: bool = False,
+    ) -> tuple[List[VectorStoreDocument], int]:
+        """List documents by metadata filters using Qdrant scroll API"""
+        client = await self._get_async_client()
+
+        # Prepare filter if provided
+        search_filter = None
+        if filters:
+            # Convert simple dict filters to Qdrant filter format
+            conditions = []
+            for key, value in filters.items():
+                if key != "_text":  # Skip internal text field
+                    conditions.append(
+                        models.FieldCondition(
+                            key=key, match=models.MatchValue(value=value)
+                        )
+                    )
+
+            if conditions:
+                search_filter = models.Filter(must=conditions)
+
+        # Get total count with the filter
+        try:
+            count_result = await client.count(
+                collection_name=collection,
+                count_filter=search_filter,
+                exact=True,
+            )
+            total_count = count_result.count if hasattr(count_result, "count") else 0
+        except (ResponseHandlingException, UnexpectedResponse):
+            # Collection doesn't exist
+            return ([], 0)
+
+        # Use scroll to get documents with pagination
+        # Qdrant scroll doesn't support direct offset, so we need to scroll through
+        documents = []
+        scroll_offset = None
+        current_offset = 0
+
+        # Keep scrolling until we reach the desired offset + limit
+        while len(documents) < limit and (current_offset < offset + limit or total_count == 0):
+            try:
+                scroll_result = await client.scroll(
+                    collection_name=collection,
+                    scroll_filter=search_filter,
+                    limit=min(100, offset + limit - current_offset),  # Fetch in batches
+                    offset=scroll_offset,
+                    with_payload=True,
+                    with_vectors=False,  # We don't need vectors for listing
+                )
+
+                points, next_offset = scroll_result
+
+                if not points:
+                    break
+
+                # Process points and add to results if past offset
+                for point in points:
+                    if current_offset >= offset:
+                        # Extract text from payload
+                        content = point.payload.get("_text", "")
+                        # Create metadata without internal fields
+                        metadata = {
+                            k: v for k, v in point.payload.items() if not k.startswith("_")
+                        }
+
+                        doc = VectorStoreDocument(
+                            id=str(point.id),
+                            content=content,
+                            metadata=metadata,
+                            score=None if not include_scores else 0.0,
+                        )
+                        documents.append(doc)
+
+                        if len(documents) >= limit:
+                            break
+
+                    current_offset += 1
+
+                # Update scroll offset for next iteration
+                scroll_offset = next_offset
+                if next_offset is None:
+                    break
+
+            except (ResponseHandlingException, UnexpectedResponse) as e:
+                self.logger.error(f"Error scrolling collection '{collection}': {e}")
+                break
+
+        # Note: Qdrant scroll doesn't natively support ordering by metadata fields
+        # If order_by is specified, we sort in memory (not ideal for large datasets)
+        if order_by and documents:
+            def get_sort_key(doc: VectorStoreDocument):
+                value = doc.metadata.get(order_by)
+                # Handle None values by placing them at the end
+                if value is None:
+                    return ("", "") if order == "asc" else ("~", "~")
+                return value
+
+            try:
+                documents = sorted(
+                    documents,
+                    key=get_sort_key,
+                    reverse=(order == "desc"),
+                )
+            except Exception as e:
+                # If sorting fails, keep original order
+                self.logger.warning(
+                    f"Failed to sort by {order_by}, using insertion order: {e}"
+                )
+
+        self.logger.debug(
+            f"Listed {len(documents)} documents (total: {total_count}) from Qdrant collection '{collection}'"
+        )
+        return (documents, total_count)
+
     async def close(self):
         """Close connections to Qdrant"""
         if self._async_client:

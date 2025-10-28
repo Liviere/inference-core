@@ -166,6 +166,34 @@ class BaseVectorStoreProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def list_documents(
+        self,
+        collection: str,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        order: str = "desc",
+        include_scores: bool = False,
+    ) -> tuple[List[VectorStoreDocument], int]:
+        """
+        List documents by metadata filters without a text query.
+        
+        Args:
+            collection: Collection name
+            filters: Optional metadata filters to apply
+            limit: Maximum number of results to return
+            offset: Number of results to skip (for pagination)
+            order_by: Field to order by (e.g., 'created_at', provider-specific)
+            order: Sort order ('asc' or 'desc')
+            include_scores: Whether to include scores (may not be supported without vector query)
+            
+        Returns:
+            Tuple of (documents, total_count) where total_count is the total matching items
+        """
+        pass
+
     def get_default_collection(self) -> str:
         """Get the default collection name from config"""
         return self.config.get("default_collection", "default_documents")
@@ -357,3 +385,75 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
             "collections": list(self._collections.keys()),
             "total_documents": sum(col["count"] for col in self._collections.values()),
         }
+
+    async def list_documents(
+        self,
+        collection: str,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        order: str = "desc",
+        include_scores: bool = False,
+    ) -> tuple[List[VectorStoreDocument], int]:
+        """List documents by metadata filters (in-memory implementation)"""
+        if collection not in self._documents:
+            return ([], 0)
+
+        # Get all documents in the collection
+        documents = self._documents[collection]
+
+        # Apply metadata filters if provided
+        if filters:
+            filtered_docs = []
+            for doc in documents:
+                # Check if all filter conditions match
+                matches = True
+                for key, value in filters.items():
+                    if key not in doc.metadata or doc.metadata[key] != value:
+                        matches = False
+                        break
+                if matches:
+                    filtered_docs.append(doc)
+            documents = filtered_docs
+
+        # Get total count before pagination
+        total_count = len(documents)
+
+        # Apply ordering if specified
+        if order_by:
+            # Order by metadata field if it exists
+            def get_sort_key(doc: VectorStoreDocument):
+                # Try to get the field from metadata
+                value = doc.metadata.get(order_by)
+                # Handle None values by placing them at the end
+                if value is None:
+                    return ("", "") if order == "asc" else ("~", "~")
+                return value
+
+            try:
+                documents = sorted(
+                    documents,
+                    key=get_sort_key,
+                    reverse=(order == "desc"),
+                )
+            except Exception:
+                # If sorting fails, keep original order
+                self.logger.warning(f"Failed to sort by {order_by}, using insertion order")
+
+        # Apply pagination
+        paginated_docs = documents[offset : offset + limit]
+
+        # Create copies without scores if not requested
+        if not include_scores:
+            paginated_docs = [
+                VectorStoreDocument(
+                    id=doc.id,
+                    content=doc.content,
+                    metadata=doc.metadata,
+                    score=None,
+                )
+                for doc in paginated_docs
+            ]
+
+        return (paginated_docs, total_count)
