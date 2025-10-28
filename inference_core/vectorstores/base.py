@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class VectorStoreDocument(BaseModel):
     """Document with vector representation"""
-    
+
     id: str
     content: str
     metadata: Dict[str, Any] = {}
@@ -27,7 +27,7 @@ class VectorStoreDocument(BaseModel):
 
 class CollectionStats(BaseModel):
     """Statistics about a vector collection"""
-    
+
     name: str
     count: int
     dimension: int
@@ -37,7 +37,7 @@ class CollectionStats(BaseModel):
 class BaseVectorStoreProvider(ABC):
     """
     Abstract base class for vector store providers.
-    
+
     Provides a unified interface for different vector database backends
     like Qdrant, Milvus, FAISS, etc.
     """
@@ -45,7 +45,7 @@ class BaseVectorStoreProvider(ABC):
     def __init__(self, config: Dict[str, Any]):
         """
         Initialize the vector store provider.
-        
+
         Args:
             config: Provider-specific configuration dictionary
         """
@@ -56,11 +56,11 @@ class BaseVectorStoreProvider(ABC):
     async def ensure_collection(self, name: str, dimension: int = None) -> bool:
         """
         Ensure a collection exists, creating it if necessary.
-        
+
         Args:
             name: Collection name
             dimension: Vector dimension (uses default if None)
-            
+
         Returns:
             True if collection was created, False if it already existed
         """
@@ -76,13 +76,13 @@ class BaseVectorStoreProvider(ABC):
     ) -> List[str]:
         """
         Add texts to the vector store.
-        
+
         Args:
             texts: Sequence of texts to add
             metadatas: Optional metadata for each text
             ids: Optional IDs for each text (auto-generated if None)
             collection: Collection name (uses default if None)
-            
+
         Returns:
             List of document IDs that were added
         """
@@ -99,14 +99,14 @@ class BaseVectorStoreProvider(ABC):
     ) -> List[VectorStoreDocument]:
         """
         Search for similar documents.
-        
+
         Args:
             query: Query text
             k: Number of results to return
             collection: Collection name (uses default if None)
             filters: Optional filters to apply
             **kwargs: Additional search parameters
-            
+
         Returns:
             List of similar documents with scores
         """
@@ -120,11 +120,11 @@ class BaseVectorStoreProvider(ABC):
     ) -> BaseRetriever:
         """
         Create a LangChain retriever interface.
-        
+
         Args:
             collection: Collection name (uses default if None)
             search_kwargs: Additional search parameters
-            
+
         Returns:
             LangChain BaseRetriever instance
         """
@@ -134,10 +134,10 @@ class BaseVectorStoreProvider(ABC):
     async def collection_stats(self, collection: str) -> CollectionStats:
         """
         Get statistics about a collection.
-        
+
         Args:
             collection: Collection name
-            
+
         Returns:
             Collection statistics
         """
@@ -147,10 +147,10 @@ class BaseVectorStoreProvider(ABC):
     async def delete_collection(self, collection: str) -> bool:
         """
         Delete a collection.
-        
+
         Args:
             collection: Collection name
-            
+
         Returns:
             True if collection was deleted, False if it didn't exist
         """
@@ -160,7 +160,7 @@ class BaseVectorStoreProvider(ABC):
     async def health_check(self) -> Dict[str, Any]:
         """
         Check the health of the vector store.
-        
+
         Returns:
             Health status information
         """
@@ -179,7 +179,7 @@ class BaseVectorStoreProvider(ABC):
     ) -> tuple[List[VectorStoreDocument], int]:
         """
         List documents by metadata filters without a text query.
-        
+
         Args:
             collection: Collection name
             filters: Optional metadata filters to apply
@@ -188,7 +188,7 @@ class BaseVectorStoreProvider(ABC):
             order_by: Field to order by (e.g., 'created_at', provider-specific)
             order: Sort order ('asc' or 'desc')
             include_scores: Whether to include scores (may not be supported without vector query)
-            
+
         Returns:
             Tuple of (documents, total_count) where total_count is the total matching items
         """
@@ -210,7 +210,7 @@ class BaseVectorStoreProvider(ABC):
 class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
     """
     In-memory vector store implementation for testing and development.
-    
+
     Note: This is not suitable for production use as data is not persisted.
     """
 
@@ -250,15 +250,19 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
 
         doc_ids = []
         for i, text in enumerate(texts):
-            doc_id = ids[i] if ids else f"{collection}_{i}_{len(self._documents[collection])}"
+            doc_id = (
+                ids[i]
+                if ids
+                else f"{collection}_{i}_{len(self._documents[collection])}"
+            )
             metadata = metadatas[i] if metadatas else {}
-            
+
             doc = VectorStoreDocument(
                 id=doc_id,
                 content=text,
                 metadata=metadata,
             )
-            
+
             self._documents[collection].append(doc)
             self._collections[collection]["count"] += 1
             doc_ids.append(doc_id)
@@ -276,7 +280,7 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
     ) -> List[VectorStoreDocument]:
         """Simple text matching for in-memory implementation"""
         collection = collection or self.get_default_collection()
-        
+
         if collection not in self._documents:
             return []
 
@@ -284,19 +288,19 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
         # In a real implementation, this would use actual vector similarity
         documents = self._documents[collection]
         query_lower = query.lower()
-        
+
         # Score documents based on query term presence
         scored_docs = []
         for doc in documents:
             score = 0.0
             content_lower = doc.content.lower()
-            
+
             # Simple scoring: count query words found in content
             query_words = query_lower.split()
             for word in query_words:
                 if word in content_lower:
                     score += 1.0
-            
+
             if score > 0:
                 doc_copy = doc.model_copy()
                 doc_copy.score = score / len(query_words) if query_words else 0.0
@@ -312,25 +316,30 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
         search_kwargs: Optional[Dict[str, Any]] = None,
     ) -> BaseRetriever:
         """Create a mock retriever for in-memory implementation"""
-        from langchain_core.retrievers import BaseRetriever
-        from langchain_core.documents import Document
         from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
+        from langchain_core.documents import Document
+        from langchain_core.retrievers import BaseRetriever
 
         class InMemoryRetriever(BaseRetriever):
             """Simple in-memory retriever implementation"""
-            
-            def __init__(self, provider: "InMemoryVectorStoreProvider", collection: str, search_kwargs: Dict[str, Any]):
+
+            def __init__(
+                self,
+                provider: "InMemoryVectorStoreProvider",
+                collection: str,
+                search_kwargs: Dict[str, Any],
+            ):
                 # Don't call super().__init__() to avoid Pydantic validation issues
                 # Set attributes directly
-                object.__setattr__(self, 'provider', provider)
-                object.__setattr__(self, 'collection', collection)  
-                object.__setattr__(self, 'search_kwargs', search_kwargs or {})
+                object.__setattr__(self, "provider", provider)
+                object.__setattr__(self, "collection", collection)
+                object.__setattr__(self, "search_kwargs", search_kwargs or {})
 
             def _get_relevant_documents(
                 self, query: str, *, run_manager: CallbackManagerForRetrieverRun
             ) -> List[Document]:
                 import asyncio
-                
+
                 # Run the async method in a sync context
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -339,12 +348,12 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
                         self.provider.similarity_search(
                             query=query,
                             collection=self.collection,
-                            **self.search_kwargs
+                            **self.search_kwargs,
                         )
                     )
                 finally:
                     loop.close()
-                
+
                 # Convert to LangChain Documents
                 return [
                     Document(page_content=doc.content, metadata=doc.metadata)
@@ -359,7 +368,7 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
         """Get stats for in-memory collection"""
         if collection not in self._collections:
             raise ValueError(f"Collection '{collection}' does not exist")
-        
+
         col_info = self._collections[collection]
         return CollectionStats(
             name=collection,
@@ -403,19 +412,41 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
         # Get all documents in the collection
         documents = self._documents[collection]
 
-        # Apply metadata filters if provided
+        # Apply metadata filters if provided (supports simple nested dicts and presence check via empty dict)
         if filters:
-            filtered_docs = []
-            for doc in documents:
-                # Check if all filter conditions match
-                matches = True
-                for key, value in filters.items():
-                    if key not in doc.metadata or doc.metadata[key] != value:
-                        matches = False
-                        break
-                if matches:
-                    filtered_docs.append(doc)
-            documents = filtered_docs
+
+            def _matches_filter(meta: Dict[str, Any], flt: Dict[str, Any]) -> bool:
+                for k, v in flt.items():
+                    if k not in meta:
+                        return False
+                    current = meta.get(k)
+                    # Presence check: empty dict means just require the key to exist
+                    if isinstance(v, dict):
+                        if len(v) == 0:
+                            continue
+                        # Nested dict: allow one-level nested matching and dot-path emulation
+                        if not isinstance(current, dict):
+                            return False
+                        # All nested keys must match (scalars only)
+                        for nk, nv in v.items():
+                            cv = current.get(nk)
+                            if isinstance(nv, dict):
+                                # support deeper nesting via simple recursion
+                                if not isinstance(cv, dict):
+                                    return False
+                                if not _matches_filter(cv, nv):
+                                    return False
+                            else:
+                                if cv != nv:
+                                    return False
+                    else:
+                        if current != v:
+                            return False
+                return True
+
+            documents = [
+                doc for doc in documents if _matches_filter(doc.metadata, filters)
+            ]
 
         # Get total count before pagination
         total_count = len(documents)
@@ -439,7 +470,9 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
                 )
             except Exception:
                 # If sorting fails, keep original order
-                self.logger.warning(f"Failed to sort by {order_by}, using insertion order")
+                self.logger.warning(
+                    f"Failed to sort by {order_by}, using insertion order"
+                )
 
         # Apply pagination
         paginated_docs = documents[offset : offset + limit]

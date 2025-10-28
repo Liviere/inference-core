@@ -202,22 +202,8 @@ class QdrantProvider(BaseVectorStoreProvider):
         # Generate query embedding
         query_embedding = self._embed_texts([query])[0]
 
-        # Prepare search filter if provided
-        search_filter = None
-        if filters:
-            # Convert simple dict filters to Qdrant filter format
-            # For now, support simple key-value matching
-            conditions = []
-            for key, value in filters.items():
-                if key != "_text":  # Skip internal text field
-                    conditions.append(
-                        models.FieldCondition(
-                            key=key, match=models.MatchValue(value=value)
-                        )
-                    )
-
-            if conditions:
-                search_filter = models.Filter(must=conditions)
+        # Prepare search filter if provided (supports nested dictionaries)
+        search_filter = self._build_qdrant_filter(filters) if filters else None
 
         # Perform search
         search_result = await client.search(
@@ -396,21 +382,8 @@ class QdrantProvider(BaseVectorStoreProvider):
         """List documents by metadata filters using Qdrant scroll API"""
         client = await self._get_async_client()
 
-        # Prepare filter if provided
-        search_filter = None
-        if filters:
-            # Convert simple dict filters to Qdrant filter format
-            conditions = []
-            for key, value in filters.items():
-                if key != "_text":  # Skip internal text field
-                    conditions.append(
-                        models.FieldCondition(
-                            key=key, match=models.MatchValue(value=value)
-                        )
-                    )
-
-            if conditions:
-                search_filter = models.Filter(must=conditions)
+        # Prepare filter if provided (supports nested dictionaries)
+        search_filter = self._build_qdrant_filter(filters) if filters else None
 
         # Get total count with the filter
         try:
@@ -431,7 +404,9 @@ class QdrantProvider(BaseVectorStoreProvider):
         current_offset = 0
 
         # Keep scrolling until we reach the desired offset + limit
-        while len(documents) < limit and (current_offset < offset + limit or total_count == 0):
+        while len(documents) < limit and (
+            current_offset < offset + limit or total_count == 0
+        ):
             try:
                 scroll_result = await client.scroll(
                     collection_name=collection,
@@ -454,7 +429,9 @@ class QdrantProvider(BaseVectorStoreProvider):
                         content = point.payload.get("_text", "")
                         # Create metadata without internal fields
                         metadata = {
-                            k: v for k, v in point.payload.items() if not k.startswith("_")
+                            k: v
+                            for k, v in point.payload.items()
+                            if not k.startswith("_")
                         }
 
                         doc = VectorStoreDocument(
@@ -482,6 +459,7 @@ class QdrantProvider(BaseVectorStoreProvider):
         # Note: Qdrant scroll doesn't natively support ordering by metadata fields
         # If order_by is specified, we sort in memory (not ideal for large datasets)
         if order_by and documents:
+
             def get_sort_key(doc: VectorStoreDocument):
                 value = doc.metadata.get(order_by)
                 # Handle None values by placing them at the end
@@ -505,6 +483,96 @@ class QdrantProvider(BaseVectorStoreProvider):
             f"Listed {len(documents)} documents (total: {total_count}) from Qdrant collection '{collection}'"
         )
         return (documents, total_count)
+
+    # --------------------
+    # Helpers
+    # --------------------
+    def _build_qdrant_filter(self, filters: Dict[str, Any]) -> Optional[models.Filter]:
+        """Build a Qdrant models.Filter from a (possibly nested) dict.
+
+        Rules:
+        - Scalar values (str/int/float/bool) -> FieldCondition(key, MatchValue(value))
+        - Empty dict value -> presence check: require key to exist (implemented as Nested with no conditions is not supported; we mimic by not adding a condition to avoid 400s)
+        - Dict value with scalars -> Nested(key=<parent>, filter=Filter(must=[FieldCondition(...)]))
+        - Deeply nested dict -> recursive Nested for each level
+
+        Note: Qdrant supports Nested(key=..., filter=Filter(...)) for JSON objects.
+        """
+        if not filters:
+            return None
+
+        must_conditions: List[Any] = []
+
+        for key, value in filters.items():
+            if key == "_text":
+                # never filter on internal field
+                continue
+
+            cond = self._build_condition_for_key(key, value)
+            if cond is None:
+                # Skip unsupported/empty presence checks to avoid validation errors
+                continue
+            # Support single condition or list of conditions
+            if isinstance(cond, list):
+                must_conditions.extend(cond)
+            else:
+                must_conditions.append(cond)
+
+        if not must_conditions:
+            return None
+
+        return models.Filter(must=must_conditions)
+
+    def _build_condition_for_key(self, key: str, value: Any):
+        """Recursively build FieldCondition or Nested for a key/value."""
+        # Presence check: treat {} as "key exists" by skipping (no-op filter)
+        if isinstance(value, dict) and len(value) == 0:
+            return None
+
+        # Scalar -> simple match
+        if isinstance(value, (str, int, float, bool)):
+            return models.FieldCondition(key=key, match=models.MatchValue(value=value))
+
+        # Dict with scalar sub-keys -> Nested
+        if isinstance(value, dict):
+            # Split one level: build inner conditions
+            inner_must: List[Any] = []
+            for sub_key, sub_val in value.items():
+                # If nested deeper, recurse by creating nested with combined path
+                if isinstance(sub_val, dict):
+                    nested_cond = self._build_condition_for_key(
+                        f"{key}.{sub_key}", sub_val
+                    )
+                    if nested_cond is not None:
+                        # When we already expanded to a dotted path, it returns FieldCondition/Nested
+                        # Wrap as must element directly
+                        inner_must.append(nested_cond)
+                elif isinstance(sub_val, (str, int, float, bool)):
+                    inner_must.append(
+                        models.FieldCondition(
+                            key=f"{key}.{sub_key}",
+                            match=models.MatchValue(value=sub_val),
+                        )
+                    )
+
+            if not inner_must:
+                return None
+
+            # Two implementation options: Nested or dot-path FieldConditions.
+            # Using dot-path is sufficient here since we already expanded keys as key.sub_key
+            # Return a Filter grouping via should/must is not necessary; caller will wrap in Filter(must=[...]).
+            # Therefore, return a models.Filter is not accepted as a condition; we return a models.Nested for clarity.
+            try:
+                # Prefer NestedCondition when available in the installed qdrant-client
+                return models.NestedCondition(
+                    key=key, filter=models.Filter(must=inner_must)
+                )
+            except Exception:
+                # Fallback: flatten into top-level FieldConditions with dotted keys
+                return inner_must
+
+        # Unsupported value type -> skip
+        return None
 
     async def close(self):
         """Close connections to Qdrant"""
