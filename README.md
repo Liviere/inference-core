@@ -50,7 +50,7 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 - Streaming (token/event feed)
 - Native Batch (provider discounted large runs; orchestration via Celery)
 
-**Cost & Usage Tracking** – Token counts & pricing snapshots, failure‑tolerant logging, Prometheus metrics, Sentry traces.
+**Cost & Usage Tracking** – Token counts & pricing snapshots, failure‑tolerant logging, Prometheus metrics, Sentry traces. **Generic helpers for custom LLM tasks** – Reusable abstraction to add usage/cost logging to any custom task (extraction, summarization, etc.) without duplicating boilerplate. [Learn more →](docs/custom-task-usage-logging.md)
 
 **Authentication & Users** – Registration, login, refresh rotation, email verification hooks (pluggable email delivery).
 
