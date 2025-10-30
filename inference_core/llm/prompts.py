@@ -81,7 +81,14 @@ def _find_custom_file(dir_name: str, prompt_name: str) -> Optional[Path]:
     base = _CUSTOM_BASE / dir_name
     if not base.exists():
         return None
+    # Prefer preset-named files first, then generic names
     candidates = [
+        # preset variants
+        base / f"{prompt_name}.preset.j2",
+        base / f"{prompt_name}.preset.jinja2",
+        base / f"{prompt_name}.system.preset.j2",
+        base / f"{prompt_name}.system.preset.jinja2",
+        # generic variants
         base / f"{prompt_name}.j2",
         base / f"{prompt_name}.jinja2",
     ]

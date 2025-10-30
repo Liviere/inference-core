@@ -187,3 +187,9 @@ inference_core/main.py
 # Poetry lock file
 poetry.lock
 email_config.yaml
+
+# Custom prompts: ignore user templates but keep shipped presets
+inference_core/custom_prompts/**/*.j2
+inference_core/custom_prompts/**/*.jinja2
+!inference_core/custom_prompts/**/*preset*.j2
+!inference_core/custom_prompts/**/*preset*.jinja2
