@@ -20,6 +20,7 @@ from typing import Any, AsyncGenerator, Dict, Optional
 from fastapi import Request
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
@@ -118,6 +119,8 @@ async def stream_chat(
     request: Optional[Request] = None,
     user_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    prompt_name: Optional[str] = None,
+    system_prompt: Optional[str] = None,
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
@@ -231,8 +234,22 @@ async def stream_chat(
         # Build message list manually for streaming
         messages = []
 
-        # Add system message from prompt template
-        prompt_template = get_chat_prompt_template("chat")
+        # Add system message from prompt template (with optional overrides)
+        base_prompt_name = prompt_name or "chat"
+        prompt_template = get_chat_prompt_template(base_prompt_name)
+        if system_prompt:
+            try:
+                prompt_template = ChatPromptTemplate.from_messages(
+                    [
+                        ("system", system_prompt),
+                        MessagesPlaceholder(variable_name="history"),
+                        ("human", "{user_input}"),
+                    ]
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to apply system_prompt override for streaming chat: {e}"
+                )
         if prompt_template and hasattr(prompt_template, "messages"):
             for msg_template in prompt_template.messages:
                 if hasattr(msg_template, "format"):
@@ -490,6 +507,7 @@ async def stream_completion(
     request: Optional[Request] = None,
     user_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    prompt_name: Optional[str] = None,
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
@@ -563,7 +581,7 @@ async def stream_completion(
             yield format_sse(error_data)
             return
         # Build prompt for completion (system + user)
-        prompt_template = get_prompt_template("completion")
+        prompt_template = get_prompt_template(prompt_name or "completion")
         input_data = {"prompt": text}
 
         # Emit start event

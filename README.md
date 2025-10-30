@@ -100,7 +100,7 @@ Simple LLM call (HTTP):
 curl -X POST http://localhost:8000/api/v1/llm/completion \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <ACCESS_TOKEN>' \
-  -d '{"question": "Explain vector embeddings simply"}'
+  -d '{"prompt": "Explain vector embeddings simply"}'
 ```
 
 Streaming (Server-Sent Tokens style endpoint may vary):
@@ -108,7 +108,7 @@ Streaming (Server-Sent Tokens style endpoint may vary):
 ```bash
 curl -X POST -N http://localhost:8000/api/v1/llm/completion/stream \\
   -H 'Content-Type: application/json' \\
-  -d '{"question": "Hello"}'
+  -d '{"prompt": "Hello"}'
 ```
 
 Batch (conceptual – provider-native):
@@ -232,23 +232,68 @@ async def generate_hint(
 
 ### Extending the LLM Service
 
-Instead of calling the lower-level chain constructors directly, wrap `LLMService` to express domain semantics.
+Prefer inheriting from `LLMService` and providing default attributes (e.g. system prompt, models, params) or overriding factory hooks.
 
 ```python
-# app/services/turn_llm_service.py
+# app/services/custom_llm_service.py
 from inference_core.services.llm_service import LLMService
 
-class CustomLLMService:
-  def __init__(self):
-    self._llm = LLMService()
+
+class CustomLLMService(LLMService):
+  """Example domain specialization with its own system prompt and parameters."""
+
+  def __init__(self) -> None:
+    super().__init__(
+      default_models={
+        # tasks: "completion" | "chat"
+        "chat": "gpt-4o-mini",
+      },
+      default_model_params={
+        "chat": {"temperature": 0.3},
+        "completion": {"temperature": 0.2},
+      },
+      default_prompt_names={
+        "chat": "chat",           # you can point to your own template in prompts.py
+        "completion": "completion",
+      },
+      default_chat_system_prompt=(
+        "You are a domain tutor. Be concise, prioritize clarity,"
+        " and include one short example if helpful."
+      ),
+    )
 
   async def generate_hint(self, phrase: str, cefr_level: str) -> str:
-    prompt = f"Explain the phrase '{phrase}' in simple terms for CEFR level {cefr_level}."
-    response = await self._llm.completion(question=prompt)
+    prompt = (
+      f"Explain the phrase '{phrase}' in simple terms for CEFR level {cefr_level}."
+    )
+    # You can also use per-call overrides, e.g. prompt_name
+    response = await self.completion(prompt=prompt, prompt_name="completion")
     return response.result["answer"]
 
-# Singleton-style instance (simple pattern)
+  # Optional: precisely override the hook that builds the chat chain
+  # (e.g., to always enforce a specific system prompt or template name)
+  # def _build_chat_chain(self, *, model_name, model_params, prompt_name, system_prompt):
+  #     return super()._build_chat_chain(
+  #         model_name=model_name,
+  #         model_params=model_params,
+  #         prompt_name=prompt_name or "chat",
+  #         system_prompt=system_prompt or self._default_chat_system_prompt,
+  #     )
+
+
+# Simple singleton for injection
 custom_llm_service = CustomLLMService()
+```
+
+Quick "copy" of a task configuration (e.g. different system prompt) without creating a subclass:
+
+```python
+from inference_core.services.llm_service import LLMService
+
+base_llm = LLMService()
+coach_llm = base_llm.copy_with(default_chat_system_prompt="Coach tone, ask guiding questions.")
+
+# coach_llm.chat(...)
 ```
 
 ### Direct Low-Level Usage (Optional)

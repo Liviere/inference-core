@@ -7,17 +7,22 @@ Each chain combines prompts with models for specific functionality.
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import (
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+    PromptTemplate,
+)
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 from inference_core.core.config import get_settings
 
 from .models import get_model_factory
-from .prompts import AVAILABLE_PROMPTS, get_chat_prompt_template
+from .prompts import AVAILABLE_PROMPTS, get_chat_prompt_template, get_prompt_template
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +77,35 @@ class BaseChain:
 class CompletionChain(BaseChain):
     """Chain for single-turn completions"""
 
-    def __init__(self, model_name: Optional[str] = None, **model_params):
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        *,
+        prompt: Optional[PromptTemplate] = None,
+        prompt_name: Optional[str] = None,
+        **model_params,
+    ):
         super().__init__(model_name, **model_params)
+        self._custom_prompt: Optional[PromptTemplate] = prompt
+        self._prompt_name: Optional[str] = prompt_name
         self._build_chain()
 
     def _build_chain(self):
         """Build the completion chain"""
         model = self._get_model("completion")
-        prompt = AVAILABLE_PROMPTS["completion"]
+        # Select prompt precedence: explicit instance > by-name > default
+        if self._custom_prompt is not None:
+            prompt = self._custom_prompt
+        elif self._prompt_name is not None:
+            try:
+                prompt = get_prompt_template(self._prompt_name)
+            except Exception:
+                logger.warning(
+                    f"Unknown completion prompt_name='{self._prompt_name}', falling back to default"
+                )
+                prompt = AVAILABLE_PROMPTS["completion"]
+        else:
+            prompt = AVAILABLE_PROMPTS["completion"]
 
         self._chain = prompt | model | StrOutputParser()
 
@@ -101,18 +127,38 @@ class CompletionChain(BaseChain):
 
 
 def create_completion_chain(
-    model_name: Optional[str] = None, **model_params
+    model_name: Optional[str] = None,
+    *,
+    prompt: Optional[PromptTemplate] = None,
+    prompt_name: Optional[str] = None,
+    **model_params,
 ) -> CompletionChain:
     """Create a completion chain instance"""
-    return CompletionChain(model_name, **model_params)
+    return CompletionChain(
+        model_name,
+        prompt=prompt,
+        prompt_name=prompt_name,
+        **model_params,
+    )
 
 
 ## Chat Chain
 class ChatChain(BaseChain):
     """Chain for multi-turn chat using session-based history"""
 
-    def __init__(self, model_name: Optional[str] = None, **model_params):
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        *,
+        prompt: Optional[ChatPromptTemplate] = None,
+        prompt_name: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        **model_params,
+    ):
         super().__init__(model_name, **model_params)
+        self._custom_prompt: Optional[ChatPromptTemplate] = prompt
+        self._prompt_name: Optional[str] = prompt_name
+        self._system_prompt: Optional[str] = system_prompt
         self._build_chain()
 
     @staticmethod
@@ -134,7 +180,38 @@ class ChatChain(BaseChain):
     def _build_chain(self):
         """Build the chat chain with message history support"""
         model = self._get_model("chat")
-        prompt = get_chat_prompt_template("chat")
+        # Determine base prompt
+        if self._custom_prompt is not None:
+            prompt = self._custom_prompt
+        elif self._prompt_name is not None:
+            try:
+                prompt = get_chat_prompt_template(self._prompt_name)
+            except Exception:
+                logger.warning(
+                    f"Unknown chat prompt_name='{self._prompt_name}', falling back to default 'chat'"
+                )
+                prompt = get_chat_prompt_template("chat")
+        else:
+            prompt = get_chat_prompt_template("chat")
+
+        # Optionally replace the first system message content
+        if self._system_prompt:
+            try:
+                # Recompose ChatPromptTemplate with overridden system content
+                base_msgs = []
+                from langchain_core.prompts import (
+                    ChatPromptTemplate,
+                    MessagesPlaceholder,
+                )
+
+                base_msgs.append(("system", self._system_prompt))
+                # Preserve placeholders and human template from existing prompt
+                # We assume the canonical structure: system, history placeholder, human
+                base_msgs.append(MessagesPlaceholder(variable_name="history"))
+                base_msgs.append(("human", "{user_input}"))
+                prompt = ChatPromptTemplate.from_messages(base_msgs)
+            except Exception as e:
+                logger.warning(f"Failed to apply system_prompt override: {e}")
 
         # Base LCEL chain (keep model output as AIMessage for history updates)
         base_chain = prompt | model
@@ -171,6 +248,19 @@ class ChatChain(BaseChain):
             raise
 
 
-def create_chat_chain(model_name: Optional[str] = None, **model_params) -> ChatChain:
+def create_chat_chain(
+    model_name: Optional[str] = None,
+    *,
+    prompt: Optional[ChatPromptTemplate] = None,
+    prompt_name: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    **model_params,
+) -> ChatChain:
     """Create a chat chain instance"""
-    return ChatChain(model_name, **model_params)
+    return ChatChain(
+        model_name,
+        prompt=prompt,
+        prompt_name=prompt_name,
+        system_prompt=system_prompt,
+        **model_params,
+    )

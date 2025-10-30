@@ -42,16 +42,101 @@ class LLMService:
     Main LLM Service providing high-level interface for AI operations.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        default_models: Optional[Dict[str, str]] = None,
+        default_model_params: Optional[Dict[str, Dict[str, Any]]] = None,
+        default_prompt_names: Optional[Dict[str, str]] = None,
+        default_chat_system_prompt: Optional[str] = None,
+    ):
         self.config = get_llm_config()
         self.model_factory = get_model_factory()
         self.usage_logger = UsageLogger(self.config.usage_logging)
+        # Customization defaults for inheritance/clone patterns
+        self._default_models = default_models or {}
+        self._default_model_params = default_model_params or {}
+        self._default_prompt_names = default_prompt_names or {}
+        self._default_chat_system_prompt = default_chat_system_prompt
         self._usage_stats = {
             "requests_count": 0,
             "total_tokens": 0,
             "errors_count": 0,
             "last_request": None,
         }
+
+    # --------- Helper hooks for subclasses ---------
+    def _effective_model_name(self, task: str, override: Optional[str]) -> str:
+        """Resolve model name with precedence: override > default_models > config mapping."""
+        if override:
+            return override
+        if task in self._default_models:
+            return self._default_models[task]
+        return self.config.get_task_model(task)
+
+    def _merge_params(
+        self, task: str, runtime_params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Merge default model params with runtime params (runtime wins)."""
+        base = dict(self._default_model_params.get(task, {}))
+        base.update(runtime_params)
+        return base
+
+    def _build_completion_chain(
+        self,
+        *,
+        model_name: Optional[str],
+        model_params: Dict[str, Any],
+        prompt_name: Optional[str],
+    ):
+        """Factory hook to build completion chain; subclasses can override."""
+        kwargs: Dict[str, Any] = dict(model_name=model_name)
+        effective_prompt_name = prompt_name or self._default_prompt_names.get(
+            "completion"
+        )
+        if effective_prompt_name is not None:
+            kwargs["prompt_name"] = effective_prompt_name
+        kwargs.update(model_params)
+        return create_completion_chain(**kwargs)
+
+    def _build_chat_chain(
+        self,
+        *,
+        model_name: Optional[str],
+        model_params: Dict[str, Any],
+        prompt_name: Optional[str],
+        system_prompt: Optional[str],
+    ):
+        """Factory hook to build chat chain; subclasses can override."""
+        kwargs: Dict[str, Any] = dict(model_name=model_name)
+        effective_prompt_name = prompt_name or self._default_prompt_names.get("chat")
+        if effective_prompt_name is not None:
+            kwargs["prompt_name"] = effective_prompt_name
+        effective_system_prompt = system_prompt or self._default_chat_system_prompt
+        if effective_system_prompt is not None:
+            kwargs["system_prompt"] = effective_system_prompt
+        kwargs.update(model_params)
+        return create_chat_chain(**kwargs)
+
+    def copy_with(
+        self,
+        *,
+        default_models: Optional[Dict[str, str]] = None,
+        default_model_params: Optional[Dict[str, Dict[str, Any]]] = None,
+        default_prompt_names: Optional[Dict[str, str]] = None,
+        default_chat_system_prompt: Optional[str] = None,
+    ) -> "LLMService":
+        """Create a shallow clone with updated defaults (easy task copying)."""
+        return LLMService(
+            default_models=default_models or self._default_models,
+            default_model_params=default_model_params or self._default_model_params,
+            default_prompt_names=default_prompt_names or self._default_prompt_names,
+            default_chat_system_prompt=(
+                default_chat_system_prompt
+                if default_chat_system_prompt is not None
+                else self._default_chat_system_prompt
+            ),
+        )
 
     async def completion(
         self,
@@ -67,6 +152,7 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        prompt_name: Optional[str] = None,
         user_id: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> LLMResponse:
@@ -85,7 +171,7 @@ class LLMService:
         self._log_request("completion", {"prompt": text, "model_name": model_name})
 
         # Start usage logging session
-        resolved_model_name = model_name or self.config.get_task_model("completion")
+        resolved_model_name = self._effective_model_name("completion", model_name)
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
@@ -120,7 +206,7 @@ class LLMService:
                         raise ValueError(
                             f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
                         )
-            model_params = {
+            runtime_params = {
                 k: v
                 for k, v in {
                     "temperature": temperature,
@@ -134,8 +220,13 @@ class LLMService:
                 }.items()
                 if v is not None
             }
-            # Use new canonical factory name
-            chain = create_completion_chain(model_name=model_name, **model_params)
+            model_params = self._merge_params("completion", runtime_params)
+            # Use factory hook (supports prompt overrides)
+            chain = self._build_completion_chain(
+                model_name=model_name,
+                model_params=model_params,
+                prompt_name=prompt_name,
+            )
             answer = await chain.completion(prompt=text, callbacks=callbacks)
 
             # Usage already accumulated by callback handler
@@ -186,6 +277,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        prompt_name: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         user_id: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> LLMResponse:
@@ -209,7 +302,7 @@ class LLMService:
         )
 
         # Start usage logging session
-        resolved_model_name = model_name or self.config.get_task_model("chat")
+        resolved_model_name = self._effective_model_name("chat", model_name)
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
@@ -245,7 +338,7 @@ class LLMService:
                         raise ValueError(
                             f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
                         )
-            model_params = {
+            runtime_params = {
                 k: v
                 for k, v in {
                     "temperature": temperature,
@@ -259,9 +352,14 @@ class LLMService:
                 }.items()
                 if v is not None
             }
-
-            # Use new canonical factory name
-            chain = create_chat_chain(model_name=model_name, **model_params)
+            model_params = self._merge_params("chat", runtime_params)
+            # Use factory hook with prompt/system overrides
+            chain = self._build_chat_chain(
+                model_name=model_name,
+                model_params=model_params,
+                prompt_name=prompt_name,
+                system_prompt=system_prompt,
+            )
             reply = await chain.chat(
                 session_id=session_id, user_input=user_input, callbacks=callbacks
             )
@@ -313,6 +411,8 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        prompt_name: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         user_id: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
@@ -341,7 +441,7 @@ class LLMService:
 
         try:
             # Build model parameters
-            model_params = {}
+            model_params: Dict[str, Any] = {}
             if temperature is not None:
                 model_params["temperature"] = temperature
             if max_tokens is not None:
@@ -358,6 +458,8 @@ class LLMService:
                 model_params["reasoning_effort"] = reasoning_effort
             if verbosity is not None:
                 model_params["verbosity"] = verbosity
+            # Merge with defaults for chat
+            model_params = self._merge_params("chat", model_params)
 
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -377,6 +479,8 @@ class LLMService:
                 user_input=user_input,
                 model_name=model_name,
                 request=request,
+                prompt_name=prompt_name or self._default_prompt_names.get("chat"),
+                system_prompt=system_prompt or self._default_chat_system_prompt,
                 user_id=user_id,
                 request_id=request_id,
                 **model_params,
@@ -403,6 +507,7 @@ class LLMService:
         request_timeout: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         verbosity: Optional[str] = None,
+        prompt_name: Optional[str] = None,
         user_id: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
@@ -430,7 +535,7 @@ class LLMService:
 
         try:
             # Build model parameters
-            model_params = {}
+            model_params: Dict[str, Any] = {}
             if temperature is not None:
                 model_params["temperature"] = temperature
             if max_tokens is not None:
@@ -447,6 +552,8 @@ class LLMService:
                 model_params["reasoning_effort"] = reasoning_effort
             if verbosity is not None:
                 model_params["verbosity"] = verbosity
+            # Merge with defaults for completion
+            model_params = self._merge_params("completion", model_params)
 
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -465,6 +572,7 @@ class LLMService:
                 prompt=prompt if prompt is not None else question,
                 model_name=model_name,
                 request=request,
+                prompt_name=prompt_name or self._default_prompt_names.get("completion"),
                 user_id=user_id,
                 request_id=request_id,
                 **model_params,
