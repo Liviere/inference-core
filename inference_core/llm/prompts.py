@@ -3,15 +3,31 @@ LLM Prompts Templates
 
 Contains predefined prompt templates for various tasks.
 Uses LangChain's PromptTemplate for consistent and reusable prompts.
+
+Also supports loading custom Jinja-style templates from
+`inference_core/custom_prompts/` so that built-in prompts stay immutable.
+
+Conventions for custom prompts:
+- Completion:  custom_prompts/completion/<name>.j2  (expects `{prompt}` variable)
+- Chat (system): custom_prompts/chat/<name>.j2 or <name>.system.j2 (system message text)
+    The chat template is composed as: system, MessagesPlaceholder('history'), human '{user_input}'.
 """
 
-from typing import cast
+import logging
+from pathlib import Path
+from typing import Optional, cast
 
 from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
     PromptTemplate,
 )
+
+logger = logging.getLogger(__name__)
+
+# Base directory containing custom prompts
+# custom_prompts lives at inference_core/custom_prompts (one level up from llm/)
+_CUSTOM_BASE = Path(__file__).resolve().parent.parent / "custom_prompts"
 
 
 class Prompts:
@@ -47,6 +63,85 @@ class ChatPrompts:
     )
 
 
+def _load_text_file(path: Path) -> Optional[str]:
+    try:
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Failed to read custom prompt file {path}: {e}")
+    return None
+
+
+def _find_custom_file(dir_name: str, prompt_name: str) -> Optional[Path]:
+    """Look for .j2/.jinja2 files for a given prompt in a subdir.
+
+    Searches in inference_core/custom_prompts/<dir_name>/<prompt_name>.(j2|jinja2)
+    and for chat also supports '<prompt_name>.system.(j2|jinja2)'.
+    """
+    base = _CUSTOM_BASE / dir_name
+    if not base.exists():
+        return None
+    candidates = [
+        base / f"{prompt_name}.j2",
+        base / f"{prompt_name}.jinja2",
+    ]
+    if dir_name == "chat":
+        candidates.extend(
+            [
+                base / f"{prompt_name}.system.j2",
+                base / f"{prompt_name}.system.jinja2",
+            ]
+        )
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def get_custom_completion_prompt(prompt_name: str) -> Optional[PromptTemplate]:
+    """Attempt to load a custom completion PromptTemplate from filesystem.
+
+    The template should reference `{prompt}`.
+    """
+    path = _find_custom_file("completion", prompt_name)
+    if not path:
+        return None
+    content = _load_text_file(path)
+    if not content:
+        return None
+    try:
+        # from_template will infer variables; we expect `{prompt}` to be present
+        return PromptTemplate.from_template(content)
+    except Exception as e:
+        logger.warning(f"Invalid custom completion template '{prompt_name}': {e}")
+        return None
+
+
+def get_custom_chat_prompt(prompt_name: str) -> Optional[ChatPromptTemplate]:
+    """Attempt to build a ChatPromptTemplate from a custom system prompt file.
+
+    The file content is used as the system message; we preserve the default
+    history placeholder and human input structure.
+    """
+    path = _find_custom_file("chat", prompt_name)
+    if not path:
+        return None
+    system_text = _load_text_file(path)
+    if not system_text:
+        return None
+    try:
+        return ChatPromptTemplate.from_messages(
+            [
+                ("system", system_text),
+                MessagesPlaceholder(variable_name="history"),
+                ("human", "{user_input}"),
+            ]
+        )
+    except Exception as e:
+        logger.warning(f"Invalid custom chat template '{prompt_name}': {e}")
+        return None
+
+
 def get_prompt_template(prompt_name: str) -> PromptTemplate:
     """
     Get a prompt template by name
@@ -60,7 +155,14 @@ def get_prompt_template(prompt_name: str) -> PromptTemplate:
     Raises:
         AttributeError: If prompt template doesn't exist
     """
-    return cast(PromptTemplate, getattr(Prompts, prompt_name.upper()))
+    try:
+        return cast(PromptTemplate, getattr(Prompts, prompt_name.upper()))
+    except AttributeError:
+        # Fallback to custom prompt loader
+        custom = get_custom_completion_prompt(prompt_name)
+        if custom is not None:
+            return custom
+        raise
 
 
 def get_chat_prompt_template(prompt_name: str) -> ChatPromptTemplate:
@@ -76,7 +178,14 @@ def get_chat_prompt_template(prompt_name: str) -> ChatPromptTemplate:
     Raises:
         AttributeError: If chat prompt template doesn't exist
     """
-    return cast(ChatPromptTemplate, getattr(ChatPrompts, prompt_name.upper()))
+    try:
+        return cast(ChatPromptTemplate, getattr(ChatPrompts, prompt_name.upper()))
+    except AttributeError:
+        # Fallback to custom chat prompt loader
+        custom = get_custom_chat_prompt(prompt_name)
+        if custom is not None:
+            return custom
+        raise
 
 
 # Available prompt templates

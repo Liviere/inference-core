@@ -16,7 +16,7 @@
 
 ---
 
-**Documentation Index** → [`docs/README.md`](docs/README.md) • **Configuration Reference** → [`docs/configuration.md`](docs/configuration.md) • **Docker Deploy Guide** → [`docker/README.md`](docker/README.md)
+**Documentation Index** → [`docs/README.md`](docs/README.md) • **Configuration Reference** → [`docs/configuration.md`](docs/configuration.md) • **Custom Prompts** → [`docs/custom-prompts.md`](docs/custom-prompts.md) • **Docker Deploy Guide** → [`docker/README.md`](docker/README.md)
 
 ---
 
@@ -253,7 +253,7 @@ class CustomLLMService(LLMService):
         "completion": {"temperature": 0.2},
       },
       default_prompt_names={
-        "chat": "chat",           # you can point to your own template in prompts.py
+        "chat": "chat",           # or point to a file in custom_prompts/chat/<name>.j2
         "completion": "completion",
       },
       default_chat_system_prompt=(

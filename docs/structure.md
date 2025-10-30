@@ -45,6 +45,9 @@ inference_core/
 │   │   ├── prompts.py
 │   │   ├── streaming.py
 │   │   └── batch/
+│   ├── custom_prompts/
+│   │   ├── completion/       # .j2/.jinja2 templates for completion (expects {prompt})
+│   │   └── chat/             # .j2/.jinja2 system prompts for chat (e.g., tutor.system.j2)
 │   ├── observability/
 │   │   ├── __init__.py
 │   │   ├── logging.py
