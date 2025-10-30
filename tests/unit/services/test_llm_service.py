@@ -54,15 +54,20 @@ class TestLLMService:
         get_settings.cache_clear()
 
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
-    def test_init(self, mock_llm_config, mock_get_model_factory):
+    @patch("inference_core.services.llm_service.get_llm_config")
+    def test_init(self, mock_get_llm_config, mock_get_model_factory):
         """Test LLMService initialization"""
         mock_factory = MagicMock()
         mock_get_model_factory.return_value = mock_factory
 
+        mock_config = MagicMock()
+        mock_get_llm_config.return_value = mock_config
+
         service = LLMService()
 
-        assert service.config == mock_llm_config  # Uses the mocked config directly
+        assert (
+            service.config == mock_config
+        )  # Uses the mocked config from get_llm_config
         assert service.model_factory == mock_factory
         assert service._usage_stats["requests_count"] == 0
         assert service._usage_stats["total_tokens"] == 0
@@ -71,18 +76,20 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.create_explanation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
     async def test_explain_success(
         self,
-        mock_llm_config,
+        mock_get_llm_config,
         mock_get_model_factory,
         mock_create_chain,
     ):
         """Test explain method successful execution"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -109,15 +116,17 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.create_explanation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
     async def test_explain_with_model_params(
-        self, mock_llm_config, mock_get_model_factory, mock_create_chain
+        self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
         """Test explain method with custom model parameters"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -147,16 +156,17 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.create_explanation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
     async def test_explain_chain_error(
-        self, mock_llm_config, mock_get_model_factory, mock_create_chain
+        self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
         """Test explain method when chain raises error"""
         # Mock configuration
         mock_config = MagicMock()
         mock_config.enable_monitoring = False
-        mock_llm_config = mock_config
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -178,15 +188,17 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.create_conversation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
     async def test_converse_success(
-        self, mock_llm_config, mock_get_model_factory, mock_create_chain
+        self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
         """Test converse method successful execution"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -214,15 +226,17 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.create_conversation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
     async def test_converse_with_model_params(
-        self, mock_llm_config, mock_get_model_factory, mock_create_chain
+        self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
         """Test converse method with custom model parameters"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -256,15 +270,17 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.create_conversation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
     async def test_converse_chain_error(
-        self, mock_llm_config, mock_get_model_factory, mock_create_chain
+        self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
         """Test converse method when chain raises error"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -284,12 +300,14 @@ class TestLLMService:
         assert service._usage_stats["errors_count"] == 1
 
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
-    def test_get_available_models(self, mock_llm_config, mock_get_model_factory):
+    @patch("inference_core.services.llm_service.get_llm_config")
+    def test_get_available_models(self, mock_get_llm_config, mock_get_model_factory):
         """Test get_available_models method"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -306,12 +324,14 @@ class TestLLMService:
         mock_factory.get_available_models.assert_called_once()
 
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
-    async def test_get_usage_stats(self, mock_llm_config, mock_get_model_factory):
+    @patch("inference_core.services.llm_service.get_llm_config")
+    async def test_get_usage_stats(self, mock_get_llm_config, mock_get_model_factory):
         """Test get_usage_stats method"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -336,14 +356,16 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.logger")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     def test_log_request_with_monitoring(
-        self, mock_llm_config, mock_get_model_factory, mock_logger
+        self, mock_get_llm_config, mock_get_model_factory, mock_logger
     ):
         """Test _log_request method with monitoring enabled"""
         # Mock configuration with monitoring enabled
-        mock_llm_config.configure_mock(enable_monitoring=True)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = True
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -358,13 +380,16 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.logger")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     def test_log_request_without_monitoring(
-        self, mock_llm_config, mock_get_model_factory, mock_logger
+        self, mock_get_llm_config, mock_get_model_factory, mock_logger
     ):
         """Test _log_request method with monitoring disabled"""
         # Mock configuration with monitoring disabled
-        mock_llm_config.enable_monitoring = False
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -377,12 +402,16 @@ class TestLLMService:
         mock_logger.info.assert_not_called()
 
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
-    def test_update_usage_stats_success(self, mock_llm_config, mock_get_model_factory):
+    @patch("inference_core.services.llm_service.get_llm_config")
+    def test_update_usage_stats_success(
+        self, mock_get_llm_config, mock_get_model_factory
+    ):
         """Test _update_usage_stats method for successful operation"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -399,12 +428,16 @@ class TestLLMService:
         assert service._usage_stats["last_request"] is not None
 
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
-    def test_update_usage_stats_failure(self, mock_llm_config, mock_get_model_factory):
+    @patch("inference_core.services.llm_service.get_llm_config")
+    def test_update_usage_stats_failure(
+        self, mock_get_llm_config, mock_get_model_factory
+    ):
         """Test _update_usage_stats method for failed operation"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -421,12 +454,16 @@ class TestLLMService:
 
     @patch("inference_core.services.llm_service.logger")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
-    def test_handle_error(self, mock_llm_config, mock_get_model_factory, mock_logger):
+    @patch("inference_core.services.llm_service.get_llm_config")
+    def test_handle_error(
+        self, mock_get_llm_config, mock_get_model_factory, mock_logger
+    ):
         """Test _handle_error method"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()
@@ -475,19 +512,21 @@ class TestLLMServiceIntegration:
     @patch("inference_core.services.llm_service.create_explanation_chain")
     @patch("inference_core.services.llm_service.create_conversation_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    @patch("inference_core.services.llm_service.llm_config")
+    @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
     async def test_multiple_operations_update_stats(
         self,
-        mock_llm_config,
+        mock_get_llm_config,
         mock_get_model_factory,
         mock_create_conv_chain,
         mock_create_exp_chain,
     ):
         """Test that multiple operations update usage statistics correctly"""
         # Mock configuration
-        mock_llm_config.configure_mock(enable_monitoring=False)
-        mock_llm_config.configure_mock(usage_logging=MagicMock(enabled=False))
+        mock_config = MagicMock()
+        mock_config.enable_monitoring = False
+        mock_config.usage_logging = MagicMock(enabled=False)
+        mock_get_llm_config.return_value = mock_config
 
         # Mock model factory
         mock_factory = MagicMock()

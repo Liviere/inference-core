@@ -304,7 +304,8 @@ class TestGetDbDependency:
             finally:
                 await db_gen.aclose()
 
-            mock_session.close.assert_called_once()
+            # Context manager should be exited (session closed inside)
+            mock_context.__aexit__.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_db_handles_exception(self):
@@ -334,5 +335,5 @@ class TestGetDbDependency:
             finally:
                 await db_gen.aclose()
 
-            # Verify session was still closed despite exception
-            mock_session.close.assert_called_once()
+            # Verify context manager exit was called despite exception
+            mock_context.__aexit__.assert_called_once()
