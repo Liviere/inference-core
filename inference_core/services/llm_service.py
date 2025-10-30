@@ -14,10 +14,7 @@ from fastapi import Request
 from pydantic import BaseModel
 
 from inference_core.llm.callbacks import LLMUsageCallbackHandler
-from inference_core.llm.chains import (
-    create_conversation_chain,
-    create_explanation_chain,
-)
+from inference_core.llm.chains import create_chat_chain, create_completion_chain
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.usage_logging import UsageLogger
@@ -56,7 +53,7 @@ class LLMService:
             "last_request": None,
         }
 
-    async def explain(
+    async def completion(
         self,
         question: str,
         model_name: Optional[str] = None,
@@ -73,24 +70,26 @@ class LLMService:
         request_id: Optional[str] = None,
     ) -> LLMResponse:
         """
-        Generate an explanation for a given question using the specified model.
+        Generate a completion-style answer for a given question using the specified model.
 
         Args:
-            question: The question to explain
+            question: The question to answer
             model_name: Optional model name to override default
 
         Returns:
-            Explanation string
+            Completion string
         """
-        self._log_request("explain", {"question": question, "model_name": model_name})
+        self._log_request(
+            "completion", {"question": question, "model_name": model_name}
+        )
 
         # Start usage logging session
-        resolved_model_name = model_name or self.config.get_task_model("explain")
+        resolved_model_name = model_name or self.config.get_task_model("completion")
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
         usage_session = self.usage_logger.start_session(
-            task_type="explain",
+            task_type="completion",
             request_mode="sync",
             model_name=resolved_model_name,
             provider=provider,
@@ -134,7 +133,8 @@ class LLMService:
                 }.items()
                 if v is not None
             }
-            chain = create_explanation_chain(model_name=model_name, **model_params)
+            # Use new canonical factory name
+            chain = create_completion_chain(model_name=model_name, **model_params)
             answer = await chain.generate_story(question=question, callbacks=callbacks)
 
             # Usage already accumulated by callback handler
@@ -160,7 +160,7 @@ class LLMService:
 
             return result
         except Exception as e:
-            self._handle_error("explain", e)
+            self._handle_error("completion", e)
 
             # Finalize usage logging with error
             await usage_session.finalize(
@@ -171,7 +171,7 @@ class LLMService:
             )
             raise e
 
-    async def converse(
+    async def chat(
         self,
         session_id: str,
         user_input: str,
@@ -188,10 +188,10 @@ class LLMService:
         user_id: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> LLMResponse:
-        """Engage in a multi-turn conversation within a session.
+        """Engage in a multi-turn chat within a session.
 
         Args:
-            session_id: Unique identifier for the conversation session
+            session_id: Unique identifier for the chat session
             user_input: The user's message
             model_name: Optional model name override
 
@@ -199,7 +199,7 @@ class LLMService:
             LLMResponse with assistant reply
         """
         self._log_request(
-            "conversation",
+            "chat",
             {
                 "session_id": session_id,
                 "user_input": user_input[:128],
@@ -208,12 +208,12 @@ class LLMService:
         )
 
         # Start usage logging session
-        resolved_model_name = model_name or self.config.get_task_model("conversation")
+        resolved_model_name = model_name or self.config.get_task_model("chat")
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
         usage_session = self.usage_logger.start_session(
-            task_type="conversation",
+            task_type="chat",
             request_mode="sync",
             model_name=resolved_model_name,
             provider=provider,
@@ -259,7 +259,8 @@ class LLMService:
                 if v is not None
             }
 
-            chain = create_conversation_chain(model_name=model_name, **model_params)
+            # Use new canonical factory name
+            chain = create_chat_chain(model_name=model_name, **model_params)
             reply = await chain.chat(
                 session_id=session_id, user_input=user_input, callbacks=callbacks
             )
@@ -285,7 +286,7 @@ class LLMService:
 
             return result
         except Exception as e:
-            self._handle_error("conversation", e)
+            self._handle_error("chat", e)
 
             # Finalize usage logging with error
             await usage_session.finalize(
@@ -296,7 +297,7 @@ class LLMService:
             )
             raise e
 
-    async def stream_conversation(
+    async def stream_chat(
         self,
         session_id: Optional[str],
         user_input: str,
@@ -314,10 +315,10 @@ class LLMService:
         user_id: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
-        """Stream a conversation response using Server-Sent Events.
+        """Stream a chat response using Server-Sent Events.
 
         Args:
-            session_id: Conversation session ID (auto-generated if None)
+            session_id: Chat session ID (auto-generated if None)
             user_input: User's message
             model_name: Optional model name override
             request: FastAPI request object for disconnect detection
@@ -326,10 +327,10 @@ class LLMService:
             AsyncGenerator yielding SSE-formatted bytes
         """
         # Import here to avoid circular imports
-        from inference_core.llm.streaming import stream_conversation
+        from inference_core.llm.streaming import stream_chat
 
         self._log_request(
-            "stream_conversation",
+            "stream_chat",
             {
                 "session_id": session_id,
                 "user_input": user_input[:128],
@@ -370,7 +371,7 @@ class LLMService:
                             f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
                         )
 
-            async for chunk in stream_conversation(
+            async for chunk in stream_chat(
                 session_id=session_id,
                 user_input=user_input,
                 model_name=model_name,
@@ -383,10 +384,10 @@ class LLMService:
 
             self._update_usage_stats()
         except Exception as e:
-            self._handle_error("stream_conversation", e)
+            self._handle_error("stream_chat", e)
             raise e
 
-    async def stream_explanation(
+    async def stream_completion(
         self,
         question: str,
         model_name: Optional[str] = None,
@@ -403,10 +404,10 @@ class LLMService:
         user_id: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
-        """Stream an explanation response using Server-Sent Events.
+        """Stream a completion response using Server-Sent Events.
 
         Args:
-            question: Question to explain
+            question: Question to answer
             model_name: Optional model name override
             request: FastAPI request object for disconnect detection
 
@@ -414,10 +415,10 @@ class LLMService:
             AsyncGenerator yielding SSE-formatted bytes
         """
         # Import here to avoid circular imports
-        from inference_core.llm.streaming import stream_explanation
+        from inference_core.llm.streaming import stream_completion
 
         self._log_request(
-            "stream_explanation",
+            "stream_completion",
             {
                 "question": question[:128],
                 "model_name": model_name,
@@ -457,7 +458,7 @@ class LLMService:
                             f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
                         )
 
-            async for chunk in stream_explanation(
+            async for chunk in stream_completion(
                 question=question,
                 model_name=model_name,
                 request=request,
@@ -469,7 +470,7 @@ class LLMService:
 
             self._update_usage_stats()
         except Exception as e:
-            self._handle_error("stream_explanation", e)
+            self._handle_error("stream_completion", e)
             raise e
 
     def get_available_models(self) -> Dict[str, bool]:
@@ -526,3 +527,6 @@ llm_service = LLMService()
 def get_llm_service() -> LLMService:
     """Get global LLM service instance"""
     return llm_service
+
+
+# No local aliases; canonical factories are imported from inference_core.llm.chains

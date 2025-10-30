@@ -527,7 +527,7 @@ class LLMConfig:
                 max_tokens=8192,
                 temperature=0.7,
             ),
-            " gpt-5-nano": ModelConfig(
+            "gpt-5-nano": ModelConfig(
                 name="gpt-5-nano",
                 provider=ModelProvider.OPENAI,
                 api_key=os.getenv("OPENAI_API_KEY"),
@@ -538,8 +538,8 @@ class LLMConfig:
 
         # Default model preferences for different tasks
         self.task_models = {
-            "explain": "gpt-5-mini",
-            "conversation": "gpt-5-mini",
+            "completion": "gpt-5-mini",
+            "chat": "gpt-5-mini",
         }
 
         # General settings

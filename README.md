@@ -25,7 +25,7 @@
 Inference Core is a modular backend scaffold for Large Language Model–driven platforms. It focuses on:
 
 - Fast provider integration (OpenAI / Gemini / Claude – easily extensible)
-- Clean chain layer (Completion → `explain`, Chat → `converse`)
+- Clean chain layer (Completion and Chat)
 - Multiple request modes: synchronous, streaming, provider‑native batch (cost reduction)
 - Deep observability: usage logging, cost estimation, metrics, tracing
 - Built‑in user system + JWT auth (access + rotated refresh in Redis)
@@ -42,7 +42,7 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **LLM Provider Abstraction** – Central config (YAML + ENV) with overridable model mapping & parameter policies.
 
-**Chains Layer** – Opinionated minimal surface for completion (explain) & chat (converse) tasks; easy to extend with new task types.
+**Chains Layer** – Opinionated minimal surface for completion & chat tasks; easy to extend with new task types.
 
 **Request Modes** – Same logical interface for:
 
@@ -97,16 +97,18 @@ app = create_application()  # Standard FastAPI instance
 Simple LLM call (HTTP):
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/llm/explain \
+curl -X POST http://localhost:8000/api/v1/llm/completion \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <ACCESS_TOKEN>' \
-  -d '{"prompt": "Explain vector embeddings simply"}'
+  -d '{"question": "Explain vector embeddings simply"}'
 ```
 
 Streaming (Server-Sent Tokens style endpoint may vary):
 
 ```bash
-curl -N http://localhost:8000/api/v1/llm/stream/explain?prompt=Hello
+curl -X POST -N http://localhost:8000/api/v1/llm/completion/stream \\
+  -H 'Content-Type: application/json' \\
+  -d '{"question": "Hello"}'
 ```
 
 Batch (conceptual – provider-native):
@@ -242,7 +244,7 @@ class CustomLLMService:
 
   async def generate_hint(self, phrase: str, cefr_level: str) -> str:
     prompt = f"Explain the phrase '{phrase}' in simple terms for CEFR level {cefr_level}."
-    response = await self._llm.explain(question=prompt)
+    response = await self._llm.completion(question=prompt)
     return response.result["answer"]
 
 # Singleton-style instance (simple pattern)
@@ -255,8 +257,8 @@ custom_llm_service = CustomLLMService()
 from inference_core.services.llm_service import LLMService
 
 llm = LLMService()
-answer = await llm.explain("What are embeddings?")
-chat_turn = await llm.converse(session_id="demo", user_input="Hello!")
+answer = await llm.completion("What are embeddings?")
+chat_turn = await llm.chat(session_id="demo", user_input="Hello!")
 ```
 
 ---

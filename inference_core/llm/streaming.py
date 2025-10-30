@@ -7,7 +7,7 @@ Server-Sent Events (SSE) and LangChain's streaming callback system.
 Key Components:
 - StreamingForwarderHandler: Callback handler that forwards tokens to an asyncio.Queue
 - SSE formatting helpers for event streams
-- Async generators for conversation and explanation streaming
+- Async generators for chat and completion streaming
 """
 
 import asyncio
@@ -111,7 +111,7 @@ def extract_usage_details(md: Any) -> Dict[str, int]:
     return usage
 
 
-async def stream_conversation(
+async def stream_chat(
     session_id: Optional[str],
     user_input: str,
     model_name: Optional[str] = None,
@@ -121,10 +121,10 @@ async def stream_conversation(
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
-    Stream a conversation response using Server-Sent Events.
+    Stream a chat response using Server-Sent Events.
 
     Args:
-        session_id: Conversation session ID (auto-generated if None)
+        session_id: Chat session ID (auto-generated if None)
         user_input: User's message
         model_name: Optional model override
         request: FastAPI request object for disconnect detection
@@ -137,7 +137,7 @@ async def stream_conversation(
     if not session_id:
         session_id = str(uuid.uuid4())
 
-    logger.info(f"Starting conversation stream for session {session_id}")
+    logger.info(f"Starting chat stream for session {session_id}")
 
     # Create bounded queue for token forwarding
     token_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -156,7 +156,7 @@ async def stream_conversation(
     try:
         # Get model factory and create streaming model
         factory = get_model_factory()
-        default_model_name = factory.config.get_task_model("conversation")
+        default_model_name = factory.config.get_task_model("chat")
 
         # Resolve model / provider for usage logging
         resolved_model_name = model_name or default_model_name
@@ -171,7 +171,7 @@ async def stream_conversation(
         if usage_logger and model_cfg:
             try:
                 usage_session = usage_logger.start_session(
-                    task_type="conversation",
+                    task_type="chat",
                     request_mode="streaming",
                     model_name=resolved_model_name,
                     provider=provider,
@@ -181,9 +181,7 @@ async def stream_conversation(
                     request_id=request_id,
                 )
             except Exception as e:  # pragma: no cover - defensive
-                logger.error(
-                    f"Failed to start usage session (conversation stream): {e}"
-                )
+                logger.error(f"Failed to start usage session (chat stream): {e}")
                 usage_session = None
 
         # Create model with streaming enabled and callback handler
@@ -212,7 +210,7 @@ async def stream_conversation(
         # Correct indentation: yield inside try block
         yield format_sse(start_data)
 
-        # Load conversation history (can be I/O heavy) AFTER start was sent
+        # Load chat history (can be I/O heavy) AFTER start was sent
         from inference_core.core.config import get_settings
 
         settings = get_settings()
@@ -234,7 +232,7 @@ async def stream_conversation(
         messages = []
 
         # Add system message from prompt template
-        prompt_template = get_chat_prompt_template("conversation")
+        prompt_template = get_chat_prompt_template("chat")
         if prompt_template and hasattr(prompt_template, "messages"):
             for msg_template in prompt_template.messages:
                 if hasattr(msg_template, "format"):
@@ -244,7 +242,7 @@ async def stream_conversation(
 
                         messages.append(SystemMessage(content=formatted.content))
 
-        # Add conversation history
+        # Add chat history
         history_messages = history.messages
         messages.extend(history_messages)
 
@@ -432,9 +430,7 @@ async def stream_conversation(
                                 partial=False,
                             )
                         except Exception as e:  # pragma: no cover
-                            logger.error(
-                                f"Usage finalize (conversation stream) failed: {e}"
-                            )
+                            logger.error(f"Usage finalize (chat stream) failed: {e}")
                         finally:
                             finalized = True
                     break
@@ -468,7 +464,7 @@ async def stream_conversation(
                 pass
 
     except Exception as e:
-        logger.error(f"Error in conversation streaming: {str(e)}")
+        logger.error(f"Error in chat streaming: {str(e)}")
         error_data = {"event": "error", "message": str(e)}
         yield format_sse(error_data)
 
@@ -484,10 +480,10 @@ async def stream_conversation(
                 )
             except Exception as e:  # pragma: no cover
                 logger.error(f"Usage finalize (disconnect) failed: {e}")
-        logger.info(f"Conversation stream ended for session {session_id}")
+        logger.info(f"Chat stream ended for session {session_id}")
 
 
-async def stream_explanation(
+async def stream_completion(
     question: str,
     model_name: Optional[str] = None,
     request: Optional[Request] = None,
@@ -496,10 +492,10 @@ async def stream_explanation(
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
-    Stream an explanation response using Server-Sent Events.
+    Stream a completion response using Server-Sent Events.
 
     Args:
-        question: Question to explain
+    question: Question to answer
         model_name: Optional model override
         request: FastAPI request object for disconnect detection
         **model_params: Additional model parameters
@@ -507,7 +503,7 @@ async def stream_explanation(
     Yields:
         SSE-formatted bytes for each streaming event
     """
-    logger.info(f"Starting explanation stream for question: {question[:100]}...")
+    logger.info(f"Starting completion stream for question: {question[:100]}...")
 
     # Create bounded queue for token forwarding
     token_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -526,7 +522,7 @@ async def stream_explanation(
     try:
         # Get model factory and create streaming model
         factory = get_model_factory()
-        default_model_name = factory.config.get_task_model("explain")
+        default_model_name = factory.config.get_task_model("completion")
 
         # Resolve model/provider
         resolved_model_name = model_name or default_model_name
@@ -540,7 +536,7 @@ async def stream_explanation(
         if usage_logger and model_cfg:
             try:
                 usage_session = usage_logger.start_session(
-                    task_type="explain",
+                    task_type="completion",
                     request_mode="streaming",
                     model_name=resolved_model_name,
                     provider=provider,
@@ -549,7 +545,7 @@ async def stream_explanation(
                     request_id=request_id,
                 )
             except Exception as e:  # pragma: no cover
-                logger.error(f"Failed to start usage session (explain stream): {e}")
+                logger.error(f"Failed to start usage session (completion stream): {e}")
                 usage_session = None
 
         # Create model with streaming enabled and callback handler
@@ -563,12 +559,12 @@ async def stream_explanation(
             error_data = {"event": "error", "message": "Failed to create model"}
             yield format_sse(error_data)
             return
-        # Build prompt for explanation (system + user)
-        prompt_template = get_prompt_template("explain")
+        # Build prompt for completion (system + user)
+        prompt_template = get_prompt_template("completion")
         input_data = {"question": question}
 
         # Emit start event
-        start_data = {"event": "start", "model": model_name or "explain"}
+        start_data = {"event": "start", "model": model_name or "completion"}
         yield format_sse(start_data)
 
         # Background task using events API with fallback
@@ -625,7 +621,7 @@ async def stream_explanation(
                                         )
                                     except asyncio.QueueFull:
                                         logger.warning(
-                                            "Queue full, dropping explain event token piece"
+                                            "Queue full, dropping completion event token piece"
                                         )
                             elif name in ("on_chat_model_end", "on_llm_end"):
                                 data = (
@@ -657,7 +653,7 @@ async def stream_explanation(
                                     pass
                     except Exception as ev_err:
                         logger.warning(
-                            f"astream_events(explain) failed, fallback to astream: {ev_err}"
+                            f"astream_events(completion) failed, fallback to astream: {ev_err}"
                         )
                 if not used_events_api:
                     async for chunk in model.astream(messages):
@@ -682,14 +678,14 @@ async def stream_explanation(
                                 )
                             except asyncio.QueueFull:
                                 logger.warning(
-                                    "Queue full, dropping explain fallback token piece"
+                                    "Queue full, dropping completion fallback token piece"
                                 )
                     try:
                         token_queue.put_nowait(StreamChunk(type="end"))
                     except asyncio.QueueFull:
                         pass
             except Exception as e:
-                logger.error(f"Error in explain model event streaming: {e}")
+                logger.error(f"Error in completion model event streaming: {e}")
                 try:
                     token_queue.put_nowait(StreamChunk(type="error", message=str(e)))
                     token_queue.put_nowait(StreamChunk(type="end"))
@@ -718,7 +714,7 @@ async def stream_explanation(
                             usage_session.accumulate(chunk.usage)
                         except Exception as e:  # pragma: no cover
                             logger.warning(
-                                f"Failed to accumulate explain streaming usage: {e}"
+                                f"Failed to accumulate completion streaming usage: {e}"
                             )
                     yield format_sse({"event": "usage", "usage": chunk.usage})
                 elif chunk.type == "error":
@@ -735,7 +731,9 @@ async def stream_explanation(
                                 partial=True,
                             )
                         except Exception as fe:  # pragma: no cover
-                            logger.error(f"Usage finalize (explain error) failed: {fe}")
+                            logger.error(
+                                f"Usage finalize (completion error) failed: {fe}"
+                            )
                         finally:
                             finalized = True
                     break
@@ -751,7 +749,7 @@ async def stream_explanation(
                             )
                         except Exception as fe:  # pragma: no cover
                             logger.error(
-                                f"Usage finalize (explain success) failed: {fe}"
+                                f"Usage finalize (completion success) failed: {fe}"
                             )
                         finally:
                             finalized = True
@@ -771,7 +769,7 @@ async def stream_explanation(
                 pass
 
     except Exception as e:
-        logger.error(f"Error in explanation streaming: {str(e)}")
+        logger.error(f"Error in completion streaming: {str(e)}")
         error_data = {"event": "error", "message": str(e)}
         yield format_sse(error_data)
 
@@ -785,5 +783,5 @@ async def stream_explanation(
                     partial=True,
                 )
             except Exception as e:  # pragma: no cover
-                logger.error(f"Usage finalize (explain disconnect) failed: {e}")
-        logger.info("Explanation stream ended")
+                logger.error(f"Usage finalize (completion disconnect) failed: {e}")
+    logger.info("Completion stream ended")

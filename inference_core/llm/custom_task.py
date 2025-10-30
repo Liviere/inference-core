@@ -12,8 +12,8 @@ The helpers:
 - Respect pricing config from llm_config.yaml
 
 Source references:
-  - LLMService explain/converse patterns (sync mode)
-  - streaming.py stream_conversation (streaming mode)
+  - LLMService completion/chat patterns (sync mode)
+  - streaming.py stream_chat (streaming mode)
   - UsageLogger and LLMUsageCallbackHandler (usage tracking)
 """
 
@@ -43,7 +43,7 @@ async def run_with_usage(
     """Execute a LangChain Runnable with automatic usage/cost logging.
 
     This helper wraps any LangChain Runnable (chain, model, etc.) with
-    usage tracking, similar to the built-in explain/conversation tasks.
+    usage tracking, similar to the built-in completion/chat tasks.
 
     Args:
         task_type: Task identifier (e.g., "extraction", "summarization")

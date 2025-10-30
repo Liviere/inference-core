@@ -224,60 +224,60 @@ class TestTaskService:
         assert stats["registered"] is None
 
     @patch("inference_core.services.task_service.celery_app")
-    def test_explain_async(self, mock_celery_app):
-        """Test explain_async submits explanation task"""
+    def test_completion_async(self, mock_celery_app):
+        """Test completion_async submits completion task"""
         mock_task = MagicMock()
-        mock_task.id = "explain-task-123"
+        mock_task.id = "completion-task-123"
         mock_celery_app.send_task.return_value = mock_task
 
         service = TaskService()
-        task_id = service.explain_async(query="What is AI?", model="gpt-3.5")
+        task_id = service.completion_async(query="What is AI?", model="gpt-3.5")
 
-        assert task_id == "explain-task-123"
+        assert task_id == "completion-task-123"
         mock_celery_app.send_task.assert_called_once_with(
-            "llm.explain", kwargs={"query": "What is AI?", "model": "gpt-3.5"}
+            "llm.completion", kwargs={"query": "What is AI?", "model": "gpt-3.5"}
         )
 
     @patch("inference_core.services.task_service.celery_app")
-    def test_explain_async_no_kwargs(self, mock_celery_app):
-        """Test explain_async without arguments"""
+    def test_completion_async_no_kwargs(self, mock_celery_app):
+        """Test completion_async without arguments"""
         mock_task = MagicMock()
-        mock_task.id = "explain-task-456"
+        mock_task.id = "completion-task-456"
         mock_celery_app.send_task.return_value = mock_task
 
         service = TaskService()
-        task_id = service.explain_async()
+        task_id = service.completion_async()
 
-        assert task_id == "explain-task-456"
-        mock_celery_app.send_task.assert_called_once_with("llm.explain", kwargs={})
+        assert task_id == "completion-task-456"
+        mock_celery_app.send_task.assert_called_once_with("llm.completion", kwargs={})
 
     @patch("inference_core.services.task_service.celery_app")
-    def test_conversation_async(self, mock_celery_app):
-        """Test conversation_async submits conversation task"""
+    def test_chat_async(self, mock_celery_app):
+        """Test chat_async submits chat task"""
         mock_task = MagicMock()
-        mock_task.id = "conversation-task-789"
+        mock_task.id = "chat-task-789"
         mock_celery_app.send_task.return_value = mock_task
 
         service = TaskService()
-        task_id = service.conversation_async(message="Hello", session_id="session-123")
+        task_id = service.chat_async(message="Hello", session_id="session-123")
 
-        assert task_id == "conversation-task-789"
+        assert task_id == "chat-task-789"
         mock_celery_app.send_task.assert_called_once_with(
-            "llm.conversation", kwargs={"message": "Hello", "session_id": "session-123"}
+            "llm.chat", kwargs={"message": "Hello", "session_id": "session-123"}
         )
 
     @patch("inference_core.services.task_service.celery_app")
-    def test_conversation_async_no_kwargs(self, mock_celery_app):
-        """Test conversation_async without arguments"""
+    def test_chat_async_no_kwargs(self, mock_celery_app):
+        """Test chat_async without arguments"""
         mock_task = MagicMock()
-        mock_task.id = "conversation-task-000"
+        mock_task.id = "chat-task-000"
         mock_celery_app.send_task.return_value = mock_task
 
         service = TaskService()
-        task_id = service.conversation_async()
+        task_id = service.chat_async()
 
-        assert task_id == "conversation-task-000"
-        mock_celery_app.send_task.assert_called_once_with("llm.conversation", kwargs={})
+        assert task_id == "chat-task-000"
+        mock_celery_app.send_task.assert_called_once_with("llm.chat", kwargs={})
 
 
 class TestGetTaskService:
@@ -365,7 +365,7 @@ class TestTaskServiceErrorHandling:
         service = TaskService()
 
         with pytest.raises(Exception, match="Broker connection failed"):
-            service.explain_async(query="test")
+            service.completion_async(query="test")
 
 
 class TestTaskServiceIntegration:
@@ -401,7 +401,7 @@ class TestTaskServiceIntegration:
         service = TaskService()
 
         # Submit task
-        task_id = service.explain_async(query="What is AI?")
+        task_id = service.completion_async(query="What is AI?")
         assert task_id == "lifecycle-task-123"
 
         # Check status

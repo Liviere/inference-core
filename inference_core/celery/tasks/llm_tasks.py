@@ -1,4 +1,4 @@
-"""Celery tasks for LLM operations (explain, conversation).
+"""Celery tasks for LLM operations (completion, chat).
 
 Refactored to use a shared persistent worker event loop via
 `run_in_worker_loop` helper to avoid per-task loop creation and the
@@ -13,11 +13,11 @@ from inference_core.celery.celery_main import celery_app
 from inference_core.services.llm_service import get_llm_service
 
 
-@celery_app.task(name="llm.explain")
-def task_llm_explain(**kwargs) -> Dict[str, Any]:
-    """Generate explanation using LLMService executed in the worker loop."""
+@celery_app.task(name="llm.completion")
+def task_llm_completion(**kwargs) -> Dict[str, Any]:
+    """Generate completion using LLMService executed in the worker loop."""
 
-    current = task_llm_explain.request  # type: ignore[attr-defined]
+    current = task_llm_completion.request  # type: ignore[attr-defined]
     task_id = getattr(current, "id", None) or ""
 
     async def _run() -> Dict[str, Any]:
@@ -26,7 +26,7 @@ def task_llm_explain(**kwargs) -> Dict[str, Any]:
         model_name: Optional[str] = kwargs.get("model_name")
         user_id: Optional[str] = kwargs.get("user_id")
 
-        result = await service.explain(
+        result = await service.completion(
             question=question,
             model_name=model_name,
             temperature=kwargs.get("temperature"),
@@ -43,11 +43,11 @@ def task_llm_explain(**kwargs) -> Dict[str, Any]:
     return run_in_worker_loop(_run())
 
 
-@celery_app.task(name="llm.conversation")
-def task_llm_conversation(**kwargs) -> Dict[str, Any]:
-    """Run a conversation turn using LLMService on the worker event loop."""
+@celery_app.task(name="llm.chat")
+def task_llm_chat(**kwargs) -> Dict[str, Any]:
+    """Run a chat turn using LLMService on the worker event loop."""
 
-    current = task_llm_conversation.request  # type: ignore[attr-defined]
+    current = task_llm_chat.request  # type: ignore[attr-defined]
     task_id = getattr(current, "id", None) or ""
 
     async def _run() -> Dict[str, Any]:
@@ -57,7 +57,7 @@ def task_llm_conversation(**kwargs) -> Dict[str, Any]:
         model_name: Optional[str] = kwargs.get("model_name")
         user_id: Optional[str] = kwargs.get("user_id")
 
-        result = await service.converse(
+        result = await service.chat(
             session_id=session_id,
             user_input=user_input,
             model_name=model_name,

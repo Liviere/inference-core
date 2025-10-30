@@ -17,43 +17,43 @@ class TestLLMEndpointAccessControlTasks:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_llm_explain_endpoint_public_mode(
+    async def test_llm_completion_endpoint_public_mode(
         self, public_access_async_client, monkeypatch
     ):
-        """/api/v1/llm/explain should work in public mode without auth."""
+        """/api/v1/llm/completion should work in public mode without auth."""
         # Patch task service factory to avoid real task submission
         with patch(
             "inference_core.services.task_service.get_task_service"
         ) as mock_task_service:
             mock_service = mock_task_service.return_value
             # mimic async submit returning a task id
-            mock_service.explain_submit_async.return_value = "test-task-id"
+            mock_service.completion_submit_async.return_value = "test-task-id"
 
             resp = await public_access_async_client.post(
-                "/api/v1/llm/explain", json={"question": "What is AI?"}
+                "/api/v1/llm/completion", json={"question": "What is AI?"}
             )
             assert resp.status_code == 200
             assert "task_id" in resp.json()
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_llm_explain_endpoint_user_mode_no_auth(
+    async def test_llm_completion_endpoint_user_mode_no_auth(
         self, user_access_async_client
     ):
-        """In user mode without authentication, explain endpoint should 401."""
+        """In user mode without authentication, completion endpoint should 401."""
         resp = await user_access_async_client.post(
-            "/api/v1/llm/explain", json={"question": "What is AI?"}
+            "/api/v1/llm/completion", json={"question": "What is AI?"}
         )
         assert resp.status_code == 403
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_llm_explain_endpoint_superuser_mode_no_auth(
+    async def test_llm_completion_endpoint_superuser_mode_no_auth(
         self, superuser_access_async_client
     ):
-        """In superuser mode without authentication, explain endpoint should 401."""
+        """In superuser mode without authentication, completion endpoint should 401."""
         resp = await superuser_access_async_client.post(
-            "/api/v1/llm/explain", json={"question": "What is AI?"}
+            "/api/v1/llm/completion", json={"question": "What is AI?"}
         )
         assert resp.status_code == 403
 
@@ -141,10 +141,10 @@ class TestStreamingEndpointsAccessControl:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_explain_stream_endpoint_public_mode(
+    async def test_completion_stream_endpoint_public_mode(
         self, public_access_async_client
     ):
-        """Streaming explain endpoint should work in public mode without auth."""
+        """Streaming completion endpoint should work in public mode without auth."""
         with patch(
             "inference_core.services.llm_service.get_llm_service"
         ) as mock_llm_service:
@@ -154,31 +154,29 @@ class TestStreamingEndpointsAccessControl:
                 # simple async generator producing one SSE chunk
                 yield "data: chunk\n\n"
 
-            mock_service.stream_explanation.return_value = mock_stream()
+            mock_service.stream_completion.return_value = mock_stream()
 
             resp = await public_access_async_client.post(
-                "/api/v1/llm/explain/stream", json={"question": "What is AI?"}
+                "/api/v1/llm/completion/stream", json={"question": "What is AI?"}
             )
             assert resp.status_code == 200
             assert resp.headers.get("content-type", "").startswith("text/event-stream")
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_explain_stream_endpoint_superuser_mode_no_auth(
+    async def test_completion_stream_endpoint_superuser_mode_no_auth(
         self, superuser_access_async_client
     ):
-        """Explain stream should 401 in superuser mode without auth."""
+        """Completion stream should 401 in superuser mode without auth."""
         resp = await superuser_access_async_client.post(
-            "/api/v1/llm/explain/stream", json={"question": "What is AI?"}
+            "/api/v1/llm/completion/stream", json={"question": "What is AI?"}
         )
         assert resp.status_code == 403
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_conversation_stream_endpoint_public_mode(
-        self, public_access_async_client
-    ):
-        """Streaming conversation endpoint should work in public mode without auth."""
+    async def test_chat_stream_endpoint_public_mode(self, public_access_async_client):
+        """Streaming chat endpoint should work in public mode without auth."""
         with patch(
             "inference_core.services.llm_service.get_llm_service"
         ) as mock_llm_service:
@@ -187,21 +185,21 @@ class TestStreamingEndpointsAccessControl:
             async def mock_stream():
                 yield "data: conv\n\n"
 
-            mock_service.stream_conversation.return_value = mock_stream()
+            mock_service.stream_chat.return_value = mock_stream()
 
             resp = await public_access_async_client.post(
-                "/api/v1/llm/conversation/stream", json={"user_input": "Hello"}
+                "/api/v1/llm/chat/stream", json={"user_input": "Hello"}
             )
             assert resp.status_code == 200
             assert resp.headers.get("content-type", "").startswith("text/event-stream")
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_conversation_stream_endpoint_superuser_mode_no_auth(
+    async def test_chat_stream_endpoint_superuser_mode_no_auth(
         self, superuser_access_async_client
     ):
-        """Conversation stream should 401 in superuser mode without auth."""
+        """Chat stream should 401 in superuser mode without auth."""
         resp = await superuser_access_async_client.post(
-            "/api/v1/llm/conversation/stream", json={"user_input": "Hello"}
+            "/api/v1/llm/chat/stream", json={"user_input": "Hello"}
         )
         assert resp.status_code == 403

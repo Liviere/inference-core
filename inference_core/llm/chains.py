@@ -68,18 +68,18 @@ class BaseChain:
 
 
 # Chain implementations for specific tasks
-## Explanation Chain
-class ExplanationChain(BaseChain):
-    """Chain for explaining concepts"""
+## Completion Chain
+class CompletionChain(BaseChain):
+    """Chain for single-turn completions"""
 
     def __init__(self, model_name: Optional[str] = None, **model_params):
         super().__init__(model_name, **model_params)
         self._build_chain()
 
     def _build_chain(self):
-        """Build the explanation chain"""
-        model = self._get_model("explain")
-        prompt = AVAILABLE_PROMPTS["explain"]
+        """Build the completion chain"""
+        model = self._get_model("completion")
+        prompt = AVAILABLE_PROMPTS["completion"]
 
         self._chain = prompt | model | StrOutputParser()
 
@@ -95,16 +95,16 @@ class ExplanationChain(BaseChain):
         )
 
 
-def create_explanation_chain(
+def create_completion_chain(
     model_name: Optional[str] = None, **model_params
-) -> ExplanationChain:
-    """Create an explenation chain instance"""
-    return ExplanationChain(model_name, **model_params)
+) -> CompletionChain:
+    """Create a completion chain instance"""
+    return CompletionChain(model_name, **model_params)
 
 
-## Conversation Chain
-class ConversationChain(BaseChain):
-    """Chain for multi-turn conversation using session-based history"""
+## Chat Chain
+class ChatChain(BaseChain):
+    """Chain for multi-turn chat using session-based history"""
 
     def __init__(self, model_name: Optional[str] = None, **model_params):
         super().__init__(model_name, **model_params)
@@ -127,9 +127,9 @@ class ConversationChain(BaseChain):
         return url
 
     def _build_chain(self):
-        """Build the conversation chain with message history support"""
-        model = self._get_model("conversation")
-        prompt = get_chat_prompt_template("conversation")
+        """Build the chat chain with message history support"""
+        model = self._get_model("chat")
+        prompt = get_chat_prompt_template("chat")
 
         # Base LCEL chain (keep model output as AIMessage for history updates)
         base_chain = prompt | model
@@ -148,7 +148,7 @@ class ConversationChain(BaseChain):
     async def chat(self, session_id: str, user_input: str, callbacks=None) -> str:
         """Send a user message within a session and get assistant reply"""
         if not self._chain:
-            raise NotImplementedError("Conversation chain not initialized")
+            raise NotImplementedError("Chat chain not initialized")
 
         try:
             config = {"configurable": {"session_id": session_id}}
@@ -162,12 +162,10 @@ class ConversationChain(BaseChain):
             )
             return getattr(result, "content", str(result))
         except Exception as e:
-            logger.error(f"Conversation execution failed: {str(e)}")
+            logger.error(f"Chat execution failed: {str(e)}")
             raise
 
 
-def create_conversation_chain(
-    model_name: Optional[str] = None, **model_params
-) -> ConversationChain:
-    """Create a conversation chain instance"""
-    return ConversationChain(model_name, **model_params)
+def create_chat_chain(model_name: Optional[str] = None, **model_params) -> ChatChain:
+    """Create a chat chain instance"""
+    return ChatChain(model_name, **model_params)

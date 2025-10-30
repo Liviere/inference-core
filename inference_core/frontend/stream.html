@@ -170,26 +170,26 @@
 				<div class="col">
 					<label for="mode">Mode</label>
 					<select id="mode">
-						<option value="conversation" selected>Conversation</option>
-						<option value="explain">Explain</option>
+						<option value="chat" selected>Chat</option>
+						<option value="completion">Completion</option>
 					</select>
 				</div>
 			<div class="row">
 				<div class="col">
-					<label for="session_id" class="conversation-only">Session ID (optional)</label>
-					<input type="text" id="session_id" class="conversation-only" placeholder="auto-generate if empty" />
+					<label for="session_id" class="chat-only">Session ID (optional)</label>
+					<input type="text" id="session_id" class="chat-only" placeholder="auto-generate if empty" />
 				</div>
 				<div class="col">
 					<label for="model_name">Model Override (optional)</label>
 					<input type="text" id="model_name" placeholder="e.g. gpt-4o-mini" />
 				</div>
 				<div class="col">
-					<label for="temperature" class="conversation-only">Temperature</label>
-					<input type="text" id="temperature" class="conversation-only" placeholder="e.g. 0.7" />
+					<label for="temperature" class="chat-only">Temperature</label>
+					<input type="text" id="temperature" class="chat-only" placeholder="e.g. 0.7" />
 				</div>
 				<div class="col">
-					<label for="max_tokens" class="conversation-only">Max Tokens</label>
-					<input type="text" id="max_tokens" class="conversation-only" placeholder="e.g. 256" />
+					<label for="max_tokens" class="chat-only">Max Tokens</label>
+					<input type="text" id="max_tokens" class="chat-only" placeholder="e.g. 256" />
 				</div>
 			</div>
 			<label for="prompt_input" id="prompt_label">User Message</label>
@@ -215,9 +215,9 @@
 		</div>
 
 		<footer>
-			Simple manual QA page for SSE endpoints. Conversation: POST
-			/api/v1/llm/conversation/stream, Explanation: POST
-			/api/v1/llm/explain/stream. Refresh to reset.
+			Simple manual QA page for SSE endpoints. Chat: POST
+			/api/v1/llm/chat/stream, Completion: POST
+			/api/v1/llm/completion/stream. Refresh to reset.
 		</footer>
 
 		<script>
@@ -238,15 +238,15 @@
 
 				function updateModeUI() {
 					const mode = modeSel.value;
-					const convoOnly = document.querySelectorAll('.conversation-only');
-					if (mode === 'conversation') {
+					const chatOnly = document.querySelectorAll('.chat-only');
+					if (mode === 'chat') {
 						promptLabel.textContent = 'User Message';
 						promptInput.placeholder = 'Ask something...';
-						convoOnly.forEach(el => (el.style.display = ''));
+						chatOnly.forEach(el => (el.style.display = ''));
 					} else {
-						promptLabel.textContent = 'Question';
-						promptInput.placeholder = 'Explain something...';
-						convoOnly.forEach(el => (el.style.display = 'none'));
+						promptLabel.textContent = 'Prompt';
+						promptInput.placeholder = 'Enter a completion prompt...';
+						chatOnly.forEach(el => (el.style.display = 'none'));
 					}
 				}
 				modeSel.addEventListener('change', updateModeUI);
@@ -308,14 +308,14 @@
 
 					let endpoint = '';
 					let body = {};
-					if (mode === 'conversation') {
-						endpoint = '/api/v1/llm/conversation/stream';
+					if (mode === 'chat') {
+						endpoint = '/api/v1/llm/chat/stream';
 						body = { user_input: text_value };
 						if (session_id) body.session_id = session_id; else body.session_id = undefined;
 						if (temperature) body.temperature = parseFloat(temperature);
 						if (max_tokens) body.max_tokens = parseInt(max_tokens, 10);
 					} else {
-						endpoint = '/api/v1/llm/explain/stream';
+						endpoint = '/api/v1/llm/completion/stream';
 						body = { question: text_value };
 					}
 					if (model_name) body.model_name = model_name;

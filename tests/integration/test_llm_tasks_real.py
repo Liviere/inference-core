@@ -14,10 +14,7 @@ from typing import List
 import pytest
 import yaml
 
-from inference_core.celery.tasks.llm_tasks import (
-    task_llm_conversation,
-    task_llm_explain,
-)
+from inference_core.celery.tasks.llm_tasks import task_llm_chat, task_llm_completion
 from inference_core.llm.config import llm_config
 
 
@@ -41,9 +38,9 @@ def _env_truthy(var_name: str, default: str = "0") -> bool:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("model_name", _load_testing_models("explain"))
-def test_llm_explain_real_uses_testing_models(model_name: str):
-    """Run explain task with real chain using a testing model from YAML."""
+@pytest.mark.parametrize("model_name", _load_testing_models("completion"))
+def test_llm_completion_real_uses_testing_models(model_name: str):
+    """Run completion task with real chain using a testing model from YAML."""
     # Opt-in gate for running real LLM tests
     if not _env_truthy("RUN_LLM_REAL_TESTS"):
         pytest.skip("Set RUN_LLM_REAL_TESTS=1 to run real-chain LLM tests.")
@@ -52,7 +49,7 @@ def test_llm_explain_real_uses_testing_models(model_name: str):
         pytest.skip(f"Testing model not available: {model_name}")
 
     question = "Explain unit testing briefly."
-    out = task_llm_explain(
+    out = task_llm_completion(
         question=question,
         model_name=model_name,
         max_tokens=64,
@@ -76,9 +73,9 @@ def test_llm_explain_real_uses_testing_models(model_name: str):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("model_name", _load_testing_models("conversation"))
-def test_llm_conversation_real_uses_testing_models(model_name: str):
-    """Run conversation task with real chain using a testing model from YAML."""
+@pytest.mark.parametrize("model_name", _load_testing_models("chat"))
+def test_llm_chat_real_uses_testing_models(model_name: str):
+    """Run chat task with real chain using a testing model from YAML."""
     if not _env_truthy("RUN_LLM_REAL_TESTS"):
         pytest.skip("Set RUN_LLM_REAL_TESTS=1 to run real-chain LLM tests.")
     if not llm_config.is_model_available(model_name):
@@ -86,7 +83,7 @@ def test_llm_conversation_real_uses_testing_models(model_name: str):
 
     session_id = "it-session-001"
     user_input = "Hello, who are you?"
-    out = task_llm_conversation(
+    out = task_llm_chat(
         session_id=session_id,
         user_input=user_input,
         model_name=model_name,

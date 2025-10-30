@@ -89,8 +89,8 @@ Environment variables grouped by functional domain.
 | `OPENAI_API_KEY`            | (none)    | OpenAI API key                         |
 | `GOOGLE_API_KEY`            | (none)    | Gemini key                             |
 | `ANTHROPIC_API_KEY`         | (none)    | Claude key                             |
-| `LLM_EXPLAIN_MODEL`         | (none)    | Override model for explain task        |
-| `LLM_CONVERSATION_MODEL`    | (none)    | Override model for conversation task   |
+| `LLM_COMPLETION_MODEL`      | (none)    | Override model for completion task     |
+| `LLM_CHAT_MODEL`            | (none)    | Override model for chat task           |
 | `LLM_ENABLE_CACHING`        | true      | Enable in-process fallback cache       |
 | `LLM_CACHE_TTL`             | 3600      | Cache TTL (seconds)                    |
 | `LLM_MAX_CONCURRENT`        | 5         | Max concurrent LLM requests (fallback) |

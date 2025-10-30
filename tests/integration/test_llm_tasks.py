@@ -4,25 +4,22 @@ from typing import Any, Dict, Optional
 import pytest
 
 # Import task functions under test
-from inference_core.celery.tasks.llm_tasks import (
-    task_llm_conversation,
-    task_llm_explain,
-)
+from inference_core.celery.tasks.llm_tasks import task_llm_chat, task_llm_completion
 
 
-class _FakeExplanationChain:
-    """Minimal fake for create_explanation_chain output."""
+class _FakeCompletionChain:
+    """Minimal fake for create_completion_chain output."""
 
     def __init__(self, model_name: Optional[str] = None, **model_params: Any):
-        self.model_name = model_name or "fake-explain-model"
+        self.model_name = model_name or "fake-completion-model"
         self.model_params = model_params
 
     async def generate_story(self, *, question: str, callbacks=None) -> str:
-        return f"[explained:{self.model_name}] {question}"
+        return f"[completion:{self.model_name}] {question}"
 
 
-class _FakeConversationChain:
-    """Minimal fake for create_conversation_chain output."""
+class _FakeChatChain:
+    """Minimal fake for create_chat_chain output."""
 
     def __init__(self, model_name: Optional[str] = None, **model_params: Any):
         self.model_name = model_name or "fake-conv-model"
@@ -33,21 +30,21 @@ class _FakeConversationChain:
 
 
 @pytest.mark.integration
-def test_task_llm_explain_basic(monkeypatch):
-    """Explain task returns structured payload with answer and metadata."""
+def test_task_llm_completion_basic(monkeypatch):
+    """Completion task returns structured payload with answer and metadata."""
 
     # Patch the chain factory inside llm_service module namespace
     import inference_core.services.llm_service as llm_svc
 
-    def _fake_create_explanation_chain(model_name: Optional[str] = None, **kwargs: Any):
-        return _FakeExplanationChain(model_name=model_name, **kwargs)
+    def _fake_create_completion_chain(model_name: Optional[str] = None, **kwargs: Any):
+        return _FakeCompletionChain(model_name=model_name, **kwargs)
 
     monkeypatch.setattr(
-        llm_svc, "create_explanation_chain", _fake_create_explanation_chain
+        llm_svc, "create_completion_chain", _fake_create_completion_chain
     )
 
     question = "Why is the sky blue?"
-    out: Dict[str, Any] = task_llm_explain(
+    out: Dict[str, Any] = task_llm_completion(
         question=question, model_name="demo-model", temperature=0.2
     )
 
@@ -56,7 +53,7 @@ def test_task_llm_explain_basic(monkeypatch):
     assert "result" in out and "metadata" in out
 
     # Result assertions
-    assert out["result"]["answer"] == f"[explained:demo-model] {question}"
+    assert out["result"]["answer"] == f"[completion:demo-model] {question}"
 
     # Metadata assertions
     meta = out["metadata"]
@@ -67,24 +64,20 @@ def test_task_llm_explain_basic(monkeypatch):
 
 
 @pytest.mark.integration
-def test_task_llm_conversation_with_session_id(monkeypatch):
-    """Conversation task echoes reply and preserves provided session_id."""
+def test_task_llm_chat_with_session_id(monkeypatch):
+    """Chat task echoes reply and preserves provided session_id."""
 
     import inference_core.services.llm_service as llm_svc
 
-    def _fake_create_conversation_chain(
-        model_name: Optional[str] = None, **kwargs: Any
-    ):
-        return _FakeConversationChain(model_name=model_name, **kwargs)
+    def _fake_create_chat_chain(model_name: Optional[str] = None, **kwargs: Any):
+        return _FakeChatChain(model_name=model_name, **kwargs)
 
-    monkeypatch.setattr(
-        llm_svc, "create_conversation_chain", _fake_create_conversation_chain
-    )
+    monkeypatch.setattr(llm_svc, "create_chat_chain", _fake_create_chat_chain)
 
     session_id = "test-session-123"
     user_input = "Hello there"
 
-    out: Dict[str, Any] = task_llm_conversation(
+    out: Dict[str, Any] = task_llm_chat(
         session_id=session_id,
         user_input=user_input,
         model_name="chat-model",
@@ -107,23 +100,19 @@ def test_task_llm_conversation_with_session_id(monkeypatch):
 
 
 @pytest.mark.integration
-def test_task_llm_conversation_autogenerates_session_id(monkeypatch):
-    """Conversation task fills session_id when not provided."""
+def test_task_llm_chat_autogenerates_session_id(monkeypatch):
+    """Chat task fills session_id when not provided."""
 
     import inference_core.services.llm_service as llm_svc
 
-    def _fake_create_conversation_chain(
-        model_name: Optional[str] = None, **kwargs: Any
-    ):
-        return _FakeConversationChain(model_name=model_name, **kwargs)
+    def _fake_create_chat_chain(model_name: Optional[str] = None, **kwargs: Any):
+        return _FakeChatChain(model_name=model_name, **kwargs)
 
-    monkeypatch.setattr(
-        llm_svc, "create_conversation_chain", _fake_create_conversation_chain
-    )
+    monkeypatch.setattr(llm_svc, "create_chat_chain", _fake_create_chat_chain)
 
     user_input = "How are you?"
 
-    out: Dict[str, Any] = task_llm_conversation(user_input=user_input)
+    out: Dict[str, Any] = task_llm_chat(user_input=user_input)
 
     # Ensure a session_id is present
     result = out["result"]

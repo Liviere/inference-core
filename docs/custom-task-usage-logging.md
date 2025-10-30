@@ -1,6 +1,6 @@
 # Custom LLM Tasks Usage/Cost Logging
 
-This guide explains how to use the generic usage/cost logging abstraction for custom LLM tasks beyond the built-in `explain` and `conversation` tasks.
+This guide explains how to use the generic usage/cost logging abstraction for custom LLM tasks beyond the built-in `completion` and `chat` tasks.
 
 ## Overview
 
@@ -233,7 +233,7 @@ class CustomMetricsCallback(BaseCallbackHandler):
     def on_llm_start(self, *args, **kwargs):
         # Track custom metrics
         metrics.increment("custom_task.started")
-    
+
     def on_llm_end(self, *args, **kwargs):
         metrics.increment("custom_task.completed")
 
@@ -262,9 +262,9 @@ models:
     pricing:
       currency: USD
       input:
-        cost_per_1k: 0.00015  # $0.15 per 1M tokens
+        cost_per_1k: 0.00015 # $0.15 per 1M tokens
       output:
-        cost_per_1k: 0.0006   # $0.60 per 1M tokens
+        cost_per_1k: 0.0006 # $0.60 per 1M tokens
 ```
 
 ### Usage Logging Configuration
@@ -274,10 +274,10 @@ Control usage logging via settings in `llm_config.yaml`:
 ```yaml
 settings:
   usage_logging:
-    enabled: true              # Enable/disable usage logging
-    base_currency: USD         # Base currency for costs
-    fail_open: true            # Continue on logging errors
-    default_rounding_decimals: 6  # Decimal places for cost rounding
+    enabled: true # Enable/disable usage logging
+    base_currency: USD # Base currency for costs
+    fail_open: true # Continue on logging errors
+    default_rounding_decimals: 6 # Decimal places for cost rounding
 ```
 
 Or via environment variables:

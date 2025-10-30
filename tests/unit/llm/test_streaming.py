@@ -11,8 +11,8 @@ import pytest
 from inference_core.llm.streaming import (
     StreamChunk,
     format_sse,
-    stream_conversation,
-    stream_explanation,
+    stream_chat,
+    stream_completion,
 )
 
 
@@ -94,10 +94,8 @@ class TestStreamingFunctions:
     @patch("inference_core.llm.streaming.get_model_factory")
     @patch("inference_core.llm.streaming.SQLChatMessageHistory")
     @patch("inference_core.llm.streaming.get_chat_prompt_template")
-    async def test_stream_conversation_basic(
-        self, mock_prompt, mock_history, mock_factory
-    ):
-        """Test basic conversation streaming"""
+    async def test_stream_chat_basic(self, mock_prompt, mock_history, mock_factory):
+        """Test basic chat streaming"""
         # Mock model factory
         mock_model = AsyncMock()
 
@@ -127,7 +125,7 @@ class TestStreamingFunctions:
 
         # Collect streaming output
         chunks = []
-        async for chunk in stream_conversation(
+        async for chunk in stream_chat(
             session_id="test-session", user_input="Hello", request=mock_request
         ):
             chunks.append(chunk)
@@ -145,9 +143,9 @@ class TestStreamingFunctions:
         assert len(token_chunks) > 0
 
     @patch("inference_core.llm.streaming.get_model_factory")
-    @patch("inference_core.llm.streaming.get_chat_prompt_template")
-    async def test_stream_explanation_basic(self, mock_prompt, mock_factory):
-        """Test basic explanation streaming"""
+    @patch("inference_core.llm.streaming.get_prompt_template")
+    async def test_stream_completion_basic(self, mock_prompt, mock_factory):
+        """Test basic completion streaming"""
         # Mock model factory
         mock_model = AsyncMock()
 
@@ -162,11 +160,9 @@ class TestStreamingFunctions:
         mock_factory_instance.create_model.return_value = mock_model
         mock_factory.return_value = mock_factory_instance
 
-        # Mock prompt template
+        # Mock prompt template for completion
         mock_prompt_instance = Mock()
-        mock_prompt_instance.format_messages.return_value = [
-            Mock(content="Explain: What is the meaning of life?")
-        ]
+        mock_prompt_instance.format.return_value = "What is the meaning of life?"
         mock_prompt.return_value = mock_prompt_instance
 
         # Mock request
@@ -175,7 +171,7 @@ class TestStreamingFunctions:
 
         # Collect streaming output
         chunks = []
-        async for chunk in stream_explanation(
+        async for chunk in stream_completion(
             question="What is the meaning of life?", request=mock_request
         ):
             chunks.append(chunk)
@@ -200,7 +196,7 @@ class TestStreamingFunctions:
             mock_factory.return_value = mock_factory_instance
 
             chunks = []
-            async for chunk in stream_conversation(
+            async for chunk in stream_chat(
                 session_id=None, user_input="Hello"  # No session ID provided
             ):
                 chunks.append(chunk)
@@ -219,9 +215,7 @@ class TestStreamingFunctions:
         mock_factory.return_value = mock_factory_instance
 
         chunks = []
-        async for chunk in stream_conversation(
-            session_id="test-session", user_input="Hello"
-        ):
+        async for chunk in stream_chat(session_id="test-session", user_input="Hello"):
             chunks.append(chunk)
 
         # Should get error event
@@ -257,7 +251,7 @@ class TestStreamingFunctions:
         ):
 
             chunks = []
-            async for chunk in stream_conversation(
+            async for chunk in stream_chat(
                 session_id="test-session", user_input="Hello", request=mock_request
             ):
                 chunks.append(chunk)

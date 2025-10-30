@@ -74,17 +74,17 @@ class TestLLMService:
         assert service._usage_stats["errors_count"] == 0
         assert service._usage_stats["last_request"] is None
 
-    @patch("inference_core.services.llm_service.create_explanation_chain")
+    @patch("inference_core.services.llm_service.create_completion_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
-    async def test_explain_success(
+    async def test_completion_success(
         self,
         mock_get_llm_config,
         mock_get_model_factory,
         mock_create_chain,
     ):
-        """Test explain method successful execution"""
+        """Test completion method successful execution"""
         # Mock configuration
         mock_config = MagicMock()
         mock_config.enable_monitoring = False
@@ -98,14 +98,14 @@ class TestLLMService:
         # Mock chain
         mock_chain = AsyncMock()
         mock_chain.model_name = "test-model"
-        mock_chain.generate_story.return_value = "Test explanation"
+        mock_chain.generate_story.return_value = "Test completion"
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
-        result = await service.explain("What is AI?")
+        result = await service.completion("What is AI?")
 
         assert isinstance(result, LLMResponse)
-        assert result.result["answer"] == "Test explanation"
+        assert result.result["answer"] == "Test completion"
         assert result.metadata.model_name == "test-model"
         assert service._usage_stats["requests_count"] == 1
 
@@ -114,14 +114,14 @@ class TestLLMService:
             question="What is AI?", callbacks=[]
         )
 
-    @patch("inference_core.services.llm_service.create_explanation_chain")
+    @patch("inference_core.services.llm_service.create_completion_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
-    async def test_explain_with_model_params(
+    async def test_completion_with_model_params(
         self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
-        """Test explain method with custom model parameters"""
+        """Test completion method with custom model parameters"""
         # Mock configuration
         mock_config = MagicMock()
         mock_config.enable_monitoring = False
@@ -135,11 +135,11 @@ class TestLLMService:
         # Mock chain
         mock_chain = AsyncMock()
         mock_chain.model_name = "custom-model"
-        mock_chain.generate_story.return_value = "Custom explanation"
+        mock_chain.generate_story.return_value = "Custom completion"
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
-        result = await service.explain(
+        result = await service.completion(
             "What is AI?",
             model_name="custom-model",
             temperature=0.7,
@@ -147,21 +147,21 @@ class TestLLMService:
             top_p=0.9,
         )
 
-        assert result.result["answer"] == "Custom explanation"
+        assert result.result["answer"] == "Custom completion"
         assert result.metadata.model_name == "custom-model"
 
         mock_create_chain.assert_called_once_with(
             model_name="custom-model", temperature=0.7, max_tokens=100, top_p=0.9
         )
 
-    @patch("inference_core.services.llm_service.create_explanation_chain")
+    @patch("inference_core.services.llm_service.create_completion_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
-    async def test_explain_chain_error(
+    async def test_completion_chain_error(
         self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
-        """Test explain method when chain raises error"""
+        """Test completion method when chain raises error"""
         # Mock configuration
         mock_config = MagicMock()
         mock_config.enable_monitoring = False
@@ -180,20 +180,20 @@ class TestLLMService:
         service = LLMService()
 
         with pytest.raises(Exception, match="Model error"):
-            await service.explain("What is AI?")
+            await service.completion("What is AI?")
 
         # Should increment error count
         assert service._usage_stats["errors_count"] == 1
         assert service._usage_stats["requests_count"] == 1
 
-    @patch("inference_core.services.llm_service.create_conversation_chain")
+    @patch("inference_core.services.llm_service.create_chat_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
-    async def test_converse_success(
+    async def test_chat_success(
         self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
-        """Test converse method successful execution"""
+        """Test chat method successful execution"""
         # Mock configuration
         mock_config = MagicMock()
         mock_config.enable_monitoring = False
@@ -206,17 +206,17 @@ class TestLLMService:
 
         # Mock chain
         mock_chain = AsyncMock()
-        mock_chain.model_name = "conversation-model"
+        mock_chain.model_name = "chat-model"
         mock_chain.chat.return_value = "Hello! How can I help you?"
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
-        result = await service.converse("session-123", "Hello")
+        result = await service.chat("session-123", "Hello")
 
         assert isinstance(result, LLMResponse)
         assert result.result["reply"] == "Hello! How can I help you?"
         assert result.result["session_id"] == "session-123"
-        assert result.metadata.model_name == "conversation-model"
+        assert result.metadata.model_name == "chat-model"
         assert service._usage_stats["requests_count"] == 1
 
         mock_create_chain.assert_called_once_with(model_name=None)
@@ -224,14 +224,14 @@ class TestLLMService:
             session_id="session-123", user_input="Hello", callbacks=[]
         )
 
-    @patch("inference_core.services.llm_service.create_conversation_chain")
+    @patch("inference_core.services.llm_service.create_chat_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
-    async def test_converse_with_model_params(
+    async def test_chat_with_model_params(
         self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
-        """Test converse method with custom model parameters"""
+        """Test chat method with custom model parameters"""
         # Mock configuration
         mock_config = MagicMock()
         mock_config.enable_monitoring = False
@@ -249,7 +249,7 @@ class TestLLMService:
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
-        result = await service.converse(
+        result = await service.chat(
             "session-456",
             "Tell me a story",
             model_name="custom-chat-model",
@@ -268,14 +268,14 @@ class TestLLMService:
             timeout=30,  # request_timeout maps to timeout
         )
 
-    @patch("inference_core.services.llm_service.create_conversation_chain")
+    @patch("inference_core.services.llm_service.create_chat_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
-    async def test_converse_chain_error(
+    async def test_chat_chain_error(
         self, mock_get_llm_config, mock_get_model_factory, mock_create_chain
     ):
-        """Test converse method when chain raises error"""
+        """Test chat method when chain raises error"""
         # Mock configuration
         mock_config = MagicMock()
         mock_config.enable_monitoring = False
@@ -288,13 +288,13 @@ class TestLLMService:
 
         # Mock chain that raises error
         mock_chain = AsyncMock()
-        mock_chain.chat.side_effect = Exception("Conversation error")
+        mock_chain.chat.side_effect = Exception("Chat error")
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
 
-        with pytest.raises(Exception, match="Conversation error"):
-            await service.converse("session-123", "Hello")
+        with pytest.raises(Exception, match="Chat error"):
+            await service.chat("session-123", "Hello")
 
         # Should increment error count
         assert service._usage_stats["errors_count"] == 1
@@ -509,8 +509,8 @@ class TestLLMServiceIntegration:
 
         get_settings.cache_clear()
 
-    @patch("inference_core.services.llm_service.create_explanation_chain")
-    @patch("inference_core.services.llm_service.create_conversation_chain")
+    @patch("inference_core.services.llm_service.create_completion_chain")
+    @patch("inference_core.services.llm_service.create_chat_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @patch("inference_core.services.llm_service.get_llm_config")
     @pytest.mark.asyncio
@@ -532,13 +532,13 @@ class TestLLMServiceIntegration:
         mock_factory = MagicMock()
         mock_get_model_factory.return_value = mock_factory
 
-        # Mock explanation chain
+        # Mock completion chain
         mock_exp_chain = AsyncMock()
         mock_exp_chain.model_name = "exp-model"
-        mock_exp_chain.generate_story.return_value = "Explanation"
+        mock_exp_chain.generate_story.return_value = "Completion"
         mock_create_exp_chain.return_value = mock_exp_chain
 
-        # Mock conversation chain
+        # Mock chat chain
         mock_conv_chain = AsyncMock()
         mock_conv_chain.model_name = "conv-model"
         mock_conv_chain.chat.return_value = "Chat response"
@@ -547,13 +547,13 @@ class TestLLMServiceIntegration:
         service = LLMService()
 
         # Perform multiple operations
-        await service.explain("What is AI?")
-        await service.converse("session-1", "Hello")
+        await service.completion("What is AI?")
+        await service.chat("session-1", "Hello")
 
         try:
             # Simulate a failure
             mock_exp_chain.generate_story.side_effect = Exception("Error")
-            await service.explain("Another question")
+            await service.completion("Another question")
         except Exception:
             pass  # Expected
 

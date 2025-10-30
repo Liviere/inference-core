@@ -243,7 +243,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 **LLM Configuration (llm_config.yaml):**
 
 - Providers: OpenAI, custom OpenAI-compatible endpoints
-- Models: Configurable per task (explain, conversation)
+- Models: Configurable per task (completion, chat)
 - Testing: Uses different models for testing vs production
 
 ### API Endpoints Summary
@@ -272,7 +272,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 
 **LLM (if configured):**
 
-- LLM endpoints for explain and conversation tasks via Celery
+- LLM endpoints for completion and chat tasks via Celery
 
 ## Critical Reminders
 

@@ -28,13 +28,13 @@ class TestLLMUsageLogging:
 
         get_settings.cache_clear()
 
-    @patch("inference_core.services.llm_service.create_explanation_chain")
+    @patch("inference_core.services.llm_service.create_completion_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     @pytest.mark.asyncio
-    async def test_usage_log_creation_on_explain_success(
+    async def test_usage_log_creation_on_completion_success(
         self, mock_get_model_factory, mock_create_chain, async_session_with_engine
     ):
-        """Test that explain operations create usage logs"""
+        """Test that completion operations create usage logs"""
         service = LLMService()
         # Ensure usage logging is enabled for this test
         service.config.usage_logging.enabled = True
@@ -55,19 +55,19 @@ class TestLLMUsageLogging:
         # Mock chain
         mock_chain = AsyncMock()
         mock_chain.model_name = "gpt-5-nano"
-        mock_chain.generate_story.return_value = "This is a test explanation."
+        mock_chain.generate_story.return_value = "This is a test completion."
         mock_create_chain.return_value = mock_chain
 
-        # Call the explain method with patched session
+        # Call the completion method with patched session
         with patch(
             "inference_core.llm.usage_logging.get_async_session",
             new=_get_async_session_override,
         ):
-            result = await service.explain(
+            result = await service.completion(
                 question="What is Python?", model_name="gpt-5-nano"
             )
 
-        assert result.result["answer"] == "This is a test explanation."
+        assert result.result["answer"] == "This is a test completion."
         assert result.metadata.model_name == "gpt-5-nano"
 
         # Check that a usage log was created
@@ -75,7 +75,7 @@ class TestLLMUsageLogging:
         query = (
             select(LLMRequestLog)
             .where(
-                LLMRequestLog.task_type == "explain",
+                LLMRequestLog.task_type == "completion",
                 LLMRequestLog.model_name == "gpt-5-nano",
             )
             .order_by(LLMRequestLog.created_at.desc())
@@ -86,7 +86,7 @@ class TestLLMUsageLogging:
         log_entry = result.scalar_one_or_none()
 
         assert log_entry is not None
-        assert log_entry.task_type == "explain"
+        assert log_entry.task_type == "completion"
         assert log_entry.request_mode == "sync"
         assert log_entry.model_name == "gpt-5-nano"
         assert isinstance(log_entry.provider, str) and len(log_entry.provider) > 0
@@ -98,8 +98,8 @@ class TestLLMUsageLogging:
         await session.execute(delete(LLMRequestLog))
         await session.commit()
 
-    # async def test_usage_log_creation_on_explain_error(self):
-    #     """Test that explain errors create usage logs with error information"""
+    # async def test_usage_log_creation_on_completion_error(self):
+    #     """Test that completion errors create usage logs with error information"""
     #     service = LLMService()
 
     #     # Patch model factory & chain at service layer (consistent with success test)
@@ -108,7 +108,7 @@ class TestLLMUsageLogging:
     #             "inference_core.services.llm_service.get_model_factory"
     #         ) as mock_get_model_factory,
     #         patch(
-    #             "inference_core.services.llm_service.create_explanation_chain"
+    #             "inference_core.services.llm_service.create_completion_chain"
     #         ) as mock_create_chain,
     #     ):
     #         mock_factory = MagicMock()
@@ -119,9 +119,9 @@ class TestLLMUsageLogging:
     #         mock_chain.generate_story.side_effect = ValueError("Test error")
     #         mock_create_chain.return_value = mock_chain
 
-    #         # Call the explain method and expect it to raise
+    #         # Call the completion method and expect it to raise
     #         with pytest.raises(ValueError, match="Test error"):
-    #             await service.explain(
+    #             await service.completion(
     #                 question="What is Python?", model_name="gpt-5-nano"
     #             )
 
@@ -132,7 +132,7 @@ class TestLLMUsageLogging:
     #         query = (
     #             select(LLMRequestLog)
     #             .where(
-    #                 LLMRequestLog.task_type == "explain", LLMRequestLog.success == False
+    #                 LLMRequestLog.task_type == "completion", LLMRequestLog.success == False
     #             )
     #             .order_by(LLMRequestLog.created_at.desc())
     #             .limit(1)
@@ -146,12 +146,12 @@ class TestLLMUsageLogging:
     #         assert log_entry.error_type == "ValueError"
     #         assert "Test error" in log_entry.error_message
 
-    @patch("inference_core.services.llm_service.create_conversation_chain")
+    @patch("inference_core.services.llm_service.create_chat_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
-    async def test_usage_log_creation_on_converse_success(
+    async def test_usage_log_creation_on_chat_success(
         self, mock_get_model_factory, mock_create_chain, async_session_with_engine
     ):
-        """Test that conversation operations create usage logs"""
+        """Test that chat operations create usage logs"""
         service = LLMService()
         service.config.usage_logging.enabled = True
         session, _ = async_session_with_engine
@@ -173,12 +173,12 @@ class TestLLMUsageLogging:
         mock_chain.chat.return_value = "Hello! How can I help you?"
         mock_create_chain.return_value = mock_chain
 
-        # Call the converse method using the patched session
+        # Call the chat method using the patched session
         with patch(
             "inference_core.llm.usage_logging.get_async_session",
             new=_get_async_session_override,
         ):
-            result = await service.converse(
+            result = await service.chat(
                 session_id=session_id, user_input="Hello", model_name="gpt-5-mini"
             )
 
@@ -189,7 +189,7 @@ class TestLLMUsageLogging:
         query = (
             select(LLMRequestLog)
             .where(
-                LLMRequestLog.task_type == "conversation",
+                LLMRequestLog.task_type == "chat",
                 LLMRequestLog.session_id == session_id,
             )
             .order_by(LLMRequestLog.created_at.desc())
@@ -200,7 +200,7 @@ class TestLLMUsageLogging:
         log_entry = result.scalar_one_or_none()
 
         assert log_entry is not None
-        assert log_entry.task_type == "conversation"
+        assert log_entry.task_type == "chat"
         assert log_entry.request_mode == "sync"
         assert log_entry.model_name == "gpt-5-mini"
         assert log_entry.session_id == session_id
@@ -269,7 +269,7 @@ class TestLLMUsageLogging:
 
             # Create some test log entries directly
             log1 = LLMRequestLog(
-                task_type="explain",
+                task_type="completion",
                 request_mode="sync",
                 model_name="gpt-5-nano",
                 provider="openai",
@@ -286,7 +286,7 @@ class TestLLMUsageLogging:
             )
 
             log2 = LLMRequestLog(
-                task_type="conversation",
+                task_type="chat",
                 request_mode="sync",
                 model_name="gpt-5-mini",
                 provider="openai",
@@ -320,8 +320,8 @@ class TestLLMUsageLogging:
             assert stats["cost"]["total"] >= 0.1775  # 0.0875 + 0.09
             assert "gpt-5-nano" in stats["cost"]["by_model"]
             assert "gpt-5-mini" in stats["cost"]["by_model"]
-            assert "explain" in stats["cost"]["by_task_type"]
-            assert "conversation" in stats["cost"]["by_task_type"]
+            assert "completion" in stats["cost"]["by_task_type"]
+            assert "chat" in stats["cost"]["by_task_type"]
 
         finally:
             await session.execute(delete(LLMRequestLog))
@@ -364,7 +364,7 @@ class TestLLMUsageLogging:
         assert stats["cost"]["currency"] == "USD"
         assert stats["cost"]["total"] >= 0.0
 
-    @patch("inference_core.services.llm_service.create_explanation_chain")
+    @patch("inference_core.services.llm_service.create_completion_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     async def test_usage_logging_disabled(
         self, mock_get_model_factory, mock_create_chain, async_session_with_engine
@@ -388,7 +388,7 @@ class TestLLMUsageLogging:
 
         try:
             # Call should still work when logging is disabled
-            result = await service.explain(
+            result = await service.completion(
                 question="Test question", model_name="gpt-5-nano"
             )
             assert result.result["answer"] == "Test response"
@@ -399,7 +399,7 @@ class TestLLMUsageLogging:
             await session.execute(delete(LLMRequestLog))
             await session.commit()
 
-    @patch("inference_core.services.llm_service.create_explanation_chain")
+    @patch("inference_core.services.llm_service.create_completion_chain")
     @patch("inference_core.services.llm_service.get_model_factory")
     async def test_usage_logging_with_pricing_config(
         self, mock_get_model_factory, mock_create_chain, async_session_with_engine
@@ -430,22 +430,22 @@ class TestLLMUsageLogging:
         # Mock the chain with usage metadata
         mock_chain = AsyncMock()
         mock_chain.model_name = "gpt-5-mini"  # This model has pricing config
-        mock_chain.generate_story.return_value = "Test explanation"
+        mock_chain.generate_story.return_value = "Test completion"
         mock_create_chain.return_value = mock_chain
 
-        # Call explain
+        # Call completion
         with patch(
             "inference_core.llm.usage_logging.get_async_session",
             new=_get_async_session_override,
         ):
-            await service.explain(question="What is AI?", model_name="gpt-5-mini")
+            await service.completion(question="What is AI?", model_name="gpt-5-mini")
 
         # Check that the log entry was created with pricing information
 
         query = (
             select(LLMRequestLog)
             .where(
-                LLMRequestLog.task_type == "explain",
+                LLMRequestLog.task_type == "completion",
                 LLMRequestLog.model_name == "gpt-5-mini",
             )
             .order_by(LLMRequestLog.created_at.desc())

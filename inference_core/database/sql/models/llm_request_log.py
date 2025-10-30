@@ -23,7 +23,7 @@ class LLMRequestLog(Base, TimestampMixin):
         created_at: Request timestamp
         user_id: Optional user association (nullable FK)
         session_id: Optional session identifier
-        task_type: Type of task (explain, conversation, batch, etc.)
+        task_type: Type of task (completion, chat, batch, etc.)
         request_mode: Request mode (sync, async, streaming)
         model_name: LLM model used
         provider: LLM provider (openai, claude, etc.)
@@ -88,7 +88,7 @@ class LLMRequestLog(Base, TimestampMixin):
         String(50),
         nullable=False,
         index=True,
-        doc="Task type (explain, conversation, etc.)",
+        doc="Task type (completion, chat, etc.)",
     )
     request_mode: Mapped[str] = mapped_column(
         String(20), nullable=False, doc="Request mode (sync, async, streaming)"

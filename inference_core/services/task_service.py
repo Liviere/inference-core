@@ -120,23 +120,23 @@ class TaskService:
         """Async wrapper for get_worker_stats to avoid blocking the event loop."""
         return await run_in_threadpool(self.get_worker_stats)
 
-    def explain_async(self, **kwargs) -> str:
-        """Submit explenation task"""
-        task = self.celery_app.send_task("llm.explain", kwargs=kwargs)
+    def completion_async(self, **kwargs) -> str:
+        """Submit completion task"""
+        task = self.celery_app.send_task("llm.completion", kwargs=kwargs)
         return task.id
 
-    def conversation_async(self, **kwargs) -> str:
-        """Submit conversation task (one turn)"""
-        task = self.celery_app.send_task("llm.conversation", kwargs=kwargs)
+    def chat_async(self, **kwargs) -> str:
+        """Submit chat task (one turn)"""
+        task = self.celery_app.send_task("llm.chat", kwargs=kwargs)
         return task.id
 
-    async def explain_submit_async(self, **kwargs) -> str:
-        """Async wrapper for explain_async to avoid blocking the event loop."""
-        return await run_in_threadpool(self.explain_async, **kwargs)
+    async def completion_submit_async(self, **kwargs) -> str:
+        """Async wrapper for completion_async to avoid blocking the event loop."""
+        return await run_in_threadpool(self.completion_async, **kwargs)
 
-    async def conversation_submit_async(self, **kwargs) -> str:
-        """Async wrapper for conversation_async to avoid blocking the event loop."""
-        return await run_in_threadpool(self.conversation_async, **kwargs)
+    async def chat_submit_async(self, **kwargs) -> str:
+        """Async wrapper for chat_async to avoid blocking the event loop."""
+        return await run_in_threadpool(self.chat_async, **kwargs)
 
 
 # Global task service instance

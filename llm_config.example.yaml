@@ -339,7 +339,7 @@ models:
 
 # Task Model Assignments
 tasks:
-  explain:
+  completion:
     primary: 'gpt-5-mini'
     fallback:
       [
@@ -350,7 +350,7 @@ tasks:
     testing: ['gpt-5-nano']
     description: 'Models suitable for explanations'
 
-  conversation:
+  chat:
     primary: 'gpt-5-mini'
     fallback:
       [
@@ -389,8 +389,8 @@ settings:
 
   # Environment variable overrides
   env_overrides:
-    explain: 'LLM_EXPLAIN_MODEL'
-    conversation: 'LLM_CONVERSATION_MODEL'
+    completion: 'LLM_COMPLETION_MODEL'
+    chat: 'LLM_CHAT_MODEL'
 
 # Parameter policy overrides (optional)
 # Allows introducing NEW parameters without code changes.

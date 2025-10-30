@@ -72,18 +72,18 @@ class BaseLLMRequest(BaseModel):
     )
 
 
-class ExplainRequest(BaseLLMRequest):
-    """Request model for explanation endpoint"""
+class CompletionRequest(BaseLLMRequest):
+    """Request model for completion endpoint"""
 
-    question: str = Field(..., description="The question to explain")
+    question: str = Field(..., description="The question to answer")
 
 
-class ConversationRequest(BaseLLMRequest):
-    """Request model for conversation endpoint"""
+class ChatRequest(BaseLLMRequest):
+    """Request model for chat endpoint"""
 
     session_id: Optional[str] = Field(
         default=None,
-        description="Conversation session identifier. If omitted, a new session will be created.",
+        description="Chat session identifier. If omitted, a new session will be created.",
     )
     user_input: str = Field(..., description="User message to the assistant")
 
@@ -113,17 +113,17 @@ def get_llm_service_dependency():
 ###################################
 
 
-@router.post("/explain", response_model=TaskResponse)
-async def explain(
-    request: ExplainRequest,
+@router.post("/completion", response_model=TaskResponse)
+async def completion(
+    request: CompletionRequest,
     task_service: TaskService = Depends(get_task_service),
     current_user: Optional[dict] = Depends(get_optional_current_user),
 ) -> TaskResponse:
     """
-    Generate an explanation for a given question using the specified model.
+    Generate a completion-style answer for a given question using the specified model.
 
     Args:
-        request: ExplainRequest containing the question and optional parameters
+    request: CompletionRequest containing the question and optional parameters
         task_service: TaskService instance for managing async tasks
 
     Returns:
@@ -138,28 +138,28 @@ async def explain(
                 effective_user_id = str(request.as_user_id)
         if effective_user_id:
             payload["user_id"] = effective_user_id
-        task_id = await task_service.explain_submit_async(**payload)
+        task_id = await task_service.completion_submit_async(**payload)
 
         return TaskResponse(
             task_id=task_id,
             status="PENDING",
-            message="Explanation task submitted successfully",
+            message="Completion task submitted successfully",
         )
 
     except Exception as e:
-        logger.error(f"Explenation task submission failed: {str(e)}")
+        logger.error(f"Completion task submission failed: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"Explenation task submission failed: {str(e)}"
+            status_code=500, detail=f"Completion task submission failed: {str(e)}"
         )
 
 
-@router.post("/conversation", response_model=TaskResponse)
-async def conversation(
-    request: ConversationRequest,
+@router.post("/chat", response_model=TaskResponse)
+async def chat(
+    request: ChatRequest,
     task_service: TaskService = Depends(get_task_service),
     current_user: Optional[dict] = Depends(get_optional_current_user),
 ) -> TaskResponse:
-    """Submit a conversation turn as a Celery task.
+    """Submit a chat turn as a Celery task.
 
     If session_id is not provided, a new session will be created on the worker.
     """
@@ -171,32 +171,32 @@ async def conversation(
             if request.as_user_id and current_user.get("is_superuser"):
                 effective_user_id = str(request.as_user_id)
             kwargs["user_id"] = effective_user_id
-        task_id = await task_service.conversation_submit_async(**kwargs)
+        task_id = await task_service.chat_submit_async(**kwargs)
 
         return TaskResponse(
             task_id=task_id,
             status="PENDING",
-            message="Conversation task submitted successfully",
+            message="Chat task submitted successfully",
         )
     except Exception as e:
-        logger.error(f"Conversation task submission failed: {str(e)}")
+        logger.error(f"Chat task submission failed: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Conversation task submission failed: {str(e)}",
+            detail=f"Chat task submission failed: {str(e)}",
         )
 
 
-@router.post("/conversation/stream")
-async def conversation_stream(
-    request: ConversationRequest,
+@router.post("/chat/stream")
+async def chat_stream(
+    request: ChatRequest,
     http_request: Request,
     llm_service=Depends(get_llm_service_dependency),
     current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
     """
-    Stream a conversation turn using Server-Sent Events.
+    Stream a chat turn using Server-Sent Events.
 
-    Provides real-time token-by-token streaming for conversation responses.
+    Provides real-time token-by-token streaming for chat responses.
     If session_id is not provided, a new session will be created.
 
     Returns:
@@ -224,7 +224,7 @@ async def conversation_stream(
 
         request_id = http_request.headers.get("X-Request-ID") or str(uuid4())
 
-        async_generator = llm_service.stream_conversation(
+        async_generator = llm_service.stream_chat(
             session_id=request.session_id,
             user_input=request.user_input,
             model_name=request.model_name,
@@ -245,24 +245,24 @@ async def conversation_stream(
             },
         )
     except Exception as e:
-        logger.error(f"Conversation streaming failed: {str(e)}")
+        logger.error(f"Chat streaming failed: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Conversation streaming failed: {str(e)}",
+            detail=f"Chat streaming failed: {str(e)}",
         )
 
 
-@router.post("/explain/stream")
-async def explain_stream(
-    request: ExplainRequest,
+@router.post("/completion/stream")
+async def completion_stream(
+    request: CompletionRequest,
     http_request: Request,
     llm_service=Depends(get_llm_service_dependency),
     current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
     """
-    Stream an explanation using Server-Sent Events.
+    Stream a completion using Server-Sent Events.
 
-    Provides real-time token-by-token streaming for explanation responses.
+    Provides real-time token-by-token streaming for completion responses.
 
     Returns:
         StreamingResponse with Server-Sent Events (text/event-stream)
@@ -289,7 +289,7 @@ async def explain_stream(
 
         request_id = http_request.headers.get("X-Request-ID") or str(uuid4())
 
-        async_generator = llm_service.stream_explanation(
+        async_generator = llm_service.stream_completion(
             question=request.question,
             model_name=request.model_name,
             request=http_request,
@@ -309,10 +309,10 @@ async def explain_stream(
             },
         )
     except Exception as e:
-        logger.error(f"Explanation streaming failed: {str(e)}")
+        logger.error(f"Completion streaming failed: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Explanation streaming failed: {str(e)}",
+            detail=f"Completion streaming failed: {str(e)}",
         )
 
 

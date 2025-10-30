@@ -30,10 +30,10 @@ class TestStreamingEndpoints:
     @patch("inference_core.llm.streaming.get_model_factory")
     @patch("inference_core.llm.streaming.SQLChatMessageHistory")
     @patch("inference_core.llm.streaming.get_chat_prompt_template")
-    async def test_conversation_stream_endpoint(
+    async def test_chat_stream_endpoint(
         self, mock_prompt, mock_history, mock_factory, public_access_async_client
     ):
-        """Test conversation streaming endpoint"""
+        """Test chat streaming endpoint"""
         # Mock model factory
         mock_model = AsyncMock()
 
@@ -64,7 +64,7 @@ class TestStreamingEndpoints:
         }
 
         async with public_access_async_client.stream(
-            "POST", "/api/v1/llm/conversation/stream", json=request_data
+            "POST", "/api/v1/llm/chat/stream", json=request_data
         ) as response:
             assert response.status_code == 200
             assert (
@@ -108,11 +108,11 @@ class TestStreamingEndpoints:
         assert len(token_events) > 0
 
     @patch("inference_core.llm.streaming.get_model_factory")
-    @patch("inference_core.llm.streaming.get_chat_prompt_template")
-    async def test_explain_stream_endpoint(
+    @patch("inference_core.llm.streaming.get_prompt_template")
+    async def test_completion_stream_endpoint(
         self, mock_prompt, mock_factory, public_access_async_client
     ):
-        """Test explanation streaming endpoint"""
+        """Test completion streaming endpoint"""
         # Mock model factory
         mock_model = AsyncMock()
 
@@ -127,18 +127,16 @@ class TestStreamingEndpoints:
         mock_factory_instance.create_model.return_value = mock_model
         mock_factory.return_value = mock_factory_instance
 
-        # Mock prompt template
+        # Mock prompt template (completion uses generic get_prompt_template with .format())
         mock_prompt_instance = Mock()
-        mock_prompt_instance.format_messages.return_value = [
-            Mock(content="Explain: What is the meaning of life?")
-        ]
+        mock_prompt_instance.format.return_value = "What is the meaning of life?"
         mock_prompt.return_value = mock_prompt_instance
 
         # Make request to streaming endpoint
         request_data = {"question": "What is the meaning of life?"}
 
         async with public_access_async_client.stream(
-            "POST", "/api/v1/llm/explain/stream", json=request_data
+            "POST", "/api/v1/llm/completion/stream", json=request_data
         ) as response:
             assert response.status_code == 200
             assert (
@@ -180,41 +178,39 @@ class TestStreamingEndpoints:
         token_events = [e for e in events if e.get("event") == "token"]
         assert len(token_events) > 0
 
-    async def test_conversation_stream_missing_user_input(
-        self, public_access_async_client
-    ):
-        """Test conversation streaming with missing user input"""
+    async def test_chat_stream_missing_user_input(self, public_access_async_client):
+        """Test chat streaming with missing user input"""
         request_data = {
             "session_id": "test-session"
             # Missing user_input
         }
 
         response = await public_access_async_client.post(
-            "/api/v1/llm/conversation/stream", json=request_data
+            "/api/v1/llm/chat/stream", json=request_data
         )
 
         # Should return validation error
         assert response.status_code == 422
 
-    async def test_explain_stream_missing_question(self, public_access_async_client):
-        """Test explanation streaming with missing question"""
+    async def test_completion_stream_missing_question(self, public_access_async_client):
+        """Test completion streaming with missing question"""
         request_data = {
             "model_name": "gpt-4o-mini"
             # Missing question
         }
 
         response = await public_access_async_client.post(
-            "/api/v1/llm/explain/stream", json=request_data
+            "/api/v1/llm/completion/stream", json=request_data
         )
 
         # Should return validation error
         assert response.status_code == 422
 
     @patch("inference_core.llm.streaming.get_model_factory")
-    async def test_conversation_stream_model_failure(
+    async def test_chat_stream_model_failure(
         self, mock_factory, public_access_async_client
     ):
-        """Test conversation streaming when model creation fails"""
+        """Test chat streaming when model creation fails"""
         # Mock factory that returns None (failed model creation)
         mock_factory_instance = Mock()
         mock_factory_instance.create_model.return_value = None
@@ -223,7 +219,7 @@ class TestStreamingEndpoints:
         request_data = {"user_input": "Hello", "session_id": "test-session"}
 
         async with public_access_async_client.stream(
-            "POST", "/api/v1/llm/conversation/stream", json=request_data
+            "POST", "/api/v1/llm/chat/stream", json=request_data
         ) as response:
             assert response.status_code == 200  # Stream starts successfully
 
@@ -246,10 +242,8 @@ class TestStreamingEndpoints:
         except json.JSONDecodeError:
             pytest.fail("Error response was not valid JSON")
 
-    async def test_conversation_stream_with_model_params(
-        self, public_access_async_client
-    ):
-        """Test conversation streaming with additional model parameters"""
+    async def test_chat_stream_with_model_params(self, public_access_async_client):
+        """Test chat streaming with additional model parameters"""
         with (
             patch("inference_core.llm.streaming.get_model_factory") as mock_factory,
             patch("inference_core.llm.streaming.SQLChatMessageHistory") as mock_history,
@@ -288,7 +282,7 @@ class TestStreamingEndpoints:
             }
 
             async with public_access_async_client.stream(
-                "POST", "/api/v1/llm/conversation/stream", json=request_data
+                "POST", "/api/v1/llm/chat/stream", json=request_data
             ) as response:
                 assert response.status_code == 200
 
@@ -313,7 +307,7 @@ class TestStreamingEndpoints:
             request_data = {"user_input": "Hello", "session_id": "test-session"}
 
             response = await public_access_async_client.post(
-                "/api/v1/llm/conversation/stream", json=request_data
+                "/api/v1/llm/chat/stream", json=request_data
             )
 
             # Check streaming headers
@@ -328,7 +322,7 @@ class TestStreamingEndpoints:
     async def test_stream_with_auto_generated_session_id(
         self, public_access_async_client
     ):
-        """Test conversation streaming with auto-generated session ID"""
+        """Test chat streaming with auto-generated session ID"""
         with (
             patch("inference_core.llm.streaming.get_model_factory") as mock_factory,
             patch("inference_core.llm.streaming.SQLChatMessageHistory") as mock_history,
@@ -364,7 +358,7 @@ class TestStreamingEndpoints:
             }
 
             async with public_access_async_client.stream(
-                "POST", "/api/v1/llm/conversation/stream", json=request_data
+                "POST", "/api/v1/llm/chat/stream", json=request_data
             ) as response:
                 assert response.status_code == 200
 
@@ -388,7 +382,7 @@ class TestStreamingEndpoints:
 class TestStreamingAuthentication:
     """Test streaming endpoints with authentication"""
 
-    async def test_conversation_stream_requires_auth(self, public_access_async_client):
+    async def test_chat_stream_requires_auth(self, public_access_async_client):
         """Test that streaming endpoints require authentication"""
         # This test assumes auth is enabled - may need to be adjusted
         # based on the actual auth configuration
@@ -396,7 +390,7 @@ class TestStreamingAuthentication:
 
         # Request without authentication headers
         response = await public_access_async_client.post(
-            "/api/v1/llm/conversation/stream", json=request_data
+            "/api/v1/llm/chat/stream", json=request_data
         )
 
         # Check if auth is required (this depends on the app's auth setup)
@@ -447,7 +441,7 @@ class TestStreamingPerformance:
         start_time = time.time()
 
         async with public_access_async_client.stream(
-            "POST", "/api/v1/llm/conversation/stream", json=request_data
+            "POST", "/api/v1/llm/chat/stream", json=request_data
         ) as response:
             # Time to get first chunk should be fast
             first_chunk_time = None

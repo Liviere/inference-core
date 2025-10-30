@@ -26,12 +26,15 @@ Question: {question}
 
 Answer:""",
     )
+    # New canonical name aligned with API: completion
+    COMPLETION = EXPLAIN
 
 
 class ChatPrompts:
     """Chat-based prompt templates for conversational interactions"""
 
-    CONVERSATION = ChatPromptTemplate.from_messages(
+    # New canonical name aligned with API: chat
+    CHAT = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
@@ -79,9 +82,9 @@ def get_chat_prompt_template(prompt_name: str) -> ChatPromptTemplate:
 
 # Available prompt templates
 AVAILABLE_PROMPTS = {
-    "explain": Prompts.EXPLAIN,
+    "completion": Prompts.COMPLETION,
 }
 
 AVAILABLE_CHAT_PROMPTS = {
-    "conversation": ChatPrompts.CONVERSATION,
+    "chat": ChatPrompts.CHAT,
 }
