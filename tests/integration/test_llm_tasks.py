@@ -14,8 +14,8 @@ class _FakeCompletionChain:
         self.model_name = model_name or "fake-completion-model"
         self.model_params = model_params
 
-    async def generate_story(self, *, question: str, callbacks=None) -> str:
-        return f"[completion:{self.model_name}] {question}"
+    async def completion(self, *, prompt: str, callbacks=None) -> str:
+        return f"[completion:{self.model_name}] {prompt}"
 
 
 class _FakeChatChain:

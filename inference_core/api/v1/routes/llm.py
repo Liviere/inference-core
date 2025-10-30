@@ -6,12 +6,12 @@ Provides endpoints for story generation, analysis, and other LLM-powered feature
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Annotated, Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from inference_core.core.dependecies import (
     get_llm_router_dependencies,
@@ -75,7 +75,15 @@ class BaseLLMRequest(BaseModel):
 class CompletionRequest(BaseLLMRequest):
     """Request model for completion endpoint"""
 
-    question: str = Field(..., description="The question to answer")
+    # Accept both 'prompt' (preferred) and legacy 'question' from clients
+    prompt: Annotated[
+        str,
+        Field(
+            description="Text prompt to generate from",
+            validation_alias=AliasChoices("prompt", "question"),
+            serialization_alias="prompt",
+        ),
+    ]
 
 
 class ChatRequest(BaseLLMRequest):
@@ -278,7 +286,7 @@ async def completion_stream(
         # Build kwargs for streaming
         stream_kwargs = {}
         for field, value in request.model_dump(exclude_none=True).items():
-            if field not in ["question", "model_name"]:
+            if field not in ["prompt", "model_name"]:
                 stream_kwargs[field] = value
 
         effective_user_id: Optional[str] = None
@@ -290,7 +298,7 @@ async def completion_stream(
         request_id = http_request.headers.get("X-Request-ID") or str(uuid4())
 
         async_generator = llm_service.stream_completion(
-            question=request.question,
+            prompt=request.prompt,
             model_name=request.model_name,
             request=http_request,
             user_id=effective_user_id,

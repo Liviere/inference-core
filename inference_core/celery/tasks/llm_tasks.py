@@ -22,12 +22,12 @@ def task_llm_completion(**kwargs) -> Dict[str, Any]:
 
     async def _run() -> Dict[str, Any]:
         service = get_llm_service()
-        question: str = kwargs.get("question", "")
+        prompt: str = kwargs.get("prompt") or kwargs.get("question", "")
         model_name: Optional[str] = kwargs.get("model_name")
         user_id: Optional[str] = kwargs.get("user_id")
 
         result = await service.completion(
-            question=question,
+            prompt=prompt,
             model_name=model_name,
             temperature=kwargs.get("temperature"),
             max_tokens=kwargs.get("max_tokens"),

@@ -98,7 +98,7 @@ class TestLLMService:
         # Mock chain
         mock_chain = AsyncMock()
         mock_chain.model_name = "test-model"
-        mock_chain.generate_story.return_value = "Test completion"
+        mock_chain.completion.return_value = "Test completion"
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
@@ -110,8 +110,8 @@ class TestLLMService:
         assert service._usage_stats["requests_count"] == 1
 
         mock_create_chain.assert_called_once_with(model_name=None)
-        mock_chain.generate_story.assert_called_once_with(
-            question="What is AI?", callbacks=[]
+        mock_chain.completion.assert_called_once_with(
+            prompt="What is AI?", callbacks=[]
         )
 
     @patch("inference_core.services.llm_service.create_completion_chain")
@@ -135,7 +135,7 @@ class TestLLMService:
         # Mock chain
         mock_chain = AsyncMock()
         mock_chain.model_name = "custom-model"
-        mock_chain.generate_story.return_value = "Custom completion"
+        mock_chain.completion.return_value = "Custom completion"
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
@@ -174,7 +174,7 @@ class TestLLMService:
 
         # Mock chain that raises error
         mock_chain = AsyncMock()
-        mock_chain.generate_story.side_effect = Exception("Model error")
+        mock_chain.completion.side_effect = Exception("Model error")
         mock_create_chain.return_value = mock_chain
 
         service = LLMService()
@@ -535,7 +535,7 @@ class TestLLMServiceIntegration:
         # Mock completion chain
         mock_exp_chain = AsyncMock()
         mock_exp_chain.model_name = "exp-model"
-        mock_exp_chain.generate_story.return_value = "Completion"
+        mock_exp_chain.completion.return_value = "Completion"
         mock_create_exp_chain.return_value = mock_exp_chain
 
         # Mock chat chain
@@ -552,8 +552,8 @@ class TestLLMServiceIntegration:
 
         try:
             # Simulate a failure
-            mock_exp_chain.generate_story.side_effect = Exception("Error")
-            await service.completion("Another question")
+            mock_exp_chain.completion.side_effect = Exception("Error")
+            await service.completion("Another questipon")
         except Exception:
             pass  # Expected
 

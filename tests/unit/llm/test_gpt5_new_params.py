@@ -55,7 +55,7 @@ def test_gpt5_legacy_param_rejected_in_service_completion(monkeypatch):
     class DummyChain:
         model_name = "gpt-5"
 
-        async def generate_story(self, **_):
+        async def completion(self, **_):
             return "ok"
 
     monkeypatch.setattr(

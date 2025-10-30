@@ -55,7 +55,7 @@ class TestLLMUsageLogging:
         # Mock chain
         mock_chain = AsyncMock()
         mock_chain.model_name = "gpt-5-nano"
-        mock_chain.generate_story.return_value = "This is a test completion."
+        mock_chain.completion.return_value = "This is a test completion."
         mock_create_chain.return_value = mock_chain
 
         # Call the completion method with patched session
@@ -116,7 +116,7 @@ class TestLLMUsageLogging:
 
     #         mock_chain = AsyncMock()
     #         mock_chain.model_name = "gpt-5-nano"
-    #         mock_chain.generate_story.side_effect = ValueError("Test error")
+    #         mock_chain.completion.side_effect = ValueError("Test error")
     #         mock_create_chain.return_value = mock_chain
 
     #         # Call the completion method and expect it to raise
@@ -379,7 +379,7 @@ class TestLLMUsageLogging:
         mock_get_model_factory.return_value = mock_factory
         mock_chain = AsyncMock()
         mock_chain.model_name = "gpt-5-nano"
-        mock_chain.generate_story.return_value = "Test response"
+        mock_chain.completion.return_value = "Test response"
         mock_create_chain.return_value = mock_chain
 
         # Temporarily disable usage logging
@@ -430,7 +430,7 @@ class TestLLMUsageLogging:
         # Mock the chain with usage metadata
         mock_chain = AsyncMock()
         mock_chain.model_name = "gpt-5-mini"  # This model has pricing config
-        mock_chain.generate_story.return_value = "Test completion"
+        mock_chain.completion.return_value = "Test completion"
         mock_create_chain.return_value = mock_chain
 
         # Call completion

@@ -17,17 +17,16 @@ from langchain_core.prompts import (
 class Prompts:
     """Collection of prompt templates for tasks"""
 
-    EXPLAIN = PromptTemplate(
-        input_variables=["question"],
+    # Canonical completion prompt expects 'prompt' input variable
+    COMPLETION = PromptTemplate(
+        input_variables=["prompt"],
         template="""
 You are an expert in explaining complex concepts in simple terms.
 
-Question: {question}
+Prompt: {prompt}
 
 Answer:""",
     )
-    # New canonical name aligned with API: completion
-    COMPLETION = EXPLAIN
 
 
 class ChatPrompts:

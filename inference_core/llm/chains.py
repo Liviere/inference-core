@@ -83,15 +83,20 @@ class CompletionChain(BaseChain):
 
         self._chain = prompt | model | StrOutputParser()
 
-    async def generate_story(
+    async def completion(
         self,
-        question: str,
+        *,
+        prompt: str,
         callbacks=None,
     ) -> str:
-        """Generate a answer to a question"""
+        """Generate a completion for the given prompt."""
+
+        if not prompt:
+            raise ValueError("Prompt text is required for completion")
+
         return await self.arun(
             callbacks=callbacks,
-            question=question,
+            prompt=prompt,
         )
 
 

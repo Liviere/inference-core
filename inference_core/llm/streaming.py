@@ -484,7 +484,8 @@ async def stream_chat(
 
 
 async def stream_completion(
-    question: str,
+    prompt: Optional[str] = None,
+    question: Optional[str] = None,
     model_name: Optional[str] = None,
     request: Optional[Request] = None,
     user_id: Optional[str] = None,
@@ -495,7 +496,8 @@ async def stream_completion(
     Stream a completion response using Server-Sent Events.
 
     Args:
-    question: Question to answer
+        prompt: Text prompt to generate from (preferred)
+        question: Legacy alias for prompt
         model_name: Optional model override
         request: FastAPI request object for disconnect detection
         **model_params: Additional model parameters
@@ -503,7 +505,8 @@ async def stream_completion(
     Yields:
         SSE-formatted bytes for each streaming event
     """
-    logger.info(f"Starting completion stream for question: {question[:100]}...")
+    text = prompt if prompt is not None else question or ""
+    logger.info(f"Starting completion stream for prompt: {text[:100]}...")
 
     # Create bounded queue for token forwarding
     token_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -561,7 +564,7 @@ async def stream_completion(
             return
         # Build prompt for completion (system + user)
         prompt_template = get_prompt_template("completion")
-        input_data = {"question": question}
+        input_data = {"prompt": text}
 
         # Emit start event
         start_data = {"event": "start", "model": model_name or "completion"}
@@ -577,11 +580,11 @@ async def stream_completion(
                         if isinstance(formatted, str):
                             messages.append(HumanMessage(content=formatted))
                         else:
-                            messages.append(HumanMessage(content=question))
+                            messages.append(HumanMessage(content=text))
                     except Exception:
-                        messages.append(HumanMessage(content=question))
+                        messages.append(HumanMessage(content=text))
                 else:
-                    messages.append(HumanMessage(content=question))
+                    messages.append(HumanMessage(content=text))
 
                 used_events_api = False
                 if hasattr(model, "astream_events"):

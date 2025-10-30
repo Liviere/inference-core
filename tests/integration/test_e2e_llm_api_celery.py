@@ -25,7 +25,7 @@ class _FakeCompletionChain:
         self.model_name = model_name or "e2e-completion"
         self.model_params = model_params
 
-    async def generate_story(self, *, question: str) -> str:
+    async def completion(self, *, question: str) -> str:
         return f"[E2E completion:{self.model_name}] {question}"
 
 

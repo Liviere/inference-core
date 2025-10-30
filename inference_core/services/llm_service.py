@@ -55,7 +55,8 @@ class LLMService:
 
     async def completion(
         self,
-        question: str,
+        prompt: Optional[str] = None,
+        question: Optional[str] = None,
         model_name: Optional[str] = None,
         *,
         temperature: Optional[float] = None,
@@ -70,18 +71,18 @@ class LLMService:
         request_id: Optional[str] = None,
     ) -> LLMResponse:
         """
-        Generate a completion-style answer for a given question using the specified model.
+        Generate a completion-style answer for a given prompt using the specified model.
 
         Args:
-            question: The question to answer
+            prompt: Text prompt to generate from (preferred)
+            question: Legacy alias for prompt
             model_name: Optional model name to override default
 
         Returns:
             Completion string
         """
-        self._log_request(
-            "completion", {"question": question, "model_name": model_name}
-        )
+        text = prompt if prompt is not None else question or ""
+        self._log_request("completion", {"prompt": text, "model_name": model_name})
 
         # Start usage logging session
         resolved_model_name = model_name or self.config.get_task_model("completion")
@@ -135,7 +136,7 @@ class LLMService:
             }
             # Use new canonical factory name
             chain = create_completion_chain(model_name=model_name, **model_params)
-            answer = await chain.generate_story(question=question, callbacks=callbacks)
+            answer = await chain.completion(prompt=text, callbacks=callbacks)
 
             # Usage already accumulated by callback handler
             usage_metadata = usage_session.accumulated_usage
@@ -389,7 +390,8 @@ class LLMService:
 
     async def stream_completion(
         self,
-        question: str,
+        prompt: Optional[str] = None,
+        question: Optional[str] = None,
         model_name: Optional[str] = None,
         request: Optional[Request] = None,
         *,
@@ -407,7 +409,8 @@ class LLMService:
         """Stream a completion response using Server-Sent Events.
 
         Args:
-            question: Question to answer
+            prompt: Text prompt to generate from (preferred)
+            question: Legacy alias for prompt
             model_name: Optional model name override
             request: FastAPI request object for disconnect detection
 
@@ -420,7 +423,7 @@ class LLMService:
         self._log_request(
             "stream_completion",
             {
-                "question": question[:128],
+                "prompt": (prompt if prompt is not None else question or "")[:128],
                 "model_name": model_name,
             },
         )
@@ -459,7 +462,7 @@ class LLMService:
                         )
 
             async for chunk in stream_completion(
-                question=question,
+                prompt=prompt if prompt is not None else question,
                 model_name=model_name,
                 request=request,
                 user_id=user_id,
