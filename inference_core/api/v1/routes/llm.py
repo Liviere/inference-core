@@ -34,6 +34,12 @@ class BaseLLMRequest(BaseModel):
     model_name: Optional[str] = Field(
         None, description="Optional model name to override default"
     )
+    task_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional custom task type to load defaults from llm_config.yaml (e.g., 'summarization')."
+        ),
+    )
     temperature: Optional[float] = Field(
         default=None, ge=0.0, le=2.0, description="Model temperature"
     )

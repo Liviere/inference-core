@@ -324,6 +324,64 @@ chat_turn2 = await llm.chat(
 )
 ```
 
+### Custom task types (task_type)
+
+You can route requests through a custom logical task name to pick model defaults and fallbacks from `llm_config.yaml` (tasks section), and optionally select default prompts per task via `LLMService` defaults.
+
+1. Define a custom task in `llm_config.yaml`:
+
+```yaml
+tasks:
+  summarization:
+    primary: 'claude-3-5-haiku-latest'
+    fallback: ['gpt-5-nano']
+    testing: ['gpt-5-nano']
+    description: 'Fast summaries'
+```
+
+2. Call the API with `task_type`:
+
+```bash
+# Completion (sync)
+curl -X POST http://localhost:8000/api/v1/llm/completion \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "task_type": "summarization",
+    "prompt": "Summarize the following article..."
+  }'
+
+# Chat (stream)
+curl -X POST -N http://localhost:8000/api/v1/llm/chat/stream \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "task_type": "summarization",
+    "session_id": "demo",
+    "user_input": "Summarize the main points.",
+    "input_vars": {"audience": "executive"}
+  }'
+```
+
+3. Optionally set default prompt templates per task when constructing or cloning the service:
+
+```python
+from inference_core.services.llm_service import LLMService
+
+llm = LLMService().copy_with(
+  default_prompt_names={
+    "summarization": "summary_short",  # resolves to custom_prompts/completion/summary_short.j2 for completion
+    "chat": "tutor"
+  }
+)
+
+resp = await llm.completion(task_type="summarization", input_vars={"prompt": "..."})
+```
+
+Notes:
+
+- `task_type` is optional. If omitted, the built-in mapping uses "completion" or "chat" as before.
+- `default_prompt_names` can be keyed by any task name (built-in or custom). For chat, you can also override `system_prompt` per-call.
+- All programmatic methods and streaming variants accept `task_type`.
+
 ---
 
 ## ⚙️ Configuration (Where To Look)

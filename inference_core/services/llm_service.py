@@ -72,6 +72,7 @@ class LLMService:
             return override
         if task in self._default_models:
             return self._default_models[task]
+        # Fall back to config's task mapping (supports custom task types)
         return self.config.get_task_model(task)
 
     def _merge_params(
@@ -144,6 +145,7 @@ class LLMService:
         question: Optional[str] = None,
         model_name: Optional[str] = None,
         *,
+        task_type: Optional[str] = None,
         input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -185,7 +187,11 @@ class LLMService:
                         break
         if preview is None:
             preview = (prompt if prompt is not None else question) or ""
-        self._log_request("completion", {"prompt": preview, "model_name": model_name})
+        effective_task = task_type or "completion"
+        self._log_request(
+            "completion",
+            {"prompt": preview, "model_name": model_name, "task_type": effective_task},
+        )
 
         # Deprecation notice for legacy 'question'
         if question is not None:
@@ -194,12 +200,12 @@ class LLMService:
             )
 
         # Start usage logging session
-        resolved_model_name = self._effective_model_name("completion", model_name)
+        resolved_model_name = self._effective_model_name(effective_task, model_name)
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
         usage_session = self.usage_logger.start_session(
-            task_type="completion",
+            task_type=effective_task,
             request_mode="sync",
             model_name=resolved_model_name,
             provider=provider,
@@ -243,12 +249,13 @@ class LLMService:
                 }.items()
                 if v is not None
             }
-            model_params = self._merge_params("completion", runtime_params)
+            model_params = self._merge_params(effective_task, runtime_params)
             # Use factory hook (supports prompt overrides)
             chain = self._build_completion_chain(
                 model_name=model_name,
                 model_params=model_params,
-                prompt_name=prompt_name,
+                prompt_name=prompt_name
+                or self._default_prompt_names.get(effective_task),
             )
             # Call chain respecting legacy call shape for tests
             if input_vars is not None:
@@ -300,6 +307,7 @@ class LLMService:
         user_input: str,
         model_name: Optional[str] = None,
         *,
+        task_type: Optional[str] = None,
         input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -324,6 +332,7 @@ class LLMService:
         Returns:
             LLMResponse with assistant reply
         """
+        effective_task = task_type or "chat"
         self._log_request(
             "chat",
             {
@@ -339,16 +348,17 @@ class LLMService:
                     )
                 ),
                 "model_name": model_name,
+                "task_type": effective_task,
             },
         )
 
         # Start usage logging session
-        resolved_model_name = self._effective_model_name("chat", model_name)
+        resolved_model_name = self._effective_model_name(effective_task, model_name)
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
         usage_session = self.usage_logger.start_session(
-            task_type="chat",
+            task_type=effective_task,
             request_mode="sync",
             model_name=resolved_model_name,
             provider=provider,
@@ -393,13 +403,14 @@ class LLMService:
                 }.items()
                 if v is not None
             }
-            model_params = self._merge_params("chat", runtime_params)
+            model_params = self._merge_params(effective_task, runtime_params)
             # Use factory hook with prompt/system overrides
             chain = self._build_chat_chain(
                 model_name=model_name,
                 model_params=model_params,
-                prompt_name=prompt_name,
-                system_prompt=system_prompt,
+                prompt_name=prompt_name
+                or self._default_prompt_names.get(effective_task),
+                system_prompt=system_prompt or self._default_chat_system_prompt,
             )
             if input_vars is not None:
                 reply = await chain.chat(
@@ -454,6 +465,7 @@ class LLMService:
         model_name: Optional[str] = None,
         request: Optional[Request] = None,
         *,
+        task_type: Optional[str] = None,
         input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -482,12 +494,14 @@ class LLMService:
         # Import here to avoid circular imports
         from inference_core.llm.streaming import stream_chat
 
+        effective_task = task_type or "chat"
         self._log_request(
             "stream_chat",
             {
                 "session_id": session_id,
                 "user_input": user_input[:128],
                 "model_name": model_name,
+                "task_type": effective_task,
             },
         )
 
@@ -510,8 +524,8 @@ class LLMService:
                 model_params["reasoning_effort"] = reasoning_effort
             if verbosity is not None:
                 model_params["verbosity"] = verbosity
-            # Merge with defaults for chat
-            model_params = self._merge_params("chat", model_params)
+            # Merge with defaults for task
+            model_params = self._merge_params(effective_task, model_params)
 
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -536,7 +550,8 @@ class LLMService:
                 user_input=user_input,
                 model_name=model_name,
                 request=request,
-                prompt_name=prompt_name or self._default_prompt_names.get("chat"),
+                prompt_name=prompt_name
+                or self._default_prompt_names.get(effective_task),
                 system_prompt=system_prompt or self._default_chat_system_prompt,
                 user_id=user_id,
                 request_id=request_id,
@@ -557,6 +572,7 @@ class LLMService:
         model_name: Optional[str] = None,
         request: Optional[Request] = None,
         *,
+        task_type: Optional[str] = None,
         input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -584,11 +600,13 @@ class LLMService:
         # Import here to avoid circular imports
         from inference_core.llm.streaming import stream_completion
 
+        effective_task = task_type or "completion"
         self._log_request(
             "stream_completion",
             {
                 "prompt": (prompt if prompt is not None else question or "")[:128],
                 "model_name": model_name,
+                "task_type": effective_task,
             },
         )
 
@@ -611,8 +629,8 @@ class LLMService:
                 model_params["reasoning_effort"] = reasoning_effort
             if verbosity is not None:
                 model_params["verbosity"] = verbosity
-            # Merge with defaults for completion
-            model_params = self._merge_params("completion", model_params)
+            # Merge with defaults for task
+            model_params = self._merge_params(effective_task, model_params)
 
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -642,7 +660,8 @@ class LLMService:
                 prompt=prompt if prompt is not None else question,
                 model_name=model_name,
                 request=request,
-                prompt_name=prompt_name or self._default_prompt_names.get("completion"),
+                prompt_name=prompt_name
+                or self._default_prompt_names.get(effective_task),
                 user_id=user_id,
                 request_id=request_id,
                 **_extras,

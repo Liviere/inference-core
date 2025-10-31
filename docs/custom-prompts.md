@@ -59,9 +59,43 @@ You can provide your own prompt templates without modifying the core `prompts.py
   await llm.stream_chat(session_id="s1", user_input="hi", prompt_name="sales_assistant")
   ```
 
+## Custom task types (task_type) and prompts
+
+You can route requests via a custom `task_type` (e.g., `summarization`) declared in `llm_config.yaml` (under `tasks:`). This changes how models are chosen (primary/fallback/testing), and you can also attach default prompt names per task in your service instance.
+
+- Config example (`llm_config.yaml`):
+
+  ```yaml
+  tasks:
+    summarization:
+      primary: 'claude-3-5-haiku-latest'
+      fallback: ['gpt-5-nano']
+      testing: ['gpt-5-nano']
+  ```
+
+- Programmatic usage with default prompts per task:
+
+  ```python
+  llm = LLMService().copy_with(
+      default_prompt_names={
+          "summarization": "summary_short",  # completion template name
+          "chat": "tutor",
+      }
+  )
+
+  # Completion using the custom task type and template
+  await llm.completion(task_type="summarization", input_vars={"prompt": "..."})
+  ```
+
+Notes:
+
+- `task_type` is optional; without it, the core uses built-in tasks: `completion` and `chat`.
+- File placement still follows the two folders (`custom_prompts/completion` and `custom_prompts/chat`). Mapping from task type → template name comes from `default_prompt_names` in your `LLMService` instance.
+- For chat, you can also override `system_prompt` per-call, which takes precedence over the file.
+
 ## Notes
 
 - Built-in prompts remain unchanged; custom names fall back to the file-based loader.
 - For chat, if you also provide `system_prompt=...` (string) per-call, it overrides the file for that request only.
 - Template engine is Jinja-compatible; plain text content works fine.
-- Dla zgodności wstecznej `completion(...)` wciąż akceptuje parametr `question` jako alias `prompt`.
+- For backward compatibility, `completion(...)` still accepts the `question` parameter as an alias for `prompt`.

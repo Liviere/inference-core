@@ -24,6 +24,7 @@ def task_llm_completion(**kwargs) -> Dict[str, Any]:
         service = get_llm_service()
         prompt: str = kwargs.get("prompt") or kwargs.get("question", "")
         input_vars = kwargs.get("input_vars")
+        task_type = kwargs.get("task_type")
         model_name: Optional[str] = kwargs.get("model_name")
         user_id: Optional[str] = kwargs.get("user_id")
         if input_vars is not None:
@@ -36,6 +37,7 @@ def task_llm_completion(**kwargs) -> Dict[str, Any]:
                 frequency_penalty=kwargs.get("frequency_penalty"),
                 presence_penalty=kwargs.get("presence_penalty"),
                 request_timeout=kwargs.get("request_timeout"),
+                task_type=task_type,
                 user_id=user_id,
                 request_id=task_id,
             )
@@ -49,6 +51,7 @@ def task_llm_completion(**kwargs) -> Dict[str, Any]:
                 frequency_penalty=kwargs.get("frequency_penalty"),
                 presence_penalty=kwargs.get("presence_penalty"),
                 request_timeout=kwargs.get("request_timeout"),
+                task_type=task_type,
                 user_id=user_id,
                 request_id=task_id,
             )
@@ -69,6 +72,7 @@ def task_llm_chat(**kwargs) -> Dict[str, Any]:
         session_id: Optional[str] = kwargs.get("session_id") or str(uuid4())
         user_input: str = kwargs.get("user_input", "")
         input_vars = kwargs.get("input_vars")
+        task_type = kwargs.get("task_type")
         model_name: Optional[str] = kwargs.get("model_name")
         user_id: Optional[str] = kwargs.get("user_id")
         if input_vars is not None:
@@ -83,6 +87,7 @@ def task_llm_chat(**kwargs) -> Dict[str, Any]:
                 frequency_penalty=kwargs.get("frequency_penalty"),
                 presence_penalty=kwargs.get("presence_penalty"),
                 request_timeout=kwargs.get("request_timeout"),
+                task_type=task_type,
                 user_id=user_id,
                 request_id=task_id,
             )
@@ -97,6 +102,7 @@ def task_llm_chat(**kwargs) -> Dict[str, Any]:
                 frequency_penalty=kwargs.get("frequency_penalty"),
                 presence_penalty=kwargs.get("presence_penalty"),
                 request_timeout=kwargs.get("request_timeout"),
+                task_type=task_type,
                 user_id=user_id,
                 request_id=task_id,
             )
