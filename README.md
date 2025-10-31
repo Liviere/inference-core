@@ -304,6 +304,24 @@ from inference_core.services.llm_service import LLMService
 llm = LLMService()
 answer = await llm.completion("What are embeddings?")
 chat_turn = await llm.chat(session_id="demo", user_input="Hello!")
+
+# Multiple variables with input_vars
+# Your Jinja2 templates can reference extra fields.
+answer2 = await llm.completion(
+  input_vars={
+    "prompt": "Describe photosynthesis",
+    "topic": "biology",
+    "tone": "simplified",
+  },
+  prompt_name="simple_explainer",
+)
+
+chat_turn2 = await llm.chat(
+  session_id="demo",
+  user_input="How does JWT work?",  # used for history
+  input_vars={"context": "FastAPI", "audience": "junior dev"},
+  prompt_name="tutor",
+)
 ```
 
 ---

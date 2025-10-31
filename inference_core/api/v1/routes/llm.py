@@ -84,6 +84,10 @@ class CompletionRequest(BaseLLMRequest):
             serialization_alias="prompt",
         ),
     ]
+    input_vars: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional dictionary of template variables replacing single 'prompt'",
+    )
 
 
 class ChatRequest(BaseLLMRequest):
@@ -94,6 +98,10 @@ class ChatRequest(BaseLLMRequest):
         description="Chat session identifier. If omitted, a new session will be created.",
     )
     user_input: str = Field(..., description="User message to the assistant")
+    input_vars: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional dictionary of template variables. user_input remains the value used for history.",
+    )
 
 
 class ModelsListResponse(BaseModel):

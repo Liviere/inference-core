@@ -7,7 +7,7 @@ Each chain combines prompts with models for specific functionality.
 
 import asyncio
 import logging
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -112,17 +112,30 @@ class CompletionChain(BaseChain):
     async def completion(
         self,
         *,
-        prompt: str,
+        input_vars: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
         callbacks=None,
     ) -> str:
-        """Generate a completion for the given prompt."""
+        """Generate a completion with flexible variables.
 
-        if not prompt:
-            raise ValueError("Prompt text is required for completion")
+        Precedence:
+        - If input_vars provided, they are passed directly to the prompt.
+        - Else, falls back to single variable {'prompt': prompt}.
+        """
+
+        variables: Dict[str, Any] = {}
+        if input_vars is not None:
+            if not isinstance(input_vars, dict):
+                raise ValueError("input_vars must be a dict when provided")
+            variables = dict(input_vars)
+        else:
+            if not prompt:
+                raise ValueError("Either input_vars or prompt must be provided")
+            variables = {"prompt": prompt}
 
         return await self.arun(
             callbacks=callbacks,
-            prompt=prompt,
+            **variables,
         )
 
 
@@ -227,19 +240,61 @@ class ChatChain(BaseChain):
             history_messages_key="history",
         )
 
-    async def chat(self, session_id: str, user_input: str, callbacks=None) -> str:
-        """Send a user message within a session and get assistant reply"""
+    async def chat(
+        self,
+        session_id: str,
+        *,
+        input_vars: Optional[Dict[str, Any]] = None,
+        user_input: Optional[str] = None,
+        callbacks=None,
+    ) -> str:
+        """Send a message within a session and get assistant reply.
+
+        You can pass arbitrary template variables via input_vars. For history
+        tracking, the chain expects a 'user_input' string. If not provided,
+        we try to derive one from common keys (message/input/prompt) and
+        also inject it under 'user_input' (extra variables are ignored by prompts).
+        """
         if not self._chain:
             raise NotImplementedError("Chat chain not initialized")
 
         try:
+            variables: Dict[str, Any] = {}
+            if input_vars is not None:
+                if not isinstance(input_vars, dict):
+                    raise ValueError("input_vars must be a dict when provided")
+                variables = dict(input_vars)
+
+            # Ensure we have a primary user_input for history
+            def _pick_primary(d: Dict[str, Any]) -> Optional[str]:
+                for key in ("user_input", "message", "input", "prompt", "question"):
+                    val = d.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val
+                # fallback: first string value
+                for val in d.values():
+                    if isinstance(val, str) and val.strip():
+                        return val
+                return None
+
+            if user_input is not None:
+                variables["user_input"] = user_input
+            elif "user_input" not in variables:
+                primary = _pick_primary(variables)
+                if primary is not None:
+                    variables["user_input"] = primary
+                else:
+                    raise ValueError(
+                        "user_input is required (provide user_input param or include a string value in input_vars)"
+                    )
+
             config = {"configurable": {"session_id": session_id}}
             if callbacks:
                 config["callbacks"] = callbacks
             # Use sync invoke in a worker thread due to SQLChatMessageHistory sync operations
             result = await asyncio.to_thread(
                 self._chain.invoke,
-                {"user_input": user_input},
+                variables,
                 config=config,
             )
             return getattr(result, "content", str(result))

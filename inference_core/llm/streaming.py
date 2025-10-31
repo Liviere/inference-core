@@ -121,6 +121,7 @@ async def stream_chat(
     request_id: Optional[str] = None,
     prompt_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    input_vars: Optional[Dict[str, Any]] = None,
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
@@ -231,40 +232,58 @@ async def stream_chat(
             session_id=session_id, connection_string=connection_string
         )
 
-        # Build message list manually for streaming
-        messages = []
-
-        # Add system message from prompt template (with optional overrides)
+        # Build messages using prompt template formatting (supports extra variables)
         base_prompt_name = prompt_name or "chat"
         prompt_template = get_chat_prompt_template(base_prompt_name)
+        # Format full message list with history and variables
+        try:
+            messages = prompt_template.format_messages(
+                user_input=user_input,
+                history=history.messages,
+                **(input_vars or {}),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to format chat prompt with variables: {e}")
+            # Fallback to minimal structure: system (from template) + history + human(user_input)
+            messages = []
+            try:
+                if prompt_template and hasattr(prompt_template, "messages"):
+                    for msg_template in prompt_template.messages:
+                        if hasattr(msg_template, "format"):
+                            formatted = msg_template.format(
+                                user_input=user_input, history=[]
+                            )
+                            if formatted.type == "system":
+                                from langchain_core.messages import SystemMessage
+
+                                messages.append(
+                                    SystemMessage(content=formatted.content)
+                                )
+            except Exception:
+                pass
+            messages.extend(history.messages)
+            messages.append(HumanMessage(content=user_input))
+
+        # Apply system_prompt override on first system message if provided
         if system_prompt:
             try:
-                prompt_template = ChatPromptTemplate.from_messages(
-                    [
-                        ("system", system_prompt),
-                        MessagesPlaceholder(variable_name="history"),
-                        ("human", "{user_input}"),
-                    ]
-                )
+                from langchain_core.messages import SystemMessage
+
+                replaced = False
+                for i, m in enumerate(messages):
+                    if (
+                        isinstance(m, SystemMessage)
+                        or getattr(m, "type", "") == "system"
+                    ):
+                        messages[i] = SystemMessage(content=system_prompt)
+                        replaced = True
+                        break
+                if not replaced:
+                    messages.insert(0, SystemMessage(content=system_prompt))
             except Exception as e:
                 logger.warning(
                     f"Failed to apply system_prompt override for streaming chat: {e}"
                 )
-        if prompt_template and hasattr(prompt_template, "messages"):
-            for msg_template in prompt_template.messages:
-                if hasattr(msg_template, "format"):
-                    formatted = msg_template.format(user_input=user_input, history=[])
-                    if formatted.type == "system":
-                        from langchain_core.messages import SystemMessage
-
-                        messages.append(SystemMessage(content=formatted.content))
-
-        # Add chat history
-        history_messages = history.messages
-        messages.extend(history_messages)
-
-        # Add current user message
-        messages.append(HumanMessage(content=user_input))
 
         # Start streaming using LangChain astream_events (preferred) with fallback to astream
         async def event_stream_model():
@@ -508,6 +527,7 @@ async def stream_completion(
     user_id: Optional[str] = None,
     request_id: Optional[str] = None,
     prompt_name: Optional[str] = None,
+    input_vars: Optional[Dict[str, Any]] = None,
     **model_params,
 ) -> AsyncGenerator[bytes, None]:
     """
@@ -580,9 +600,9 @@ async def stream_completion(
             error_data = {"event": "error", "message": "Failed to create model"}
             yield format_sse(error_data)
             return
-        # Build prompt for completion (system + user)
+        # Build prompt for completion (template with variables)
         prompt_template = get_prompt_template(prompt_name or "completion")
-        input_data = {"prompt": text}
+        input_data = dict(input_vars) if input_vars is not None else {"prompt": text}
 
         # Emit start event
         start_data = {"event": "start", "model": model_name or "completion"}
@@ -599,7 +619,10 @@ async def stream_completion(
                             messages.append(HumanMessage(content=formatted))
                         else:
                             messages.append(HumanMessage(content=text))
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to format completion prompt with variables: {e}"
+                        )
                         messages.append(HumanMessage(content=text))
                 else:
                     messages.append(HumanMessage(content=text))

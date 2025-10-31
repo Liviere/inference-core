@@ -23,21 +23,35 @@ def task_llm_completion(**kwargs) -> Dict[str, Any]:
     async def _run() -> Dict[str, Any]:
         service = get_llm_service()
         prompt: str = kwargs.get("prompt") or kwargs.get("question", "")
+        input_vars = kwargs.get("input_vars")
         model_name: Optional[str] = kwargs.get("model_name")
         user_id: Optional[str] = kwargs.get("user_id")
-
-        result = await service.completion(
-            prompt=prompt,
-            model_name=model_name,
-            temperature=kwargs.get("temperature"),
-            max_tokens=kwargs.get("max_tokens"),
-            top_p=kwargs.get("top_p"),
-            frequency_penalty=kwargs.get("frequency_penalty"),
-            presence_penalty=kwargs.get("presence_penalty"),
-            request_timeout=kwargs.get("request_timeout"),
-            user_id=user_id,
-            request_id=task_id,
-        )
+        if input_vars is not None:
+            result = await service.completion(
+                input_vars=input_vars,
+                model_name=model_name,
+                temperature=kwargs.get("temperature"),
+                max_tokens=kwargs.get("max_tokens"),
+                top_p=kwargs.get("top_p"),
+                frequency_penalty=kwargs.get("frequency_penalty"),
+                presence_penalty=kwargs.get("presence_penalty"),
+                request_timeout=kwargs.get("request_timeout"),
+                user_id=user_id,
+                request_id=task_id,
+            )
+        else:
+            result = await service.completion(
+                prompt=prompt,
+                model_name=model_name,
+                temperature=kwargs.get("temperature"),
+                max_tokens=kwargs.get("max_tokens"),
+                top_p=kwargs.get("top_p"),
+                frequency_penalty=kwargs.get("frequency_penalty"),
+                presence_penalty=kwargs.get("presence_penalty"),
+                request_timeout=kwargs.get("request_timeout"),
+                user_id=user_id,
+                request_id=task_id,
+            )
         return result.model_dump()
 
     return run_in_worker_loop(_run())
@@ -54,22 +68,38 @@ def task_llm_chat(**kwargs) -> Dict[str, Any]:
         service = get_llm_service()
         session_id: Optional[str] = kwargs.get("session_id") or str(uuid4())
         user_input: str = kwargs.get("user_input", "")
+        input_vars = kwargs.get("input_vars")
         model_name: Optional[str] = kwargs.get("model_name")
         user_id: Optional[str] = kwargs.get("user_id")
-
-        result = await service.chat(
-            session_id=session_id,
-            user_input=user_input,
-            model_name=model_name,
-            temperature=kwargs.get("temperature"),
-            max_tokens=kwargs.get("max_tokens"),
-            top_p=kwargs.get("top_p"),
-            frequency_penalty=kwargs.get("frequency_penalty"),
-            presence_penalty=kwargs.get("presence_penalty"),
-            request_timeout=kwargs.get("request_timeout"),
-            user_id=user_id,
-            request_id=task_id,
-        )
+        if input_vars is not None:
+            result = await service.chat(
+                session_id=session_id,
+                user_input=user_input,
+                input_vars=input_vars,
+                model_name=model_name,
+                temperature=kwargs.get("temperature"),
+                max_tokens=kwargs.get("max_tokens"),
+                top_p=kwargs.get("top_p"),
+                frequency_penalty=kwargs.get("frequency_penalty"),
+                presence_penalty=kwargs.get("presence_penalty"),
+                request_timeout=kwargs.get("request_timeout"),
+                user_id=user_id,
+                request_id=task_id,
+            )
+        else:
+            result = await service.chat(
+                session_id=session_id,
+                user_input=user_input,
+                model_name=model_name,
+                temperature=kwargs.get("temperature"),
+                max_tokens=kwargs.get("max_tokens"),
+                top_p=kwargs.get("top_p"),
+                frequency_penalty=kwargs.get("frequency_penalty"),
+                presence_penalty=kwargs.get("presence_penalty"),
+                request_timeout=kwargs.get("request_timeout"),
+                user_id=user_id,
+                request_id=task_id,
+            )
         data = result.model_dump()
         data.setdefault("result", {})
         data["result"]["session_id"] = session_id

@@ -144,6 +144,7 @@ class LLMService:
         question: Optional[str] = None,
         model_name: Optional[str] = None,
         *,
+        input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
@@ -161,14 +162,36 @@ class LLMService:
 
         Args:
             prompt: Text prompt to generate from (preferred)
-            question: Legacy alias for prompt
+            input_vars: Optional dict of variables for the prompt template; if provided, overrides 'prompt'
+            question: Legacy alias for prompt (kept for backward compatibility)
             model_name: Optional model name to override default
 
         Returns:
             Completion string
         """
-        text = prompt if prompt is not None else question or ""
-        self._log_request("completion", {"prompt": text, "model_name": model_name})
+        preview = None
+        if input_vars and isinstance(input_vars, dict):
+            # Prefer common key for preview
+            preview = (
+                input_vars.get("prompt")
+                if isinstance(input_vars.get("prompt"), str)
+                else None
+            )
+            if preview is None:
+                # fallback: first string value
+                for v in input_vars.values():
+                    if isinstance(v, str):
+                        preview = v
+                        break
+        if preview is None:
+            preview = (prompt if prompt is not None else question) or ""
+        self._log_request("completion", {"prompt": preview, "model_name": model_name})
+
+        # Deprecation notice for legacy 'question'
+        if question is not None:
+            logger.warning(
+                "LLMService.completion(): parameter 'question' is deprecated; use 'prompt' or 'input_vars'"
+            )
 
         # Start usage logging session
         resolved_model_name = self._effective_model_name("completion", model_name)
@@ -227,7 +250,15 @@ class LLMService:
                 model_params=model_params,
                 prompt_name=prompt_name,
             )
-            answer = await chain.completion(prompt=text, callbacks=callbacks)
+            # Call chain respecting legacy call shape for tests
+            if input_vars is not None:
+                variables = dict(input_vars)
+                answer = await chain.completion(
+                    input_vars=variables, callbacks=callbacks
+                )
+            else:
+                text = (prompt if prompt is not None else question) or ""
+                answer = await chain.completion(prompt=text, callbacks=callbacks)
 
             # Usage already accumulated by callback handler
             usage_metadata = usage_session.accumulated_usage
@@ -269,6 +300,7 @@ class LLMService:
         user_input: str,
         model_name: Optional[str] = None,
         *,
+        input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
@@ -296,7 +328,16 @@ class LLMService:
             "chat",
             {
                 "session_id": session_id,
-                "user_input": user_input[:128],
+                "user_input": (
+                    (user_input[:128] if isinstance(user_input, str) else None)
+                    if user_input is not None
+                    else (
+                        input_vars.get("user_input")[:128]
+                        if isinstance(input_vars, dict)
+                        and isinstance(input_vars.get("user_input"), str)
+                        else None
+                    )
+                ),
                 "model_name": model_name,
             },
         )
@@ -360,9 +401,19 @@ class LLMService:
                 prompt_name=prompt_name,
                 system_prompt=system_prompt,
             )
-            reply = await chain.chat(
-                session_id=session_id, user_input=user_input, callbacks=callbacks
-            )
+            if input_vars is not None:
+                reply = await chain.chat(
+                    session_id=session_id,
+                    user_input=user_input,
+                    input_vars=input_vars,
+                    callbacks=callbacks,
+                )
+            else:
+                reply = await chain.chat(
+                    session_id=session_id,
+                    user_input=user_input,
+                    callbacks=callbacks,
+                )
 
             usage_metadata = usage_session.accumulated_usage
 
@@ -403,6 +454,7 @@ class LLMService:
         model_name: Optional[str] = None,
         request: Optional[Request] = None,
         *,
+        input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
@@ -474,6 +526,11 @@ class LLMService:
                             f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
                         )
 
+            # Build optional extras to preserve backward-compatible call shape
+            _extras: Dict[str, Any] = {}
+            if input_vars is not None:
+                _extras["input_vars"] = input_vars
+
             async for chunk in stream_chat(
                 session_id=session_id,
                 user_input=user_input,
@@ -483,6 +540,7 @@ class LLMService:
                 system_prompt=system_prompt or self._default_chat_system_prompt,
                 user_id=user_id,
                 request_id=request_id,
+                **_extras,
                 **model_params,
             ):
                 yield chunk
@@ -499,6 +557,7 @@ class LLMService:
         model_name: Optional[str] = None,
         request: Optional[Request] = None,
         *,
+        input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
@@ -568,6 +627,17 @@ class LLMService:
                             f"Parameter '{legacy[0]}' is deprecated for {model_name}; use reasoning_effort / verbosity"
                         )
 
+            # Deprecation notice for legacy 'question'
+            if question is not None:
+                logger.warning(
+                    "LLMService.stream_completion(): parameter 'question' is deprecated; use 'prompt' or 'input_vars'"
+                )
+
+            # Build optional extras to preserve backward-compatible call shape
+            _extras: Dict[str, Any] = {}
+            if input_vars is not None:
+                _extras["input_vars"] = input_vars
+
             async for chunk in stream_completion(
                 prompt=prompt if prompt is not None else question,
                 model_name=model_name,
@@ -575,6 +645,7 @@ class LLMService:
                 prompt_name=prompt_name or self._default_prompt_names.get("completion"),
                 user_id=user_id,
                 request_id=request_id,
+                **_extras,
                 **model_params,
             ):
                 yield chunk
