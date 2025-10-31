@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from inference_core.llm.callbacks import LLMUsageCallbackHandler
 from inference_core.llm.chains import create_chat_chain, create_completion_chain
 from inference_core.llm.config import get_llm_config
-from inference_core.llm.models import get_model_factory
+from inference_core.llm.models import get_model_factory, task_override
 from inference_core.llm.usage_logging import UsageLogger
 from inference_core.services.llm_usage_service import get_llm_usage_service
 
@@ -145,7 +145,7 @@ class LLMService:
         question: Optional[str] = None,
         model_name: Optional[str] = None,
         *,
-        task_type: Optional[str] = None,
+        task_type: Optional[str] = "completion",
         input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -171,6 +171,9 @@ class LLMService:
         Returns:
             Completion string
         """
+        effective_task = task_type or "completion"
+        resolved_model_name = self._effective_model_name(effective_task, model_name)
+
         preview = None
         if input_vars and isinstance(input_vars, dict):
             # Prefer common key for preview
@@ -187,7 +190,6 @@ class LLMService:
                         break
         if preview is None:
             preview = (prompt if prompt is not None else question) or ""
-        effective_task = task_type or "completion"
         self._log_request(
             "completion",
             {"prompt": preview, "model_name": model_name, "task_type": effective_task},
@@ -200,7 +202,6 @@ class LLMService:
             )
 
         # Start usage logging session
-        resolved_model_name = self._effective_model_name(effective_task, model_name)
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
@@ -251,12 +252,13 @@ class LLMService:
             }
             model_params = self._merge_params(effective_task, runtime_params)
             # Use factory hook (supports prompt overrides)
-            chain = self._build_completion_chain(
-                model_name=model_name,
-                model_params=model_params,
-                prompt_name=prompt_name
-                or self._default_prompt_names.get(effective_task),
-            )
+            with task_override(effective_task):
+                chain = self._build_completion_chain(
+                    model_name=model_name,
+                    model_params=model_params,
+                    prompt_name=prompt_name
+                    or self._default_prompt_names.get(effective_task),
+                )
             # Call chain respecting legacy call shape for tests
             if input_vars is not None:
                 variables = dict(input_vars)
@@ -307,7 +309,7 @@ class LLMService:
         user_input: str,
         model_name: Optional[str] = None,
         *,
-        task_type: Optional[str] = None,
+        task_type: Optional[str] = "chat",
         input_vars: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -333,6 +335,8 @@ class LLMService:
             LLMResponse with assistant reply
         """
         effective_task = task_type or "chat"
+        resolved_model_name = self._effective_model_name(effective_task, model_name)
+
         self._log_request(
             "chat",
             {
@@ -353,7 +357,6 @@ class LLMService:
         )
 
         # Start usage logging session
-        resolved_model_name = self._effective_model_name(effective_task, model_name)
         model_config = self.config.models.get(resolved_model_name)
         provider = model_config.provider if model_config else "unknown"
 
@@ -405,13 +408,14 @@ class LLMService:
             }
             model_params = self._merge_params(effective_task, runtime_params)
             # Use factory hook with prompt/system overrides
-            chain = self._build_chat_chain(
-                model_name=model_name,
-                model_params=model_params,
-                prompt_name=prompt_name
-                or self._default_prompt_names.get(effective_task),
-                system_prompt=system_prompt or self._default_chat_system_prompt,
-            )
+            with task_override(effective_task):
+                chain = self._build_chat_chain(
+                    model_name=model_name,
+                    model_params=model_params,
+                    prompt_name=prompt_name
+                    or self._default_prompt_names.get(effective_task),
+                    system_prompt=system_prompt or self._default_chat_system_prompt,
+                )
             if input_vars is not None:
                 reply = await chain.chat(
                     session_id=session_id,
@@ -545,20 +549,21 @@ class LLMService:
             if input_vars is not None:
                 _extras["input_vars"] = input_vars
 
-            async for chunk in stream_chat(
-                session_id=session_id,
-                user_input=user_input,
-                model_name=model_name,
-                request=request,
-                prompt_name=prompt_name
-                or self._default_prompt_names.get(effective_task),
-                system_prompt=system_prompt or self._default_chat_system_prompt,
-                user_id=user_id,
-                request_id=request_id,
-                **_extras,
-                **model_params,
-            ):
-                yield chunk
+            with task_override(effective_task):
+                async for chunk in stream_chat(
+                    session_id=session_id,
+                    user_input=user_input,
+                    model_name=model_name,
+                    request=request,
+                    prompt_name=prompt_name
+                    or self._default_prompt_names.get(effective_task),
+                    system_prompt=system_prompt or self._default_chat_system_prompt,
+                    user_id=user_id,
+                    request_id=request_id,
+                    **_extras,
+                    **model_params,
+                ):
+                    yield chunk
 
             self._update_usage_stats()
         except Exception as e:
@@ -656,18 +661,19 @@ class LLMService:
             if input_vars is not None:
                 _extras["input_vars"] = input_vars
 
-            async for chunk in stream_completion(
-                prompt=prompt if prompt is not None else question,
-                model_name=model_name,
-                request=request,
-                prompt_name=prompt_name
-                or self._default_prompt_names.get(effective_task),
-                user_id=user_id,
-                request_id=request_id,
-                **_extras,
-                **model_params,
-            ):
-                yield chunk
+            with task_override(effective_task):
+                async for chunk in stream_completion(
+                    prompt=prompt if prompt is not None else question,
+                    model_name=model_name,
+                    request=request,
+                    prompt_name=prompt_name
+                    or self._default_prompt_names.get(effective_task),
+                    user_id=user_id,
+                    request_id=request_id,
+                    **_extras,
+                    **model_params,
+                ):
+                    yield chunk
 
             self._update_usage_stats()
         except Exception as e:

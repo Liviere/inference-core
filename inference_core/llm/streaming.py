@@ -23,7 +23,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from inference_core.llm.config import get_llm_config
-from inference_core.llm.models import get_model_factory
+from inference_core.llm.models import current_task_override, get_model_factory
 from inference_core.llm.prompts import get_chat_prompt_template, get_prompt_template
 from inference_core.llm.usage_logging import UsageLogger
 
@@ -160,7 +160,9 @@ async def stream_chat(
     try:
         # Get model factory and create streaming model
         factory = get_model_factory()
-        default_model_name = factory.config.get_task_model("chat")
+        # Honor task override when resolving default chat model
+        _task = current_task_override() or "chat"
+        default_model_name = factory.config.get_task_model(_task)
 
         # Resolve model / provider for usage logging
         resolved_model_name = model_name or default_model_name
@@ -563,7 +565,9 @@ async def stream_completion(
     try:
         # Get model factory and create streaming model
         factory = get_model_factory()
-        default_model_name = factory.config.get_task_model("completion")
+        # Honor task override when resolving default completion model
+        _task = current_task_override() or "completion"
+        default_model_name = factory.config.get_task_model(_task)
 
         # Resolve model/provider
         resolved_model_name = model_name or default_model_name

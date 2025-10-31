@@ -6,6 +6,8 @@ Supports multiple providers through OpenAI-compatible interfaces.
 """
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
 from langchain_anthropic import ChatAnthropic
@@ -222,7 +224,9 @@ class LLMModelFactory:
 
     def get_model_for_task(self, task: str, **kwargs) -> Optional[BaseChatModel]:
         """Get the preferred model for a specific task"""
-        model_name = self.config.get_task_model(task)
+        # Honor task override (used by LLMService to map custom task_type to model)
+        effective_task = _TASK_OVERRIDE.get() or task
+        model_name = self.config.get_task_model(effective_task)
         return self.create_model(model_name, **kwargs)
 
 
@@ -232,3 +236,31 @@ def get_model_factory() -> LLMModelFactory:
     from .config import llm_config
 
     return LLMModelFactory(llm_config)
+
+
+# -------- Task override support (thread/async-task local) --------
+# LLMService sets this to ensure model selection honors custom task types
+_TASK_OVERRIDE: ContextVar[Optional[str]] = ContextVar(
+    "llm_task_override", default=None
+)
+
+
+def current_task_override() -> Optional[str]:
+    """Return current effective task override if set."""
+    return _TASK_OVERRIDE.get()
+
+
+@contextmanager
+def task_override(task: Optional[str]):
+    """Temporarily override the task used for default model resolution.
+
+    Usage:
+        with task_override("my_custom_task"):
+            # any factory.get_model_for_task("chat") will resolve using "my_custom_task"
+            ...
+    """
+    token = _TASK_OVERRIDE.set(task)
+    try:
+        yield
+    finally:
+        _TASK_OVERRIDE.reset(token)
