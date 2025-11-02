@@ -5,18 +5,35 @@ Main service class that provides high-level interface for all LLM operations.
 This is the primary entry point for the API to interact with LLM capabilities.
 """
 
+import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, AsyncGenerator, Dict, Optional, cast
+from typing import Any, AsyncGenerator, Dict, List, Optional, cast
 
 from fastapi import Request
 from pydantic import BaseModel
 
+try:  # Optional imports used when MCP tooling is enabled
+    from langchain.agents import AgentExecutor, create_openai_tools_agent
+    from langchain_community.chat_message_histories import SQLChatMessageHistory
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain_core.tools import BaseTool
+except Exception:  # pragma: no cover - optional dependency guard
+    AgentExecutor = None  # type: ignore
+    create_openai_tools_agent = None  # type: ignore
+    ChatPromptTemplate = None  # type: ignore
+    MessagesPlaceholder = None  # type: ignore
+    BaseTool = None  # type: ignore
+    SQLChatMessageHistory = None  # type: ignore
+
 from inference_core.llm.callbacks import LLMUsageCallbackHandler
 from inference_core.llm.chains import create_chat_chain, create_completion_chain
 from inference_core.llm.config import get_llm_config
+from inference_core.llm.mcp_tools import get_mcp_tool_manager
 from inference_core.llm.models import get_model_factory, task_override
+from inference_core.llm.prompts import ChatPrompts
 from inference_core.llm.usage_logging import UsageLogger
 from inference_core.services.llm_usage_service import get_llm_usage_service
 
@@ -58,12 +75,244 @@ class LLMService:
         self._default_model_params = default_model_params or {}
         self._default_prompt_names = default_prompt_names or {}
         self._default_chat_system_prompt = default_chat_system_prompt
+        self._mcp_tool_manager = get_mcp_tool_manager()
         self._usage_stats = {
             "requests_count": 0,
             "total_tokens": 0,
             "errors_count": 0,
             "last_request": None,
         }
+
+    # --------- MCP tooling support ---------
+
+    @dataclass
+    class _ToolingContext:
+        profile_name: str
+        tools: List[Any]
+        instructions: str
+        limits: Dict[str, Any]
+
+    async def _get_tooling_context(
+        self,
+        task_type: str,
+        user_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional["LLMService._ToolingContext"]:
+        """Return tooling context when MCP is enabled for the task.
+
+        Args:
+            task_type: Effective task type (e.g. "chat")
+            user_context: Optional dictionary with user flags (expects is_superuser)
+
+        Returns:
+            Tooling context or None when MCP should not be used.
+        """
+
+        mcp_cfg = self.config.mcp_config
+        if not (mcp_cfg and mcp_cfg.enabled):
+            return None
+
+        task_config = self.config.task_configs.get(task_type)
+        profile_name = task_config.mcp_profile if task_config else None
+        if not profile_name:
+            return None
+
+        limits = mcp_cfg.get_profile(profile_name)
+        if limits is None:
+            logger.warning(
+                "MCP profile '%s' referenced by task '%s' is not defined",
+                profile_name,
+                task_type,
+            )
+            return None
+
+        try:
+            tools = await self._mcp_tool_manager.get_tools(
+                profile_name=profile_name,
+                user=user_context,
+            )
+        except PermissionError:
+            logger.warning(
+                "User lacks permission for MCP profile '%s' (task '%s')",
+                profile_name,
+                task_type,
+            )
+            return None
+        except Exception as exc:  # pragma: no cover - safety log
+            logger.error(
+                "Failed to load MCP tools for profile '%s': %s",
+                profile_name,
+                exc,
+            )
+            return None
+
+        if not tools:
+            return None
+
+        instructions = self._build_tool_instructions(profile_name, tools, limits)
+        limits_dict = self._mcp_tool_manager.get_profile_limits(profile_name)
+        return LLMService._ToolingContext(
+            profile_name=profile_name,
+            tools=tools,
+            instructions=instructions,
+            limits=limits_dict,
+        )
+
+    @staticmethod
+    def _build_tool_instructions(
+        profile_name: str, tools: List[Any], limits: Any
+    ) -> str:
+        """Build instruction text for the system prompt to expose available tools."""
+
+        header = (
+            "You have access to external tools via the Model Context Protocol (MCP). "
+            "Use them when needed to complete the task. Call a tool only if it helps."
+        )
+        lines = [header, f"Active profile: {profile_name}."]
+
+        if getattr(limits, "max_steps", None):
+            lines.append(f"Maximum tool iterations: {limits.max_steps}.")
+        if getattr(limits, "max_run_seconds", None):
+            lines.append(
+                f"Hard timeout for tool usage: {limits.max_run_seconds} seconds."
+            )
+
+        lines.append("Available tools:")
+        for tool in tools:
+            name = getattr(tool, "name", "unknown-tool")
+            description = getattr(tool, "description", "No description provided")
+            lines.append(f"- {name}: {description}")
+
+        lines.append(
+            "If a tool returns data, summarise the outcome for the user before responding."
+        )
+        # Dev ergonomics: avoid closing the browser unless the user explicitly asks.
+        # This helps when using headful Playwright MCP during interactive sessions.
+        lines.append(
+            "Do NOT call 'browser_close' unless the user explicitly instructs you to close the browser."
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _sync_connection_string() -> str:
+        """Return synchronous DB URI for chat history storage."""
+
+        from inference_core.core.config import get_settings
+
+        settings = get_settings()
+        url = settings.database_url
+        if "+aiosqlite" in url:
+            return url.replace("+aiosqlite", "")
+        if "+asyncpg" in url:
+            return url.replace("+asyncpg", "+psycopg")
+        if "+aiomysql" in url:
+            return url.replace("+aiomysql", "+pymysql")
+        return url
+
+    async def _chat_with_tools(
+        self,
+        *,
+        session_id: str,
+        user_input: str,
+        resolved_model_name: str,
+        model_params: Dict[str, Any],
+        usage_session,
+        callbacks,
+        tooling: "LLMService._ToolingContext",
+    ) -> LLMResponse:
+        """Run a tool-enabled agent conversation."""
+
+        if AgentExecutor is None or create_openai_tools_agent is None:
+            raise RuntimeError(
+                "LangChain agent tooling is unavailable. Ensure langchain.agents is installed."
+            )
+
+        # Prepare model with runtime params
+        with task_override("chat"):
+            model = self.model_factory.create_model(resolved_model_name, **model_params)
+        if not model:
+            raise ValueError(
+                f"Failed to create model '{resolved_model_name}' for MCP chat"
+            )
+
+        try:
+            base_system_prompt = ChatPrompts.CHAT.format_messages(  # type: ignore[misc]
+                history=[],
+                user_input="",
+            )[0].content
+        except (
+            Exception
+        ):  # pragma: no cover - fallback if format_messages signature changes
+            base_system_prompt = (
+                "You are a helpful assistant that provides concise and accurate answers to user questions. "
+                "Always respond in a friendly and professional manner."
+            )
+
+        system_prompt = f"{base_system_prompt}\n\n{tooling.instructions}"
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ]
+        )
+
+        agent = create_openai_tools_agent(model, tooling.tools, prompt)
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=tooling.tools,
+            handle_parsing_errors=True,
+            max_iterations=tooling.limits.get("max_steps", 10),
+            verbose=False,
+        )
+
+        # Load history synchronously, then append new messages
+        if SQLChatMessageHistory is None:
+            raise RuntimeError(
+                "SQLChatMessageHistory is unavailable. Install langchain-community to enable chat history."
+            )
+        history = SQLChatMessageHistory(
+            session_id=session_id,
+            connection_string=self._sync_connection_string(),
+        )
+        history_messages = history.messages
+
+        config = {}
+        if callbacks:
+            config["callbacks"] = callbacks
+
+        timeout = tooling.limits.get("max_run_seconds", 60)
+
+        try:
+            result = await asyncio.wait_for(
+                agent_executor.ainvoke(
+                    {
+                        "input": user_input,
+                        "chat_history": history_messages,
+                    },
+                    config=config,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"MCP-enabled chat exceeded timeout of {timeout} seconds"
+            ) from exc
+
+        output_text = result.get("output", "")
+
+        # Persist history manually as we bypassed RunnableWithMessageHistory
+        history.add_user_message(user_input)
+        history.add_ai_message(output_text)
+
+        return LLMResponse(
+            result={"answer": output_text, "tool_profile": tooling.profile_name},
+            metadata=LLMMetadata(
+                model_name=resolved_model_name,
+                timestamp=datetime.now(UTC).isoformat(),
+            ),
+        )
 
     # --------- Helper hooks for subclasses ---------
     def _effective_model_name(self, task: str, override: Optional[str]) -> str:
@@ -407,6 +656,39 @@ class LLMService:
                 if v is not None
             }
             model_params = self._merge_params(effective_task, runtime_params)
+
+            # Try MCP tooling path if available for this task/profile
+            tooling_ctx = await self._get_tooling_context(
+                effective_task,
+                user_context=None,
+            )
+            if tooling_ctx is not None:
+                try:
+                    response = await self._chat_with_tools(
+                        session_id=session_id,
+                        user_input=user_input,
+                        resolved_model_name=resolved_model_name,
+                        model_params=model_params,
+                        usage_session=usage_session,
+                        callbacks=callbacks,
+                        tooling=tooling_ctx,
+                    )
+
+                    usage_metadata = usage_session.accumulated_usage
+                    self._update_usage_stats()
+                    await usage_session.finalize(
+                        success=True,
+                        final_usage=usage_metadata,
+                        streamed=False,
+                        partial=False,
+                    )
+                    return response
+                except Exception as tool_err:
+                    logger.warning(
+                        "Tool-enabled chat failed, falling back to standard chain: %s",
+                        tool_err,
+                    )
+                    # Fall through to standard chat chain
             # Use factory hook with prompt/system overrides
             with task_override(effective_task):
                 chain = self._build_chat_chain(
