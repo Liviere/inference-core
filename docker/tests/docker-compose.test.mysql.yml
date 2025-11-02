@@ -40,7 +40,7 @@ services:
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:-test_password}
       CELERY_BROKER_URL: redis://redis-test:${REDIS_PORT:-6380}/0
       CELERY_RESULT_BACKEND: redis://redis-test:${REDIS_PORT:-6380}/1
-      REDIS_URL: redis://redis-test:${REDIS_PORT:-6380}/10
+      REDIS_URL: redis://redis-test:${REDIS_PORT:-6380}/0
       SECRET_KEY: ${SECRET_KEY:-test-secret-key-do-not-use-in-production}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}

@@ -71,15 +71,15 @@ Environment variables grouped by functional domain.
 
 ## Redis / Celery
 
-| Variable                | Default                   | Description                        |
-| ----------------------- | ------------------------- | ---------------------------------- |
-| `REDIS_URL`             | redis://localhost:6379/10 | Redis for refresh sessions / locks |
-| `REDIS_REFRESH_PREFIX`  | auth:refresh:             | Key prefix for refresh sessions    |
-| `CELERY_BROKER_URL`     | redis://localhost:6379/0  | Celery broker                      |
-| `CELERY_RESULT_BACKEND` | redis://localhost:6379/1  | Celery result backend              |
-| `DEBUG_CELERY`          | 0                         | Enable debugpy attach (1=on)       |
-| `REDIS_PORT`            | 6379                      | Exposed port (compose)             |
-| `FLOWER_PORT`           | 5555                      | Flower UI port                     |
+| Variable                | Default                  | Description                        |
+| ----------------------- | ------------------------ | ---------------------------------- |
+| `REDIS_URL`             | redis://localhost:6379/0 | Redis for refresh sessions / locks |
+| `REDIS_REFRESH_PREFIX`  | auth:refresh:            | Key prefix for refresh sessions    |
+| `CELERY_BROKER_URL`     | redis://localhost:6379/0 | Celery broker                      |
+| `CELERY_RESULT_BACKEND` | redis://localhost:6379/1 | Celery result backend              |
+| `DEBUG_CELERY`          | 0                        | Enable debugpy attach (1=on)       |
+| `REDIS_PORT`            | 6379                     | Exposed port (compose)             |
+| `FLOWER_PORT`           | 5555                     | Flower UI port                     |
 
 ## LLM & Access Control
 

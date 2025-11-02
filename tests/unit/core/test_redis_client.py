@@ -206,9 +206,11 @@ class TestRedisClientIntegration:
         mock_redis.ping.return_value = True
         mock_from_url.return_value = mock_redis
 
-        with patch("inference_core.core.config.get_settings") as mock_get_settings:
+        with patch(
+            "inference_core.core.redis_client.get_settings"
+        ) as mock_get_settings:
             mock_settings = MagicMock()
-            mock_settings.redis_url = "redis://localhost:6379/10"
+            mock_settings.redis_url = "redis://localhost:6379/0"
             mock_get_settings.return_value = mock_settings
 
             # Test get_redis creates connection
@@ -221,7 +223,7 @@ class TestRedisClientIntegration:
 
             # Verify the connection was created with correct parameters
             mock_from_url.assert_called_once_with(
-                "redis://localhost:6380/10", decode_responses=True
+                "redis://localhost:6379/0", decode_responses=True
             )
 
     @patch("redis.asyncio.from_url")
