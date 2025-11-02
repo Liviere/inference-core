@@ -172,7 +172,7 @@ class TestStreamingFunctions:
         # Collect streaming output
         chunks = []
         async for chunk in stream_completion(
-            question="What is the meaning of life?", request=mock_request
+            prompt="What is the meaning of life?", request=mock_request
         ):
             chunks.append(chunk)
 

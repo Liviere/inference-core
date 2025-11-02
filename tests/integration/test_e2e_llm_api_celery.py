@@ -25,8 +25,8 @@ class _FakeCompletionChain:
         self.model_name = model_name or "e2e-completion"
         self.model_params = model_params
 
-    async def completion(self, *, question: str) -> str:
-        return f"[E2E completion:{self.model_name}] {question}"
+    async def completion(self, *, prompt: str) -> str:
+        return f"[E2E completion:{self.model_name}] {prompt}"
 
 
 class _FakeChatChain:
@@ -97,10 +97,10 @@ class TestE2ELLMApiCelry:
 
         # Patch task.run to avoid nested asyncio.run during eager execution
         def _fake_completion_run(self, *args, **kwargs):
-            question = kwargs.get("question", "")
+            prompt = kwargs.get("prompt", "")
             model_name = kwargs.get("model_name") or "demo-e2e"
             return {
-                "result": {"answer": f"[E2E completion:{model_name}] {question}"},
+                "result": {"answer": f"[E2E completion:{model_name}] {prompt}"},
                 "metadata": {
                     "model_name": model_name,
                     "timestamp": "2025-01-01T00:00:00Z",
@@ -152,7 +152,7 @@ class TestE2ELLMApiCelry:
         # Submit task via API
         resp = await public_access_async_client.post(
             "/api/v1/llm/completion",
-            json={"question": "What is E2E?", "model_name": "demo-e2e"},
+            json={"prompt": "What is E2E?", "model_name": "demo-e2e"},
         )
         assert resp.status_code == 200
         task = resp.json()

@@ -64,7 +64,7 @@ class TestLLMUsageLogging:
             new=_get_async_session_override,
         ):
             result = await service.completion(
-                question="What is Python?", model_name="gpt-5-nano"
+                prompt="What is Python?", model_name="gpt-5-nano"
             )
 
         assert result.result["answer"] == "This is a test completion."
@@ -122,7 +122,7 @@ class TestLLMUsageLogging:
     #         # Call the completion method and expect it to raise
     #         with pytest.raises(ValueError, match="Test error"):
     #             await service.completion(
-    #                 question="What is Python?", model_name="gpt-5-nano"
+    #                 prompt="What is Python?", model_name="gpt-5-nano"
     #             )
 
     #     # Check that a usage log was created with error information
@@ -389,7 +389,7 @@ class TestLLMUsageLogging:
         try:
             # Call should still work when logging is disabled
             result = await service.completion(
-                question="Test question", model_name="gpt-5-nano"
+                prompt="Test prompt", model_name="gpt-5-nano"
             )
             assert result.result["answer"] == "Test response"
         finally:
@@ -438,7 +438,7 @@ class TestLLMUsageLogging:
             "inference_core.llm.usage_logging.get_async_session",
             new=_get_async_session_override,
         ):
-            await service.completion(question="What is AI?", model_name="gpt-5-mini")
+            await service.completion(prompt="What is AI?", model_name="gpt-5-mini")
 
         # Check that the log entry was created with pricing information
 

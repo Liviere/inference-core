@@ -78,7 +78,7 @@ Completion streaming:
 
 ```bash
 curl -N -H 'Content-Type: application/json' \
-  -d '{"question":"completion FastAPI in one sentence"}' \
+  -d '{"prompt":"completion FastAPI in one sentence"}' \
   http://localhost:8000/api/v1/llm/completion/stream
 ```
 
@@ -199,7 +199,7 @@ HTTP Request Example (Completion):
 ```json
 POST /api/v1/llm/completion
 {
-  "question": "completion attention in transformers",
+  "prompt": "completion attention in transformers",
   "model_name": "gpt-5",
   "reasoning_effort": "high",
   "verbosity": "high"

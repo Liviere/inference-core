@@ -48,9 +48,9 @@ def test_llm_completion_real_uses_testing_models(model_name: str):
     if not llm_config.is_model_available(model_name):
         pytest.skip(f"Testing model not available: {model_name}")
 
-    question = "Explain unit testing briefly."
+    prompt = "Explain unit testing briefly."
     out = task_llm_completion(
-        question=question,
+        prompt=prompt,
         model_name=model_name,
         max_tokens=64,
         request_timeout=30,

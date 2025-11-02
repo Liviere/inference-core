@@ -30,7 +30,7 @@ class TestLLMEndpointAccessControlTasks:
             mock_service.completion_submit_async.return_value = "test-task-id"
 
             resp = await public_access_async_client.post(
-                "/api/v1/llm/completion", json={"question": "What is AI?"}
+                "/api/v1/llm/completion", json={"prompt": "What is AI?"}
             )
             assert resp.status_code == 200
             assert "task_id" in resp.json()
@@ -42,7 +42,7 @@ class TestLLMEndpointAccessControlTasks:
     ):
         """In user mode without authentication, completion endpoint should 401."""
         resp = await user_access_async_client.post(
-            "/api/v1/llm/completion", json={"question": "What is AI?"}
+            "/api/v1/llm/completion", json={"prompt": "What is AI?"}
         )
         assert resp.status_code == 403
 
@@ -53,7 +53,7 @@ class TestLLMEndpointAccessControlTasks:
     ):
         """In superuser mode without authentication, completion endpoint should 401."""
         resp = await superuser_access_async_client.post(
-            "/api/v1/llm/completion", json={"question": "What is AI?"}
+            "/api/v1/llm/completion", json={"prompt": "What is AI?"}
         )
         assert resp.status_code == 403
 
@@ -157,7 +157,7 @@ class TestStreamingEndpointsAccessControl:
             mock_service.stream_completion.return_value = mock_stream()
 
             resp = await public_access_async_client.post(
-                "/api/v1/llm/completion/stream", json={"question": "What is AI?"}
+                "/api/v1/llm/completion/stream", json={"prompt": "What is AI?"}
             )
             assert resp.status_code == 200
             assert resp.headers.get("content-type", "").startswith("text/event-stream")
@@ -169,7 +169,7 @@ class TestStreamingEndpointsAccessControl:
     ):
         """Completion stream should 401 in superuser mode without auth."""
         resp = await superuser_access_async_client.post(
-            "/api/v1/llm/completion/stream", json={"question": "What is AI?"}
+            "/api/v1/llm/completion/stream", json={"prompt": "What is AI?"}
         )
         assert resp.status_code == 403
 

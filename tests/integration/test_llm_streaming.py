@@ -133,7 +133,7 @@ class TestStreamingEndpoints:
         mock_prompt.return_value = mock_prompt_instance
 
         # Make request to streaming endpoint
-        request_data = {"question": "What is the meaning of life?"}
+        request_data = {"prompt": "What is the meaning of life?"}
 
         async with public_access_async_client.stream(
             "POST", "/api/v1/llm/completion/stream", json=request_data
@@ -193,10 +193,10 @@ class TestStreamingEndpoints:
         assert response.status_code == 422
 
     async def test_completion_stream_missing_question(self, public_access_async_client):
-        """Test completion streaming with missing question"""
+        """Test completion streaming with missing prompt"""
         request_data = {
             "model_name": "gpt-4o-mini"
-            # Missing question
+            # Missing prompt
         }
 
         response = await public_access_async_client.post(

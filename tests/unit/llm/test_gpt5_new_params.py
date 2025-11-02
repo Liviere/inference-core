@@ -67,7 +67,7 @@ def test_gpt5_legacy_param_rejected_in_service_completion(monkeypatch):
 
         asyncio.run(
             svc.completion(
-                question="Q?",
+                prompt="Q?",
                 model_name="gpt-5",
                 temperature=0.5,  # legacy should raise
             )

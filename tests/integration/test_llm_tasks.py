@@ -43,9 +43,9 @@ def test_task_llm_completion_basic(monkeypatch):
         llm_svc, "create_completion_chain", _fake_create_completion_chain
     )
 
-    question = "Why is the sky blue?"
+    prompt = "Why is the sky blue?"
     out: Dict[str, Any] = task_llm_completion(
-        question=question, model_name="demo-model", temperature=0.2
+        prompt=prompt, model_name="demo-model", temperature=0.2
     )
 
     # Validate structure
@@ -53,7 +53,7 @@ def test_task_llm_completion_basic(monkeypatch):
     assert "result" in out and "metadata" in out
 
     # Result assertions
-    assert out["result"]["answer"] == f"[completion:demo-model] {question}"
+    assert out["result"]["answer"] == f"[completion:demo-model] {prompt}"
 
     # Metadata assertions
     meta = out["metadata"]

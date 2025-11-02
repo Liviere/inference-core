@@ -316,7 +316,7 @@
 						if (max_tokens) body.max_tokens = parseInt(max_tokens, 10);
 					} else {
 						endpoint = '/api/v1/llm/completion/stream';
-						body = { question: text_value };
+						body = { prompt: text_value };
 					}
 					if (model_name) body.model_name = model_name;
 					log('POST ' + endpoint);
