@@ -328,6 +328,12 @@ class MCPProfileConfig(BaseModel):
     max_run_seconds: int = Field(
         default=60, ge=1, le=600, description="Hard timeout per request in seconds"
     )
+    tool_retry_attempts: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="How many times to retry the tool-enabled agent after a failure before falling back",
+    )
     allowlist_hosts: Optional[List[str]] = Field(
         default=None, description="Optional hostname allowlist (supports wildcards)"
     )

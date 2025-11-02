@@ -288,22 +288,49 @@ class LLMService:
         config = {"callbacks": exec_callbacks}
 
         timeout = tooling.limits.get("max_run_seconds", 60)
+        max_tool_retries = int(tooling.limits.get("tool_retry_attempts", 0))
 
-        try:
-            result = await asyncio.wait_for(
-                agent_executor.ainvoke(
-                    {
-                        "input": user_input,
-                        "chat_history": history_messages,
-                    },
-                    config=config,
-                ),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"MCP-enabled chat exceeded timeout of {timeout} seconds"
-            ) from exc
+        # Retry loop: on tool/agent failure, inform the agent and try again up to the configured limit
+        attempt = 0
+        last_error: Optional[Exception] = None
+        augmented_input = user_input
+
+        while True:
+            try:
+                result = await asyncio.wait_for(
+                    agent_executor.ainvoke(
+                        {
+                            "input": augmented_input,
+                            "chat_history": history_messages,
+                        },
+                        config=config,
+                    ),
+                    timeout=timeout,
+                )
+                break  # success
+            except asyncio.TimeoutError as exc:
+                # Hard timeout – do not retry, bubble up
+                raise TimeoutError(
+                    f"MCP-enabled chat exceeded timeout of {timeout} seconds"
+                ) from exc
+            except Exception as exc:  # Tool/agent error – optionally retry
+                last_error = exc
+                if attempt >= max_tool_retries:
+                    # Exhausted retries – re-raise to allow fallback path
+                    raise
+                attempt += 1
+
+                # Provide a concise recovery hint to the agent and retry.
+                # Common Playwright failure: execution context destroyed due to navigation.
+                error_text = str(exc)
+                recovery_hint = (
+                    "Previous tool step failed. Reason: "
+                    + error_text
+                    + "\nPlease adjust and retry. If navigation occurred, wait for the page to settle before interacting (e.g., use browser_wait_for or re-locate elements), then continue."
+                )
+                augmented_input = (
+                    f"{user_input}\n\n[ToolRetry #{attempt}: {recovery_hint}]"
+                )
 
         output_text = result.get("output", "")
 
