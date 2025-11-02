@@ -360,7 +360,13 @@ class MCPConfig(BaseModel):
 
 
 class TaskConfig(BaseModel):
-    """Configuration for a task (e.g., completion, chat, agent)"""
+    """Configuration for a task (e.g., completion, chat, agent).
+    
+    Note: This is used alongside task_models dict for extended task metadata.
+    - task_models: Stores primary model name for backward compatibility
+    - task_configs: Stores full task configuration including MCP profile
+    Both are populated from the same YAML tasks section.
+    """
 
     primary: str = Field(..., description="Primary model name")
     fallback: Optional[List[str]] = Field(

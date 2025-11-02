@@ -84,8 +84,7 @@ class TestMCPIntegration:
             add_tool = next((t for t in tools if t.name == "add"), None)
             assert add_tool is not None, "Add tool not found"
             
-            # Execute the tool
-            # Source: LangChain tools – ainvoke method for async execution
+            # Execute the tool (LangChain tool interface)
             result = await add_tool.ainvoke({"a": 5, "b": 3})
             
             # Should return the sum

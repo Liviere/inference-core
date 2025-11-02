@@ -137,8 +137,19 @@ class MCPToolManager:
         
         Source: LangChain MCP Adapters – multi-server client initialization
         """
+        # Import here to avoid dependency errors if packages not installed
         try:
             from langchain_mcp_adapters.client import MultiServerMCPClient
+        except ImportError as e:
+            logger.error(
+                "MCP dependencies not installed. "
+                "Run: pip install langchain-mcp-adapters mcp"
+            )
+            self._client = None
+            self._initialized = True
+            return
+        
+        try:
             
             # Build server configurations for the client
             server_configs = {}
