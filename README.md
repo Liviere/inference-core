@@ -296,6 +296,27 @@ coach_llm = base_llm.copy_with(default_chat_system_prompt="Coach tone, ask guidi
 # coach_llm.chat(...)
 ```
 
+### Celery task factory (extend background workers)
+
+When you embed the core as a submodule you can reuse the Celery factory to add your own task modules without modifying `inference_core` directly. The helper mirrors the FastAPI application factory.
+
+```python
+from inference_core.celery.celery_main import create_celery_app, attach_base_task_class
+
+celery_app = create_celery_app(
+  include_modules=["your_project.background.tasks"],
+  autodiscover=["your_project"],
+  extra_task_routes={
+    "your_project.background.tasks.long_running": {"queue": "custom"}
+  },
+)
+
+# (Optional) reuse the shared logging hooks for lifecycle events
+attach_base_task_class(celery_app)
+```
+
+Each argument is additive – defaults from `inference_core` remain intact. You can also pass `beat_schedule_overrides` or `post_configure` callbacks for advanced tweaks.
+
 ### Direct Low-Level Usage (Optional)
 
 ```python
