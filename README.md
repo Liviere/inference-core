@@ -58,6 +58,8 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **Vector Store Integration** – Qdrant (production) or in‑memory (dev); ingestion + similarity search + async batch flows.
 
+**Model Context Protocol (MCP)** – Tool-augmented LLM reasoning with external capabilities (web browsing, file access, APIs) via standardized MCP integration. Security-first with RBAC, timeouts, and isolation. [Learn more →](docs/MCP_INTEGRATION.md)
+
 **Observability** – Structured JSON logging, metrics (Prometheus), tracing & error tracking (Sentry), future dashboards (Grafana).
 
 **Testing Layers** – Unit tests (pure logic), integration tests (API/services), performance scaffolding (Locust planned), optional real‑provider tests behind flags.
