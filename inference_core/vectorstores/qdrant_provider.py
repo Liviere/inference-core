@@ -535,6 +535,20 @@ class QdrantProvider(BaseVectorStoreProvider):
 
         # Dict with scalar sub-keys -> Nested
         if isinstance(value, dict):
+            # Range support for numeric fields (gte/lte/gt/lt)
+            range_keys = {"gte", "lte", "gt", "lt"}
+            if any(k in value for k in range_keys):
+                try:
+                    rng = models.Range(
+                        gte=value.get("gte"),
+                        lte=value.get("lte"),
+                        gt=value.get("gt"),
+                        lt=value.get("lt"),
+                    )
+                    return models.FieldCondition(key=key, range=rng)
+                except Exception:
+                    # Fall back to nested handling below if range construction fails
+                    pass
             # Split one level: build inner conditions
             inner_must: List[Any] = []
             for sub_key, sub_val in value.items():
