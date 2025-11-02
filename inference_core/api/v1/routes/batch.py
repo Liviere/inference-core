@@ -12,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from inference_core.core.dependecies import get_current_active_user, get_db, get_llm_router_dependencies
+from inference_core.core.dependecies import get_current_active_user, get_db
 from inference_core.database.sql.models.batch import BatchItemStatus, BatchJobStatus
 from inference_core.llm.config import ModelProvider, llm_config
 from inference_core.schemas.batch import (
@@ -27,9 +27,8 @@ from inference_core.services.batch_service import BatchService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/llm/batch", 
-    tags=["Batch Processing"], 
-    dependencies=get_llm_router_dependencies()
+    prefix="/llm/batch",
+    tags=["Batch Processing"],
 )
 
 

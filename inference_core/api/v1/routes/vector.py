@@ -9,7 +9,6 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from inference_core.core.dependecies import get_llm_router_dependencies
 from inference_core.schemas.vector import (
     CollectionStatsResponse,
     ErrorResponse,
@@ -30,7 +29,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/vector",
     tags=["Vector Store"],
-    dependencies=get_llm_router_dependencies(),
     responses={
         503: {"model": ErrorResponse, "description": "Vector store unavailable"},
         500: {"model": ErrorResponse, "description": "Internal server error"},
@@ -223,7 +221,7 @@ async def list_documents(
 ):
     """
     List documents by metadata filters without a text query.
-    
+
     Retrieves documents based on metadata filters with pagination support.
     Useful for listing all documents in a session, by user, or other metadata criteria.
     """

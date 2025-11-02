@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.v1.routes import auth, batch, health, llm, metrics, tasks, vector
 from .core.config import Settings, get_settings
+from .core.dependecies import get_current_active_user, get_current_superuser
 from .core.lifecycle import init_resources, shutdown_resources
 from .core.logging_config import setup_logging
 
@@ -135,7 +136,7 @@ def create_application(
     ###################################
 
     # Configure API routers explicitly
-    setup_routers(app, external_routers)
+    setup_routers(app, settings, external_routers)
 
     # Mount simple static test assets (only in debug/development) for LLM streaming manual QA
     # These assets provide a lightweight in-browser UI to exercise SSE streaming endpoints.
@@ -191,7 +192,9 @@ def create_application(
     return app
 
 
-def setup_routers(app: FastAPI, external_routers: Dict[str, APIRouter] = None) -> None:
+def setup_routers(
+    app: FastAPI, settings: Settings, external_routers: Dict[str, APIRouter] = None
+) -> None:
     """
     Setup all application routers explicitly
 
@@ -201,13 +204,29 @@ def setup_routers(app: FastAPI, external_routers: Dict[str, APIRouter] = None) -
     # Create API v1 router
     api_v1 = APIRouter(prefix="/api/v1")
 
+    # Compute LLM access control dependencies based on provided settings once for this app instance.
+    def _llm_deps_for_settings():
+        from fastapi import (
+            Depends,  # local import to avoid circular deps in type checkers
+        )
+
+        mode = settings.llm_api_access_mode
+        if mode == "public":
+            return []
+        elif mode == "user":
+            return [Depends(get_current_active_user)]
+        else:
+            return [Depends(get_current_superuser)]
+
     # Include all v1 endpoints with explicit configuration
     api_v1.include_router(health.router)
     api_v1.include_router(auth.router)
     api_v1.include_router(tasks.router)
     api_v1.include_router(llm.router)
-    api_v1.include_router(batch.router)
-    api_v1.include_router(vector.router)
+    # Apply same access control to batch endpoints (public/user/superuser) derived from settings
+    api_v1.include_router(batch.router, dependencies=_llm_deps_for_settings())
+
+    api_v1.include_router(vector.router, dependencies=_llm_deps_for_settings())
 
     # Include main API router
     app.include_router(api_v1)
