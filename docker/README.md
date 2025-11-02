@@ -71,3 +71,65 @@ docker-compose -f docker-compose.base.yml -f docker/docker-compose.{database}.ym
 ```
 
 Replace `{database}` with `sqlite`, `mysql`, or `postgres` as needed.
+
+## Playwright MCP – headful mode (visible browser window)
+
+The repository includes a helper compose file to run the Playwright MCP server in "headed" mode (browser window visible on a Linux host with X11/XWayland):
+
+- File: `docker/docker-compose.playwright-mcp.headful.yml`
+- Browser: Chromium in headed mode (no `--headless`), `--no-sandbox` for running inside the container
+- Stability: `tmpfs: /dev/shm` mounted and a separate volume for the browser cache
+
+Host requirements (Linux):
+
+- Running X11 or XWayland and the `DISPLAY` environment variable set
+- Container access to the X11 socket: mount `/tmp/.X11-unix`
+- (Optional) Allow local connections: `xhost +local:` (revoke after the session: `xhost -local:`)
+
+Quick start – optional commands (not required by the application, only for MCP debugging):
+
+```bash
+# Allow containers to access X11 (optional, depending on X policy)
+xhost +local:
+
+# Start the MCP server in headful mode
+docker compose -f docker/docker-compose.playwright-mcp.headful.yml --profile headful up
+
+# MCP will listen on http://localhost:8931
+```
+
+Notes:
+
+- If you use Wayland without XWayland, consider enabling XWayland or using a VNC/noVNC alternative.
+- For tests, stick to headless mode and normalized port settings suitable for CI.
+- The `playwright-ms` volume stores cache/browsers under `/ms-playwright` (resolves ENOENT errors on read-only filesystems).
+
+### Windows / WSL2 variants
+
+There are two ready compose files for Windows/WSL2:
+
+1. WSLg (Windows 11, GUI via WSL)
+
+- File: `docker/docker-compose.playwright-mcp.headful-wslg.yml`
+- Requires WSLg; run from a WSL shell
+- Mounts `/mnt/wslg/.X11-unix` and `runtime-dir`, sets `DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`
+
+Run:
+
+```bash
+docker compose -f docker/docker-compose.playwright-mcp.headful-wslg.yml --profile headful-wslg up
+```
+
+2. X-server on Windows (VcXsrv/Xming) over TCP
+
+- File: `docker/docker-compose.playwright-mcp.headful-windows-xserver.yml`
+- Requires a running X‑server on Windows (e.g., VcXsrv) and port 6000 open
+- Sets `DISPLAY=host.docker.internal:0.0` (Docker Desktop)
+
+Run:
+
+```bash
+docker compose -f docker/docker-compose.playwright-mcp.headful-windows-xserver.yml --profile headful-win up
+```
+
+Security note: temporarily disabling access control in the X‑server simplifies startup, but consider using restrictions (xauth) in shared environments.

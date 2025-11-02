@@ -1,0 +1,35 @@
+version: '3.9'
+
+services:
+  playwright-mcp-headful-win-x:
+    image: mcr.microsoft.com/playwright/mcp:latest
+    container_name: playwright-mcp-headful-win-x
+    entrypoint: ['node']
+    command:
+      - cli.js
+      - --browser=chromium
+      - --port=8931
+      - --no-sandbox
+      - --user-data-dir=/ms-playwright/mcp-profile
+    environment:
+      # Route X11 over TCP to Windows X server (e.g., VcXsrv)
+      - DISPLAY=host.docker.internal:0.0
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    volumes:
+      # Browser cache/profile volume
+      - playwright-ms:/ms-playwright
+    ports:
+      - '8931:8931'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: false
+    tmpfs:
+      - /dev/shm:rw
+      - /tmp:rw
+    profiles:
+      - headful-win
+
+volumes:
+  playwright-ms:
