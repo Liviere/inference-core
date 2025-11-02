@@ -28,7 +28,10 @@ except Exception:  # pragma: no cover - optional dependency guard
     BaseTool = None  # type: ignore
     SQLChatMessageHistory = None  # type: ignore
 
-from inference_core.llm.callbacks import LLMUsageCallbackHandler
+from inference_core.llm.callbacks import (
+    LLMUsageCallbackHandler,
+    ToolUsageCallbackHandler,
+)
 from inference_core.llm.chains import create_chat_chain, create_completion_chain
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.mcp_tools import get_mcp_tool_manager
@@ -278,9 +281,11 @@ class LLMService:
         )
         history_messages = history.messages
 
-        config = {}
-        if callbacks:
-            config["callbacks"] = callbacks
+        # Attach callbacks including a tool-usage logger
+        tool_logger = ToolUsageCallbackHandler()
+        exec_callbacks = list(callbacks) if callbacks else []
+        exec_callbacks.append(tool_logger)
+        config = {"callbacks": exec_callbacks}
 
         timeout = tooling.limits.get("max_run_seconds", 60)
 
@@ -306,8 +311,20 @@ class LLMService:
         history.add_user_message(user_input)
         history.add_ai_message(output_text)
 
+        tools_used = tool_logger.get_events()
+        if tools_used:
+            try:
+                names = [e.get("tool") for e in tools_used if e.get("tool")]
+                logger.info("Agent used tools: %s", names)
+            except Exception:
+                pass
+
         return LLMResponse(
-            result={"answer": output_text, "tool_profile": tooling.profile_name},
+            result={
+                "answer": output_text,
+                "tool_profile": tooling.profile_name,
+                "tools_used": tools_used,
+            },
             metadata=LLMMetadata(
                 model_name=resolved_model_name,
                 timestamp=datetime.now(UTC).isoformat(),
