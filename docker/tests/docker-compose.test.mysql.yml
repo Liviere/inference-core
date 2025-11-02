@@ -78,9 +78,7 @@ services:
       sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker 
              --loglevel=info 
              --queues=default,llm_tasks
-             --hostname=test-worker@%h 
-             --pool=gevent
-             --autoscale=200,10"
+             --hostname=test-worker@%h"
     environment:
       ENVIRONMENT: testing
       DATABASE_SERVICE: mysql+aiomysql

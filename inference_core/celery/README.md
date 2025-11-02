@@ -14,7 +14,7 @@ Sample values are provided in `.env.example`.
 2. Start the API server
    - `poetry run fastapi dev`
 3. Start a Celery worker in another terminal
-   - `poetry run celery -A inference_core.celery.celery_main:celery_app worker --pool=gevent --autoscale=200,10 --loglevel=info --queues=default`
+   - `poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info --queues=default`
 4. Optional: start Flower (Celery monitoring UI)
    - `poetry run celery -A inference_core.celery.celery_main:celery_app flower --port=5555`
 

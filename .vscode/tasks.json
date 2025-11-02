@@ -20,7 +20,7 @@
 		{
 			"label": "Celery: Start Worker",
 			"type": "shell",
-			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker --pool=gevent --autoscale=200,10 --loglevel=info",
+			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
@@ -36,7 +36,7 @@
 		{
 			"label": "Celery: Start Worker (DEBUG)",
 			"type": "shell",
-			"command": "export DEBUG_CELERY=1 && poetry run celery -A inference_core.celery.celery_main:celery_app worker --pool=gevent --autoscale=3,2 --loglevel=info",
+			"command": "export DEBUG_CELERY=1 && poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []

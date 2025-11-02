@@ -120,7 +120,7 @@ docker run -d --name redis-test -p 6379:6379 redis:7-alpine
 
 ```bash
 # In a separate terminal
-poetry run celery -A inference_core.celery.celery_main:celery_app  worker --pool=gevent --autoscale=200,10 --loglevel=info --queues=default
+poetry run celery -A inference_core.celery.celery_main:celery_app  worker --loglevel=info --queues=default
 ```
 
 **Start Flower Monitoring (optional):**
