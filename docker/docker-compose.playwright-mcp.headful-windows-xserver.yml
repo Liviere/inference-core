@@ -7,10 +7,12 @@ services:
     entrypoint: ['node']
     command:
       - cli.js
+      - --config=/app/playwright-mcp.config.json
       - --browser=chromium
       - --port=8931
       - --no-sandbox
       - --user-data-dir=/ms-playwright/mcp-profile
+      - --shared-browser-context
     environment:
       # Route X11 over TCP to Windows X server (e.g., VcXsrv)
       - DISPLAY=host.docker.internal:0.0
@@ -18,6 +20,9 @@ services:
     volumes:
       # Browser cache/profile volume
       - playwright-ms:/ms-playwright
+      # MCP server config and outputs
+      - ./docker/playwright-mcp.config.json:/app/playwright-mcp.config.json:ro
+      - ./docker/outputs:/outputs
     ports:
       - '8931:8931'
     security_opt:

@@ -7,10 +7,12 @@ services:
     entrypoint: ['node']
     command:
       - cli.js
+      - --config=/app/playwright-mcp.config.json
       - --browser=chromium
       - --port=8931
       - --no-sandbox
       - --user-data-dir=/ms-playwright/mcp-profile
+      - --shared-browser-context
     environment:
       # WSLg Wayland/XWayland environment
       - DISPLAY=:0
@@ -21,6 +23,9 @@ services:
     volumes:
       # Browser cache/profile volume
       - playwright-ms:/ms-playwright
+      # MCP server config and outputs
+      - ./docker/playwright-mcp.config.json:/app/playwright-mcp.config.json:ro
+      - ./docker/outputs:/outputs
       # WSLg sockets
       - /mnt/wslg/.X11-unix:/tmp/.X11-unix:rw
       - /mnt/wslg/runtime-dir:/tmp/runtime-dir:rw

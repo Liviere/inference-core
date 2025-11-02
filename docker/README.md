@@ -88,7 +88,7 @@ Host requirements (Linux):
 
 Quick start – optional commands (not required by the application, only for MCP debugging):
 
-```bash
+````bash
 # Allow containers to access X11 (optional, depending on X policy)
 xhost +local:
 
@@ -96,13 +96,31 @@ xhost +local:
 docker compose -f docker/docker-compose.playwright-mcp.headful.yml --profile headful up
 
 # MCP will listen on http://localhost:8931
-```
 
 Notes:
 
 - If you use Wayland without XWayland, consider enabling XWayland or using a VNC/noVNC alternative.
 - For tests, stick to headless mode and normalized port settings suitable for CI.
 - The `playwright-ms` volume stores cache/browsers under `/ms-playwright` (resolves ENOENT errors on read-only filesystems).
+
+#### MCP server configuration (keep context between sessions)
+
+- Config file: `docker/playwright-mcp.config.json`
+   - Sets `isolated: false` and a `userDataDir` to persist the browser profile.
+   - Enables `saveSession: true` to keep artifacts/state.
+   - Headful compose variants mount this file and pass `--config=/app/playwright-mcp.config.json`.
+- MCP artifacts are written to `docker/outputs` (mapped to `/outputs`).
+
+Shared context across clients:
+
+- Headful compose variants additionally pass `--shared-browser-context`, which causes all HTTP connections to MCP to use the same browser context.
+- Effect: state/login/cookies are shared between MCP client sessions and preserved across connections (together with the persistent `userDataDir` profile).
+- Separation note: in shared environments or when handling concurrent requests from different users, consider disabling this option or running separate MCP instances.
+
+Optional: to ensure the browser window never closes when the MCP session ends, attach to an existing browser:
+
+- Chrome DevTools (CDP): run Chrome with `--remote-debugging-port=9222` and set `browser.cdpEndpoint` in the config.
+- Extension: start the server with `--extension` to connect via the Chrome/Edge extension.
 
 ### Windows / WSL2 variants
 
@@ -118,7 +136,7 @@ Run:
 
 ```bash
 docker compose -f docker/docker-compose.playwright-mcp.headful-wslg.yml --profile headful-wslg up
-```
+````
 
 2. X-server on Windows (VcXsrv/Xming) over TCP
 
