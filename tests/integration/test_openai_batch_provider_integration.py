@@ -14,8 +14,8 @@ from uuid import uuid4
 import pytest
 from openai.types import Batch, BatchRequestCounts, FileObject
 
-from inference_core.llm.batch import registry
 from inference_core.llm.batch.providers.openai_provider import OpenAIBatchProvider
+from inference_core.llm.batch.registry import get_global_registry
 
 
 @pytest.mark.integration
@@ -448,6 +448,7 @@ class TestOpenAIBatchProviderIntegration:
     def test_provider_available_in_registry(self):
         """Test that OpenAI provider is properly registered and accessible."""
         # Verify provider is registered
+        registry = get_global_registry()
         assert registry.is_registered("openai") is True
 
         # Verify we can create an instance

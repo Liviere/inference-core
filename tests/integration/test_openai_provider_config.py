@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from inference_core.llm.batch import registry
+from inference_core.llm.batch.registry import get_global_registry
 
 
 class TestOpenAIProviderConfiguration:
@@ -20,6 +20,7 @@ class TestOpenAIProviderConfiguration:
         # Mock environment variable
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key-from-env"}):
             config = {"api_key": os.environ.get("OPENAI_API_KEY")}
+            registry = get_global_registry()
 
             # Create provider instance
             provider = registry.create_provider("openai", config)
@@ -31,6 +32,7 @@ class TestOpenAIProviderConfiguration:
     def test_provider_supports_configured_models(self):
         """Test that provider supports models from configuration."""
         config = {"api_key": "test-key"}
+        registry = get_global_registry()
         provider = registry.create_provider("openai", config)
 
         # Test models from llm_config.yaml batch section
@@ -44,6 +46,7 @@ class TestOpenAIProviderConfiguration:
 
     def test_provider_in_global_registry(self):
         """Test that OpenAI provider is available in global registry."""
+        registry = get_global_registry()
         assert registry.is_registered("openai") is True
 
         available_providers = registry.list()

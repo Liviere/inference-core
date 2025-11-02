@@ -22,8 +22,8 @@ class TestBatchSubmitTask:
     """Tests for batch_submit task"""
 
     @patch("inference_core.celery.tasks.batch_tasks.get_async_session")
-    @patch("inference_core.celery.tasks.batch_tasks.registry")
-    def test_batch_submit_success(self, mock_registry, mock_get_session):
+    @patch("inference_core.celery.tasks.batch_tasks.get_global_registry")
+    def test_batch_submit_success(self, mock_get_global_registry, mock_get_session):
         """Test successful batch submission"""
         # Setup mocks
         job_id = str(uuid.uuid4())
@@ -55,7 +55,9 @@ class TestBatchSubmitTask:
             mock_provider.submit.return_value = MagicMock(
                 provider_batch_id="batch_123", submitted_at=datetime.now(), item_count=1
             )
-            mock_registry.create_provider.return_value = mock_provider
+
+            registry = mock_get_global_registry.return_value
+            registry.create_provider.return_value = mock_provider
 
             # Execute task
             result = batch_submit(job_id)
@@ -124,8 +126,8 @@ class TestBatchFetchTask:
     """Tests for batch_fetch task"""
 
     @patch("inference_core.celery.tasks.batch_tasks.get_async_session")
-    @patch("inference_core.celery.tasks.batch_tasks.registry")
-    def test_batch_fetch_success(self, mock_registry, mock_get_session):
+    @patch("inference_core.celery.tasks.batch_tasks.get_global_registry")
+    def test_batch_fetch_success(self, mock_get_global_registry, mock_get_session):
         """Test successful batch fetch"""
         # Setup mocks
         job_id = str(uuid.uuid4())
@@ -156,7 +158,8 @@ class TestBatchFetchTask:
                     output_text="Success text",
                 )
             ]
-            mock_registry.create_provider.return_value = mock_provider
+            registry = mock_get_global_registry.return_value
+            registry.create_provider.return_value = mock_provider
 
             # Execute task
             result = batch_fetch(job_id)

@@ -73,7 +73,7 @@ class BatchJobResponse(BatchJobBase):
     id: UUID = Field(..., description="Unique job identifier")
     status: BatchJobStatus = Field(..., description="Current job status")
     provider_batch_id: Optional[str] = Field(
-        None, description="External provider batch ID"
+        None, description="External provider batch ID (added after submission)"
     )
     submitted_at: Optional[datetime] = Field(
         None, description="When batch was submitted"

@@ -26,7 +26,7 @@ from inference_core.llm.batch.exceptions import (
     ProviderPermanentError,
     ProviderTransientError,
 )
-from inference_core.llm.batch.registry import registry
+from inference_core.llm.batch.registry import get_global_registry
 from inference_core.llm.config import get_llm_config
 from inference_core.observability.logging import get_batch_logger
 from inference_core.observability.metrics import (
@@ -208,6 +208,7 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
     start_time = time.time()
     job_uuid = UUID(job_id)
     provider = None  # Will be set once we load the job
+    registry = get_global_registry()
 
     try:
         batch_logger.info(
@@ -546,6 +547,7 @@ def batch_poll(self) -> Dict[str, Any]:
     """
     start_time = time.time()
     redis_client = get_sync_redis()
+    registry = get_global_registry()
 
     # Log polling cycle start
     batch_logger.info(
@@ -897,6 +899,7 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
     start_time = time.time()
     job_uuid = UUID(job_id)
     provider = None
+    registry = get_global_registry()
 
     try:
         batch_logger.info(

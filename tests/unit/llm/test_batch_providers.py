@@ -21,7 +21,7 @@ from inference_core.llm.batch import (
     ProviderStatus,
     ProviderSubmitResult,
     ProviderTransientError,
-    registry,
+    get_global_registry,
 )
 from inference_core.llm.batch.exceptions import ProviderRegistrationError
 
@@ -502,15 +502,18 @@ class TestGlobalRegistry:
 
     def setup_method(self):
         """Clear global registry before each test."""
+        registry = get_global_registry()
         registry.clear()
 
     def teardown_method(self):
         """Clear global registry after each test."""
+        registry = get_global_registry()
         registry.clear()
 
     def test_global_registry_usage(self):
         """Test using the global registry instance."""
         # Register provider
+        registry = get_global_registry()
         registry.register(MockBatchProvider)
 
         # Verify it's accessible

@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from inference_core.core.dependecies import get_current_active_user, get_db
 from inference_core.database.sql.models.batch import BatchItemStatus, BatchJobStatus
-from inference_core.llm.config import ModelProvider, llm_config
+from inference_core.llm.batch.registry import BatchProviderRegistry, get_global_registry
+from inference_core.llm.config import llm_config
 from inference_core.schemas.batch import (
     BatchCancelResponse,
     BatchItemListResponse,
@@ -391,6 +392,7 @@ async def cancel_batch_job(
     job_id: UUID,
     current_user: dict = Depends(get_current_active_user),
     batch_service: BatchService = Depends(get_batch_service),
+    registry: BatchProviderRegistry = Depends(get_global_registry),
 ) -> BatchCancelResponse:
     """
     Cancel a batch processing job.
@@ -440,11 +442,6 @@ async def cancel_batch_job(
         ]:
             try:
                 # Import provider registry to get provider
-                from inference_core.llm.batch.registry import (
-                    registry as batch_provider_registry,
-                )
-
-                registry = batch_provider_registry
                 provider = registry.create_provider(job.provider)
                 cancelled_with_provider = provider.cancel(job.provider_batch_id)
 

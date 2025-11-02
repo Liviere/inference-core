@@ -17,7 +17,7 @@ from openai.types import Batch, BatchRequestCounts, FileObject
 from inference_core.llm.batch import (
     ProviderPermanentError,
     ProviderTransientError,
-    registry,
+    get_global_registry,
 )
 from inference_core.llm.batch.providers.openai_provider import OpenAIBatchProvider
 
@@ -545,6 +545,8 @@ class TestOpenAIProviderRegistration:
             OpenAIBatchProvider,
         )
 
+        registry = get_global_registry()
+
         if not registry.is_registered("openai"):
             registry.register(OpenAIBatchProvider)
 
@@ -558,6 +560,8 @@ class TestOpenAIProviderRegistration:
         from inference_core.llm.batch.providers.openai_provider import (
             OpenAIBatchProvider,
         )
+
+        registry = get_global_registry()
 
         if not registry.is_registered("openai"):
             registry.register(OpenAIBatchProvider)
