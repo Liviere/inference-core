@@ -14,7 +14,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from inference_core.core.config import Settings
+from inference_core.core.config import Settings, get_settings
 from inference_core.core.dependecies import get_db
 from inference_core.database.sql.connection import (
     Base,
@@ -123,7 +123,9 @@ async def async_test_client() -> AsyncGenerator[AsyncClient, None]:
 
 @pytest_asyncio.fixture()
 def async_test_client_factory():
-    async def _factory(**overrides) -> AsyncGenerator[AsyncClient, None]:
+    async def _factory(
+        dependency_overrides: dict | None = None, **overrides
+    ) -> AsyncGenerator[AsyncClient, None]:
         engine = create_database_engine()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -139,6 +141,10 @@ def async_test_client_factory():
         app = create_application(custom_settings=settings)
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[get_settings] = lambda: settings
+        # Apply any test-specific dependency overrides (e.g., auth, services)
+        if dependency_overrides:
+            for dep, fn in dependency_overrides.items():
+                app.dependency_overrides[dep] = fn
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
