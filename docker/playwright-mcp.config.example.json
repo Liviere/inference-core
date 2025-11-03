@@ -1,0 +1,25 @@
+{
+	"browser": {
+		"browserName": "chromium",
+		"isolated": false,
+		"userDataDir": "/ms-playwright/mcp-profile",
+		"launchOptions": {
+			"headless": false,
+			"args": ["--no-sandbox", "--start-maximized"]
+		},
+		"contextOptions": {
+			"viewport": { "width": 1920, "height": 1080 }
+		}
+	},
+	"server": {
+		"port": 8931,
+		"host": "0.0.0.0"
+	},
+	"capabilities": ["core", "core-tabs", "vision", "pdf"],
+	"outputDir": "/outputs",
+	"saveSession": true,
+	"timeouts": {
+		"action": 10000,
+		"navigation": 90000
+	}
+}

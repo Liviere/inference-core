@@ -1,0 +1,53 @@
+version: '3.9'
+
+services:
+  playwright-mcp-headful:
+    image: mcr.microsoft.com/playwright/mcp:latest
+    container_name: playwright-mcp-headful
+    restart: unless-stopped
+    # Run headed Chromium (omit --headless) and keep --no-sandbox for Docker
+    entrypoint: ['node']
+    command:
+      - cli.js
+      - --config=/app/playwright-mcp.config.json
+      - --browser=chromium
+      - --port=8931
+      - --no-sandbox
+      # Use persistent user data dir to keep the profile and reduce teardown side-effects
+      - --user-data-dir=/ms-playwright/mcp-profile
+      # Reuse the same browser context across HTTP clients (persistent session across connections)
+      - --shared-browser-context
+      - --timeout-action=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - --timeout-navigation=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
+    environment:
+      # Forward host X11 display (Linux)
+      - DISPLAY=${DISPLAY}
+      # Store browsers in a writable mounted volume (fixes ENOENT in read-only FS)
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_TIMEOUT_ACTION=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - PLAYWRIGHT_TIMEOUT_NAVIGATION=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
+    volumes:
+      # Writable browser cache/profile
+      - playwright-ms:/ms-playwright
+      # Config file for Playwright MCP server
+      - ./docker/playwright-mcp.config.json:/app/playwright-mcp.config.json:ro
+      # Outputs directory for artifacts (traces, screenshots, pdfs)
+      - ./docker/outputs:/outputs
+      # X11 socket passthrough (Linux Xorg/XWayland)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    ports:
+      - '8931:8931'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Headed Chromium needs write access + larger shared memory
+    read_only: false
+    tmpfs:
+      - /dev/shm:rw
+      - /tmp:rw
+    profiles:
+      - headful
+
+volumes:
+  playwright-ms:

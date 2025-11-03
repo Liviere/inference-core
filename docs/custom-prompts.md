@@ -99,3 +99,28 @@ Notes:
 - For chat, if you also provide `system_prompt=...` (string) per-call, it overrides the file for that request only.
 - Template engine is Jinja-compatible; plain text content works fine.
 - For backward compatibility, `completion(...)` still accepts the `question` parameter as an alias for `prompt`.
+
+## MCP tool instruction templates (Jinja2)
+
+You can inject additional, configurable instructions specifically for MCP tool-enabled chats using Jinja2 templates placed in `inference_core/custom_prompts/mcp/`.
+
+- Location: `inference_core/custom_prompts/mcp/`
+- File naming (first match wins):
+  - `<profile>.j2`, `<profile>.jinja2`, `<profile>.tmpl`
+
+Template context variables available:
+
+- `profile_name` – active MCP profile name
+- `tools` – list of tool dicts with keys: `name`, `description`, `args_schema`
+- `limits` – dict with keys such as `max_steps`, `max_run_seconds`, `tool_retry_attempts`, `allowlist_hosts`, `rate_limits`
+
+Example `inference_core/custom_prompts/mcp/profile_name.j2`:
+
+```
+{# Extra guidance for MCP sessions #}
+Custom MCP Instructions for profile "{{ profile_name }}":
+- Prefer robust selectors and re-locate elements after navigation.
+- If an action triggers navigation, wait for the page to settle (use wait tool) before interacting again.
+```
+
+The rendered text is appended to the auto-generated tool instructions.

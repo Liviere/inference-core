@@ -14,9 +14,11 @@ Conventions for custom prompts:
 """
 
 import logging
+from functools import lru_cache
 from pathlib import Path
-from typing import Optional, cast
+from typing import Any, Dict, Optional, cast
 
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateNotFound
 from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Base directory containing custom prompts
 # custom_prompts lives at inference_core/custom_prompts (one level up from llm/)
 _CUSTOM_BASE = Path(__file__).resolve().parent.parent / "custom_prompts"
+_MCP_DIR = _CUSTOM_BASE / "mcp"
 
 
 class Prompts:
@@ -102,6 +105,56 @@ def _find_custom_file(dir_name: str, prompt_name: str) -> Optional[Path]:
     for p in candidates:
         if p.exists():
             return p
+    return None
+
+
+@lru_cache(maxsize=1)
+def _get_mcp_environment() -> Optional[Environment]:
+    """Return a cached Jinja2 environment for MCP custom templates."""
+
+    if not _MCP_DIR.exists() or not _MCP_DIR.is_dir():
+        return None
+
+    try:
+        loader = FileSystemLoader(str(_MCP_DIR))
+        return Environment(
+            loader=loader,
+            autoescape=False,
+            undefined=StrictUndefined,
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+    except Exception as exc:
+        logger.warning("Failed to initialize MCP template environment: %s", exc)
+        return None
+
+
+def render_custom_mcp_instructions(
+    profile_name: str, context: Dict[str, Any]
+) -> Optional[str]:
+    """Render additional MCP instructions for a profile, if a template exists."""
+
+    env = _get_mcp_environment()
+    if env is None:
+        return None
+
+    candidates = [
+        f"{profile_name}.j2",
+        f"{profile_name}.jinja2",
+        f"{profile_name}.tmpl",
+    ]
+
+    for template_name in candidates:
+        try:
+            template = env.get_template(template_name)
+            rendered = template.render(**context)
+            return rendered.strip()
+        except TemplateNotFound:
+            continue
+        except Exception as exc:
+            logger.warning("Failed to render MCP template '%s': %s", template_name, exc)
+            return None
+
     return None
 
 

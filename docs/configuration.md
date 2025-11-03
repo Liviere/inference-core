@@ -131,3 +131,29 @@ Environment variables grouped by functional domain.
 - Rotate `SECRET_KEY`; avoid storing in repo or image layers.
 - Reduce Sentry sample rates for high throughput environments.
 - For Qdrant production add persistence volume & consider auth.
+
+## Playwright MCP / Docker timeouts
+
+You can override MCP CLI timeouts via environment variables. The compose files include these variables and provide sensible defaults.
+
+| Variable                        | Default | Description                                                 |
+| ------------------------------- | ------- | ----------------------------------------------------------- |
+| `PLAYWRIGHT_TIMEOUT_ACTION`     | 5000    | Action timeout in milliseconds (`--timeout-action`)         |
+| `PLAYWRIGHT_TIMEOUT_NAVIGATION` | 60000   | Navigation timeout in milliseconds (`--timeout-navigation`) |
+
+These are injected into the MCP CLI command by the Docker compose files (see `docker/docker-compose.playwright-mcp*.yml`). If you don't set them, compose will fall back to the defaults shown above.
+
+Examples:
+
+- Temporary in shell:
+
+```bash
+PLAYWRIGHT_TIMEOUT_ACTION=8000 PLAYWRIGHT_TIMEOUT_NAVIGATION=120000 docker compose -f docker/docker-compose.playwright-mcp.headful.yml --profile headful up
+```
+
+- Persist in `.env` (recommended):
+
+```
+PLAYWRIGHT_TIMEOUT_ACTION=8000
+PLAYWRIGHT_TIMEOUT_NAVIGATION=120000
+```

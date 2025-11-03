@@ -1,0 +1,38 @@
+services:
+  playwright-mcp:
+    image: mcr.microsoft.com/playwright/mcp:latest
+    container_name: playwright-mcp
+    restart: unless-stopped
+    entrypoint: ['node']
+    command:
+      [
+        'cli.js',
+        '--browser=chromium',
+        '--no-sandbox',
+        '--port=8931',
+        '--isolated',
+        '--timeout-action=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}',
+        '--timeout-navigation=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}',
+      ]
+    ports:
+      - '127.0.0.1:8931:8931' # host:container (nie 3000)
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_TIMEOUT_ACTION=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - PLAYWRIGHT_TIMEOUT_NAVIGATION=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
+    # Rekomendowane twarde ograniczenia i sandbox
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Chrome may need write access outside mounted volumes under isolated mode.
+    # Keep container locked down via no-new-privileges and dropped caps.
+    read_only: false
+    tmpfs:
+      - /tmp
+      - /dev/shm:rw
+    volumes:
+      - playwright-ms:/ms-playwright
+
+volumes:
+  playwright-ms:

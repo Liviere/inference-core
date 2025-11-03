@@ -193,3 +193,5 @@ inference_core/custom_prompts/**/*.j2
 inference_core/custom_prompts/**/*.jinja2
 !inference_core/custom_prompts/**/*preset*.j2
 !inference_core/custom_prompts/**/*preset*.jinja2
+# Playwright MCP local config (keep example in repo, ignore local overrides)
+docker/playwright-mcp.config.json

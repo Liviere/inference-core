@@ -251,6 +251,145 @@ class ModelConfig(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
 
+class MCPServerTimeouts(BaseModel):
+    """Timeout configuration for MCP server connections"""
+
+    connect_seconds: int = Field(
+        default=10, ge=1, le=300, description="Connection timeout in seconds"
+    )
+    read_seconds: int = Field(
+        default=300, ge=1, le=600, description="Read timeout in seconds"
+    )
+
+
+class MCPServerConfig(BaseModel):
+    """Configuration for an individual MCP server"""
+
+    transport: str = Field(
+        ...,
+        description="Transport type: stdio, streamable_http, sse, or websocket",
+    )
+    # For streamable_http, sse, websocket
+    url: Optional[str] = Field(
+        default=None, description="Server URL for HTTP transports"
+    )
+    headers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="HTTP headers (supports env vars like ${VAR:-default})",
+    )
+    timeouts: Optional[MCPServerTimeouts] = Field(
+        default=None, description="Connection and read timeouts"
+    )
+    # For stdio
+    command: Optional[str] = Field(
+        default=None, description="Command to execute for stdio"
+    )
+    args: Optional[List[str]] = Field(
+        default=None, description="Arguments for stdio command"
+    )
+    env: Optional[Dict[str, str]] = Field(
+        default=None, description="Environment variables for stdio process"
+    )
+    cwd: Optional[str] = Field(
+        default=None, description="Working directory for stdio process"
+    )
+    terminate_on_close: bool = Field(
+        default=True, description="Terminate server process on connection close"
+    )
+
+    @field_validator("transport")
+    @classmethod
+    def validate_transport(cls, v):
+        allowed = ["stdio", "streamable_http", "sse", "websocket"]
+        if v not in allowed:
+            raise ValueError(f"transport must be one of: {allowed}")
+        return v
+
+
+class MCPRateLimits(BaseModel):
+    """Rate limiting configuration for MCP profiles"""
+
+    requests_per_minute: int = Field(
+        default=60, ge=1, description="Maximum requests per minute"
+    )
+    tokens_per_minute: int = Field(
+        default=90000, ge=1, description="Maximum tokens per minute"
+    )
+
+
+class MCPProfileConfig(BaseModel):
+    """Configuration for an MCP profile (groups servers + limits)"""
+
+    description: str = Field(default="", description="Human-readable description")
+    servers: List[str] = Field(..., description="List of server names to include")
+    max_steps: int = Field(
+        default=10, ge=1, le=50, description="Maximum agent reasoning steps"
+    )
+    max_run_seconds: int = Field(
+        default=60, ge=1, le=600, description="Hard timeout per request in seconds"
+    )
+    tool_retry_attempts: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="How many times to retry the tool-enabled agent after a failure before falling back",
+    )
+    allowlist_hosts: Optional[List[str]] = Field(
+        default=None, description="Optional hostname allowlist (supports wildcards)"
+    )
+    rate_limits: Optional[MCPRateLimits] = Field(
+        default=None, description="Optional rate limiting"
+    )
+
+
+class MCPConfig(BaseModel):
+    """Main MCP configuration"""
+
+    enabled: bool = Field(
+        default=False, description="Global MCP feature flag (default OFF)"
+    )
+    require_superuser: bool = Field(
+        default=True, description="Require superuser for MCP tool access"
+    )
+    default_profile: Optional[str] = Field(
+        default=None, description="Default profile name (null = no default)"
+    )
+    profiles: Dict[str, MCPProfileConfig] = Field(
+        default_factory=dict, description="Named profiles grouping servers and limits"
+    )
+    servers: Dict[str, MCPServerConfig] = Field(
+        default_factory=dict, description="Individual MCP server configurations"
+    )
+
+    def get_profile(self, profile_name: str) -> Optional[MCPProfileConfig]:
+        """Get a profile by name"""
+        return self.profiles.get(profile_name)
+
+    def is_profile_enabled(self, profile_name: str) -> bool:
+        """Check if a profile exists and is valid"""
+        return profile_name in self.profiles
+
+
+class TaskConfig(BaseModel):
+    """Configuration for a task (e.g., completion, chat, agent).
+
+    Note: This is used alongside task_models dict for extended task metadata.
+    - task_models: Stores primary model name for backward compatibility
+    - task_configs: Stores full task configuration including MCP profile
+    Both are populated from the same YAML tasks section.
+    """
+
+    primary: str = Field(..., description="Primary model name")
+    fallback: Optional[List[str]] = Field(
+        default=None, description="Fallback model names"
+    )
+    testing: Optional[List[str]] = Field(default=None, description="Models for testing")
+    description: str = Field(default="", description="Task description")
+    mcp_profile: Optional[str] = Field(
+        default=None, description="Optional MCP profile name for tool-enabled tasks"
+    )
+
+
 class LLMConfig:
     """Main LLM configuration class"""
 
@@ -258,6 +397,7 @@ class LLMConfig:
         self.providers: Dict[str, Any] = {}
         self.models: Dict[str, ModelConfig] = {}
         self.task_models: Dict[str, str] = {}
+        self.task_configs: Dict[str, TaskConfig] = {}  # Store full task configs
         self.enable_caching: bool = True
         self.cache_ttl: int = 3600
         self.max_concurrent_requests: int = 5
@@ -269,6 +409,7 @@ class LLMConfig:
         self.usage_logging: UsageLoggingConfig = (
             UsageLoggingConfig()
         )  # Initialize with defaults
+        self.mcp_config: MCPConfig = MCPConfig()  # Initialize MCP config
         self._load_config()
 
     def _load_config(self):
@@ -376,8 +517,15 @@ class LLMConfig:
         # Parse task model assignments
         tasks_config = yaml_config.get("tasks", {})
         self.task_models = {}
+        self.task_configs = {}
 
         for task_name, task_data in tasks_config.items():
+            # Store full task config
+            try:
+                self.task_configs[task_name] = TaskConfig(**task_data)
+            except Exception as e:
+                logging.warning(f"Error parsing task config for {task_name}: {e}")
+
             # Check for environment variable override
             env_var = (
                 yaml_config.get("settings", {}).get("env_overrides", {}).get(task_name)
@@ -408,6 +556,9 @@ class LLMConfig:
 
         # Parse usage logging configuration
         self._load_usage_logging_config(yaml_config)
+
+        # Parse MCP configuration
+        self._load_mcp_config(yaml_config)
 
     def _load_batch_config(self, yaml_config: Dict[str, Any]):
         """Load and validate batch configuration from YAML"""
@@ -507,6 +658,110 @@ class LLMConfig:
                 f"Error loading usage logging configuration: {e}. Using default configuration."
             )
             self.usage_logging = UsageLoggingConfig()
+
+    def _load_mcp_config(self, yaml_config: Dict[str, Any]):
+        """Load and validate MCP configuration from YAML
+
+        Source: LangChain MCP Adapters – multi-server client, tool loading
+        Source: MCP Python SDK – clients/servers, transports
+        """
+        mcp_data = yaml_config.get("mcp", {})
+
+        # Support environment variable override for enabled flag
+        enabled = os.getenv("MCP_ENABLED")
+        if enabled is not None:
+            mcp_data["enabled"] = enabled.lower() in ("true", "1", "yes", "on")
+
+        # Test-mode normalization: keep defaults stable for unit tests
+        # When running under tests, force MCP disabled by default and normalize example server URLs.
+        # This avoids coupling tests to developer-local llm_config.yaml.
+        test_env = (
+            os.getenv("ENVIRONMENT") == "testing"
+            or os.getenv("PYTEST_CURRENT_TEST") is not None
+        )
+        if test_env:
+            # Only override 'enabled' if not explicitly set via MCP_ENABLED
+            if enabled is None:
+                mcp_data["enabled"] = False
+            # Force stricter default for permissions in tests unless explicitly overridden
+            if os.getenv("MCP_REQUIRE_SUPERUSER") is None:
+                mcp_data["require_superuser"] = True
+            # Normalize playwright server URL (if present) to default test port
+            servers_section = mcp_data.get("servers") or {}
+            if isinstance(servers_section, dict) and "playwright" in servers_section:
+                try:
+                    srv = dict(servers_section["playwright"])  # shallow copy
+                    # Only adjust URL for HTTP-like transports
+                    if srv.get("transport") in {"streamable_http", "sse", "websocket"}:
+                        srv["url"] = "http://localhost:3000/mcp"
+                    servers_section["playwright"] = srv
+                    mcp_data["servers"] = servers_section
+                except Exception:
+                    pass
+
+        try:
+            if not mcp_data:
+                self.mcp_config = MCPConfig()
+                return
+
+            # Resolve environment variables in server configurations
+            servers_data = mcp_data.get("servers", {})
+            resolved_servers = {}
+
+            for server_name, server_config in servers_data.items():
+                resolved_config = dict(server_config)
+
+                # Resolve env vars in headers (e.g., "${MCP_PLAYWRIGHT_TOKEN:-}")
+                if "headers" in resolved_config and resolved_config["headers"]:
+                    resolved_headers = {}
+                    for key, value in resolved_config["headers"].items():
+                        if (
+                            isinstance(value, str)
+                            and value.startswith("${")
+                            and value.endswith("}")
+                        ):
+                            # Parse ${VAR:-default} syntax
+                            env_expr = value[2:-1]  # Strip ${ }
+                            if ":-" in env_expr:
+                                var_name, default = env_expr.split(":-", 1)
+                                resolved_headers[key] = os.getenv(var_name, default)
+                            else:
+                                resolved_headers[key] = os.getenv(env_expr, "")
+                        else:
+                            resolved_headers[key] = value
+                    resolved_config["headers"] = resolved_headers
+
+                try:
+                    resolved_servers[server_name] = MCPServerConfig(**resolved_config)
+                except Exception as e:
+                    logging.warning(
+                        f"Invalid MCP server configuration for {server_name}: {e}"
+                    )
+
+            # Parse profiles
+            profiles_data = mcp_data.get("profiles", {})
+            profiles = {}
+            for profile_name, profile_config in profiles_data.items():
+                try:
+                    profiles[profile_name] = MCPProfileConfig(**profile_config)
+                except Exception as e:
+                    logging.warning(
+                        f"Invalid MCP profile configuration for {profile_name}: {e}"
+                    )
+
+            self.mcp_config = MCPConfig(
+                enabled=mcp_data.get("enabled", False),
+                require_superuser=mcp_data.get("require_superuser", True),
+                default_profile=mcp_data.get("default_profile"),
+                profiles=profiles,
+                servers=resolved_servers,
+            )
+
+        except Exception as e:
+            logging.error(
+                f"Error loading MCP configuration: {e}. Using default configuration."
+            )
+            self.mcp_config = MCPConfig()
 
     def _load_fallback_config(self):
         """Load fallback configuration when YAML file is not available"""

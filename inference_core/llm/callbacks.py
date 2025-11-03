@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from langchain_core.callbacks import UsageMetadataCallbackHandler
+from langchain_core.callbacks import BaseCallbackHandler, UsageMetadataCallbackHandler
 
 from .config import PricingConfig
 from .usage_logging import UsageNormalizer, UsageSession
@@ -151,3 +151,69 @@ class LLMUsageCallbackHandler(UsageMetadataCallbackHandler):
 
 
 __all__ = ["LLMUsageCallbackHandler"]
+
+
+class ToolUsageCallbackHandler(BaseCallbackHandler):
+    """Callback handler that logs and captures tool invocations.
+
+    Captures:
+    - on_tool_start: tool name and input string
+    - on_tool_end: output string
+    - on_tool_error: error message
+
+    Stores a list of events in chronological order so the caller can inspect
+    which MCP tools were used during an agent run.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[dict] = []
+
+    # LangChain core uses serialized schema for tools; handle both legacy and new signatures
+    def on_tool_start(self, serialized, input_str: str | None = None, **kwargs):  # type: ignore[override]
+        try:
+            # `serialized` may be a dict like {"name": "browser_navigate", ...}
+            name = None
+            if isinstance(serialized, dict):
+                name = (
+                    serialized.get("name")
+                    or serialized.get("tool")
+                    or serialized.get("id")
+                )
+            event = {"event": "start", "tool": name or "<unknown>", "input": input_str}
+            logger.info(f"Tool start: {event['tool']} input={input_str!r}")
+            self.events.append(event)
+        except Exception as e:  # pragma: no cover
+            logger.debug(f"ToolUsageCallbackHandler.on_tool_start error: {e}")
+
+    def on_tool_end(self, output: str | None = None, **kwargs):  # type: ignore[override]
+        try:
+            # Attach output to the last 'start' if exists; else push standalone end
+            payload = output or ""
+            # Truncate very large payloads for logs
+            short = payload if len(payload) <= 2000 else payload[:2000] + "…"
+            # Try to annotate the most recent start
+            for item in reversed(self.events):
+                if item.get("event") == "start" and "output" not in item:
+                    item["output"] = short
+                    item["event"] = "finish"
+                    logger.info("Tool end: %s", item.get("tool"))
+                    break
+            else:
+                self.events.append({"event": "finish", "output": short})
+        except Exception as e:  # pragma: no cover
+            logger.debug(f"ToolUsageCallbackHandler.on_tool_end error: {e}")
+
+    def on_tool_error(self, error: Exception, **kwargs):  # type: ignore[override]
+        try:
+            err_text = str(error)
+            self.events.append({"event": "error", "error": err_text})
+            logger.warning("Tool error: %s", err_text)
+        except Exception:  # pragma: no cover
+            pass
+
+    def get_events(self) -> list[dict]:
+        return list(self.events)
+
+
+__all__.append("ToolUsageCallbackHandler")

@@ -1,0 +1,51 @@
+version: '3.9'
+
+services:
+  playwright-mcp-headful-wslg:
+    image: mcr.microsoft.com/playwright/mcp:latest
+    container_name: playwright-mcp-headful-wslg
+    restart: unless-stopped
+    entrypoint: ['node']
+    command:
+      - cli.js
+      - --config=/app/playwright-mcp.config.json
+      - --browser=chromium
+      - --port=8931
+      - --no-sandbox
+      - --user-data-dir=/ms-playwright/mcp-profile
+      - --shared-browser-context
+      - --timeout-action=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - --timeout-navigation=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
+    environment:
+      # WSLg Wayland/XWayland environment
+      - DISPLAY=:0
+      - WAYLAND_DISPLAY=wayland-0
+      - XDG_RUNTIME_DIR=/tmp/runtime-dir
+      # Writable cache for browsers
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_TIMEOUT_ACTION=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - PLAYWRIGHT_TIMEOUT_NAVIGATION=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
+    volumes:
+      # Browser cache/profile volume
+      - playwright-ms:/ms-playwright
+      # MCP server config and outputs
+      - ./docker/playwright-mcp.config.json:/app/playwright-mcp.config.json:ro
+      - ./docker/outputs:/outputs
+      # WSLg sockets
+      - /mnt/wslg/.X11-unix:/tmp/.X11-unix:rw
+      - /mnt/wslg/runtime-dir:/tmp/runtime-dir:rw
+    ports:
+      - '8931:8931'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: false
+    tmpfs:
+      - /dev/shm:rw
+      - /tmp:rw
+    profiles:
+      - headful-wslg
+
+volumes:
+  playwright-ms:
