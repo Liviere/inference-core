@@ -17,11 +17,15 @@ services:
       - --user-data-dir=/ms-playwright/mcp-profile
       # Reuse the same browser context across HTTP clients (persistent session across connections)
       - --shared-browser-context
+      - --timeout-action=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - --timeout-navigation=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
     environment:
       # Forward host X11 display (Linux)
       - DISPLAY=${DISPLAY}
       # Store browsers in a writable mounted volume (fixes ENOENT in read-only FS)
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_TIMEOUT_ACTION=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - PLAYWRIGHT_TIMEOUT_NAVIGATION=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
     volumes:
       # Writable browser cache/profile
       - playwright-ms:/ms-playwright

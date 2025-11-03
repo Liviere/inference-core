@@ -14,6 +14,8 @@ services:
       - --no-sandbox
       - --user-data-dir=/ms-playwright/mcp-profile
       - --shared-browser-context
+      - --timeout-action=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - --timeout-navigation=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
     environment:
       # WSLg Wayland/XWayland environment
       - DISPLAY=:0
@@ -21,6 +23,8 @@ services:
       - XDG_RUNTIME_DIR=/tmp/runtime-dir
       # Writable cache for browsers
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_TIMEOUT_ACTION=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - PLAYWRIGHT_TIMEOUT_NAVIGATION=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
     volumes:
       # Browser cache/profile volume
       - playwright-ms:/ms-playwright

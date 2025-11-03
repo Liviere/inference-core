@@ -110,6 +110,31 @@ Notes:
    - Sets `isolated: false` and a `userDataDir` to persist the browser profile.
    - Enables `saveSession: true` to keep artifacts/state.
    - Headful compose variants mount this file and pass `--config=/app/playwright-mcp.config.json`.
+
+Timeouts configuration via environment variables
+
+You can override the MCP CLI timeouts using environment variables when starting the containers. These are injected into the CLI command by the compose files and have sensible defaults:
+
+- `PLAYWRIGHT_TIMEOUT_ACTION` — action timeout in milliseconds (CLI flag `--timeout-action`), default: `5000`
+- `PLAYWRIGHT_TIMEOUT_NAVIGATION` — navigation timeout in milliseconds (CLI flag `--timeout-navigation`), default: `60000`
+
+Examples (temporary variables in shell):
+
+```bash
+PLAYWRIGHT_TIMEOUT_ACTION=8000 \
+PLAYWRIGHT_TIMEOUT_NAVIGATION=120000 \
+docker compose -f docker/docker-compose.playwright-mcp.headful.yml --profile headful up
+```
+
+Or add them to your `.env` file in the repository root (recommended):
+
+```
+# .env
+PLAYWRIGHT_TIMEOUT_ACTION=8000
+PLAYWRIGHT_TIMEOUT_NAVIGATION=120000
+```
+
+The compose files provide default fallbacks, so these variables are optional.
 - MCP artifacts are written to `docker/outputs` (mapped to `/outputs`).
 
 Shared context across clients:

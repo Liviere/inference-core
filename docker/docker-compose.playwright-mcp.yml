@@ -11,11 +11,15 @@ services:
         '--no-sandbox',
         '--port=8931',
         '--isolated',
+        '--timeout-action=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}',
+        '--timeout-navigation=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}',
       ]
     ports:
       - '127.0.0.1:8931:8931' # host:container (nie 3000)
     environment:
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_TIMEOUT_ACTION=${PLAYWRIGHT_TIMEOUT_ACTION:-5000}
+      - PLAYWRIGHT_TIMEOUT_NAVIGATION=${PLAYWRIGHT_TIMEOUT_NAVIGATION:-60000}
     # Rekomendowane twarde ograniczenia i sandbox
     security_opt:
       - no-new-privileges:true
