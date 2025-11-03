@@ -36,7 +36,7 @@ from inference_core.llm.chains import create_chat_chain, create_completion_chain
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.mcp_tools import get_mcp_tool_manager
 from inference_core.llm.models import get_model_factory, task_override
-from inference_core.llm.prompts import ChatPrompts
+from inference_core.llm.prompts import ChatPrompts, render_custom_mcp_instructions
 from inference_core.llm.usage_logging import UsageLogger
 from inference_core.services.llm_usage_service import get_llm_usage_service
 
@@ -179,6 +179,12 @@ class LLMService:
                 f"Hard timeout for tool usage: {limits.max_run_seconds} seconds."
             )
 
+        if getattr(limits, "tool_retry_attempts", None):
+            lines.append(
+                "Automatic retries on tool failures: "
+                f"{limits.tool_retry_attempts} attempt(s) before fallback."
+            )
+
         lines.append("Available tools:")
         for tool in tools:
             name = getattr(tool, "name", "unknown-tool")
@@ -188,11 +194,34 @@ class LLMService:
         lines.append(
             "If a tool returns data, summarise the outcome for the user before responding."
         )
-        # Dev ergonomics: avoid closing the browser unless the user explicitly asks.
-        # This helps when using headful Playwright MCP during interactive sessions.
-        lines.append(
-            "Do NOT call 'browser_close' unless the user explicitly instructs you to close the browser."
+        tools_payload = [
+            {
+                "name": getattr(tool, "name", None),
+                "description": getattr(tool, "description", None),
+                "args_schema": getattr(tool, "args_schema", None),
+            }
+            for tool in tools
+        ]
+        limits_payload = {
+            "max_steps": getattr(limits, "max_steps", None),
+            "max_run_seconds": getattr(limits, "max_run_seconds", None),
+            "tool_retry_attempts": getattr(limits, "tool_retry_attempts", None),
+            "allowlist_hosts": getattr(limits, "allowlist_hosts", None),
+            "rate_limits": getattr(limits, "rate_limits", None),
+        }
+
+        custom = render_custom_mcp_instructions(
+            profile_name,
+            {
+                "profile_name": profile_name,
+                "tools": tools_payload,
+                "limits": limits_payload,
+            },
         )
+        if custom:
+            lines.append("")
+            lines.append(custom)
+
         return "\n".join(lines)
 
     @staticmethod
