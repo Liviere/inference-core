@@ -106,6 +106,7 @@ Notes:
 #### MCP server configuration (keep context between sessions)
 
 - Config file: `docker/playwright-mcp.config.json`
+ - Config file: `docker/playwright-mcp.config.example.json` (copy to `docker/playwright-mcp.config.json` and edit; the non-example file is gitignored)
    - Sets `isolated: false` and a `userDataDir` to persist the browser profile.
    - Enables `saveSession: true` to keep artifacts/state.
    - Headful compose variants mount this file and pass `--config=/app/playwright-mcp.config.json`.

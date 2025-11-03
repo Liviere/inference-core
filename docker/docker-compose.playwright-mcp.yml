@@ -2,6 +2,7 @@ services:
   playwright-mcp:
     image: mcr.microsoft.com/playwright/mcp:latest
     container_name: playwright-mcp
+    restart: unless-stopped
     entrypoint: ['node']
     command:
       [

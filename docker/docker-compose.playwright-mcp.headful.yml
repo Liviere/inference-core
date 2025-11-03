@@ -4,6 +4,7 @@ services:
   playwright-mcp-headful:
     image: mcr.microsoft.com/playwright/mcp:latest
     container_name: playwright-mcp-headful
+    restart: unless-stopped
     # Run headed Chromium (omit --headless) and keep --no-sandbox for Docker
     entrypoint: ['node']
     command:

@@ -4,6 +4,7 @@ services:
   playwright-mcp-headful-win-x:
     image: mcr.microsoft.com/playwright/mcp:latest
     container_name: playwright-mcp-headful-win-x
+    restart: unless-stopped
     entrypoint: ['node']
     command:
       - cli.js

@@ -4,6 +4,7 @@ services:
   playwright-mcp-headful-wslg:
     image: mcr.microsoft.com/playwright/mcp:latest
     container_name: playwright-mcp-headful-wslg
+    restart: unless-stopped
     entrypoint: ['node']
     command:
       - cli.js
