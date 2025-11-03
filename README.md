@@ -415,6 +415,7 @@ Central references:
 - LLM provider & model mapping: `llm_config.yaml`
 - Vector settings: `VECTOR_*` ENV + [`docs/vector-store.md`](docs/vector-store.md)
 - Access control: `LLM_API_ACCESS_MODE` (`public`, `user`, `superuser`)
+- MCP / Playwright MCP configuration: see the `mcp` section in `llm_config.yaml`, the MCP guide at [`docs/mcp-integration.md`](docs/mcp-integration.md), and the example local server config at `docker/playwright-mcp.config.example.json`.
 
 Production tips:
 
