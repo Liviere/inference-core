@@ -438,14 +438,16 @@ class LLMService:
             model_params: Parameters to pass to the model
             prompt_name: Name of the prompt template to use
             system_prompt: System prompt to use
-            tools: Optional list of tools to bind to the model (for MCP integration)
+            tools: Optional list of tools (reserved for future use; currently not used in base implementation.
+                   The MCP tool integration uses a separate agent-based approach via _chat_with_tools_via_chain)
         
         Note:
-            When tools are provided, they are currently only used for informational
-            purposes in this base implementation. The actual tool execution is handled
-            by _chat_with_tools_via_chain which uses an agent executor.
-            This design preserves the factory hook pattern while allowing subclasses
-            to customize the chain building process.
+            This method is called by both standard chat and MCP tool-enabled chat flows.
+            When MCP tools are enabled, the system prompt will already be augmented with
+            tool instructions by _chat_with_tools_via_chain before calling this method.
+            
+            Subclasses can override this method to customize chain building behavior.
+            All customizations will be preserved even when MCP tools are enabled.
         """
         kwargs: Dict[str, Any] = dict(model_name=model_name)
         effective_prompt_name = prompt_name or self._default_prompt_names.get("chat")
