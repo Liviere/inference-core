@@ -250,24 +250,25 @@ class LLMService:
         prompt_name: Optional[str],
         system_prompt: Optional[str],
         tooling: "LLMService._ToolingContext",
+        task_name: str = "chat",
         callbacks,
     ) -> LLMResponse:
         """Run tool-enabled chat using the chain factory hook.
-        
+
         This method builds a chat chain using the factory hook (_build_chat_chain),
         ensuring custom configurations are preserved, and then wraps it with tool
         execution capability.
-        
+
         Args:
             session_id: Chat session ID
             user_input: User's message
             model_name: Model name
-            model_params: Model parameters  
+            model_params: Model parameters
             prompt_name: Prompt template name
             system_prompt: System prompt text
             tooling: MCP tooling context with tools and instructions
             callbacks: Callback handlers
-            
+
         Returns:
             LLMResponse with tool-augmented reply
         """
@@ -280,10 +281,12 @@ class LLMService:
         augmented_system_prompt = system_prompt
         if tooling.instructions:
             if augmented_system_prompt:
-                augmented_system_prompt = f"{augmented_system_prompt}\n\n{tooling.instructions}"
+                augmented_system_prompt = (
+                    f"{augmented_system_prompt}\n\n{tooling.instructions}"
+                )
             else:
                 augmented_system_prompt = tooling.instructions
-        
+
         # Build the base chat chain using the factory hook
         # This ensures all custom configurations (prompt templates, system prompts, model params) are preserved
         chain = self._build_chat_chain(
@@ -293,16 +296,16 @@ class LLMService:
             system_prompt=augmented_system_prompt,
             tools=None,  # Don't bind tools yet - we'll do it for the agent
         )
-        
+
         # Get the model from the chain and bind tools to it
         # The chain.model_name gives us the resolved model name
-        with task_override("chat"):
+        with task_override(task_name):
             model = self.model_factory.create_model(chain.model_name, **model_params)
         if not model:
             raise ValueError(
                 f"Failed to create model '{chain.model_name}' for MCP chat"
             )
-        
+
         # Create agent prompt with the augmented system prompt
         # We use a standard agent structure since we need the agent_scratchpad
         agent_prompt = ChatPromptTemplate.from_messages(
@@ -313,7 +316,7 @@ class LLMService:
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
             ]
         )
-        
+
         # Create agent with tools
         agent = create_openai_tools_agent(model, tooling.tools, agent_prompt)
         agent_executor = AgentExecutor(
@@ -323,7 +326,7 @@ class LLMService:
             max_iterations=tooling.limits.get("max_steps", 10),
             verbose=False,
         )
-        
+
         # Load chat history
         if SQLChatMessageHistory is None:
             raise RuntimeError(
@@ -334,15 +337,15 @@ class LLMService:
             connection_string=self._sync_connection_string(),
         )
         history_messages = history.messages
-        
+
         # Execute agent with callbacks
         tool_logger = ToolUsageCallbackHandler()
         exec_callbacks = list(callbacks) if callbacks else []
         exec_callbacks.append(tool_logger)
         config = {"callbacks": exec_callbacks}
-        
+
         timeout = tooling.limits.get("max_run_seconds", 60)
-        
+
         try:
             result = await asyncio.wait_for(
                 agent_executor.ainvoke(
@@ -358,13 +361,13 @@ class LLMService:
             raise TimeoutError(
                 f"MCP-enabled chat exceeded timeout of {timeout} seconds"
             ) from exc
-        
+
         output_text = result.get("output", "")
-        
+
         # Persist history
         history.add_user_message(user_input)
         history.add_ai_message(output_text)
-        
+
         # Log tool usage
         tools_used = tool_logger.get_events()
         if tools_used:
@@ -373,7 +376,7 @@ class LLMService:
                 logger.info("Agent used tools: %s", names)
             except Exception:
                 pass
-        
+
         return LLMResponse(
             result={
                 "reply": output_text,
@@ -432,7 +435,7 @@ class LLMService:
         tools: Optional[List[Any]] = None,
     ):
         """Factory hook to build chat chain; subclasses can override.
-        
+
         Args:
             model_name: Name of the model to use
             model_params: Parameters to pass to the model
@@ -440,12 +443,12 @@ class LLMService:
             system_prompt: System prompt to use
             tools: Optional list of tools (reserved for future use; currently not used in base implementation.
                    The MCP tool integration uses a separate agent-based approach via _chat_with_tools_via_chain)
-        
+
         Note:
             This method is called by both standard chat and MCP tool-enabled chat flows.
             When MCP tools are enabled, the system prompt will already be augmented with
             tool instructions by _chat_with_tools_via_chain before calling this method.
-            
+
             Subclasses can override this method to customize chain building behavior.
             All customizations will be preserved even when MCP tools are enabled.
         """
@@ -456,7 +459,7 @@ class LLMService:
         effective_system_prompt = system_prompt or self._default_chat_system_prompt
         if effective_system_prompt is not None:
             kwargs["system_prompt"] = effective_system_prompt
-            
+
         kwargs.update(model_params)
         return create_chat_chain(**kwargs)
 
@@ -754,7 +757,7 @@ class LLMService:
                 effective_task,
                 user_context=None,
             )
-            
+
             # If tools are available, use agent-based chat with tool execution
             if tooling_ctx is not None:
                 try:
@@ -766,12 +769,15 @@ class LLMService:
                             user_input=user_input,
                             model_name=model_name,
                             model_params=model_params,
-                            prompt_name=prompt_name or self._default_prompt_names.get(effective_task),
-                            system_prompt=system_prompt or self._default_chat_system_prompt,
+                            prompt_name=prompt_name
+                            or self._default_prompt_names.get(effective_task),
+                            system_prompt=system_prompt
+                            or self._default_chat_system_prompt,
                             tooling=tooling_ctx,
                             callbacks=callbacks,
+                            task_name=effective_task,
                         )
-                    
+
                     usage_metadata = usage_session.accumulated_usage
                     self._update_usage_stats()
                     await usage_session.finalize(
@@ -787,7 +793,7 @@ class LLMService:
                         tool_err,
                     )
                     # Fall through to standard chat chain
-            
+
             # Use factory hook for standard chat (no tools)
             with task_override(effective_task):
                 chain = self._build_chat_chain(
