@@ -193,6 +193,7 @@ class ChatChain(BaseChain):
     def _build_chain(self):
         """Build the chat chain with message history support"""
         model = self._get_model("chat")
+        
         # Determine base prompt
         if self._custom_prompt is not None:
             prompt = self._custom_prompt
@@ -311,7 +312,18 @@ def create_chat_chain(
     system_prompt: Optional[str] = None,
     **model_params,
 ) -> ChatChain:
-    """Create a chat chain instance"""
+    """Create a chat chain instance
+    
+    Args:
+        model_name: Name of the model to use
+        prompt: Optional custom ChatPromptTemplate
+        prompt_name: Name of a predefined prompt template
+        system_prompt: System prompt text
+        **model_params: Additional model parameters
+        
+    Returns:
+        ChatChain instance
+    """
     return ChatChain(
         model_name,
         prompt=prompt,
