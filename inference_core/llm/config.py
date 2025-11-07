@@ -370,6 +370,23 @@ class MCPConfig(BaseModel):
         return profile_name in self.profiles
 
 
+class ToolLimits(BaseModel):
+    """Limits configuration for tool execution"""
+
+    max_steps: int = Field(
+        default=10, ge=1, le=50, description="Maximum agent reasoning steps"
+    )
+    max_run_seconds: int = Field(
+        default=60, ge=1, le=600, description="Hard timeout per request in seconds"
+    )
+    tool_retry_attempts: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="Retry attempts for tool failures before fallback",
+    )
+
+
 class TaskConfig(BaseModel):
     """Configuration for a task (e.g., completion, chat, agent).
 
@@ -387,6 +404,16 @@ class TaskConfig(BaseModel):
     description: str = Field(default="", description="Task description")
     mcp_profile: Optional[str] = Field(
         default=None, description="Optional MCP profile name for tool-enabled tasks"
+    )
+    local_tool_providers: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of local tool provider names (non-MCP)",
+    )
+    tool_limits: Optional[ToolLimits] = Field(
+        default=None, description="Optional tool execution limits"
+    )
+    allowed_tools: Optional[List[str]] = Field(
+        default=None, description="Optional allowlist of tool names"
     )
 
 
