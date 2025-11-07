@@ -830,9 +830,10 @@ class LLMService:
             model_params = self._merge_params(effective_task, runtime_params)
 
             # Check for MCP tooling context
+            # Pass user_id into tooling context so local providers can scope tools.
             tooling_ctx = await self._get_tooling_context(
                 effective_task,
-                user_context=None,
+                user_context={"user_id": user_id} if user_id else None,
             )
 
             # If tools are available, use agent-based chat with tool execution
