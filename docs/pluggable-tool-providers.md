@@ -440,9 +440,33 @@ class CalculatorTool(BaseTool):
     description = "Perform basic calculations"
     
     def _run(self, expression: str) -> str:
+        """Safe calculation without using eval()
+        
+        In production, use a library like sympy or implement proper parsing.
+        This is a simplified example for demonstration.
+        """
         try:
-            result = eval(expression, {"__builtins__": {}})
-            return f"Result: {result}"
+            import operator
+            
+            # Basic operator map for safe calculation
+            ops = {
+                '+': operator.add,
+                '-': operator.sub,
+                '*': operator.mul,
+                '/': operator.truediv,
+            }
+            
+            # Very basic parser for "num op num" expressions
+            for op_str, op_func in ops.items():
+                if op_str in expression:
+                    parts = expression.split(op_str)
+                    if len(parts) == 2:
+                        left = float(parts[0].strip())
+                        right = float(parts[1].strip())
+                        result = op_func(left, right)
+                        return f"Result: {result}"
+            
+            return f"Could not parse '{expression}'. Use format like '2 + 2'"
         except Exception as e:
             return f"Error: {str(e)}"
     

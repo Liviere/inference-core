@@ -41,9 +41,34 @@ class CalculatorTool(BaseTool):
     def _run(self, expression: str) -> str:
         """Execute calculation synchronously"""
         try:
-            # Safe eval with restricted builtins
-            result = eval(expression, {"__builtins__": {}}, {})
-            return f"The result is: {result}"
+            # Use a simple calculation parser instead of eval for security
+            # In production, use a library like sympy or implement proper parsing
+            # This is a simplified example for demonstration only
+            import operator
+            
+            # Basic operator map for safe calculation
+            ops = {
+                '+': operator.add,
+                '-': operator.sub,
+                '*': operator.mul,
+                '/': operator.truediv,
+            }
+            
+            # Very basic parser - in production use a proper math library
+            # This handles simple "num op num" expressions
+            for op_str, op_func in ops.items():
+                if op_str in expression:
+                    parts = expression.split(op_str)
+                    if len(parts) == 2:
+                        try:
+                            left = float(parts[0].strip())
+                            right = float(parts[1].strip())
+                            result = op_func(left, right)
+                            return f"The result is: {result}"
+                        except ValueError:
+                            pass
+            
+            return f"Could not parse expression '{expression}'. Use format like '2 + 2' or '10 * 5'"
         except Exception as e:
             return f"Error calculating '{expression}': {str(e)}"
 
