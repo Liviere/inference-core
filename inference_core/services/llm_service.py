@@ -100,64 +100,141 @@ class LLMService:
         task_type: str,
         user_context: Optional[Dict[str, Any]] = None,
     ) -> Optional["LLMService._ToolingContext"]:
-        """Return tooling context when MCP is enabled for the task.
+        """Return tooling context aggregating MCP and local tool providers.
 
         Args:
             task_type: Effective task type (e.g. "chat")
             user_context: Optional dictionary with user flags (expects is_superuser)
 
         Returns:
-            Tooling context or None when MCP should not be used.
+            Tooling context or None when no tools are available.
         """
-
-        mcp_cfg = self.config.mcp_config
-        if not (mcp_cfg and mcp_cfg.enabled):
-            return None
+        from inference_core.llm.tools import load_tools_for_task
 
         task_config = self.config.task_configs.get(task_type)
-        profile_name = task_config.mcp_profile if task_config else None
-        if not profile_name:
+
+        # Collect tools from MCP if configured
+        mcp_tools = []
+        mcp_profile_name = None
+        mcp_limits = {}
+
+        mcp_cfg = self.config.mcp_config
+        if mcp_cfg and mcp_cfg.enabled and task_config:
+            profile_name = task_config.mcp_profile
+            if profile_name:
+                limits = mcp_cfg.get_profile(profile_name)
+                if limits is None:
+                    logger.warning(
+                        "MCP profile '%s' referenced by task '%s' is not defined",
+                        profile_name,
+                        task_type,
+                    )
+                else:
+                    try:
+                        mcp_tools = await self._mcp_tool_manager.get_tools(
+                            profile_name=profile_name,
+                            user=user_context,
+                        )
+                        mcp_profile_name = profile_name
+                        mcp_limits = self._mcp_tool_manager.get_profile_limits(
+                            profile_name
+                        )
+                        logger.info(
+                            f"Loaded {len(mcp_tools)} tools from MCP profile '{profile_name}'"
+                        )
+                    except PermissionError:
+                        logger.warning(
+                            "User lacks permission for MCP profile '%s' (task '%s')",
+                            profile_name,
+                            task_type,
+                        )
+                    except Exception as exc:  # pragma: no cover - safety log
+                        logger.error(
+                            "Failed to load MCP tools for profile '%s': %s",
+                            profile_name,
+                            exc,
+                        )
+
+        # Collect tools from local providers if configured
+        local_tools = []
+        if task_config and task_config.local_tool_providers:
+            try:
+                local_tools = await load_tools_for_task(
+                    task_type=task_type,
+                    provider_names=task_config.local_tool_providers,
+                    user_context=user_context,
+                    allowed_tools=task_config.allowed_tools,
+                )
+                logger.info(
+                    f"Loaded {len(local_tools)} tools from local providers "
+                    f"{task_config.local_tool_providers} for task '{task_type}'"
+                )
+            except Exception as exc:
+                logger.error(
+                    f"Failed to load local tools for task '{task_type}': {exc}",
+                    exc_info=True,
+                )
+
+        # Merge tools (deduplicate by name, MCP tools take precedence)
+        all_tools = []
+        seen_names = set()
+
+        for tool in mcp_tools:
+            tool_name = getattr(tool, "name", None)
+            if tool_name and tool_name not in seen_names:
+                # Apply allowlist if configured
+                if task_config and task_config.allowed_tools:
+                    if tool_name not in task_config.allowed_tools:
+                        logger.debug(
+                            f"MCP tool '{tool_name}' not in allowlist; skipping"
+                        )
+                        continue
+                all_tools.append(tool)
+                seen_names.add(tool_name)
+
+        for tool in local_tools:
+            tool_name = getattr(tool, "name", None)
+            if tool_name and tool_name not in seen_names:
+                all_tools.append(tool)
+                seen_names.add(tool_name)
+            elif tool_name in seen_names:
+                logger.debug(
+                    f"Local tool '{tool_name}' already loaded from MCP; skipping duplicate"
+                )
+
+        if not all_tools:
             return None
 
-        limits = mcp_cfg.get_profile(profile_name)
-        if limits is None:
-            logger.warning(
-                "MCP profile '%s' referenced by task '%s' is not defined",
-                profile_name,
-                task_type,
-            )
-            return None
+        # Merge limits: MCP limits override task-level limits, then defaults
+        merged_limits = {
+            "max_steps": 10,
+            "max_run_seconds": 60,
+            "tool_retry_attempts": 2,
+        }
 
-        try:
-            tools = await self._mcp_tool_manager.get_tools(
-                profile_name=profile_name,
-                user=user_context,
+        # Apply task-level limits if configured
+        if task_config and task_config.tool_limits:
+            merged_limits["max_steps"] = task_config.tool_limits.max_steps
+            merged_limits["max_run_seconds"] = task_config.tool_limits.max_run_seconds
+            merged_limits["tool_retry_attempts"] = (
+                task_config.tool_limits.tool_retry_attempts
             )
-        except PermissionError:
-            logger.warning(
-                "User lacks permission for MCP profile '%s' (task '%s')",
-                profile_name,
-                task_type,
-            )
-            return None
-        except Exception as exc:  # pragma: no cover - safety log
-            logger.error(
-                "Failed to load MCP tools for profile '%s': %s",
-                profile_name,
-                exc,
-            )
-            return None
 
-        if not tools:
-            return None
+        # MCP limits override task limits
+        if mcp_limits:
+            merged_limits.update(mcp_limits)
 
-        instructions = self._build_tool_instructions(profile_name, tools, limits)
-        limits_dict = self._mcp_tool_manager.get_profile_limits(profile_name)
+        # Build instructions
+        profile_label = mcp_profile_name or "local_tools"
+        instructions = self._build_tool_instructions(
+            profile_label, all_tools, type("Limits", (), merged_limits)
+        )
+
         return LLMService._ToolingContext(
-            profile_name=profile_name,
-            tools=tools,
+            profile_name=profile_label,
+            tools=all_tools,
             instructions=instructions,
-            limits=limits_dict,
+            limits=merged_limits,
         )
 
     @staticmethod

@@ -60,6 +60,8 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **Model Context Protocol (MCP)** – Tool-augmented LLM reasoning with external capabilities (web browsing, file access, APIs) via standardized MCP integration. Security-first with RBAC, timeouts, and isolation. [Learn more →](docs/mcp-integration.md)
 
+**Pluggable Tool Providers** – Attach custom LangChain tools to chat/completion tasks without MCP servers. Simple protocol-based system for application-local tools with config-driven integration, security controls, and seamless MCP compatibility. [Learn more →](docs/pluggable-tool-providers.md)
+
 **Observability** – Structured JSON logging, metrics (Prometheus), tracing & error tracking (Sentry), future dashboards (Grafana).
 
 **Testing Layers** – Unit tests (pure logic), integration tests (API/services), performance scaffolding (Locust planned), optional real‑provider tests behind flags.

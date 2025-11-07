@@ -361,6 +361,22 @@ tasks:
     testing: ['gpt-5-nano']
     description: 'Models optimized for multi-turn chat'
 
+  # Example: Task with local tool providers (non-MCP)
+  # Demonstrates how to configure custom application tools
+  assistant_converse:
+    primary: 'gpt-5-mini'
+    fallback: ['gemini-2.5-flash']
+    description: 'Conversational assistant with custom tools'
+    # List of registered tool provider names (see application code for registration)
+    local_tool_providers: ['assistant_tools']
+    # Optional: Limits for tool execution
+    tool_limits:
+      max_steps: 4              # Maximum agent reasoning steps
+      max_run_seconds: 30       # Hard timeout per request
+      tool_retry_attempts: 2    # Retry attempts on tool failures
+    # Optional: Allowlist of tool names (if omitted, all tools from providers are allowed)
+    allowed_tools: ['create_todo_task', 'search_knowledge_base']
+
 # General Settings
 settings:
   enable_caching: true
