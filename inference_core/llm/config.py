@@ -231,18 +231,23 @@ class UsageLoggingConfig(BaseModel):
     )
 
 
-class ModelConfig(BaseModel):
+class ModelParams(BaseModel):
+    max_tokens: int = Field(default=2048, ge=1, le=1047576)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    verbosity: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
+
+class ModelConfig(ModelParams):
     """Configuration for a specific model"""
 
     name: str
     provider: ModelProvider
     api_key: Optional[str] = None
     base_url: Optional[str] = None
-    max_tokens: int = Field(default=2048, ge=1, le=1047576)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
-    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
-    presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     timeout: int = Field(default=60, ge=1)
     pricing: Optional[PricingConfig] = Field(
         default=None, description="Pricing configuration"
@@ -839,6 +844,21 @@ class LLMConfig:
     def get_task_model(self, task: str) -> str:
         """Get preferred model for a specific task"""
         return self.task_models.get(task, "gpt-5-mini")
+
+    def get_model_params(self, model_name: str) -> Optional[ModelParams]:
+        """Get model parameters for a specific model"""
+        config = self.get_model_config(model_name)
+        if not config:
+            return None
+        return ModelParams(
+            max_tokens=config.max_tokens,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            frequency_penalty=config.frequency_penalty,
+            presence_penalty=config.presence_penalty,
+            verbosity=config.verbosity,
+            reasoning_effort=config.reasoning_effort,
+        )
 
     def add_custom_model(self, model_config: ModelConfig):
         """Add a custom model configuration"""
