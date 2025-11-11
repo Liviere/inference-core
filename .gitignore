@@ -130,10 +130,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Poetry
-# Comment this line if you want to commit the lock file
-#poetry.lock
-
 # Database files
 *.db
 *.db-shm
@@ -184,8 +180,6 @@ celerybeat-schedule.*
 # Ignore main.py if main_factory.py is used
 inference_core/main.py
 
-# Poetry lock file
-poetry.lock
 email_config.yaml
 
 # Custom prompts: ignore user templates but keep shipped presets

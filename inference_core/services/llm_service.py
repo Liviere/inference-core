@@ -13,20 +13,10 @@ from datetime import UTC, datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, cast
 
 from fastapi import Request
+from langchain_classic.agents import AgentExecutor, create_openai_tools_agent
+from langchain_community.chat_message_histories import SQLChatMessageHistory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pydantic import BaseModel
-
-try:  # Optional imports used when MCP tooling is enabled
-    from langchain.agents import AgentExecutor, create_openai_tools_agent
-    from langchain_community.chat_message_histories import SQLChatMessageHistory
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    from langchain_core.tools import BaseTool
-except Exception:  # pragma: no cover - optional dependency guard
-    AgentExecutor = None  # type: ignore
-    create_openai_tools_agent = None  # type: ignore
-    ChatPromptTemplate = None  # type: ignore
-    MessagesPlaceholder = None  # type: ignore
-    BaseTool = None  # type: ignore
-    SQLChatMessageHistory = None  # type: ignore
 
 from inference_core.llm.callbacks import (
     LLMUsageCallbackHandler,
