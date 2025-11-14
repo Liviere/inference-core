@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
+from deepagents import create_deep_agent
 from langchain.agents import create_agent
 from pydantic import BaseModel
 
@@ -69,3 +70,16 @@ class AgentService:
             steps=steps,
             metadata=metadata,
         )
+
+
+class DeepAgentService(AgentService):
+
+    def __init__(
+        self,
+        task_name: str,
+        tools: Optional[list[Callable]] = None,
+        subagents: Optional[list[AgentService]] = None,
+    ):
+        super().__init__(task_name, tools)
+        self.subagents = [s.agent for s in subagents] if subagents else []
+        self.agent = create_deep_agent(self.model, tools=self.tools)
