@@ -7134,6 +7134,23 @@ aiohttp = "*"
 requests = "*"
 
 [[package]]
+name = "tavily-python"
+version = "0.7.13"
+description = "Python wrapper for the Tavily API"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "tavily_python-0.7.13-py3-none-any.whl", hash = "sha256:911825467f2bb19b8162b4766d3e81081160a7c0fb8a15c7c716b2bef73e6296"},
+    {file = "tavily_python-0.7.13.tar.gz", hash = "sha256:347f92402331d071557f6dd6680f813a7d484b4ba7240905cc397cd192d1355c"},
+]
+
+[package.dependencies]
+httpx = "*"
+requests = "*"
+tiktoken = ">=0.5.1"
+
+[[package]]
 name = "tenacity"
 version = "9.1.2"
 description = "Retry code until it succeeds"
@@ -8699,4 +8716,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "9ed2f29d3fca1df623f91299dc0822e2db2df32b778db37d18b923973e2b4725"
+content-hash = "0e1ac5dabb7fbfa325d3a9f25386e83d3a7d66264d8aa164751a2ef7bf56f0fd"
