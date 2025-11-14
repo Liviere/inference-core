@@ -233,9 +233,9 @@ class LLMModelFactory:
 # Global factory instance
 def get_model_factory() -> LLMModelFactory:
     """Get global model factory instance"""
-    from .config import llm_config
+    from .config import get_llm_config
 
-    return LLMModelFactory(llm_config)
+    return LLMModelFactory(get_llm_config())
 
 
 # -------- Task override support (thread/async-task local) --------
