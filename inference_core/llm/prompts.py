@@ -202,6 +202,31 @@ def get_custom_chat_prompt(prompt_name: str) -> Optional[ChatPromptTemplate]:
         return None
 
 
+def get_custom_agent_prompt(prompt_name: str) -> Optional[ChatPromptTemplate]:
+    """Attempt to build a ChatPromptTemplate from a custom system prompt file.
+
+    The file content is used as the system message; we preserve the default
+    history placeholder and human input structure.
+    """
+    path = _find_custom_file("chat", prompt_name)
+    if not path:
+        return None
+    system_text = _load_text_file(path)
+    if not system_text:
+        return None
+    try:
+        return ChatPromptTemplate.from_messages(
+            [
+                ("system", system_text),
+                MessagesPlaceholder(variable_name="history"),
+                ("human", "{user_input}"),
+            ]
+        )
+    except Exception as e:
+        logger.warning(f"Invalid custom chat template '{prompt_name}': {e}")
+        return None
+
+
 def get_prompt_template(prompt_name: str) -> PromptTemplate:
     """
     Get a prompt template by name
