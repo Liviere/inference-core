@@ -1,6 +1,6 @@
 # Documentation Index
 
-Central index of project documentation (2025-10-02).
+Central index of project documentation
 
 ## Sections
 
@@ -8,6 +8,7 @@ Central index of project documentation (2025-10-02).
 | ---------------------------------- | ------------------------------------------- | ------------------------------------ |
 | Quickstart & Overview              | Entry point for newcomers                   | `../README.md`                       |
 | Configuration Reference            | All environment variables grouped by domain | `configuration.md`                   |
+| LLM Configuration                  | Reference for `llm_config.yaml`             | `llm_config_summary.md`              |
 | Repository Structure Snapshot      | Auto/Manual snapshot of directories         | `structure.md`                       |
 | Custom Prompts (Jinja2)            | How to add your own prompt templates        | `custom-prompts.md`                  |
 | Vector Store Guide                 | Semantic search & ingestion                 | `vector-store.md`                    |
