@@ -392,6 +392,30 @@ class ToolLimits(BaseModel):
     )
 
 
+class AgentConfig(BaseModel):
+    """Configuration for an agent.
+
+    Similar to TaskConfig but tailored for agent-specific settings.
+    """
+
+    primary: str = Field(..., description="Primary model name")
+    fallback: Optional[List[str]] = Field(
+        default=None, description="Fallback model names"
+    )
+    testing: Optional[List[str]] = Field(default=None, description="Models for testing")
+    description: str = Field(default="", description="Agent description")
+    local_tool_providers: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of local tool provider names (non-MCP)",
+    )
+    tool_limits: Optional[ToolLimits] = Field(
+        default=None, description="Optional tool execution limits"
+    )
+    allowed_tools: Optional[List[str]] = Field(
+        default=None, description="Optional allowlist of tool names"
+    )
+
+
 class TaskConfig(BaseModel):
     """Configuration for a task (e.g., completion, chat, agent).
 
@@ -430,6 +454,8 @@ class LLMConfig:
         self.models: Dict[str, ModelConfig] = {}
         self.task_models: Dict[str, str] = {}
         self.task_configs: Dict[str, TaskConfig] = {}  # Store full task configs
+        self.agent_models: Dict[str, str] = {}
+        self.agent_configs: Dict[str, AgentConfig] = {}  # Store full agent configs
         self.enable_caching: bool = True
         self.cache_ttl: int = 3600
         self.max_concurrent_requests: int = 5
@@ -572,6 +598,33 @@ class LLMConfig:
             primary_model = task_data.get("primary")
             if primary_model:
                 self.task_models[task_name] = primary_model
+
+        # Parse agent model assignments
+        agents_config = yaml_config.get("agents", {})
+        self.agent_models = {}
+        self.agent_configs = {}
+
+        for agent_name, agent_data in agents_config.items():
+            # Store full agent config
+            try:
+                self.agent_configs[agent_name] = AgentConfig(**agent_data)
+            except Exception as e:
+                logging.warning(f"Error parsing agent config for {agent_name}: {e}")
+
+            # Check for environment variable override
+            env_var = (
+                yaml_config.get("settings", {}).get("env_overrides", {}).get(agent_name)
+            )
+            if env_var:
+                override_model = os.getenv(env_var)
+                if override_model:
+                    self.agent_models[agent_name] = override_model
+                    continue
+
+            # Use primary model from config
+            primary_model = agent_data.get("primary")
+            if primary_model:
+                self.agent_models[agent_name] = primary_model
 
         # Parse general settings
         settings = yaml_config.get("settings", {})
@@ -897,6 +950,36 @@ class LLMConfig:
         if hasattr(self, "_yaml_config"):
             task_config = self._yaml_config.get("tasks", {}).get(task, {})
             fallback_models = task_config.get("fallback", [])
+
+            for fallback_model in fallback_models:
+                fallback_model_str = str(fallback_model)
+                if self.is_model_available(fallback_model_str):
+                    return fallback_model_str
+
+        # Last resort: find any available model
+        for model_name in self.models.keys():
+            if self.is_model_available(model_name):
+                return model_name
+
+        # If nothing is available, return the primary model anyway
+        return primary_model
+
+    def get_agent_model(self, agent_name: str) -> str:
+        """Get preferred model for a specific agent"""
+        return self.agent_models.get(agent_name, "gpt-5-mini")
+
+    def get_agent_model_with_fallback(self, agent_name: str) -> str:
+        """Get preferred model for an agent, with fallback to available models"""
+        primary_model = self.get_agent_model(agent_name)
+
+        # Check if primary model is available
+        if self.is_model_available(primary_model):
+            return primary_model
+
+        # Try fallback models from YAML config
+        if hasattr(self, "_yaml_config"):
+            agent_config = self._yaml_config.get("agents", {}).get(agent_name, {})
+            fallback_models = agent_config.get("fallback", [])
 
             for fallback_model in fallback_models:
                 fallback_model_str = str(fallback_model)

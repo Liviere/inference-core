@@ -229,6 +229,27 @@ class LLMModelFactory:
         model_name = self.config.get_task_model(effective_task)
         return self.create_model(model_name, **kwargs)
 
+    def get_agent_model_name(self, agent_name: BaseChatModel) -> Optional[str]:
+        """Get the preferred model name for a specific agent"""
+        effective_agent = _AGENT_OVERRIDE.get() or agent_name
+        return self.config.get_agent_model(effective_agent)
+
+    def get_model_for_agent(self, agent_name: str, **kwargs) -> Optional[BaseChatModel]:
+        """Get the preferred model for a specific agent"""
+        # Honor agent override (used by AgentService to map custom agent_type to model)
+        model_name = self.get_agent_model_name(agent_name)
+        # Extend cache key with agent to avoid reuse between agents
+        cache_key = f"{model_name}_{agent_name}_{hash(str(sorted(kwargs.items())))}"
+        if cache_key in self._model_cache:
+            logger.debug(
+                f"Using cached model instance for {model_name} (agent: {agent_name})"
+            )
+            return self._model_cache[cache_key]
+        model = self.create_model(model_name, **kwargs)
+        if model and self.config.enable_caching:
+            self._model_cache[cache_key] = model
+        return model
+
 
 # Global factory instance
 def get_model_factory() -> LLMModelFactory:
@@ -244,10 +265,21 @@ _TASK_OVERRIDE: ContextVar[Optional[str]] = ContextVar(
     "llm_task_override", default=None
 )
 
+# -------- Agent override support (thread/async-task local) --------
+# AgentService sets this to ensure model selection honors custom agent types
+_AGENT_OVERRIDE: ContextVar[Optional[str]] = ContextVar(
+    "llm_agent_override", default=None
+)
+
 
 def current_task_override() -> Optional[str]:
     """Return current effective task override if set."""
     return _TASK_OVERRIDE.get()
+
+
+def current_agent_override() -> Optional[str]:
+    """Return current effective agent override if set."""
+    return _AGENT_OVERRIDE.get()
 
 
 @contextmanager
@@ -264,3 +296,19 @@ def task_override(task: Optional[str]):
         yield
     finally:
         _TASK_OVERRIDE.reset(token)
+
+
+@contextmanager
+def agent_override(agent: Optional[str]):
+    """Temporarily override the agent used for default model resolution.
+
+    Usage:
+        with agent_override("my_custom_agent"):
+            # any factory.get_model_for_agent("default_agent") will resolve using "my_custom_agent"
+            ...
+    """
+    token = _AGENT_OVERRIDE.set(agent)
+    try:
+        yield
+    finally:
+        _AGENT_OVERRIDE.reset(token)

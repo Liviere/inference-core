@@ -30,16 +30,26 @@ class AgentResponse(BaseModel):
 class AgentService:
     def __init__(
         self,
-        task_name: str,
+        agent_name: Optional[str] = "default_agent",
         tools: Optional[list[Callable]] = None,
         use_checkpoints: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
     ):
+        # Model and tools setup
         self.model_factory = get_model_factory()
         self.tools = tools or []
-        self.model = self.model_factory.get_model_for_task(task_name)
-        self.model_name = self.model.model_name
+
+        self.model_name = self.model_factory.get_agent_model_name(agent_name)
+        assert self.model_name is not None, "Model must have a valid name."
+        self.model = self.model_factory.get_model_for_agent(agent_name)
+        assert (
+            self.model is not None
+        ), f"Model for agent {agent_name} could not be found."
+
+        # Exit stack to handle context managers for checkpointers
         self._exit_stack = ExitStack()
+
+        # Checkpointing setup
         self.use_checkpoints = use_checkpoints
         self.checkpoint_config = checkpoint_config
         if use_checkpoints:
@@ -47,6 +57,8 @@ class AgentService:
             self.checkpointer = self._initialize_checkpointer()
         else:
             self.checkpointer = None
+
+        # Create the agent
         self.agent = create_agent(
             self.model, tools=self.tools, checkpointer=self.checkpointer
         )
@@ -163,14 +175,14 @@ class DeepAgentService(AgentService):
 
     def __init__(
         self,
-        task_name: str,
+        agent_name: str,
         tools: Optional[list[Callable]] = None,
         subagents: Optional[list["AgentService"]] = None,
         use_checkpoints: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
     ):
         super().__init__(
-            task_name,
+            agent_name,
             tools,
             use_checkpoints=use_checkpoints,
             checkpoint_config=checkpoint_config,
