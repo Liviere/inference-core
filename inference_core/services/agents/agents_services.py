@@ -1,10 +1,16 @@
+import logging
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
 from deepagents import create_deep_agent
 from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
+from inference_core.core.config import get_settings
 from inference_core.llm.models import get_model_factory
 
 
@@ -22,13 +28,87 @@ class AgentResponse(BaseModel):
 
 
 class AgentService:
-    def __init__(self, task_name: str, tools: Optional[list[Callable]] = None):
+    def __init__(
+        self,
+        task_name: str,
+        tools: Optional[list[Callable]] = None,
+        use_checkpoints: bool = False,
+        checkpoint_config: Optional[dict[str, Any]] = None,
+    ):
         self.model_factory = get_model_factory()
         self.tools = tools or []
         self.model = self.model_factory.get_model_for_task(task_name)
         self.model_name = self.model.model_name
-        self.agent = create_agent(self.model, tools=self.tools)
+        self._exit_stack = ExitStack()
+        self.use_checkpoints = use_checkpoints
+        self.checkpoint_config = checkpoint_config
+        if use_checkpoints:
+            assert checkpoint_config is not None, "Checkpoint config must be provided."
+            self.checkpointer = self._initialize_checkpointer()
+        else:
+            self.checkpointer = None
+        self.agent = create_agent(
+            self.model, tools=self.tools, checkpointer=self.checkpointer
+        )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
+
+    def close(self) -> None:
+        self._exit_stack.close()
+
+    def __enter__(self) -> "AgentService":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def _get_checkpointer(self):
+        """Initialize and return a checkpointer for the agent."""
+        url = self._sync_connection_string()
+        if "sqlite" in url:
+            return SqliteSaver.from_conn_string(url)
+        elif "postgresql" in url:
+            return PostgresSaver.from_conn_string(url)
+        elif "mysql" in url:
+            logging.warning(
+                "MySQL checkpointer not implemented, using in-memory saver."
+            )
+            return InMemorySaver()
+        else:
+            logging.warning(
+                "Unknown database type for checkpointer, using in-memory saver."
+            )
+            return InMemorySaver()
+
+    def _initialize_checkpointer(self):
+        """Enter checkpointer context managers and run setup if available."""
+        checkpointer_obj = self._get_checkpointer()
+        if hasattr(checkpointer_obj, "__enter__") and hasattr(
+            checkpointer_obj, "__exit__"
+        ):
+            checkpointer = self._exit_stack.enter_context(checkpointer_obj)
+        else:
+            checkpointer = checkpointer_obj
+
+        if hasattr(checkpointer, "setup") and callable(checkpointer.setup):
+            checkpointer.setup()
+
+        return checkpointer
+
+    @staticmethod
+    def _sync_connection_string() -> str:
+        """Return a sync SQLAlchemy connection string for SQLChatMessageHistory.
+
+        Map async drivers to their sync counterparts for sync-mode history.
+        """
+        settings = get_settings()
+        url = settings.database_url
+        if "+aiosqlite" in url:
+            return url.replace("+aiosqlite", "")
+        if "+asyncpg" in url:
+            return url.replace("+asyncpg", "")
+        if "+aiomysql" in url:
+            return url.replace("+aiomysql", "")
+        return url
 
     def _merge_params(
         self, task: str, runtime_params: dict[str, Any]
@@ -50,8 +130,15 @@ class AgentService:
         steps = []
         start_time = datetime.now(UTC)
 
+        messages = [{"role": "user", "content": user_input}]
+        configurable = {}
+
+        if self.checkpoint_config:
+            configurable.update(self.checkpoint_config)
+
         for chunk in self.agent.stream(
-            {"messages": [{"role": "user", "content": user_input}]},
+            {"messages": messages},
+            {"configurable": configurable},
             stream_mode="updates",
         ):
             for step, data in chunk.items():
@@ -78,8 +165,15 @@ class DeepAgentService(AgentService):
         self,
         task_name: str,
         tools: Optional[list[Callable]] = None,
-        subagents: Optional[list[AgentService]] = None,
+        subagents: Optional[list["AgentService"]] = None,
+        use_checkpoints: bool = False,
+        checkpoint_config: Optional[dict[str, Any]] = None,
     ):
-        super().__init__(task_name, tools)
+        super().__init__(
+            task_name,
+            tools,
+            use_checkpoints=use_checkpoints,
+            checkpoint_config=checkpoint_config,
+        )
         self.subagents = [s.agent for s in subagents] if subagents else []
         self.agent = create_deep_agent(self.model, tools=self.tools)

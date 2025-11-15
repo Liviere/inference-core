@@ -3314,6 +3314,41 @@ langchain-core = ">=0.2.38"
 ormsgpack = ">=1.12.0"
 
 [[package]]
+name = "langgraph-checkpoint-postgres"
+version = "3.0.1"
+description = "Library with a Postgres implementation of LangGraph checkpoint saver."
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "langgraph_checkpoint_postgres-3.0.1-py3-none-any.whl", hash = "sha256:f79eb588b328f05d715c7ed35d20895cd0a126b524f95edbbebedc4a595f43dd"},
+    {file = "langgraph_checkpoint_postgres-3.0.1.tar.gz", hash = "sha256:4ff0f04a70ce8f5b49d373f521eba97ccf0bb61181de1535e5d91e99db2ce7da"},
+]
+
+[package.dependencies]
+langgraph-checkpoint = ">=2.1.2,<4.0.0"
+orjson = ">=3.10.1"
+psycopg = ">=3.2.0"
+psycopg-pool = ">=3.2.0"
+
+[[package]]
+name = "langgraph-checkpoint-sqlite"
+version = "3.0.0"
+description = "Library with a SQLite implementation of LangGraph checkpoint saver."
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "langgraph_checkpoint_sqlite-3.0.0-py3-none-any.whl", hash = "sha256:219c8ab974a69954fde7e3aa3cc2112f58b8fe5e1449293b32b344fa2dee110d"},
+    {file = "langgraph_checkpoint_sqlite-3.0.0.tar.gz", hash = "sha256:1b190ca6b4fd2bf70c0310896fd4240200ff54d3ee9b5ab7e7c05edfc824df72"},
+]
+
+[package.dependencies]
+aiosqlite = ">=0.20"
+langgraph-checkpoint = ">=3,<4.0.0"
+sqlite-vec = ">=0.1.6"
+
+[[package]]
 name = "langgraph-prebuilt"
 version = "1.0.2"
 description = "Library with high-level APIs for creating and executing LangGraph agents and tools."
@@ -5298,6 +5333,21 @@ files = [
 ]
 
 [[package]]
+name = "psycopg-pool"
+version = "3.2.7"
+description = "Connection Pool for Psycopg"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "psycopg_pool-3.2.7-py3-none-any.whl", hash = "sha256:4b47bb59d887ef5da522eb63746b9f70e2faf967d34aac4f56ffc65e9606728f"},
+    {file = "psycopg_pool-3.2.7.tar.gz", hash = "sha256:a77d531bfca238e49e5fb5832d65b98e69f2c62bfda3d2d4d833696bdc9ca54b"},
+]
+
+[package.dependencies]
+typing-extensions = ">=4.6"
+
+[[package]]
 name = "ptyprocess"
 version = "0.7.0"
 description = "Run a subprocess in a pseudo terminal"
@@ -7041,6 +7091,21 @@ pymysql = ["pymysql"]
 sqlcipher = ["sqlcipher3_binary"]
 
 [[package]]
+name = "sqlite-vec"
+version = "0.1.6"
+description = ""
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "sqlite_vec-0.1.6-py3-none-macosx_10_6_x86_64.whl", hash = "sha256:77491bcaa6d496f2acb5cc0d0ff0b8964434f141523c121e313f9a7d8088dee3"},
+    {file = "sqlite_vec-0.1.6-py3-none-macosx_11_0_arm64.whl", hash = "sha256:fdca35f7ee3243668a055255d4dee4dea7eed5a06da8cad409f89facf4595361"},
+    {file = "sqlite_vec-0.1.6-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7b0519d9cd96164cd2e08e8eed225197f9cd2f0be82cb04567692a0a4be02da3"},
+    {file = "sqlite_vec-0.1.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux1_x86_64.whl", hash = "sha256:823b0493add80d7fe82ab0fe25df7c0703f4752941aee1c7b2b02cec9656cb24"},
+    {file = "sqlite_vec-0.1.6-py3-none-win_amd64.whl", hash = "sha256:c65bcfd90fa2f41f9000052bcb8bb75d38240b2dae49225389eca6c3136d3f0c"},
+]
+
+[[package]]
 name = "sse-starlette"
 version = "3.0.3"
 description = "SSE plugin for Starlette"
@@ -8716,4 +8781,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "0e1ac5dabb7fbfa325d3a9f25386e83d3a7d66264d8aa164751a2ef7bf56f0fd"
+content-hash = "485a780d3cc962748f075af3b974df4502fa18ef2f3dd55f3de5dc4c944784bf"
