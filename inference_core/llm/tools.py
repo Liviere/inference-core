@@ -47,13 +47,13 @@ class ToolProvider(Protocol):
     async def get_tools(
         self,
         task_type: str,
-        user_context: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> List[Any]:
         """Return list of LangChain tools for the given context.
 
         Args:
             task_type: Task type (e.g., "chat", "completion", "assistant_converse")
-            user_context: Optional dict with user metadata (user_id, is_superuser, etc.)
+            **kwargs: Additional context-specific parameters
 
         Returns:
             List of LangChain BaseTool instances
@@ -125,8 +125,8 @@ def clear_tool_providers() -> None:
 async def load_tools_for_task(
     task_type: str,
     provider_names: List[str],
-    user_context: Optional[Dict[str, Any]] = None,
     allowed_tools: Optional[List[str]] = None,
+    **kwargs,
 ) -> List[Any]:
     """Load tools from specified providers for a task.
 
@@ -155,7 +155,7 @@ async def load_tools_for_task(
             continue
 
         try:
-            tools = await provider.get_tools(task_type, user_context)
+            tools = await provider.get_tools(task_type, **kwargs)
             logger.info(
                 f"Provider '{provider_name}' returned {len(tools)} tools for task '{task_type}'"
             )
@@ -195,6 +195,84 @@ async def load_tools_for_task(
 
     logger.info(
         f"Loaded {len(all_tools)} tools for task '{task_type}' "
+        f"from providers: {provider_names}"
+    )
+    return all_tools
+
+
+async def load_tools_for_agent(
+    agent_name: str,
+    provider_names: List[str],
+    allowed_tools: Optional[List[str]] = None,
+    **kwargs,
+) -> List[Any]:
+    """Load tools from specified providers for a task.
+
+    Args:
+        task_type: Task type (e.g., "chat", "completion")
+        provider_names: List of provider names to load tools from
+        user_context: Optional user context dict
+        allowed_tools: Optional allowlist of tool names
+
+    Returns:
+        List of LangChain tools, deduplicated by name
+
+    Raises:
+        ValueError: If a provider name is not registered
+    """
+    all_tools = []
+    seen_names = set()
+
+    for provider_name in provider_names:
+        provider = _tool_providers.get(provider_name)
+        if provider is None:
+            logger.warning(
+                f"Tool provider '{provider_name}' not found (referenced by task '{agent_name}'). "
+                f"Skipping. Available providers: {list(_tool_providers.keys())}"
+            )
+            continue
+
+        try:
+            tools = await provider.get_tools(agent_name, **kwargs)
+            logger.info(
+                f"Provider '{provider_name}' returned {len(tools)} tools for task '{agent_name}'"
+            )
+
+            # Deduplicate tools by name
+            for tool in tools:
+                tool_name = getattr(tool, "name", None)
+                if tool_name is None:
+                    logger.warning(
+                        f"Tool from provider '{provider_name}' has no 'name' attribute; skipping"
+                    )
+                    continue
+
+                # Apply allowlist if configured
+                if allowed_tools is not None and tool_name not in allowed_tools:
+                    logger.debug(
+                        f"Tool '{tool_name}' from provider '{provider_name}' "
+                        f"not in allowlist; skipping"
+                    )
+                    continue
+
+                if tool_name in seen_names:
+                    logger.debug(
+                        f"Tool '{tool_name}' already loaded from another provider; skipping duplicate"
+                    )
+                    continue
+
+                all_tools.append(tool)
+                seen_names.add(tool_name)
+
+        except Exception as exc:
+            logger.error(
+                f"Error loading tools from provider '{provider_name}': {exc}",
+                exc_info=True,
+            )
+            # Continue with other providers
+
+    logger.info(
+        f"Loaded {len(all_tools)} tools for task '{agent_name}' "
         f"from providers: {provider_names}"
     )
     return all_tools

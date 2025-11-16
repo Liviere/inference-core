@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from inference_core.core.config import get_settings
 from inference_core.llm.models import get_model_factory
+from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 
 
 class AgentMetadata(BaseModel):
@@ -36,7 +37,11 @@ class AgentService:
         checkpoint_config: Optional[dict[str, Any]] = None,
     ):
         # Model and tools setup
+        self.agent_name = agent_name
         self.model_factory = get_model_factory()
+        self.agent_config = self.model_factory.config.get_specific_agent_config(
+            agent_name
+        )
         self.tools = tools or []
 
         self.model_name = self.model_factory.get_agent_model_name(agent_name)
@@ -58,11 +63,16 @@ class AgentService:
         else:
             self.checkpointer = None
 
+    async def create_agent(self) -> Callable:
+        # Load tools from registered providers if any are configured
+        await self._load_providers_tools()
+
         # Create the agent
         self.agent = create_agent(
             self.model, tools=self.tools, checkpointer=self.checkpointer
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
+        return self.agent
 
     def close(self) -> None:
         self._exit_stack.close()
@@ -90,6 +100,42 @@ class AgentService:
                 "Unknown database type for checkpointer, using in-memory saver."
             )
             return InMemorySaver()
+
+    async def _load_providers_tools(self) -> None:
+        """Load tools from registered providers for the agent."""
+        # Collect tools from local providers if configured
+        configured_providers = self.agent_config.local_tool_providers or []
+        if not configured_providers:
+            return
+
+        registered_providers = get_registered_providers()
+        confirmed_providers = []
+        for registered_provider_name in registered_providers.keys():
+            if registered_provider_name in configured_providers:
+                logging.info(
+                    f"Loading tools from provider '{registered_provider_name}' "
+                    f"for agent '{self.agent_name}'"
+                )
+                confirmed_providers.append(registered_provider_name)
+
+        if not confirmed_providers:
+            logging.warning(
+                "No registered tool providers found; skipping tool loading."
+            )
+            return
+
+        try:
+            provider_tools = await load_tools_for_agent(
+                self.agent_name,
+                confirmed_providers,
+                allowed_tools=self.agent_config.allowed_tools,
+            )
+            self.tools.extend(provider_tools)
+        except Exception as e:
+            logging.error(
+                f"Error loading tools from provider '{registered_provider_name}': {e}",
+                exc_info=True,
+            )
 
     def _initialize_checkpointer(self):
         """Enter checkpointer context managers and run setup if available."""
