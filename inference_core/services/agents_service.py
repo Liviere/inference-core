@@ -35,6 +35,7 @@ class AgentService:
         tools: Optional[list[Callable]] = None,
         use_checkpoints: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
+        context_schema: Optional[Any] = None,
     ):
         # Model and tools setup
         self.agent_name = agent_name
@@ -43,6 +44,7 @@ class AgentService:
             agent_name
         )
         self.tools = tools or []
+        self.context_schema = context_schema
 
         self.model_name = self.model_factory.get_agent_model_name(agent_name)
         assert self.model_name is not None, "Model must have a valid name."
@@ -69,7 +71,10 @@ class AgentService:
 
         # Create the agent
         self.agent = create_agent(
-            self.model, tools=self.tools, checkpointer=self.checkpointer
+            self.model,
+            tools=self.tools,
+            checkpointer=self.checkpointer,
+            context_schema=self.context_schema,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
         return self.agent
@@ -183,7 +188,7 @@ class AgentService:
         """
         return self.agent
 
-    def run_agent_steps(self, user_input: str) -> AgentResponse:
+    def run_agent_steps(self, user_input: str, context=None) -> AgentResponse:
 
         steps = []
         start_time = datetime.now(UTC)
@@ -198,6 +203,7 @@ class AgentService:
             {"messages": messages},
             {"configurable": configurable},
             stream_mode="updates",
+            context=context,
         ):
             for step, data in chunk.items():
                 steps.append({"name": step, "data": data})
