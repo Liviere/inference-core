@@ -1093,6 +1093,10 @@ class LLMConfig:
 
         return debug_info
 
+    def get_specific_agent_config(self, agent_name: str) -> Optional[AgentConfig]:
+        """Get full configuration for a specific agent"""
+        return self.agent_configs.get(agent_name)
+
 
 def get_llm_config() -> LLMConfig:
     """Get the global LLM configuration instance"""
