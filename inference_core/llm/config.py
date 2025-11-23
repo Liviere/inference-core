@@ -406,7 +406,6 @@ class AgentConfig(BaseModel):
     fallback: Optional[List[str]] = Field(
         default=None, description="Fallback model names"
     )
-    testing: Optional[List[str]] = Field(default=None, description="Models for testing")
     description: str = Field(default="", description="Agent description")
     mcp_profile: Optional[str] = Field(
         default=None, description="MCP profile name for this agent"
@@ -414,9 +413,6 @@ class AgentConfig(BaseModel):
     local_tool_providers: Optional[List[str]] = Field(
         default=None,
         description="Optional list of local tool provider names (non-MCP)",
-    )
-    tool_limits: Optional[ToolLimits] = Field(
-        default=None, description="Optional tool execution limits"
     )
     allowed_tools: Optional[List[str]] = Field(
         default=None, description="Optional allowlist of tool names"
