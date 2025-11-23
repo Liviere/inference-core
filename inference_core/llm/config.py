@@ -404,6 +404,9 @@ class AgentConfig(BaseModel):
     )
     testing: Optional[List[str]] = Field(default=None, description="Models for testing")
     description: str = Field(default="", description="Agent description")
+    mcp_profile: Optional[str] = Field(
+        default=None, description="MCP profile name for this agent"
+    )
     local_tool_providers: Optional[List[str]] = Field(
         default=None,
         description="Optional list of local tool provider names (non-MCP)",

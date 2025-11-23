@@ -69,6 +69,9 @@ class AgentService:
         # Load tools from registered providers if any are configured
         await self._load_providers_tools()
 
+        # Load tools from MCP if configured
+        await self._load_mcp_tools()
+
         # Create the agent
         self.agent = create_agent(
             self.model,
@@ -139,6 +142,31 @@ class AgentService:
         except Exception as e:
             logging.error(
                 f"Error loading tools from provider '{registered_provider_name}': {e}",
+                exc_info=True,
+            )
+
+    async def _load_mcp_tools(self) -> None:
+        """Load tools from MCP if configured for this agent."""
+        if not self.agent_config.mcp_profile:
+            return
+
+        try:
+            from inference_core.agents.agent_mcp_tools import get_agent_mcp_manager
+
+            manager = get_agent_mcp_manager()
+            mcp_tools = await manager.get_tools_for_profile(
+                self.agent_config.mcp_profile
+            )
+
+            if mcp_tools:
+                logging.info(
+                    f"Adding {len(mcp_tools)} MCP tools to agent '{self.agent_name}'"
+                )
+                self.tools.extend(mcp_tools)
+
+        except Exception as e:
+            logging.error(
+                f"Error loading MCP tools for agent '{self.agent_name}': {e}",
                 exc_info=True,
             )
 
