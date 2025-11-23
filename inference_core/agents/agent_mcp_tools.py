@@ -56,6 +56,15 @@ class AgentMCPToolManager:
 
         try:
             tools = await client.get_tools()
+
+            # Filter tools if include_tools is configured
+            if profile.include_tools is not None:
+                original_count = len(tools)
+                tools = [t for t in tools if t.name in profile.include_tools]
+                logger.debug(
+                    f"Filtered MCP tools for profile '{profile_name}': {original_count} -> {len(tools)}"
+                )
+
             logger.info(f"Loaded {len(tools)} MCP tools for profile '{profile_name}'")
             return tools
         except Exception as e:
