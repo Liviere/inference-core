@@ -764,33 +764,6 @@ class LLMConfig:
         if enabled is not None:
             mcp_data["enabled"] = enabled.lower() in ("true", "1", "yes", "on")
 
-        # Test-mode normalization: keep defaults stable for unit tests
-        # When running under tests, force MCP disabled by default and normalize example server URLs.
-        # This avoids coupling tests to developer-local llm_config.yaml.
-        # test_env = (
-        #     os.getenv("ENVIRONMENT") == "testing"
-        #     or os.getenv("PYTEST_CURRENT_TEST") is not None
-        # )
-        # if test_env:
-        #     # Only override 'enabled' if not explicitly set via MCP_ENABLED
-        #     if enabled is None:
-        #         mcp_data["enabled"] = False
-        #     # Force stricter default for permissions in tests unless explicitly overridden
-        #     if os.getenv("MCP_REQUIRE_SUPERUSER") is None:
-        #         mcp_data["require_superuser"] = True
-        #     # Normalize playwright server URL (if present) to default test port
-        #     servers_section = mcp_data.get("servers") or {}
-        #     if isinstance(servers_section, dict) and "playwright" in servers_section:
-        #         try:
-        #             srv = dict(servers_section["playwright"])  # shallow copy
-        #             # Only adjust URL for HTTP-like transports
-        #             if srv.get("transport") in {"streamable_http", "sse", "websocket"}:
-        #                 srv["url"] = "http://localhost:3000/mcp"
-        #             servers_section["playwright"] = srv
-        #             mcp_data["servers"] = servers_section
-        #         except Exception:
-        #             pass
-
         try:
             if not mcp_data:
                 self.mcp_config = MCPConfig()
