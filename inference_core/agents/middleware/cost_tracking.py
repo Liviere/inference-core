@@ -371,14 +371,40 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             return None
 
         try:
-            # Schedule async finalization
-            # Note: after_agent is sync, but UsageSession.finalize() is async
-            # We use asyncio.create_task if there's an event loop, else run sync
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._finalize_session(state, success=True))
-            else:
-                asyncio.run(self._finalize_session(state, success=True))
+            # Build final usage from accumulated state
+            final_usage = {
+                "input_tokens": state.get("accumulated_input_tokens", 0),
+                "output_tokens": state.get("accumulated_output_tokens", 0),
+                "total_tokens": state.get("accumulated_total_tokens", 0),
+            }
+
+            # Add extra tokens
+            extra_tokens = state.get("accumulated_extra_tokens", {})
+            for key, value in extra_tokens.items():
+                final_usage[key] = value
+
+            # Calculate aggregate latency from model calls
+            model_latencies = getattr(self._ctx, "model_latencies", [])
+            tool_latencies = getattr(self._ctx, "tool_latencies", [])
+
+            # Log summary
+            logger.info(
+                f"Agent cost tracking summary: "
+                f"model_calls={state.get('model_call_count', 0)}, "
+                f"tool_calls={len(tool_latencies)}, "
+                f"input_tokens={final_usage.get('input_tokens', 0)}, "
+                f"output_tokens={final_usage.get('output_tokens', 0)}"
+            )
+
+            # Finalize session synchronously (middleware hooks are sync)
+            # This uses a dedicated thread with its own event loop
+            self._ctx.session.finalize_sync(
+                success=True,
+                error=None,
+                final_usage=final_usage,
+                streamed=False,
+                partial=False,
+            )
 
         except Exception as e:
             logger.error(f"Error finalizing cost tracking session: {e}")

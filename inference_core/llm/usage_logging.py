@@ -5,6 +5,7 @@ Handles usage normalization, pricing calculation, and persistent logging
 for all LLM interactions (standard, streaming, Celery).
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -409,6 +410,60 @@ class UsageSession:
             else:
                 logger.error(f"Usage logging failed: {e}")
                 raise
+
+    def finalize_sync(
+        self,
+        success: bool,
+        error: Optional[Exception] = None,
+        final_usage: Optional[Dict[str, Any]] = None,
+        streamed: bool = False,
+        partial: bool = False,
+    ):
+        """Synchronous wrapper for finalize() - runs in a dedicated thread with its own event loop.
+
+        Use this method when calling from synchronous code (e.g., LangChain v1 middleware hooks).
+        This avoids issues with nested event loops in FastAPI/async contexts.
+
+        Args:
+            success: Whether the request succeeded
+            error: Optional exception if request failed
+            final_usage: Final/override usage data
+            streamed: Whether response was streamed
+            partial: Whether response was partial/aborted
+        """
+        import concurrent.futures
+        import threading
+
+        def _run_in_thread():
+            """Run the async finalize in a new event loop in this thread."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(
+                    self.finalize(
+                        success=success,
+                        error=error,
+                        final_usage=final_usage,
+                        streamed=streamed,
+                        partial=partial,
+                    )
+                )
+            finally:
+                loop.close()
+
+        # Use a thread pool to run the async code
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_in_thread)
+            try:
+                # Wait for completion with a reasonable timeout
+                future.result(timeout=30.0)
+            except concurrent.futures.TimeoutError:
+                logger.error("Usage logging finalization timed out after 30 seconds")
+            except Exception as e:
+                if self.logging_config.fail_open:
+                    logger.error(f"Usage logging sync finalization failed: {e}")
+                else:
+                    raise
 
 
 class UsageLogger:
