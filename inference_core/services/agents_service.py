@@ -1,4 +1,5 @@
 import logging
+import uuid
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
@@ -10,7 +11,9 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
+from inference_core.agents.middleware import CostTrackingMiddleware
 from inference_core.core.config import get_settings
+from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 
@@ -22,10 +25,22 @@ class AgentMetadata(BaseModel):
     end_time: Optional[datetime] = None
 
 
+class AgentCostMetrics(BaseModel):
+    """Cost and usage metrics from an agent run."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    extra_tokens: dict[str, int] = {}
+    model_call_count: int = 0
+    tool_call_count: int = 0
+
+
 class AgentResponse(BaseModel):
     result: dict[str, Any]
     steps: list[dict[str, Any]]
     metadata: AgentMetadata
+    cost_metrics: Optional[AgentCostMetrics] = None
 
 
 class AgentService:
@@ -36,7 +51,28 @@ class AgentService:
         use_checkpoints: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
         context_schema: Optional[Any] = None,
+        middleware: Optional[list[Any]] = None,
+        enable_cost_tracking: bool = True,
+        user_id: Optional[uuid.UUID] = None,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ):
+        """Initialize the AgentService.
+
+        Args:
+            agent_name: Name of the agent configuration to use.
+            tools: List of tools to provide to the agent.
+            use_checkpoints: Whether to enable checkpointing for conversation history.
+            checkpoint_config: Configuration for the checkpointer (required if use_checkpoints=True).
+            context_schema: Optional schema for agent context.
+            middleware: List of middleware to apply to the agent. If None and
+                       enable_cost_tracking=True, CostTrackingMiddleware is added automatically.
+            enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
+                                  Set to False to disable cost tracking.
+            user_id: Optional user ID for cost tracking attribution.
+            session_id: Optional session ID for grouping related requests.
+            request_id: Optional correlation ID (e.g., Celery task ID).
+        """
         # Model and tools setup
         self.agent_name = agent_name
         self.model_factory = get_model_factory()
@@ -65,12 +101,33 @@ class AgentService:
         else:
             self.checkpointer = None
 
+        # Middleware setup
+        self._middleware = middleware or []
+        self._enable_cost_tracking = enable_cost_tracking
+        self._user_id = user_id
+        self._session_id = session_id
+        self._request_id = request_id
+
     async def create_agent(self) -> Callable:
+        """Create and configure the agent with tools and middleware.
+
+        This method:
+        1. Loads tools from registered providers
+        2. Loads MCP tools if configured
+        3. Builds middleware list (including CostTrackingMiddleware if enabled)
+        4. Creates the agent with all configurations
+
+        Returns:
+            The configured agent callable.
+        """
         # Load tools from registered providers if any are configured
         await self._load_providers_tools()
 
         # Load tools from MCP if configured
         await self._load_mcp_tools()
+
+        # Build middleware list
+        middleware = self._build_middleware()
 
         # Create the agent
         self.agent = create_agent(
@@ -78,9 +135,58 @@ class AgentService:
             tools=self.tools,
             checkpointer=self.checkpointer,
             context_schema=self.context_schema,
+            middleware=middleware,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
         return self.agent
+
+    def _build_middleware(self) -> list[Any]:
+        """Build the middleware list for the agent.
+
+        Adds CostTrackingMiddleware automatically if enabled and not already present.
+
+        Returns:
+            List of middleware instances.
+        """
+        middleware = list(self._middleware)
+
+        # Add CostTrackingMiddleware if enabled and not already present
+        if self._enable_cost_tracking:
+            # Check if CostTrackingMiddleware is already in the list
+            has_cost_tracking = any(
+                isinstance(m, CostTrackingMiddleware) for m in middleware
+            )
+
+            if not has_cost_tracking:
+                # Get pricing config for the model
+                pricing_config = None
+                provider = None
+                try:
+                    llm_config = get_llm_config()
+                    model_cfg = llm_config.models.get(self.model_name)
+                    if model_cfg:
+                        pricing_config = model_cfg.pricing
+                        provider = model_cfg.provider
+                except Exception as e:
+                    logging.debug(f"Could not load pricing config: {e}")
+
+                cost_middleware = CostTrackingMiddleware(
+                    pricing_config=pricing_config,
+                    user_id=self._user_id,
+                    session_id=self._session_id,
+                    request_id=self._request_id,
+                    task_type="agent",
+                    request_mode="sync",
+                    provider=provider,
+                    model_name=self.model_name,
+                )
+                # Insert at the beginning so it wraps everything
+                middleware.insert(0, cost_middleware)
+                logging.debug(
+                    f"Added CostTrackingMiddleware for agent '{self.agent_name}'"
+                )
+
+        return middleware
 
     def close(self) -> None:
         self._exit_stack.close()
@@ -217,7 +323,19 @@ class AgentService:
         return self.agent
 
     def run_agent_steps(self, user_input: str, context=None) -> AgentResponse:
+        """Execute the agent with the given input and return the response.
 
+        This method streams agent execution, collecting steps and results.
+        If CostTrackingMiddleware is enabled, usage metrics are captured
+        automatically and included in the response.
+
+        Args:
+            user_input: The user's input message.
+            context: Optional context to pass to the agent.
+
+        Returns:
+            AgentResponse with result, steps, metadata, and optional cost metrics.
+        """
         steps = []
         start_time = datetime.now(UTC)
 
@@ -226,6 +344,10 @@ class AgentService:
 
         if self.checkpoint_config:
             configurable.update(self.checkpoint_config)
+
+        # Track state for cost metrics and final result
+        accumulated_state: dict[str, Any] = {}
+        last_agent_result: dict[str, Any] = {}
 
         for chunk in self.agent.stream(
             {"messages": messages},
@@ -236,7 +358,39 @@ class AgentService:
             for step, data in chunk.items():
                 steps.append({"name": step, "data": data})
 
-        result = steps[-1]["data"] if steps else {}
+                # Accumulate state updates
+                if isinstance(data, dict):
+                    # Track cost-related fields from middleware
+                    for key in [
+                        "accumulated_input_tokens",
+                        "accumulated_output_tokens",
+                        "accumulated_total_tokens",
+                        "accumulated_extra_tokens",
+                        "model_call_count",
+                        "tool_call_count",
+                        "usage_session_id",
+                    ]:
+                        if key in data:
+                            accumulated_state[key] = data[key]
+
+                    # Track agent result (messages, etc.) - skip middleware-only updates
+                    if "messages" in data:
+                        last_agent_result = data
+
+        # Use the last result that contained messages, or fallback to last step
+        if last_agent_result:
+            result = last_agent_result
+        elif steps:
+            # Fallback: find the last step with actual content
+            for step in reversed(steps):
+                if isinstance(step.get("data"), dict) and step["data"].get("messages"):
+                    result = step["data"]
+                    break
+            else:
+                result = steps[-1].get("data", {}) if steps else {}
+        else:
+            result = {}
+
         tools_used = [step["name"] for step in steps]
         metadata = AgentMetadata(
             model_name=self.model_name,
@@ -244,14 +398,33 @@ class AgentService:
             start_time=start_time,
             end_time=datetime.now(UTC),
         )
+
+        # Extract cost metrics from accumulated state if available
+        cost_metrics = None
+        if accumulated_state and self._enable_cost_tracking:
+            cost_metrics = AgentCostMetrics(
+                input_tokens=accumulated_state.get("accumulated_input_tokens", 0),
+                output_tokens=accumulated_state.get("accumulated_output_tokens", 0),
+                total_tokens=accumulated_state.get("accumulated_total_tokens", 0),
+                extra_tokens=accumulated_state.get("accumulated_extra_tokens", {}),
+                model_call_count=accumulated_state.get("model_call_count", 0),
+                tool_call_count=accumulated_state.get("tool_call_count", 0),
+            )
+
         return AgentResponse(
             result=result,
             steps=steps,
             metadata=metadata,
+            cost_metrics=cost_metrics,
         )
 
 
 class DeepAgentService(AgentService):
+    """Service for creating deep agents with sub-agent support.
+
+    Deep agents are designed for complex multi-step tasks that may require
+    coordination with other specialized agents.
+    """
 
     def __init__(
         self,
@@ -260,12 +433,59 @@ class DeepAgentService(AgentService):
         subagents: Optional[list["AgentService"]] = None,
         use_checkpoints: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
+        middleware: Optional[list[Any]] = None,
+        enable_cost_tracking: bool = True,
+        user_id: Optional[uuid.UUID] = None,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ):
+        """Initialize the DeepAgentService.
+
+        Args:
+            agent_name: Name of the agent configuration to use.
+            tools: List of tools to provide to the agent.
+            subagents: List of sub-agents that can be invoked by this agent.
+            use_checkpoints: Whether to enable checkpointing for conversation history.
+            checkpoint_config: Configuration for the checkpointer.
+            middleware: List of middleware to apply to the agent.
+            enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
+            user_id: Optional user ID for cost tracking attribution.
+            session_id: Optional session ID for grouping related requests.
+            request_id: Optional correlation ID (e.g., Celery task ID).
+        """
         super().__init__(
             agent_name,
             tools,
             use_checkpoints=use_checkpoints,
             checkpoint_config=checkpoint_config,
+            middleware=middleware,
+            enable_cost_tracking=enable_cost_tracking,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=request_id,
         )
         self.subagents = [s.agent for s in subagents] if subagents else []
-        self.agent = create_deep_agent(self.model, tools=self.tools)
+
+    async def create_agent(self) -> Callable:
+        """Create and configure the deep agent with tools, middleware, and sub-agents.
+
+        Returns:
+            The configured deep agent callable.
+        """
+        # Load tools from registered providers if any are configured
+        await self._load_providers_tools()
+
+        # Load tools from MCP if configured
+        await self._load_mcp_tools()
+
+        # Build middleware list
+        middleware = self._build_middleware()
+
+        # Create the deep agent
+        self.agent = create_deep_agent(
+            self.model,
+            tools=self.tools,
+            middleware=middleware,
+        )
+        self.model_params = self.model_factory.config.get_model_params(self.model_name)
+        return self.agent
