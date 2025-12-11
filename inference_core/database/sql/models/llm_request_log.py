@@ -61,6 +61,9 @@ class LLMRequestLog(Base, TimestampMixin):
         # Request characteristics
         streamed: Whether request used streaming
         partial: Whether request was aborted/incomplete
+
+        # Extended details (agents)
+        details: Extended execution details for agents (per-step breakdown, etc.)
     """
 
     __tablename__ = "llm_request_logs"
@@ -186,6 +189,13 @@ class LLMRequestLog(Base, TimestampMixin):
         nullable=False,
         default=False,
         doc="Whether request was aborted/incomplete",
+    )
+
+    # Extended details for agent executions (per-step breakdown, tool calls, etc.)
+    details: Mapped[Optional[dict]] = mapped_column(
+        SmartJSON(),
+        nullable=True,
+        doc="Extended execution details (agent steps, tool calls, latencies, etc.)",
     )
 
     # Indexes for common query patterns

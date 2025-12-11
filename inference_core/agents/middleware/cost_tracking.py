@@ -93,6 +93,20 @@ class CostTrackingState(AgentState):
 
 
 @dataclass
+class _StepUsage:
+    """Usage data for a single step (model call or tool call)."""
+
+    step_type: str  # "model" or "tool"
+    step_name: str  # model name or tool name
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    extra_tokens: Dict[str, int] = field(default_factory=dict)
+    latency_ms: float = 0.0
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
 class _MiddlewareContext:
     """Internal context for tracking state across middleware hooks.
 
@@ -104,6 +118,10 @@ class _MiddlewareContext:
     tool_call_start_time: Optional[float] = None
     current_model_name: Optional[str] = None
     run_start_time: float = field(default_factory=time.monotonic)
+    # Per-step usage breakdown for details column
+    steps: List[_StepUsage] = field(default_factory=list)
+    # Current step being tracked (for latency measurement)
+    current_step: Optional[_StepUsage] = None
 
 
 class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
@@ -340,6 +358,27 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 # Accumulate in session
                 self._ctx.session.accumulate(fragment)
 
+                # Record step usage for details
+                step_extra = {}
+                for key, value in extra_tokens.items():
+                    # Get only the current step's extra tokens (not accumulated)
+                    if key in fragment:
+                        step_extra[key] = int(fragment[key])
+
+                step_usage = _StepUsage(
+                    step_type="model",
+                    step_name=self._ctx.current_model_name or "unknown",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    extra_tokens=step_extra,
+                    latency_ms=0.0,  # Will be updated by wrap_model_call
+                )
+                # Update latency from current_step if available
+                if self._ctx.current_step and self._ctx.current_step.step_type == "model":
+                    step_usage.latency_ms = self._ctx.current_step.latency_ms
+                self._ctx.steps.append(step_usage)
+
                 logger.debug(
                     f"Cost tracking: accumulated {input_tokens} input, "
                     f"{output_tokens} output tokens"
@@ -387,6 +426,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             model_latencies = getattr(self._ctx, "model_latencies", [])
             tool_latencies = getattr(self._ctx, "tool_latencies", [])
 
+            # Build details dict with per-step breakdown
+            details = self._build_details(state, model_latencies, tool_latencies)
+
             # Log summary
             logger.info(
                 f"Agent cost tracking summary: "
@@ -404,12 +446,64 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 final_usage=final_usage,
                 streamed=False,
                 partial=False,
+                details=details,
             )
 
         except Exception as e:
             logger.error(f"Error finalizing cost tracking session: {e}")
 
         return None
+
+    def _build_details(
+        self,
+        state: CostTrackingState,
+        model_latencies: List[float],
+        tool_latencies: List[float],
+    ) -> Dict[str, Any]:
+        """Build details dict with per-step breakdown for the details column.
+
+        Args:
+            state: Final agent state
+            model_latencies: List of model call latencies in ms
+            tool_latencies: List of tool call latencies in ms
+
+        Returns:
+            Details dict with steps breakdown and summary
+        """
+        # Convert step dataclasses to dicts
+        steps_data = []
+        for step in self._ctx.steps:
+            step_dict = {
+                "type": step.step_type,
+                "name": step.step_name,
+                "latency_ms": round(step.latency_ms, 2),
+            }
+            if step.step_type == "model":
+                step_dict["input_tokens"] = step.input_tokens
+                step_dict["output_tokens"] = step.output_tokens
+                step_dict["total_tokens"] = step.total_tokens
+                if step.extra_tokens:
+                    step_dict["extra_tokens"] = step.extra_tokens
+            steps_data.append(step_dict)
+
+        # Build summary
+        total_model_latency = sum(model_latencies) if model_latencies else 0
+        total_tool_latency = sum(tool_latencies) if tool_latencies else 0
+        total_latency = (time.monotonic() - self._ctx.run_start_time) * 1000
+
+        details = {
+            "agent_type": "langchain_v1",
+            "steps": steps_data,
+            "summary": {
+                "model_calls": state.get("model_call_count", 0),
+                "tool_calls": len(tool_latencies),
+                "total_latency_ms": round(total_latency, 2),
+                "model_latency_ms": round(total_model_latency, 2),
+                "tool_latency_ms": round(total_tool_latency, 2),
+            },
+        }
+
+        return details
 
     # -------------------------------------------------------------------------
     # Wrap-style hooks
@@ -423,7 +517,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         """Wrap model calls to measure latency.
 
         This hook measures the time taken for each model call and stores
-        it for later analysis.
+        it for later analysis. Latency is stored in current_step for
+        after_model to pick up.
 
         Args:
             request: The model request
@@ -444,6 +539,12 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 if not hasattr(self._ctx, "model_latencies"):
                     self._ctx.model_latencies = []
                 self._ctx.model_latencies.append(latency_ms)
+                # Store in current_step for after_model to pick up
+                self._ctx.current_step = _StepUsage(
+                    step_type="model",
+                    step_name=self._ctx.current_model_name or "unknown",
+                    latency_ms=latency_ms,
+                )
 
     def wrap_tool_call(
         self,
@@ -453,7 +554,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         """Wrap tool calls to measure latency and track count.
 
         This hook measures the time taken for each tool call and tracks
-        the total number of tool invocations.
+        the total number of tool invocations. Records step usage for details.
 
         Args:
             request: The tool call request
@@ -484,6 +585,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 if not hasattr(self._ctx, "tool_latencies"):
                     self._ctx.tool_latencies = []
                 self._ctx.tool_latencies.append(latency_ms)
+
+                # Record tool step for details
+                tool_step = _StepUsage(
+                    step_type="tool",
+                    step_name=tool_name,
+                    latency_ms=latency_ms,
+                )
+                self._ctx.steps.append(tool_step)
 
     # -------------------------------------------------------------------------
     # Internal helpers

@@ -252,8 +252,18 @@ class UsageSession:
         final_usage: Optional[Dict[str, Any]] = None,
         streamed: bool = False,
         partial: bool = False,
+        details: Optional[Dict[str, Any]] = None,
     ):
-        """Finalize and persist usage log"""
+        """Finalize and persist usage log
+
+        Args:
+            success: Whether the request succeeded
+            error: Optional exception if request failed
+            final_usage: Final/override usage data
+            streamed: Whether response was streamed
+            partial: Whether response was partial/aborted
+            details: Extended execution details (agent steps, tool calls, etc.)
+        """
         if not self.logging_config.enabled:
             return
 
@@ -394,6 +404,7 @@ class UsageSession:
                 context_multiplier=cost_result.get("context_multiplier"),
                 streamed=streamed,
                 partial=partial,
+                details=details,
             )
 
             # Persist to database
@@ -418,6 +429,7 @@ class UsageSession:
         final_usage: Optional[Dict[str, Any]] = None,
         streamed: bool = False,
         partial: bool = False,
+        details: Optional[Dict[str, Any]] = None,
     ):
         """Synchronous wrapper for finalize() - runs in a dedicated thread with its own event loop.
 
@@ -430,6 +442,7 @@ class UsageSession:
             final_usage: Final/override usage data
             streamed: Whether response was streamed
             partial: Whether response was partial/aborted
+            details: Extended execution details (agent steps, tool calls, etc.)
         """
         import concurrent.futures
         import threading
@@ -446,6 +459,7 @@ class UsageSession:
                         final_usage=final_usage,
                         streamed=streamed,
                         partial=partial,
+                        details=details,
                     )
                 )
             finally:
