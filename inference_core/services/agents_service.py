@@ -11,11 +11,13 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
-from inference_core.agents.middleware import CostTrackingMiddleware
+from inference_core.agents.middleware import CostTrackingMiddleware, MemoryMiddleware
+from inference_core.agents.tools.memory_tools import get_memory_tools
 from inference_core.core.config import get_settings
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
+from inference_core.services.agent_memory_service import get_agent_memory_service
 
 
 class AgentMetadata(BaseModel):
@@ -53,6 +55,7 @@ class AgentService:
         context_schema: Optional[Any] = None,
         middleware: Optional[list[Any]] = None,
         enable_cost_tracking: bool = True,
+        enable_memory: bool = False,
         user_id: Optional[uuid.UUID] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -69,7 +72,9 @@ class AgentService:
                        enable_cost_tracking=True, CostTrackingMiddleware is added automatically.
             enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
                                   Set to False to disable cost tracking.
-            user_id: Optional user ID for cost tracking attribution.
+            enable_memory: Whether to automatically add memory tools and MemoryMiddleware.
+                          Requires agent_memory_enabled=True in settings and user_id.
+            user_id: Optional user ID for cost tracking and memory attribution.
             session_id: Optional session ID for grouping related requests.
             request_id: Optional correlation ID (e.g., Celery task ID).
         """
@@ -104,9 +109,13 @@ class AgentService:
         # Middleware setup
         self._middleware = middleware or []
         self._enable_cost_tracking = enable_cost_tracking
+        self._enable_memory = enable_memory
         self._user_id = user_id
         self._session_id = session_id
         self._request_id = request_id
+
+        # Memory service reference (lazy loaded)
+        self._memory_service = None
 
     async def create_agent(self) -> Callable:
         """Create and configure the agent with tools and middleware.
@@ -126,6 +135,9 @@ class AgentService:
         # Load tools from MCP if configured
         await self._load_mcp_tools()
 
+        # Build memory tools if memory is enabled
+        await self._load_memory_tools()
+
         # Build middleware list
         middleware = self._build_middleware()
 
@@ -144,6 +156,7 @@ class AgentService:
         """Build the middleware list for the agent.
 
         Adds CostTrackingMiddleware automatically if enabled and not already present.
+        Adds MemoryMiddleware if memory is enabled and service is available.
 
         Returns:
             List of middleware instances.
@@ -185,6 +198,31 @@ class AgentService:
                 logging.debug(
                     f"Added CostTrackingMiddleware for agent '{self.agent_name}'"
                 )
+
+        # Add MemoryMiddleware if enabled and service available
+        if self._enable_memory and self._memory_service and self._user_id:
+            has_memory = any(isinstance(m, MemoryMiddleware) for m in middleware)
+
+            if not has_memory:
+                try:
+                    settings = get_settings()
+                    memory_middleware = MemoryMiddleware(
+                        memory_service=self._memory_service,
+                        user_id=str(self._user_id),
+                        auto_recall=settings.agent_memory_auto_recall,
+                        max_recall_results=settings.agent_memory_max_results,
+                    )
+                    # Insert after cost tracking (if present) so memory context is logged
+                    insert_pos = 1 if self._enable_cost_tracking else 0
+                    middleware.insert(insert_pos, memory_middleware)
+                    logging.debug(
+                        f"Added MemoryMiddleware for agent '{self.agent_name}'"
+                    )
+                except Exception as e:
+                    logging.error(
+                        f"Failed to add MemoryMiddleware for agent '{self.agent_name}': {e}",
+                        exc_info=True,
+                    )
 
         return middleware
 
@@ -273,6 +311,53 @@ class AgentService:
         except Exception as e:
             logging.error(
                 f"Error loading MCP tools for agent '{self.agent_name}': {e}",
+                exc_info=True,
+            )
+
+    async def _load_memory_tools(self) -> None:
+        """Load memory tools if memory is enabled for this agent.
+
+        Memory tools (save_memory, recall_memories) are added when:
+        - enable_memory=True was passed to constructor
+        - agent_memory_enabled=True in settings
+        - user_id is available for namespace isolation
+        - Vector store backend is configured
+        """
+        if not self._enable_memory:
+            return
+
+        if not self._user_id:
+            logging.warning(
+                f"Memory enabled for agent '{self.agent_name}' but no user_id provided. "
+                "Memory tools require user_id for namespace isolation."
+            )
+            return
+
+        # Get memory service (lazy initialization)
+        self._memory_service = get_agent_memory_service()
+        if not self._memory_service:
+            logging.warning(
+                f"Memory enabled for agent '{self.agent_name}' but AgentMemoryService "
+                "unavailable. Check agent_memory_enabled and vector_backend settings."
+            )
+            return
+
+        try:
+            settings = get_settings()
+            memory_tools = get_memory_tools(
+                memory_service=self._memory_service,
+                user_id=str(self._user_id),
+                session_id=self._session_id,
+                upsert_mode=settings.agent_memory_upsert_by_similarity,
+                max_recall_results=settings.agent_memory_max_results,
+            )
+            self.tools.extend(memory_tools)
+            logging.info(
+                f"Added {len(memory_tools)} memory tools to agent '{self.agent_name}'"
+            )
+        except Exception as e:
+            logging.error(
+                f"Error loading memory tools for agent '{self.agent_name}': {e}",
                 exc_info=True,
             )
 
@@ -435,6 +520,7 @@ class DeepAgentService(AgentService):
         checkpoint_config: Optional[dict[str, Any]] = None,
         middleware: Optional[list[Any]] = None,
         enable_cost_tracking: bool = True,
+        enable_memory: bool = False,
         user_id: Optional[uuid.UUID] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -449,7 +535,8 @@ class DeepAgentService(AgentService):
             checkpoint_config: Configuration for the checkpointer.
             middleware: List of middleware to apply to the agent.
             enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
-            user_id: Optional user ID for cost tracking attribution.
+            enable_memory: Whether to automatically add memory tools and MemoryMiddleware.
+            user_id: Optional user ID for cost tracking and memory attribution.
             session_id: Optional session ID for grouping related requests.
             request_id: Optional correlation ID (e.g., Celery task ID).
         """
@@ -460,6 +547,7 @@ class DeepAgentService(AgentService):
             checkpoint_config=checkpoint_config,
             middleware=middleware,
             enable_cost_tracking=enable_cost_tracking,
+            enable_memory=enable_memory,
             user_id=user_id,
             session_id=session_id,
             request_id=request_id,

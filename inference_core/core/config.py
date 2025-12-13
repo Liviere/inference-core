@@ -310,6 +310,38 @@ class Settings(BaseSettings):
         le=10000,
     )
 
+    ###################################
+    #        AGENT MEMORY             #
+    ###################################
+    agent_memory_enabled: bool = Field(
+        default=False,
+        description="Enable long-term memory for agents. Requires vector_backend to be configured.",
+    )
+    agent_memory_collection: str = Field(
+        default="agent_memory",
+        description="Collection name for agent memory storage (separate from RAG documents)",
+    )
+    agent_memory_max_results: int = Field(
+        default=5,
+        description="Maximum number of memory items to retrieve during recall",
+        ge=1,
+        le=50,
+    )
+    agent_memory_upsert_by_similarity: bool = Field(
+        default=False,
+        description="When True, check similarity before adding memory to avoid duplicates",
+    )
+    agent_memory_similarity_threshold: float = Field(
+        default=0.85,
+        description="Similarity threshold for upsert deduplication (0.0-1.0)",
+        ge=0.0,
+        le=1.0,
+    )
+    agent_memory_auto_recall: bool = Field(
+        default=True,
+        description="Automatically recall relevant memories in before_agent middleware hook",
+    )
+
     # Cookie settings for refresh tokens
     refresh_cookie_name: str = Field(
         default="refresh_token", description="Name of the refresh token cookie"

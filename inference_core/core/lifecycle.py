@@ -82,6 +82,32 @@ async def init_resources(settings: Settings) -> Dict[str, Any]:
                         "⚠️ Qdrant reported unhealthy status: %s",
                         health.get("error") or health,
                     )
+
+                # Initialize agent memory collection if enabled
+                if settings.agent_memory_enabled:
+                    try:
+                        created = await vs_service.provider.ensure_collection(
+                            settings.agent_memory_collection
+                        )
+                        if created:
+                            logger.info(
+                                "✅ Agent memory collection '%s' created",
+                                settings.agent_memory_collection,
+                            )
+                        else:
+                            logger.info(
+                                "✅ Agent memory collection '%s' already exists",
+                                settings.agent_memory_collection,
+                            )
+                        statuses["agent_memory"] = {
+                            "status": "ready",
+                            "collection": settings.agent_memory_collection,
+                        }
+                    except Exception as e:
+                        statuses["agent_memory"] = {"status": "error", "error": str(e)}
+                        logger.warning(
+                            f"⚠️ Failed to initialize agent memory collection: {e}"
+                        )
         except Exception as e:  # pragma: no cover
             statuses["vector_store"] = {"status": "error", "error": str(e)}
             logger.warning(f"⚠️ Qdrant initialization/health check failed: {e}")
