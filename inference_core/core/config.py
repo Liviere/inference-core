@@ -180,6 +180,10 @@ class Settings(BaseSettings):
         default=3600,
         description="Connection recycle time in seconds",
     )
+    database_pool_class: Optional[Literal["default", "null"]] = Field(
+        default="default",
+        description="Connection pool class. Use 'null' (NullPool) for Jupyter notebooks or multi-event-loop environments to avoid 'different loop' errors. 'default' uses standard QueuePool.",
+    )
     database_mysql_charset: str = Field(
         default="utf8mb4",
         description="MySQL character set",
@@ -442,16 +446,28 @@ class Settings(BaseSettings):
             return "unknown"
 
     def get_database_engine_args(self) -> dict:
-        """Get database engine arguments based on database type"""
+        """Get database engine arguments based on database type.
+
+        Returns connection pool configuration. Use database_pool_class='null'
+        for Jupyter notebooks or multi-event-loop environments to avoid
+        'Task got Future attached to a different loop' errors.
+        """
+        from sqlalchemy.pool import NullPool
+
         base_args = {
             "echo": self.database_echo,
         }
 
+        # NullPool support for Jupyter/multi-loop environments
+        # Source: SQLAlchemy docs - asyncio engine with multiple event loops
+        if self.database_pool_class == "null":
+            base_args["poolclass"] = NullPool
+
         # SQLite doesn't support pooling
         if self.is_sqlite:
             base_args.update({"connect_args": {"check_same_thread": False}})
-        else:
-            # PostgreSQL and MySQL pooling settings
+        elif self.database_pool_class != "null":
+            # PostgreSQL and MySQL pooling settings (skip if NullPool)
             base_args.update(
                 {
                     "pool_size": self.database_pool_size,
@@ -469,6 +485,13 @@ class Settings(BaseSettings):
                     "use_unicode": True,
                     "autocommit": False,
                 }
+        elif self.is_mysql:
+            # MySQL charset settings still needed with NullPool
+            base_args["connect_args"] = {
+                "charset": self.database_mysql_charset,
+                "use_unicode": True,
+                "autocommit": False,
+            }
 
         return base_args
 

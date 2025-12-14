@@ -207,6 +207,39 @@ def has_engine() -> bool:
     return _engine is not None
 
 
+def reset_database_for_new_event_loop() -> None:
+    """Reset database engine and session maker for a new event loop.
+
+    Use this function in Jupyter notebooks or multi-event-loop environments
+    when you need to reinitialize database connections after the event loop
+    has changed. This prevents 'Task got Future attached to a different loop'
+    errors.
+
+    This is a SYNCHRONOUS function that clears singletons without awaiting
+    disposal. For production use, prefer using database_pool_class='null'
+    in settings which uses NullPool to avoid these issues entirely.
+
+    Example (Jupyter notebook):
+        >>> from inference_core.database.sql.connection import reset_database_for_new_event_loop
+        >>> reset_database_for_new_event_loop()
+        >>> # Now you can safely create a new agent
+    """
+    global _engine, _async_session_maker
+
+    if _engine is not None:
+        logger.warning(
+            "Resetting database engine for new event loop. "
+            "Existing pooled connections will be abandoned. "
+            "Consider using DATABASE_POOL_CLASS=null for Jupyter environments."
+        )
+        # Do NOT await dispose - the old event loop may already be closed
+        # Just clear the references; connections will be garbage collected
+        _engine = None
+
+    _async_session_maker = None
+    logger.info("Database engine and session maker reset for new event loop")
+
+
 class DatabaseManager:
     """Database management utilities"""
 

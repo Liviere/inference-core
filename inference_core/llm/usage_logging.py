@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 _PRICING_SNAPSHOT_CACHE: dict[str, uuid.UUID] = {}
 
 
+def reset_usage_logging_cache() -> None:
+    """Reset the in-memory pricing snapshot cache.
+
+    Use this in Jupyter notebooks or multi-event-loop environments
+    alongside reset_database_for_new_event_loop() when reinitializing
+    connections.
+    """
+    global _PRICING_SNAPSHOT_CACHE
+    _PRICING_SNAPSHOT_CACHE = {}
+    logger.debug("Usage logging pricing snapshot cache cleared")
+
+
 class UsageNormalizer:
     """Handles normalization of usage data from different providers"""
 
