@@ -405,3 +405,53 @@ class TestDatabaseIntegration:
             autoflush=False,
             autocommit=False,
         )
+
+
+class TestResetDatabaseForNewEventLoop:
+    """Test reset_database_for_new_event_loop function for Jupyter environments."""
+
+    @patch.dict(os.environ, {"ENVIRONMENT": "testing"})
+    def setup_method(self, method):
+        """Setup test environment."""
+        from inference_core.core.config import get_settings
+
+        get_settings.cache_clear()
+
+    def test_reset_clears_engine_and_session_maker(self):
+        """Test that reset clears both _engine and _async_session_maker globals."""
+        from inference_core.database.sql import connection
+        from inference_core.database.sql.connection import (
+            has_engine,
+            reset_database_for_new_event_loop,
+        )
+
+        # Set up mock engine and session maker
+        connection._engine = MagicMock()
+        connection._async_session_maker = MagicMock()
+
+        assert has_engine() is True
+
+        # Reset
+        reset_database_for_new_event_loop()
+
+        # Verify both are cleared
+        assert connection._engine is None
+        assert connection._async_session_maker is None
+        assert has_engine() is False
+
+    def test_reset_is_safe_when_no_engine(self):
+        """Test that reset works safely when no engine exists."""
+        from inference_core.database.sql import connection
+        from inference_core.database.sql.connection import (
+            reset_database_for_new_event_loop,
+        )
+
+        # Ensure no engine exists
+        connection._engine = None
+        connection._async_session_maker = None
+
+        # Should not raise
+        reset_database_for_new_event_loop()
+
+        assert connection._engine is None
+        assert connection._async_session_maker is None

@@ -83,7 +83,9 @@ class TestListParsingDotEnvSource:
         assert result == ["*"]
 
         # Test comma-separated
-        result = dotenv_source.prepare_field_value("allowed_hosts", field, "a.com,b.com", False)
+        result = dotenv_source.prepare_field_value(
+            "allowed_hosts", field, "a.com,b.com", False
+        )
         assert result == ["a.com", "b.com"]
 
 
@@ -292,6 +294,49 @@ class TestSettings:
         # PostgreSQL should not have MySQL-specific connect_args
         assert "connect_args" not in args or args.get("connect_args") is None
 
+    def test_get_database_engine_args_nullpool(self):
+        """Test database engine args with NullPool for Jupyter/multi-loop environments."""
+        from sqlalchemy.pool import NullPool
+
+        settings = Settings(
+            database_service="postgresql+asyncpg",
+            database_host="host",
+            database_name="db",
+            database_user="user",
+            database_password="pass",
+            database_pool_class="null",
+        )
+        args = settings.get_database_engine_args()
+
+        # NullPool should be set
+        assert args["poolclass"] is NullPool
+        # Pool size/overflow should NOT be present with NullPool
+        assert "pool_size" not in args
+        assert "max_overflow" not in args
+        assert "pool_timeout" not in args
+        assert "pool_recycle" not in args
+
+    def test_get_database_engine_args_nullpool_mysql(self):
+        """Test database engine args with NullPool for MySQL retains charset settings."""
+        from sqlalchemy.pool import NullPool
+
+        settings = Settings(
+            database_service="mysql+aiomysql",
+            database_host="host",
+            database_name="db",
+            database_user="user",
+            database_password="pass",
+            database_pool_class="null",
+            database_mysql_charset="utf8mb4",
+        )
+        args = settings.get_database_engine_args()
+
+        # NullPool should be set
+        assert args["poolclass"] is NullPool
+        # MySQL connect_args should still be present
+        assert "connect_args" in args
+        assert args["connect_args"]["charset"] == "utf8mb4"
+
     @patch.dict(os.environ, {"CORS_ORIGINS": "https://app.com,https://api.com"})
     def test_cors_origins_from_env(self):
         """Test CORS origins are parsed from environment variables"""
@@ -333,27 +378,35 @@ class TestAllowedHostsSettings:
     def test_normalize_hostname_with_scheme_and_port(self):
         """Test hostname normalization removes scheme and port"""
         settings = Settings()
-        
+
         # HTTPS with port
-        assert settings._normalize_hostname("https://app.example.com:8080") == "app.example.com"
-        
+        assert (
+            settings._normalize_hostname("https://app.example.com:8080")
+            == "app.example.com"
+        )
+
         # HTTP with default port
         assert settings._normalize_hostname("http://localhost:3000") == "localhost"
-        
+
         # HTTPS without port
-        assert settings._normalize_hostname("https://api.example.com") == "api.example.com"
+        assert (
+            settings._normalize_hostname("https://api.example.com") == "api.example.com"
+        )
 
     def test_normalize_hostname_with_path(self):
         """Test hostname normalization removes path"""
         settings = Settings()
-        
-        assert settings._normalize_hostname("https://app.example.com/api/v1") == "app.example.com"
+
+        assert (
+            settings._normalize_hostname("https://app.example.com/api/v1")
+            == "app.example.com"
+        )
         assert settings._normalize_hostname("localhost:8000/health") == "localhost"
 
     def test_normalize_hostname_plain_hostname(self):
         """Test hostname normalization with plain hostnames"""
         settings = Settings()
-        
+
         assert settings._normalize_hostname("example.com") == "example.com"
         assert settings._normalize_hostname("localhost") == "localhost"
         assert settings._normalize_hostname("127.0.0.1") == "127.0.0.1"
@@ -366,27 +419,30 @@ class TestAllowedHostsSettings:
     def test_normalize_hostname_with_port_only(self):
         """Test hostname normalization with port but no scheme"""
         settings = Settings()
-        
+
         assert settings._normalize_hostname("example.com:8080") == "example.com"
         assert settings._normalize_hostname("localhost:3000") == "localhost"
 
     def test_normalize_hostname_edge_cases(self):
         """Test hostname normalization edge cases"""
         settings = Settings()
-        
+
         # Non-numeric port (should be preserved)
         assert settings._normalize_hostname("example.com:abc") == "example.com:abc"
-        
+
         # Multiple colons - only first numeric port removed
-        assert settings._normalize_hostname("example.com:8080:extra") == "example.com:8080:extra"
+        assert (
+            settings._normalize_hostname("example.com:8080:extra")
+            == "example.com:8080:extra"
+        )
 
     def test_get_effective_allowed_hosts_explicit_setting(self):
         """Test get_effective_allowed_hosts with explicit allowed_hosts"""
         settings = Settings(
             allowed_hosts=["example.com", "api.example.com"],
-            cors_origins=["https://app.example.com"]
+            cors_origins=["https://app.example.com"],
         )
-        
+
         # Should use explicit allowed_hosts, ignore cors_origins
         result = settings.get_effective_allowed_hosts()
         assert result == ["example.com", "api.example.com"]
@@ -394,7 +450,7 @@ class TestAllowedHostsSettings:
     def test_get_effective_allowed_hosts_from_cors_wildcard(self):
         """Test get_effective_allowed_hosts derives from cors_origins wildcard"""
         settings = Settings(cors_origins=["*"])
-        
+
         result = settings.get_effective_allowed_hosts()
         assert result == ["*"]
 
@@ -402,11 +458,11 @@ class TestAllowedHostsSettings:
         """Test get_effective_allowed_hosts in development environment"""
         settings = Settings(
             environment="development",
-            cors_origins=["https://app.example.com:8080", "http://localhost:3000"]
+            cors_origins=["https://app.example.com:8080", "http://localhost:3000"],
         )
-        
+
         result = settings.get_effective_allowed_hosts()
-        
+
         # Should normalize cors_origins and add localhost/127.0.0.1
         expected = ["app.example.com", "localhost", "127.0.0.1"]
         assert all(host in result for host in expected)
@@ -417,11 +473,11 @@ class TestAllowedHostsSettings:
         """Test get_effective_allowed_hosts in production environment"""
         settings = Settings(
             environment="production",
-            cors_origins=["https://app.example.com", "https://api.example.com:8443"]
+            cors_origins=["https://app.example.com", "https://api.example.com:8443"],
         )
-        
+
         result = settings.get_effective_allowed_hosts()
-        
+
         # Should normalize cors_origins but NOT add localhost/127.0.0.1 in production
         assert result == ["app.example.com", "api.example.com"]
         assert "localhost" not in result
@@ -430,9 +486,9 @@ class TestAllowedHostsSettings:
     def test_get_effective_allowed_hosts_empty_fallback(self):
         """Test get_effective_allowed_hosts with empty cors_origins"""
         settings = Settings(environment="production", cors_origins=[])
-        
+
         result = settings.get_effective_allowed_hosts()
-        
+
         # Should fallback to wildcard when no origins and no normalized hosts
         assert result == ["*"]
 
@@ -443,12 +499,12 @@ class TestAllowedHostsSettings:
             cors_origins=[
                 "https://app.example.com:8080",
                 "http://app.example.com:3000",  # Same hostname
-                "https://localhost:8000",       # Will be deduplicated
-            ]
+                "https://localhost:8000",  # Will be deduplicated
+            ],
         )
-        
+
         result = settings.get_effective_allowed_hosts()
-        
+
         # Should have unique hostnames
         assert result.count("app.example.com") == 1
         assert result.count("localhost") == 1
