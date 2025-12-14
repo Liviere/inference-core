@@ -2,8 +2,8 @@
 Middleware package for LangChain v1 agents.
 
 This package provides middleware components for agent execution control,
-including cost tracking, usage logging, memory injection, and other
-cross-cutting concerns.
+including cost tracking, usage logging, memory injection, tool-based model
+switching, and other cross-cutting concerns.
 
 Usage:
     from inference_core.agents.middleware import (
@@ -13,6 +13,10 @@ Usage:
         MemoryMiddleware,
         MemoryState,
         create_memory_middleware,
+        ToolBasedModelSwitchMiddleware,
+        ToolModelSwitchConfig,
+        ToolModelOverride,
+        create_tool_model_switch_middleware,
     )
 
     # Create cost tracking middleware with defaults
@@ -23,6 +27,18 @@ Usage:
         memory_service=memory_service,
         user_id="user-uuid",
     )
+
+    # Create tool-based model switch middleware
+    model_switch_middleware = create_tool_model_switch_middleware(
+        overrides=[
+            {
+                'tool_name': 'complex_analysis',
+                'model': 'claude-opus-4-1-20250805',
+                'trigger': 'after_tool',
+            }
+        ],
+        default_model='gpt-5-mini',
+    )
 """
 
 from .cost_tracking import (
@@ -31,6 +47,13 @@ from .cost_tracking import (
     create_cost_tracking_middleware,
 )
 from .memory import MemoryMiddleware, MemoryState, create_memory_middleware
+from .tool_model_switch import (
+    ToolBasedModelSwitchMiddleware,
+    ToolModelOverride,
+    ToolModelSwitchConfig,
+    ToolModelSwitchState,
+    create_tool_model_switch_middleware,
+)
 
 __all__ = [
     # Cost tracking
@@ -41,4 +64,10 @@ __all__ = [
     "MemoryMiddleware",
     "MemoryState",
     "create_memory_middleware",
+    # Tool-based model switching
+    "ToolBasedModelSwitchMiddleware",
+    "ToolModelOverride",
+    "ToolModelSwitchConfig",
+    "ToolModelSwitchState",
+    "create_tool_model_switch_middleware",
 ]

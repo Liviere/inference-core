@@ -11,7 +11,12 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
-from inference_core.agents.middleware import CostTrackingMiddleware, MemoryMiddleware
+from inference_core.agents.middleware import (
+    CostTrackingMiddleware,
+    MemoryMiddleware,
+    ToolBasedModelSwitchMiddleware,
+    create_tool_model_switch_middleware,
+)
 from inference_core.agents.tools.memory_tools import get_memory_tools
 from inference_core.core.config import get_settings
 from inference_core.llm.config import get_llm_config
@@ -224,7 +229,67 @@ class AgentService:
                         exc_info=True,
                     )
 
+        # Add ToolBasedModelSwitchMiddleware if configured in agent config
+        self._add_tool_model_switch_middleware(middleware)
+
         return middleware
+
+    def _add_tool_model_switch_middleware(self, middleware: list[Any]) -> None:
+        """Add ToolBasedModelSwitchMiddleware if tool_model_overrides is configured.
+
+        Checks the agent configuration for tool_model_overrides and creates
+        the middleware if any overrides are defined.
+
+        Args:
+            middleware: List of middleware to append to (modified in place).
+        """
+        if not self.agent_config:
+            return
+
+        overrides = self.agent_config.tool_model_overrides
+        if not overrides:
+            return
+
+        # Check if already present
+        has_tool_model_switch = any(
+            isinstance(m, ToolBasedModelSwitchMiddleware) for m in middleware
+        )
+        if has_tool_model_switch:
+            return
+
+        try:
+            # Convert Pydantic models to dicts for the factory function
+            override_dicts = [
+                {
+                    "tool_name": o.tool_name,
+                    "model": o.model,
+                    "trigger": o.trigger,
+                    "description": o.description,
+                }
+                for o in overrides
+            ]
+
+            tool_model_middleware = create_tool_model_switch_middleware(
+                overrides=override_dicts,
+                default_model=self.model_name,
+                model_factory=self.model_factory,
+                cache_models=True,
+            )
+
+            # Insert at the end (after cost tracking and memory)
+            # This ensures model switching happens during the actual model call
+            middleware.append(tool_model_middleware)
+
+            logging.info(
+                f"Added ToolBasedModelSwitchMiddleware for agent '{self.agent_name}' "
+                f"with {len(overrides)} override(s)"
+            )
+        except Exception as e:
+            logging.error(
+                f"Failed to add ToolBasedModelSwitchMiddleware for agent "
+                f"'{self.agent_name}': {e}",
+                exc_info=True,
+            )
 
     def close(self) -> None:
         self._exit_stack.close()

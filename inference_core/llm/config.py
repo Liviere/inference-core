@@ -396,6 +396,37 @@ class ToolLimits(BaseModel):
     )
 
 
+class ToolModelOverrideConfig(BaseModel):
+    """Configuration for tool-based model override.
+
+    Allows specifying different models for specific tools, enabling
+    cost optimization or capability-based model selection.
+    """
+
+    tool_name: str = Field(
+        ..., description="Name of the tool that triggers model switch"
+    )
+    model: str = Field(
+        ..., description="Model name to use (must be defined in models section)"
+    )
+    trigger: str = Field(
+        default="after_tool",
+        description="When to switch: 'after_tool' (next call after tool returns) "
+        "or 'before_tool' (call that invokes the tool)",
+    )
+    description: str = Field(
+        default="", description="Human-readable reason for this override"
+    )
+
+    @field_validator("trigger")
+    @classmethod
+    def validate_trigger(cls, v):
+        allowed = ["after_tool", "before_tool"]
+        if v not in allowed:
+            raise ValueError(f"trigger must be one of: {allowed}")
+        return v
+
+
 class AgentConfig(BaseModel):
     """Configuration for an agent.
 
@@ -416,6 +447,11 @@ class AgentConfig(BaseModel):
     )
     allowed_tools: Optional[List[str]] = Field(
         default=None, description="Optional allowlist of tool names"
+    )
+    tool_model_overrides: Optional[List[ToolModelOverrideConfig]] = Field(
+        default=None,
+        description="Model overrides triggered by specific tool calls. "
+        "Allows using different models for different tools.",
     )
 
 
