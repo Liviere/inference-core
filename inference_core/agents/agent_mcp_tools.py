@@ -15,6 +15,25 @@ class AgentMCPToolManager:
         self.config = get_llm_config()
         self._clients: Dict[str, Any] = {}  # Cache clients by profile name
 
+    def __filter_tools(self, tools: List[Any], profile, profile_name: str) -> List[Any]:
+        """
+        Filter tools based on profile configuration.
+        Args:
+            tools: List of LangChain tools.
+            profile: MCP profile configuration.
+            profile_name: The name of the MCP profile.
+        Returns:
+            Filtered list of LangChain tools.
+        """
+        # Filter tools if include_tools is configured
+        if profile.include_tools is not None:
+            original_count = len(tools)
+            tools = [t for t in tools if t.name in profile.include_tools]
+            logger.debug(
+                f"Filtered MCP tools for profile '{profile_name}': {original_count} -> {len(tools)}"
+            )
+        return tools
+
     async def get_tools_for_profile(self, profile_name: str) -> List[Any]:
         """
         Get LangChain-compatible tools for a specific MCP profile.
@@ -39,7 +58,12 @@ class AgentMCPToolManager:
             try:
                 # In the new adapter, we might need to ensure connection is active
                 # But typically get_tools() handles it or we assume it's persistent/stateless enough
-                return await self._clients[profile_name].get_tools()
+                tools = await self._clients[profile_name].get_tools()
+                tools = self.__filter_tools(tools, profile, profile_name)
+                logger.info(
+                    f"Loaded {len(tools)} MCP tools from cache for profile '{profile_name}'"
+                )
+                return tools
             except Exception as e:
                 logger.error(
                     f"Error getting tools from cached client for profile '{profile_name}': {e}"
@@ -56,15 +80,7 @@ class AgentMCPToolManager:
 
         try:
             tools = await client.get_tools()
-
-            # Filter tools if include_tools is configured
-            if profile.include_tools is not None:
-                original_count = len(tools)
-                tools = [t for t in tools if t.name in profile.include_tools]
-                logger.debug(
-                    f"Filtered MCP tools for profile '{profile_name}': {original_count} -> {len(tools)}"
-                )
-
+            tools = self.__filter_tools(tools, profile, profile_name)
             logger.info(f"Loaded {len(tools)} MCP tools for profile '{profile_name}'")
             return tools
         except Exception as e:
