@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 
 from deepagents import create_deep_agent
 from langchain.agents import create_agent
+from langchain.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -122,7 +123,7 @@ class AgentService:
         # Memory service reference (lazy loaded)
         self._memory_service = None
 
-    async def create_agent(self) -> Callable:
+    async def create_agent(self, **kwargs) -> Callable:
         """Create and configure the agent with tools and middleware.
 
         This method:
@@ -153,6 +154,7 @@ class AgentService:
             checkpointer=self.checkpointer,
             context_schema=self.context_schema,
             middleware=middleware,
+            **kwargs,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
         return self.agent
@@ -196,7 +198,6 @@ class AgentService:
                     task_type="agent",
                     request_mode="sync",
                     provider=provider,
-                    model_name=self.model_name,
                 )
                 # Insert at the beginning so it wraps everything
                 middleware.insert(0, cost_middleware)
@@ -489,7 +490,7 @@ class AgentService:
         steps = []
         start_time = datetime.now(UTC)
 
-        messages = [{"role": "user", "content": user_input}]
+        messages = [HumanMessage(content=user_input)]
         configurable = {}
 
         if self.checkpoint_config:
