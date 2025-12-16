@@ -67,7 +67,7 @@ class TestBatchAPIEndpoints:
         response = await async_test_client.post("/api/v1/llm/batch/", json=request_data)
 
         # FastAPI returns 403 when no credentials provided to dependency that requires auth
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     async def test_create_batch_job_success(self, async_test_client: AsyncClient):
         """Test creating batch job successfully"""
@@ -202,7 +202,7 @@ class TestBatchAPIEndpoints:
 
         response = await async_test_client.get(f"/api/v1/llm/batch/{fake_uuid}")
 
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     async def test_get_batch_items_success(self, async_test_client: AsyncClient):
         """Test getting batch items"""
@@ -469,7 +469,7 @@ class TestBatchAPIEndpoints:
 
         response = await async_test_client.post(f"/api/v1/llm/batch/{fake_uuid}/cancel")
 
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     async def test_get_batch_job_other_user_not_found(
         self, async_test_client: AsyncClient
@@ -604,19 +604,19 @@ class TestBatchAPIEndpoints:
 
         # Test create endpoint
         response = await async_test_client.post("/api/v1/llm/batch/", json={})
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
         # Test get job endpoint
         response = await async_test_client.get(f"/api/v1/llm/batch/{fake_uuid}")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
         # Test get items endpoint
         response = await async_test_client.get(f"/api/v1/llm/batch/{fake_uuid}/items")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
         # Test cancel endpoint
         response = await async_test_client.post(f"/api/v1/llm/batch/{fake_uuid}/cancel")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     # --- Provider / Model Validation Tests ---
     async def test_create_batch_job_unknown_provider(
@@ -657,7 +657,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "claude-3-5-haiku-latest",
+                "model": "gemini-2.5-flash",
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
             },
             headers={"Authorization": f"Bearer {token}"},

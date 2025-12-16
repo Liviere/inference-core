@@ -44,7 +44,7 @@ class TestLLMEndpointAccessControlTasks:
         resp = await user_access_async_client.post(
             "/api/v1/llm/completion", json={"prompt": "What is AI?"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -55,7 +55,7 @@ class TestLLMEndpointAccessControlTasks:
         resp = await superuser_access_async_client.post(
             "/api/v1/llm/completion", json={"prompt": "What is AI?"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -78,7 +78,7 @@ class TestLLMEndpointAccessControlTasks:
     ):
         """In user mode without auth, models endpoint should 401."""
         resp = await user_access_async_client.get("/api/v1/llm/models")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -124,7 +124,7 @@ class TestLLMEndpointAccessControlTasks:
     ):
         """Batch endpoints should return 401 in user mode without auth."""
         resp = await user_access_async_client.get("/api/v1/llm/batch/test-job-id")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -133,7 +133,7 @@ class TestLLMEndpointAccessControlTasks:
     ):
         """Batch endpoints should return 401 in superuser mode without auth."""
         resp = await superuser_access_async_client.get("/api/v1/llm/batch/test-job-id")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
 
 class TestStreamingEndpointsAccessControl:
@@ -171,7 +171,7 @@ class TestStreamingEndpointsAccessControl:
         resp = await superuser_access_async_client.post(
             "/api/v1/llm/completion/stream", json={"prompt": "What is AI?"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -202,4 +202,4 @@ class TestStreamingEndpointsAccessControl:
         resp = await superuser_access_async_client.post(
             "/api/v1/llm/chat/stream", json={"user_input": "Hello"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
