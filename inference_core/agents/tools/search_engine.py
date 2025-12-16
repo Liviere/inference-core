@@ -1,13 +1,25 @@
+"""Synchronous internet search tool for LangChain agents.
+
+This module provides a BaseTool implementation that wraps Tavily's search API
+and exposes a sync `_run` path so it can be used in sync agent executions. The
+async `_arun` is implemented via a thread executor for parity.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
 import logging
 import os
-from typing import Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
-from langchain.tools import tool
+from langchain_core.tools import BaseTool
+from pydantic import Field
 from tavily import TavilyClient
 
 API_KEY = os.getenv("TAVILY_API_KEY")
 
-_tavily_client_instance = None
+_tavily_client_instance: Optional[TavilyClient] = None
 
 
 def get_tavily_client() -> TavilyClient:
@@ -19,102 +31,133 @@ def get_tavily_client() -> TavilyClient:
     return _tavily_client_instance
 
 
-# Web search tool
-@tool
-def internet_search(
-    query: str,
-    max_results: int = 5,
-    topic: Literal["general", "news", "finance"] = "general",
-    include_raw_content: Optional[Literal["text", "markdown"]] = None,
-    time_range: Optional[Literal["day", "week", "month", "year"]] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    country: Optional[str] = None,
-    include_domains: Optional[list[str]] = None,
-    exclude_domains: Optional[list[str]] = None,
-) -> dict:
+class InternetSearchTool(BaseTool):
+    """Sync-capable Tavily search tool for agents.
+
+    Exists to ensure sync LangGraph tool execution succeeds when tools are
+    invoked via sync pathways. It also exposes an async path for parity.
     """
-    Perform an internet search using the configured Tavily client and return the raw response.
 
-    This function is a thin wrapper around the underlying Tavily client search API. It forwards
-    the provided search parameters to the client and returns whatever dictionary the client
-    produces. It does not perform additional processing of results.
+    name: str = "internet_search"
+    description: str = (
+        "Perform an internet search using Tavily and return the raw response. "
+        "Use when you need up-to-date web results."
+    )
 
-    Parameters
-    ----------
-    query : str
-        The search query string.
-    max_results : int, optional
-        Maximum number of results to return (default: 5).
-    topic : {'general', 'news', 'finance'}, optional
-        Restrict search to a specific topic domain. Defaults to 'general'.
-    include_raw_content : {'text', 'markdown'} or None, optional
-        If provided, include raw content in the chosen format for each result. If None, raw
-        content is omitted.
-    time_range : {'day', 'week', 'month', 'year'} or None, optional
-        Predefined relative time range to filter results (e.g., 'day' for last 24 hours).
-    start_date : str or None, optional
-        Explicit start date for the search window in ISO 8601 format (YYYY-MM-DD). If both
-        start_date and end_date are provided, they define an explicit range; otherwise
-        time_range may be used.
-    end_date : str or None, optional
-        Explicit end date for the search window in ISO 8601 format (YYYY-MM-DD).
-    country : str or None, optional
-        lowerstring country name (e.g., 'united states') to localize or filter results, depending on the client capabilities.
-    include_domains : list[str] or None, optional
-        If provided, only include results from these domains (exact hostnames).
-    exclude_domains : list[str] or None, optional
-        If provided, exclude results from these domains.
+    max_workers: int = Field(default=1, exclude=True)
 
-    Returns
-    -------
-    dict
-        The raw response dictionary returned by the Tavily client search method. Structure and
-        fields depend on the client implementation and requested options.
+    def _run(
+        self,
+        query: str,
+        max_results: int = 5,
+        topic: Literal["general", "news", "finance"] = "general",
+        include_raw_content: Optional[Literal["text", "markdown"]] = None,
+        time_range: Optional[Literal["day", "week", "month", "year"]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        country: Optional[str] = None,
+        include_domains: Optional[list[str]] = None,
+        exclude_domains: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
+        client = get_tavily_client()
+        logging.info(
+            self._format_log(
+                query,
+                max_results,
+                topic,
+                include_raw_content,
+                time_range,
+                start_date,
+                end_date,
+                country,
+                include_domains,
+                exclude_domains,
+            )
+        )
+        return client.search(
+            query=query,
+            max_results=max_results,
+            topic=topic,
+            include_raw_content=include_raw_content,
+            time_range=time_range,
+            start_date=start_date,
+            end_date=end_date,
+            country=country,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
+        )
 
-    Notes
-    -----
-    - Date format expectations and exact behavior for `country`, `include_domains` and
-      `exclude_domains` depend on the configured Tavily client.
-    - This function does not validate combinations of parameters (e.g., overlapping
-      start_date/time_range); validation is delegated to the client.
-    """
-    client = get_tavily_client()
+    async def _arun(
+        self,
+        query: str,
+        max_results: int = 5,
+        topic: Literal["general", "news", "finance"] = "general",
+        include_raw_content: Optional[Literal["text", "markdown"]] = None,
+        time_range: Optional[Literal["day", "week", "month", "year"]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        country: Optional[str] = None,
+        include_domains: Optional[list[str]] = None,
+        exclude_domains: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.max_workers
+        ) as executor:
+            return await loop.run_in_executor(
+                executor,
+                self._run,
+                query,
+                max_results,
+                topic,
+                include_raw_content,
+                time_range,
+                start_date,
+                end_date,
+                country,
+                include_domains,
+                exclude_domains,
+            )
 
-    msg = f"Performing internet search with query: {query}"
-    if topic != "general":
-        msg += f", topic: {topic}"
-    msg += f", max_results: {max_results}"
-    if include_raw_content:
-        msg += f", include_raw_content: {include_raw_content}"
-    if time_range:
-        msg += f", time_range: {time_range}"
-    if start_date or end_date:
-        parts = []
+    @staticmethod
+    def _format_log(
+        query: str,
+        max_results: int,
+        topic: str,
+        include_raw_content: Optional[str],
+        time_range: Optional[str],
+        start_date: Optional[str],
+        end_date: Optional[str],
+        country: Optional[str],
+        include_domains: Optional[list[str]],
+        exclude_domains: Optional[list[str]],
+    ) -> str:
+        parts = [
+            f"Performing internet search with query: {query}",
+            f"max_results: {max_results}",
+            f"topic: {topic}",
+        ]
+        if include_raw_content:
+            parts.append(f"include_raw_content: {include_raw_content}")
+        if time_range:
+            parts.append(f"time_range: {time_range}")
         if start_date:
             parts.append(f"start_date: {start_date}")
         if end_date:
             parts.append(f"end_date: {end_date}")
-        msg += ", " + ", ".join(parts)
-    if country:
-        msg += f", country: {country}"
-    if include_domains:
-        msg += f", include_domains: {', '.join(include_domains)}"
-    if exclude_domains:
-        msg += f", exclude_domains: {', '.join(exclude_domains)}"
+        if country:
+            parts.append(f"country: {country}")
+        if include_domains:
+            parts.append(f"include_domains: {', '.join(include_domains)}")
+        if exclude_domains:
+            parts.append(f"exclude_domains: {', '.join(exclude_domains)}")
+        return ", ".join(parts)
 
-    logging.info(msg)
 
-    response = client.search(
-        query=query,
-        max_results=max_results,
-        topic=topic,
-        include_raw_content=include_raw_content,
-        time_range=time_range,
-        start_date=start_date,
-        end_date=end_date,
-        country=country,
-        include_domains=include_domains,
-        exclude_domains=exclude_domains,
-    )
-    return response
+def get_search_tools() -> list[BaseTool]:
+    """Factory returning the internet search tool with sync support."""
+
+    return [InternetSearchTool()]
+
+
+__all__ = ["InternetSearchTool", "get_search_tools"]
