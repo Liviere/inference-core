@@ -1,9 +1,65 @@
+import asyncio
+import concurrent.futures
 import logging
 from typing import Any, Dict, List, Optional
+
+from langchain_core.tools import BaseTool
+from langchain_core.tools.structured import StructuredTool
 
 from inference_core.llm.config import get_llm_config
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async_in_thread(coro):
+    """Run coroutine in dedicated loop to provide sync fallback."""
+
+    def _runner():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(_runner).result()
+
+
+def _wrap_tool_for_sync(tool: BaseTool) -> BaseTool:
+    """Wrap async-only StructuredTool to provide sync _run."""
+
+    if not isinstance(tool, StructuredTool):
+        return tool
+
+    def _normalize_result(result: Any, response_format: str) -> Any:
+        """Ensure output matches declared response format to avoid runtime errors."""
+
+        if response_format == "content_and_artifact":
+            if isinstance(result, tuple) and len(result) == 2:
+                return result
+            return (result, result)
+        return result
+
+    class SyncWrapper(BaseTool):
+        name: str = tool.name
+        description: str = getattr(tool, "description", "") or ""
+        args_schema: Any = getattr(tool, "args_schema", None)
+        return_direct: bool = getattr(tool, "return_direct", False)
+        response_format: str = getattr(tool, "response_format", "content")
+        extras: Any = getattr(tool, "extras", None)
+
+        def _run(self, *args, **kwargs):
+            payload = kwargs if kwargs else (args[0] if len(args) == 1 else list(args))
+            result = _run_async_in_thread(tool.ainvoke(payload))
+            return _normalize_result(result, self.response_format)
+
+        async def _arun(self, *args, **kwargs):
+            payload = kwargs if kwargs else (args[0] if len(args) == 1 else list(args))
+            result = await tool.ainvoke(payload)
+            return _normalize_result(result, self.response_format)
+
+    return SyncWrapper()
 
 
 class AgentMCPToolManager:
@@ -32,7 +88,17 @@ class AgentMCPToolManager:
             logger.debug(
                 f"Filtered MCP tools for profile '{profile_name}': {original_count} -> {len(tools)}"
             )
-        return tools
+        # Ensure sync compatibility (StructuredTool lacks _run)
+        wrapped = []
+        for t in tools:
+            try:
+                wrapped.append(_wrap_tool_for_sync(t))
+            except Exception as e:
+                logger.warning(
+                    f"Failed to wrap tool '{getattr(t, 'name', '<unknown>')}' for sync: {e}"
+                )
+                wrapped.append(t)
+        return wrapped
 
     async def get_tools_for_profile(self, profile_name: str) -> List[Any]:
         """
