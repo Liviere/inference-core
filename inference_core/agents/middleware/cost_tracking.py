@@ -6,10 +6,9 @@ the new LangChain v1 middleware API. It hooks into agent lifecycle events
 to capture token usage from model calls and persist cost data to the database.
 
 Key features:
-- Accumulates token usage across multiple model calls within an agent run
+- Logs each model step individually (per-model granularity)
 - Calculates costs using pricing configuration (input/output/extras)
 - Supports context tier multipliers
-- Tracks tool call metrics (count, timing)
 - Persists to LLMRequestLog via existing UsageSession infrastructure
 
 Usage:
@@ -34,11 +33,10 @@ Source references:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain.agents.middleware import (
@@ -54,11 +52,7 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from inference_core.llm.config import PricingConfig, UsageLoggingConfig, get_llm_config
-from inference_core.llm.usage_logging import (
-    PricingCalculator,
-    UsageNormalizer,
-    UsageSession,
-)
+from inference_core.llm.usage_logging import UsageSession
 
 logger = logging.getLogger(__name__)
 
@@ -93,35 +87,10 @@ class CostTrackingState(AgentState):
 
 
 @dataclass
-class _StepUsage:
-    """Usage data for a single step (model call or tool call)."""
-
-    step_type: str  # "model" or "tool"
-    step_name: str  # model name or tool name
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
-    extra_tokens: Dict[str, int] = field(default_factory=dict)
-    latency_ms: float = 0.0
-    timestamp: float = field(default_factory=time.time)
-
-
-@dataclass
 class _MiddlewareContext:
-    """Internal context for tracking state across middleware hooks.
+    """Internal context for tracking data between middleware hooks."""
 
-    This is used to pass data between hooks that isn't stored in agent state.
-    """
-
-    session: Optional[UsageSession] = None
     model_call_start_time: Optional[float] = None
-    tool_call_start_time: Optional[float] = None
-    current_model_name: Optional[str] = None
-    run_start_time: float = field(default_factory=time.monotonic)
-    # Per-step usage breakdown for details column
-    steps: List[_StepUsage] = field(default_factory=list)
-    # Current step being tracked (for latency measurement)
-    current_step: Optional[_StepUsage] = None
 
 
 class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
@@ -132,10 +101,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     the existing UsageSession infrastructure.
 
     The middleware uses the following hooks:
-    - before_agent: Initialize usage tracking session
-    - wrap_model_call: Measure model call latency and capture usage
-    - wrap_tool_call: Measure tool call latency
-    - after_agent: Finalize and persist usage log
+    - before_agent: Reset per-run context and initialize counters
+    - wrap_model_call: Capture start time for each model step
+    - wrap_tool_call: Lightweight tool boundary logging
+    - after_agent: No-op because per-step logging happens in after_model
 
     Attributes:
         state_schema: The custom state schema with usage tracking fields
@@ -196,12 +165,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     def before_agent(
         self, state: CostTrackingState, runtime: Runtime
     ) -> Dict[str, Any] | None:
-        """Initialize usage tracking session at the start of agent execution.
+        """Initialize per-run context and state counters.
 
-        This hook:
-        1. Creates a new UsageSession for tracking
-        2. Initializes accumulator fields in state
-        3. Records the run start time
+        This hook prepares in-memory context and state accumulators so
+        downstream hooks can persist per-step usage cleanly.
 
         Args:
             state: Current agent state
@@ -211,38 +178,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             State updates with initialized tracking fields
         """
         # Create fresh context for this invocation
-        self._ctx = _MiddlewareContext(run_start_time=time.monotonic())
-
-        # Determine model name and provider from runtime or config
-        model_name = (
-            self._model_name or getattr(runtime, "model_name", None) or "unknown"
-        )
-        provider = self._provider or self._detect_provider(model_name)
-
-        # Try to get pricing config for this model if not provided
-        pricing_config = self.pricing_config
-        if pricing_config is None:
-            try:
-                llm_config = get_llm_config()
-                model_cfg = llm_config.models.get(model_name)
-                if model_cfg and model_cfg.pricing:
-                    pricing_config = model_cfg.pricing
-            except Exception as e:
-                logger.debug(f"Could not load pricing config for {model_name}: {e}")
-
-        # Create usage session
-        self._ctx.session = UsageSession(
-            task_type=self.task_type,
-            request_mode=self.request_mode,
-            model_name=model_name,
-            provider=provider,
-            pricing_config=pricing_config,
-            user_id=self.user_id,
-            session_id=self.session_id,
-            request_id=self.request_id,
-            logging_config=self.logging_config,
-        )
-        self._ctx.current_model_name = model_name
+        self._ctx = _MiddlewareContext()
 
         # Return initial state updates
         return {
@@ -263,8 +199,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         """Capture usage metadata from the model response.
 
         This hook extracts token usage from the last message in state
-        (which should be the AIMessage from the model) and accumulates
-        it in both the UsageSession and the state.
+        (which should be the AIMessage from the model) and immediately
+        persists a per-step UsageSession so each model call is logged
+        separately (important when models differ per step).
 
         Args:
             state: Current agent state with messages
@@ -273,7 +210,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         Returns:
             State updates with accumulated token counts
         """
-        if not self._ctx or not self._ctx.session:
+        if not self._ctx:
             return None
 
         updates: Dict[str, Any] = {}
@@ -294,98 +231,62 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             # LangChain v1 AIMessage has usage_metadata attribute
             usage_metadata = getattr(last_message, "usage_metadata", None)
 
+            response_metadata = getattr(last_message, "response_metadata", None) or {}
+            model_name = response_metadata.get(
+                "model_name", self._model_name or "unknown"
+            )
+
             if usage_metadata and isinstance(usage_metadata, dict):
-                # Extract core tokens
-                input_tokens = usage_metadata.get("input_tokens", 0) or 0
-                output_tokens = usage_metadata.get("output_tokens", 0) or 0
-                total_tokens = usage_metadata.get(
-                    "total_tokens", input_tokens + output_tokens
+                # Extract usage for this step only
+                fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
+
+                # Keep simple accumulators in state for compatibility
+                updates["accumulated_input_tokens"] = state.get(
+                    "accumulated_input_tokens", 0
+                ) + fragment.get("input_tokens", 0)
+                updates["accumulated_output_tokens"] = state.get(
+                    "accumulated_output_tokens", 0
+                ) + fragment.get("output_tokens", 0)
+                updates["accumulated_total_tokens"] = state.get(
+                    "accumulated_total_tokens", 0
+                ) + fragment.get("total_tokens", 0)
+                updates["accumulated_extra_tokens"] = self._merge_extra_tokens(
+                    state.get("accumulated_extra_tokens", {}), extra_tokens
                 )
 
-                # Accumulate in state
-                updates["accumulated_input_tokens"] = (
-                    state.get("accumulated_input_tokens", 0) + input_tokens
-                )
-                updates["accumulated_output_tokens"] = (
-                    state.get("accumulated_output_tokens", 0) + output_tokens
-                )
-                updates["accumulated_total_tokens"] = (
-                    state.get("accumulated_total_tokens", 0) + total_tokens
-                )
+                # Persist this single step immediately (per-model granularity)
+                provider = self._provider or self._detect_provider(model_name)
+                pricing_config = self._get_pricing_config(model_name)
 
-                # Accumulate in UsageSession
-                fragment = {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                }
-
-                # Handle extra token types (cache, reasoning, etc.)
-                extra_tokens = dict(state.get("accumulated_extra_tokens", {}))
-
-                # Check for input_token_details and output_token_details
-                input_details = usage_metadata.get("input_token_details", {}) or {}
-                output_details = usage_metadata.get("output_token_details", {}) or {}
-
-                for detail_key, val in input_details.items():
-                    if isinstance(val, (int, float)) and val > 0:
-                        token_key = f"{detail_key}_tokens"
-                        fragment[token_key] = val
-                        extra_tokens[token_key] = extra_tokens.get(token_key, 0) + int(
-                            val
-                        )
-
-                for detail_key, val in output_details.items():
-                    if isinstance(val, (int, float)) and val > 0:
-                        token_key = f"{detail_key}_tokens"
-                        fragment[token_key] = val
-                        extra_tokens[token_key] = extra_tokens.get(token_key, 0) + int(
-                            val
-                        )
-
-                # Check for direct extra token fields
-                for key, value in usage_metadata.items():
-                    if key.endswith("_tokens") and key not in {
-                        "input_tokens",
-                        "output_tokens",
-                        "total_tokens",
-                    }:
-                        if isinstance(value, (int, float)) and value > 0:
-                            fragment[key] = value
-                            extra_tokens[key] = extra_tokens.get(key, 0) + int(value)
-
-                updates["accumulated_extra_tokens"] = extra_tokens
-
-                # Accumulate in session
-                self._ctx.session.accumulate(fragment)
-
-                # Record step usage for details
-                step_extra = {}
-                for key, value in extra_tokens.items():
-                    # Get only the current step's extra tokens (not accumulated)
-                    if key in fragment:
-                        step_extra[key] = int(fragment[key])
-
-                step_usage = _StepUsage(
-                    step_type="model",
-                    step_name=self._ctx.current_model_name or "unknown",
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=total_tokens,
-                    extra_tokens=step_extra,
-                    latency_ms=0.0,  # Will be updated by wrap_model_call
-                )
-                # Update latency from current_step if available
-                if self._ctx.current_step and self._ctx.current_step.step_type == "model":
-                    step_usage.latency_ms = self._ctx.current_step.latency_ms
-                self._ctx.steps.append(step_usage)
-
-                logger.debug(
-                    f"Cost tracking: accumulated {input_tokens} input, "
-                    f"{output_tokens} output tokens"
+                session = UsageSession(
+                    task_type=self.task_type,
+                    request_mode=self.request_mode,
+                    model_name=model_name,
+                    provider=provider,
+                    pricing_config=pricing_config,
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    request_id=self.request_id,
+                    logging_config=self.logging_config,
                 )
 
+                # Align latency window with actual model call if recorded
+                if self._ctx.model_call_start_time:
+                    session.start_time = self._ctx.model_call_start_time
+
+                session.finalize_sync(
+                    success=True,
+                    error=None,
+                    final_usage=fragment,
+                    streamed=False,
+                    partial=False,
+                    details=None,
+                )
         except Exception as e:
             logger.warning(f"Error extracting usage from model response: {e}")
+        finally:
+            if self._ctx:
+                self._ctx.model_call_start_time = None
 
         return updates if updates else None
 
@@ -394,10 +295,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     ) -> Dict[str, Any] | None:
         """Finalize and persist usage log after agent completion.
 
-        This hook:
-        1. Calculates final latency
-        2. Finalizes the UsageSession (persists to DB)
-        3. Logs summary metrics
+        Per-step logging is already handled in after_model, so this hook
+        currently performs no additional persistence.
 
         Args:
             state: Final agent state
@@ -406,104 +305,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         Returns:
             None (no state updates needed)
         """
-        if not self._ctx or not self._ctx.session:
-            return None
-
-        try:
-            # Build final usage from accumulated state
-            final_usage = {
-                "input_tokens": state.get("accumulated_input_tokens", 0),
-                "output_tokens": state.get("accumulated_output_tokens", 0),
-                "total_tokens": state.get("accumulated_total_tokens", 0),
-            }
-
-            # Add extra tokens
-            extra_tokens = state.get("accumulated_extra_tokens", {})
-            for key, value in extra_tokens.items():
-                final_usage[key] = value
-
-            # Calculate aggregate latency from model calls
-            model_latencies = getattr(self._ctx, "model_latencies", [])
-            tool_latencies = getattr(self._ctx, "tool_latencies", [])
-
-            # Build details dict with per-step breakdown
-            details = self._build_details(state, model_latencies, tool_latencies)
-
-            # Log summary
-            logger.info(
-                f"Agent cost tracking summary: "
-                f"model_calls={state.get('model_call_count', 0)}, "
-                f"tool_calls={len(tool_latencies)}, "
-                f"input_tokens={final_usage.get('input_tokens', 0)}, "
-                f"output_tokens={final_usage.get('output_tokens', 0)}"
-            )
-
-            # Finalize session synchronously (middleware hooks are sync)
-            # This uses a dedicated thread with its own event loop
-            self._ctx.session.finalize_sync(
-                success=True,
-                error=None,
-                final_usage=final_usage,
-                streamed=False,
-                partial=False,
-                details=details,
-            )
-
-        except Exception as e:
-            logger.error(f"Error finalizing cost tracking session: {e}")
-
+        # Per-step logging already persisted in after_model; nothing to finalize.
         return None
-
-    def _build_details(
-        self,
-        state: CostTrackingState,
-        model_latencies: List[float],
-        tool_latencies: List[float],
-    ) -> Dict[str, Any]:
-        """Build details dict with per-step breakdown for the details column.
-
-        Args:
-            state: Final agent state
-            model_latencies: List of model call latencies in ms
-            tool_latencies: List of tool call latencies in ms
-
-        Returns:
-            Details dict with steps breakdown and summary
-        """
-        # Convert step dataclasses to dicts
-        steps_data = []
-        for step in self._ctx.steps:
-            step_dict = {
-                "type": step.step_type,
-                "name": step.step_name,
-                "latency_ms": round(step.latency_ms, 2),
-            }
-            if step.step_type == "model":
-                step_dict["input_tokens"] = step.input_tokens
-                step_dict["output_tokens"] = step.output_tokens
-                step_dict["total_tokens"] = step.total_tokens
-                if step.extra_tokens:
-                    step_dict["extra_tokens"] = step.extra_tokens
-            steps_data.append(step_dict)
-
-        # Build summary
-        total_model_latency = sum(model_latencies) if model_latencies else 0
-        total_tool_latency = sum(tool_latencies) if tool_latencies else 0
-        total_latency = (time.monotonic() - self._ctx.run_start_time) * 1000
-
-        details = {
-            "agent_type": "langchain_v1",
-            "steps": steps_data,
-            "summary": {
-                "model_calls": state.get("model_call_count", 0),
-                "tool_calls": len(tool_latencies),
-                "total_latency_ms": round(total_latency, 2),
-                "model_latency_ms": round(total_model_latency, 2),
-                "tool_latency_ms": round(total_tool_latency, 2),
-            },
-        }
-
-        return details
 
     # -------------------------------------------------------------------------
     # Wrap-style hooks
@@ -516,9 +319,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     ) -> ModelResponse:
         """Wrap model calls to measure latency.
 
-        This hook measures the time taken for each model call and stores
-        it for later analysis. Latency is stored in current_step for
-        after_model to pick up.
+        This hook captures the call start time so after_model can compute
+        per-step latency when persisting usage.
 
         Args:
             request: The model request
@@ -527,34 +329,21 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         Returns:
             The model response
         """
-        start_time = time.monotonic()
+        if self._ctx:
+            self._ctx.model_call_start_time = time.monotonic()
 
-        try:
-            response = handler(request)
-            return response
-        finally:
-            if self._ctx:
-                latency_ms = (time.monotonic() - start_time) * 1000
-                # Store latency for aggregation in after_agent
-                if not hasattr(self._ctx, "model_latencies"):
-                    self._ctx.model_latencies = []
-                self._ctx.model_latencies.append(latency_ms)
-                # Store in current_step for after_model to pick up
-                self._ctx.current_step = _StepUsage(
-                    step_type="model",
-                    step_name=self._ctx.current_model_name or "unknown",
-                    latency_ms=latency_ms,
-                )
+        response = handler(request)
+        return response
 
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Wrap tool calls to measure latency and track count.
+        """Wrap tool calls for lightweight logging.
 
-        This hook measures the time taken for each tool call and tracks
-        the total number of tool invocations. Records step usage for details.
+        Tool invocations are not persisted to usage logs here, but we keep
+        debug visibility around tool execution boundaries.
 
         Args:
             request: The tool call request
@@ -563,7 +352,6 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         Returns:
             The tool response (ToolMessage or Command)
         """
-        start_time = time.monotonic()
         tool_name = (
             request.tool_call.get("name", "<unknown>")
             if hasattr(request, "tool_call")
@@ -578,79 +366,12 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             return result
         except Exception as e:
             logger.warning(f"Tool call error ({tool_name}): {e}")
-            raise
-        finally:
-            if self._ctx:
-                latency_ms = (time.monotonic() - start_time) * 1000
-                if not hasattr(self._ctx, "tool_latencies"):
-                    self._ctx.tool_latencies = []
-                self._ctx.tool_latencies.append(latency_ms)
-
-                # Record tool step for details
-                tool_step = _StepUsage(
-                    step_type="tool",
-                    step_name=tool_name,
-                    latency_ms=latency_ms,
-                )
-                self._ctx.steps.append(tool_step)
+            return {"error": str(e)}
+        # Tool timing is not persisted; no context tracking needed here.
 
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
-
-    async def _finalize_session(
-        self,
-        state: CostTrackingState,
-        success: bool,
-        error: Optional[Exception] = None,
-    ) -> None:
-        """Finalize the usage session and persist to database.
-
-        Args:
-            state: Final agent state with accumulated metrics
-            success: Whether the agent run completed successfully
-            error: Optional exception if the run failed
-        """
-        if not self._ctx or not self._ctx.session:
-            return
-
-        try:
-            # Build final usage from accumulated state
-            final_usage = {
-                "input_tokens": state.get("accumulated_input_tokens", 0),
-                "output_tokens": state.get("accumulated_output_tokens", 0),
-                "total_tokens": state.get("accumulated_total_tokens", 0),
-            }
-
-            # Add extra tokens
-            extra_tokens = state.get("accumulated_extra_tokens", {})
-            for key, value in extra_tokens.items():
-                final_usage[key] = value
-
-            # Calculate aggregate latency from model calls
-            model_latencies = getattr(self._ctx, "model_latencies", [])
-            tool_latencies = getattr(self._ctx, "tool_latencies", [])
-
-            # Log summary
-            logger.info(
-                f"Agent cost tracking summary: "
-                f"model_calls={state.get('model_call_count', 0)}, "
-                f"tool_calls={len(tool_latencies)}, "
-                f"input_tokens={final_usage.get('input_tokens', 0)}, "
-                f"output_tokens={final_usage.get('output_tokens', 0)}"
-            )
-
-            # Finalize session (persists to DB)
-            await self._ctx.session.finalize(
-                success=success,
-                error=error,
-                final_usage=final_usage,
-                streamed=False,
-                partial=not success,
-            )
-
-        except Exception as e:
-            logger.error(f"Error in _finalize_session: {e}")
 
     @staticmethod
     def _detect_provider(model_name: str) -> str:
@@ -676,6 +397,81 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             return "deepseek"
         else:
             return "unknown"
+
+    def _get_pricing_config(self, model_name: str) -> Optional[PricingConfig]:
+        """Fetch pricing config for a given model.
+
+        Prefers llm_config per-model pricing; falls back to middleware default.
+        """
+
+        try:
+            llm_config = get_llm_config()
+            model_cfg = llm_config.models.get(model_name)
+            if model_cfg and model_cfg.pricing:
+                return model_cfg.pricing
+        except Exception as e:
+            logger.debug(f"Could not load pricing config for {model_name}: {e}")
+
+        if self.pricing_config:
+            return self.pricing_config
+
+        return None
+
+    @staticmethod
+    def _extract_usage_fragment(
+        usage_metadata: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, int]]:
+        """Extract a per-step usage fragment from LangChain metadata."""
+
+        input_tokens = usage_metadata.get("input_tokens", 0) or 0
+        output_tokens = usage_metadata.get("output_tokens", 0) or 0
+        total_tokens = usage_metadata.get("total_tokens", input_tokens + output_tokens)
+
+        fragment: Dict[str, Any] = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        }
+
+        extra_tokens: Dict[str, int] = {}
+
+        input_details = usage_metadata.get("input_token_details", {}) or {}
+        output_details = usage_metadata.get("output_token_details", {}) or {}
+
+        for detail_key, val in input_details.items():
+            if isinstance(val, (int, float)) and val > 0:
+                token_key = f"{detail_key}_tokens"
+                fragment[token_key] = val
+                extra_tokens[token_key] = extra_tokens.get(token_key, 0) + int(val)
+
+        for detail_key, val in output_details.items():
+            if isinstance(val, (int, float)) and val > 0:
+                token_key = f"{detail_key}_tokens"
+                fragment[token_key] = val
+                extra_tokens[token_key] = extra_tokens.get(token_key, 0) + int(val)
+
+        for key, value in usage_metadata.items():
+            if key.endswith("_tokens") and key not in {
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+            }:
+                if isinstance(value, (int, float)) and value > 0:
+                    fragment[key] = value
+                    extra_tokens[key] = extra_tokens.get(key, 0) + int(value)
+
+        return fragment, extra_tokens
+
+    @staticmethod
+    def _merge_extra_tokens(
+        accumulated: Dict[str, int], current: Dict[str, int]
+    ) -> Dict[str, int]:
+        """Merge accumulated and current extra token counters."""
+
+        merged = dict(accumulated)
+        for key, value in current.items():
+            merged[key] = merged.get(key, 0) + value
+        return merged
 
 
 # Convenience function for creating middleware with common defaults
