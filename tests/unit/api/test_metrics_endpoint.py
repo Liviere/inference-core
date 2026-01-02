@@ -13,7 +13,7 @@ async def test_metrics_endpoint_returns_prometheus_text():
         r = await client.get("/metrics")
         assert r.status_code == 200
         # Prometheus text exposition format content type
-        assert r.headers.get("content-type", "").startswith("text/plain; version=0.0.4")
+        assert r.headers.get("content-type", "").startswith("text/plain; version=1.0.0")
         # Basic sanity: response contains HELP/TYPE lines or metrics
         body = r.text
         assert "# HELP" in body or "# TYPE" in body or len(body) > 0

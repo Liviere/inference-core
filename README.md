@@ -44,6 +44,8 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **Chains Layer** – Opinionated minimal surface for completion & chat tasks; easy to extend with new task types.
 
+**LangChain v1 Agents** – Configurable agents defined in `agents_config.yaml` with per-agent tool bundles, middleware, prompts, and checkpointing.
+
 **Request Modes** – Same logical interface for:
 
 - Sync (immediate response)
@@ -74,6 +76,7 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 poetry install
 cp .env.example .env
 cp llm_config.example.yaml llm_config.yaml
+cp agents_config.example.yaml agents_config.yaml
 
 # Run API (auto-reload)
 poetry run uvicorn inference_core.main_factory:create_application --factory --reload --port 8000
@@ -85,6 +88,8 @@ poetry run celery -A inference_core.celery.celery_main:celery_app worker --logle
 
 Visit: http://localhost:8000/docs (dev only)  
 Health: `GET /api/v1/health/`
+
+New LangChain v1 agents are exposed under `POST /api/v1/agents/chat`.
 
 Docker Deployment: For containerized deployment (SQLite/MySQL/Postgres) and compose examples, see [`docker/README.md`](docker/README.md).
 

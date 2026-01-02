@@ -4,12 +4,11 @@ Integration tests for MCP tool functionality
 Tests the full flow of MCP tool integration using a simple math server.
 """
 
-import os
-import pytest
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
 
-from inference_core.llm.config import MCPConfig, MCPServerConfig, MCPProfileConfig
+import pytest
+
+from inference_core.llm.config import MCPConfig, MCPProfileConfig, MCPServerConfig
 from inference_core.llm.mcp_tools import MCPToolManager
 
 
@@ -37,7 +36,7 @@ class TestMCPIntegration:
                     description="Math operations",
                     servers=["math"],
                     max_steps=5,
-                    max_run_seconds=30
+                    max_run_seconds=30,
                 )
             },
             servers={
@@ -46,27 +45,29 @@ class TestMCPIntegration:
                     command="python",
                     args=[math_server_path],
                     env=None,
-                    cwd=None
+                    cwd=None,
                 )
-            }
+            },
         )
 
     @pytest.mark.asyncio
     async def test_mcp_tool_manager_loads_tools(self, mcp_config_with_math):
         """Test that MCPToolManager can load tools from math server"""
         manager = MCPToolManager(mcp_config=mcp_config_with_math)
-        
+
         try:
             # Get tools for math profile
             tools = await manager.get_tools(profile_name="math", user=None)
-            
+
             # Should have loaded tools (add and multiply)
             assert len(tools) >= 2, f"Expected at least 2 tools, got {len(tools)}"
-            
+
             tool_names = [t.name for t in tools]
             assert "add" in tool_names, f"'add' tool not found. Tools: {tool_names}"
-            assert "multiply" in tool_names, f"'multiply' tool not found. Tools: {tool_names}"
-            
+            assert (
+                "multiply" in tool_names
+            ), f"'multiply' tool not found. Tools: {tool_names}"
+
         finally:
             # Cleanup
             await manager.close()
@@ -75,25 +76,25 @@ class TestMCPIntegration:
     async def test_mcp_tool_execution(self, mcp_config_with_math):
         """Test executing tools loaded from MCP server"""
         manager = MCPToolManager(mcp_config=mcp_config_with_math)
-        
+
         try:
             # Get tools
             tools = await manager.get_tools(profile_name="math", user=None)
-            
+
             # Find the add tool
             add_tool = next((t for t in tools if t.name == "add"), None)
             assert add_tool is not None, "Add tool not found"
-            
+
             # Execute the tool (LangChain tool interface)
-            result = await add_tool.ainvoke({"a": 5, "b": 3})
-            
-            # Should return the sum
-            # Note: result format may vary (could be str or structured)
-            if isinstance(result, str):
-                assert "8" in result, f"Expected '8' in result, got: {result}"
-            else:
-                assert result == 8, f"Expected 8, got: {result}"
-            
+            response = await add_tool.ainvoke({"a": 5, "b": 3})
+            response = response[0]  # Unwrap from list
+
+            # Should return structured output as type 'text' with sum as a string
+            assert response["type"] == "text"
+            result = int(response["text"])
+
+            assert result == 8, f"Expected 8, got: {result}"
+
         finally:
             await manager.close()
 
@@ -106,21 +107,21 @@ class TestMCPIntegration:
             require_superuser=True,
             default_profile="math",
             profiles=mcp_config_with_math.profiles,
-            servers=mcp_config_with_math.servers
+            servers=mcp_config_with_math.servers,
         )
-        
+
         manager = MCPToolManager(mcp_config=strict_config)
-        
+
         # Non-superuser should be denied
         non_superuser = {"is_superuser": False}
         with pytest.raises(PermissionError, match="does not have permission"):
             await manager.get_tools(profile_name="math", user=non_superuser)
-        
+
         # Superuser should be allowed
         superuser = {"is_superuser": True}
         tools = await manager.get_tools(profile_name="math", user=superuser)
         assert len(tools) > 0
-        
+
         await manager.close()
 
     @pytest.mark.asyncio
@@ -131,11 +132,11 @@ class TestMCPIntegration:
             require_superuser=False,
             default_profile=None,
             profiles={},
-            servers={}
+            servers={},
         )
-        
+
         manager = MCPToolManager(mcp_config=disabled_config)
-        
+
         # Should not be able to get tools when disabled
         with pytest.raises(PermissionError):
             await manager.get_tools(profile_name="test", user=None)
@@ -157,24 +158,24 @@ class TestMCPErrorHandling:
                     description="Bad server",
                     servers=["nonexistent"],
                     max_steps=5,
-                    max_run_seconds=30
+                    max_run_seconds=30,
                 )
             },
             servers={
                 "nonexistent": MCPServerConfig(
                     transport="stdio",
                     command="python",
-                    args=["/nonexistent/path/server.py"]
+                    args=["/nonexistent/path/server.py"],
                 )
-            }
+            },
         )
-        
+
         manager = MCPToolManager(mcp_config=bad_config)
-        
+
         # Should raise an error when trying to connect to nonexistent server
         with pytest.raises(Exception):  # Could be various exception types
             tools = await manager.get_tools(profile_name="bad", user=None)
-        
+
         await manager.close()
 
     @pytest.mark.asyncio
@@ -192,20 +193,20 @@ class TestMCPErrorHandling:
                     description="Bad HTTP server",
                     servers=["bad_http"],
                     max_steps=5,
-                    max_run_seconds=30
+                    max_run_seconds=30,
                 )
             },
             servers={
                 "bad_http": MCPServerConfig(
                     transport="streamable_http",
                     # Missing url - should be caught during client init, not config creation
-                    url=None
+                    url=None,
                 )
-            }
+            },
         )
-        
+
         manager = MCPToolManager(mcp_config=config_with_missing_url)
-        
+
         # Initialization should skip servers with missing required fields
         # and either return empty tools or raise an error
         try:

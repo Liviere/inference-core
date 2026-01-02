@@ -12,13 +12,13 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("Math")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 def add(a: int, b: int) -> int:
     """Add two numbers"""
     return a + b
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 def multiply(a: int, b: int) -> int:
     """Multiply two numbers"""
     return a * b
@@ -27,4 +27,5 @@ def multiply(a: int, b: int) -> int:
 if __name__ == "__main__":
     # Run server with stdio transport
     import sys
+
     mcp.run(transport="stdio")
