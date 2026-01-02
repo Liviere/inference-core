@@ -204,19 +204,19 @@ class QdrantProvider(BaseVectorStoreProvider):
 
         # Prepare search filter if provided (supports nested dictionaries)
         search_filter = self._build_qdrant_filter(filters) if filters else None
-
         # Perform search
-        search_result = await client.search(
+        search_result = await client.query_points(
             collection_name=collection,
-            query_vector=query_embedding,
+            query=query_embedding,
             query_filter=search_filter,
             limit=k,
             with_payload=True,
         )
+        points = search_result.points if hasattr(search_result, "points") else []
 
         # Convert results to VectorStoreDocument
         documents = []
-        for point in search_result:
+        for point in points:
             # Extract text from payload
             content = point.payload.get("_text", "")
             # Create metadata without internal fields
