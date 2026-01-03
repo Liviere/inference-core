@@ -25,7 +25,6 @@
 Inference Core is a modular backend scaffold for Large Language Model–driven platforms. It focuses on:
 
 - Fast provider integration (OpenAI / Gemini / Claude – easily extensible)
-- Clean chain layer (Completion and Chat)
 - Multiple request modes: synchronous, streaming, provider‑native batch (cost reduction)
 - Deep observability: usage logging, cost estimation, metrics, tracing
 - Built‑in user system + JWT auth (access + rotated refresh in Redis)
@@ -41,8 +40,6 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 ## ✨ Core Features
 
 **LLM Provider Abstraction** – Central config (YAML + ENV) with overridable model mapping & parameter policies.
-
-**Chains Layer** – Opinionated minimal surface for completion & chat tasks; easy to extend with new task types.
 
 **LangChain v1 Agents** – Configurable agents defined in `agents_config.yaml` with per-agent tool bundles, middleware, prompts, and checkpointing.
 
@@ -88,8 +85,6 @@ poetry run celery -A inference_core.celery.celery_main:celery_app worker --logle
 
 Visit: http://localhost:8000/docs (dev only)  
 Health: `GET /api/v1/health/`
-
-New LangChain v1 agents are exposed under `POST /api/v1/agents/chat`.
 
 Docker Deployment: For containerized deployment (SQLite/MySQL/Postgres) and compose examples, see [`docker/README.md`](docker/README.md).
 
@@ -157,7 +152,7 @@ your-project/
 │   └── v1/
 │       └── custom.py       # Custom domain router (example)
 ├── services/
-│   └── custom_service.py   # Wrapper extending LLMService
+│   └── agents_service.py           # AgentService-based integration helpers
 ├── core/                   # (git submodule) → inference-core
 │   ├── llm_config.yaml     # Model/provider config (use llm_config.example.yaml as template)
 │   └── .env                # Core .env overrides (use .env.example as template)
@@ -217,7 +212,7 @@ from inference_core.core.dependecies import (
   get_db,
 )
 
-from app.services.custom_service import custom_llm_service
+from app.services.agents import run_default_agent
 
 router = APIRouter()
 
@@ -235,74 +230,59 @@ async def generate_hint(
   level: str = "B1",
   user = Depends(get_current_active_user),
 ):
-  hint = await custom_llm_service.generate_hint(phrase, level)
-  return {"hint": hint, "user": user["id"]}
-```
+  result = await run_default_agent(
+    user_input=f"Generate a short hint for CEFR {level}: {phrase}",
+    user_id=user["id"],
+  )
+  return {"result": result, "user": user["id"]}
 
-### Extending the LLM Service
+### AgentService (recommended)
 
-Prefer inheriting from `LLMService` and providing default attributes (e.g. system prompt, models, params) or overriding factory hooks.
-
-```python
-# app/services/custom_llm_service.py
-from inference_core.services.llm_service import LLMService
-
-
-class CustomLLMService(LLMService):
-  """Example domain specialization with its own system prompt and parameters."""
-
-  def __init__(self) -> None:
-    super().__init__(
-      default_models={
-        # tasks: "completion" | "chat"
-        "chat": "gpt-4o-mini",
-      },
-      default_model_params={
-        "chat": {"temperature": 0.3},
-        "completion": {"temperature": 0.2},
-      },
-      default_prompt_names={
-        "chat": "chat",           # or point to a file in custom_prompts/chat/<name>.j2
-        "completion": "completion",
-      },
-      default_chat_system_prompt=(
-        "You are a domain tutor. Be concise, prioritize clarity,"
-        " and include one short example if helpful."
-      ),
-    )
-
-  async def generate_hint(self, phrase: str, cefr_level: str) -> str:
-    prompt = (
-      f"Explain the phrase '{phrase}' in simple terms for CEFR level {cefr_level}."
-    )
-    # You can also use per-call overrides, e.g. prompt_name
-    response = await self.completion(prompt=prompt, prompt_name="completion")
-    return response.result["answer"]
-
-  # Optional: precisely override the hook that builds the chat chain
-  # (e.g., to always enforce a specific system prompt or template name)
-  # def _build_chat_chain(self, *, model_name, model_params, prompt_name, system_prompt):
-  #     return super()._build_chat_chain(
-  #         model_name=model_name,
-  #         model_params=model_params,
-  #         prompt_name=prompt_name or "chat",
-  #         system_prompt=system_prompt or self._default_chat_system_prompt,
-  #     )
-
-
-# Simple singleton for injection
-custom_llm_service = CustomLLMService()
-```
-
-Quick "copy" of a task configuration (e.g. different system prompt) without creating a subclass:
+`AgentService` is the primary programmatic interface recommended for new integrations.
+It is aligned with LangChain v1 agent patterns (tools + middleware + optional checkpoints).
 
 ```python
-from inference_core.services.llm_service import LLMService
+# app/services/agents.py
+import asyncio
+import uuid
 
-base_llm = LLMService()
-coach_llm = base_llm.copy_with(default_chat_system_prompt="Coach tone, ask guiding questions.")
+from inference_core.services.agents_service import AgentService
 
-# coach_llm.chat(...)
+
+async def run_default_agent(*, user_input: str, user_id: str) -> dict:
+    """Run the default agent once and return the final agent result.
+
+    This helper exists to standardize how your app invokes AgentService.
+    It keeps agent construction (tools, middleware, checkpoints) in one place.
+    """
+    session_id = str(uuid.uuid4())
+    agent_user_id = uuid.UUID(user_id)
+    checkpoint_config = {"thread_id": session_id}
+
+    agent_service = AgentService(
+        agent_name="default_agent",
+        use_checkpoints=True,
+        enable_memory=False,
+        checkpoint_config=checkpoint_config,
+        user_id=agent_user_id,
+        session_id=session_id,
+    )
+    await agent_service.create_agent(
+        system_prompt=(
+            "You are a helpful assistant. "
+            "Be concise and return a JSON-like dict structure in the final answer."
+        )
+    )
+
+    response = agent_service.run_agent_steps(user_input)
+    agent_service.close()
+    return response.result
+
+
+def run_default_agent_sync(*, user_input: str, user_id: str) -> dict:
+    """Sync wrapper for contexts where you can't/ don't want async."""
+    return asyncio.run(run_default_agent(user_input=user_input, user_id=user_id))
+```
 ```
 
 ### Celery task factory (extend background workers)
@@ -326,91 +306,10 @@ attach_base_task_class(celery_app)
 
 Each argument is additive – defaults from `inference_core` remain intact. You can also pass `beat_schedule_overrides` or `post_configure` callbacks for advanced tweaks.
 
-### Direct Low-Level Usage (Optional)
+### Direct Low-Level Usage (optional)
 
-```python
-from inference_core.services.llm_service import LLMService
-
-llm = LLMService()
-answer = await llm.completion("What are embeddings?")
-chat_turn = await llm.chat(session_id="demo", user_input="Hello!")
-
-# Multiple variables with input_vars
-# Your Jinja2 templates can reference extra fields.
-answer2 = await llm.completion(
-  input_vars={
-    "prompt": "Describe photosynthesis",
-    "topic": "biology",
-    "tone": "simplified",
-  },
-  prompt_name="simple_explainer",
-)
-
-chat_turn2 = await llm.chat(
-  session_id="demo",
-  user_input="How does JWT work?",  # used for history
-  input_vars={"context": "FastAPI", "audience": "junior dev"},
-  prompt_name="tutor",
-)
-```
-
-### Custom task types (task_type)
-
-You can route requests through a custom logical task name to pick model defaults and fallbacks from `llm_config.yaml` (tasks section), and optionally select default prompts per task via `LLMService` defaults.
-
-1. Define a custom task in `llm_config.yaml`:
-
-```yaml
-tasks:
-  summarization:
-    primary: 'claude-3-5-haiku-latest'
-    fallback: ['gpt-5-nano']
-    testing: ['gpt-5-nano']
-    description: 'Fast summaries'
-```
-
-2. Call the API with `task_type`:
-
-```bash
-# Completion (sync)
-curl -X POST http://localhost:8000/api/v1/llm/completion \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_type": "summarization",
-    "prompt": "Summarize the following article..."
-  }'
-
-# Chat (stream)
-curl -X POST -N http://localhost:8000/api/v1/llm/chat/stream \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_type": "summarization",
-    "session_id": "demo",
-    "user_input": "Summarize the main points.",
-    "input_vars": {"audience": "executive"}
-  }'
-```
-
-3. Optionally set default prompt templates per task when constructing or cloning the service:
-
-```python
-from inference_core.services.llm_service import LLMService
-
-llm = LLMService().copy_with(
-  default_prompt_names={
-    "summarization": "summary_short",  # resolves to custom_prompts/completion/summary_short.j2 for completion
-    "chat": "tutor"
-  }
-)
-
-resp = await llm.completion(task_type="summarization", input_vars={"prompt": "..."})
-```
-
-Notes:
-
-- `task_type` is optional. If omitted, the built-in mapping uses "completion" or "chat" as before.
-- `default_prompt_names` can be keyed by any task name (built-in or custom). For chat, you can also override `system_prompt` per-call.
-- All programmatic methods and streaming variants accept `task_type`.
+If you want the lowest-level, most forward-compatible interface, prefer agents.
+`AgentService` lets you attach tools, middleware, and checkpointing with minimal glue.
 
 ---
 
