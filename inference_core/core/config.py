@@ -233,7 +233,7 @@ class Settings(BaseSettings):
 
     @field_validator("database_url")
     @classmethod
-    def validate_database_url(cls, v: str, values: dict) -> str:
+    def validate_database_url(cls, v: str) -> str:
         """Validate and enhance database URL"""
         if not v:
             raise ValueError("Database URL cannot be empty")
