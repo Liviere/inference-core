@@ -24,7 +24,7 @@
 
 Inference Core is a modular backend scaffold for Large Language Model–driven platforms. It focuses on:
 
-- Fast provider integration (OpenAI / Gemini / Claude – easily extensible)
+- Fast provider integration (OpenAI / Gemini / Claude / Custom OpenAI‑compatible / Ollama - easily extensible)
 - Multiple request modes: synchronous, streaming, provider‑native batch (cost reduction)
 - Deep observability: usage logging, cost estimation, metrics, tracing
 - Built‑in user system + JWT auth (access + rotated refresh in Redis)
