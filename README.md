@@ -283,7 +283,6 @@ def run_default_agent_sync(*, user_input: str, user_id: str) -> dict:
     """Sync wrapper for contexts where you can't/ don't want async."""
     return asyncio.run(run_default_agent(user_input=user_input, user_id=user_id))
 ```
-```
 
 ### Celery task factory (extend background workers)
 
