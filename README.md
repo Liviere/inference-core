@@ -7,8 +7,7 @@
   <em>Production‑ready FastAPI + Celery backbone for LLM apps: providers, chains, batches, monitoring, vectors & auth.</em>
 </p>
 <p align="center">
-  <a href="#" target="_blank"><img alt="Build" src="https://img.shields.io/badge/build-ci--pending-lightgrey" /></a>
-  <a href="#" target="_blank"><img alt="Python" src="https://img.shields.io/badge/python-3.12+-3776AB" /></a>
+  <a href="#" target="_blank"><img alt="Python" src="https://img.shields.io/badge/python-3.14+-3776AB" /></a>
   <a href="#" target="_blank"><img alt="License" src="https://img.shields.io/badge/license-MIT-green" /></a>
   <a href="#configuration" target="_blank"><img alt="Config" src="https://img.shields.io/badge/config-.env%20%2B%20yaml-blue" /></a>
   <a href="docs/README.md" target="_blank"><img alt="Docs" src="https://img.shields.io/badge/docs-index-informational" /></a>
