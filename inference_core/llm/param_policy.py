@@ -108,6 +108,26 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
         dropped={"frequency_penalty", "presence_penalty"},
         passthrough_prefixes=set(),
     ),
+    ModelProvider.OLLAMA: ProviderParamPolicy(
+        allowed={
+            "temperature",
+            "top_p",
+            "stop",
+            "num_ctx",
+            "num_predict",
+            "repeat_penalty",
+            "top_k",
+            "options",
+            "base_url",
+            "timeout",
+        },
+        renamed={
+            "max_tokens": "num_predict",
+            "request_timeout": "timeout",
+        },
+        dropped={"frequency_penalty", "presence_penalty"},
+        passthrough_prefixes={"num_"},
+    ),
 }
 
 # Dynamic override state

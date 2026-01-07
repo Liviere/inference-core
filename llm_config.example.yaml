@@ -22,6 +22,12 @@ providers:
     requires_api_key: true
     openai_compatible: false
 
+  ollama:
+    name: 'Ollama Local'
+    base_url: 'http://localhost:11434'
+    requires_api_key: false
+    openai_compatible: false
+
   custom_openai_compatible:
     name: 'Custom OpenAI Compatible'
     api_key_env: 'CUSTOM_LLM_API_KEY'
@@ -314,6 +320,21 @@ models:
       rounding:
         decimals: 6
 
+  # Ollama Models (local server)
+  'gemma3:4b':
+    provider: 'ollama'
+    display_name: 'Gemma 3 4B (Ollama)'
+    description: 'Gemma 3 4B model served via Ollama'
+    max_tokens: 4096
+    temperature: 0.7
+
+  `gpt-oss:20b`:
+    provider: 'ollama'
+    display_name: 'GPT-OSS 20B (Ollama)'
+    description: 'GPT-OSS 20B model served via Ollama'
+    max_tokens: 8192
+    temperature: 0.7
+
   # Custom OpenAI Compatible Models
   meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8:
     provider: 'custom_openai_compatible'
@@ -346,6 +367,7 @@ tasks:
         'gemini-2.5-flash',
         'deepseek-ai/DeepSeek-V3-0324',
         'claude-3-5-haiku-latest',
+        'llama3.2:1b',
       ]
     testing: ['gpt-5-nano']
     description: 'Models suitable for explanations'
@@ -357,6 +379,7 @@ tasks:
         'gemini-2.5-flash',
         'deepseek-ai/DeepSeek-V3-0324',
         'claude-3-5-haiku-latest',
+        'llama3.2:1b',
       ]
     testing: ['gpt-5-nano']
     description: 'Models optimized for multi-turn chat'

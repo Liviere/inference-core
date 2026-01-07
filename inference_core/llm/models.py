@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
@@ -138,6 +139,9 @@ class LLMModelFactory:
         elif config.provider == ModelProvider.CLAUDE:
             return self._create_claude_model(config, model_params)
 
+        elif config.provider == ModelProvider.OLLAMA:
+            return self._create_ollama_model(config, model_params)
+
         else:
             logger.error(f"Unsupported provider: {config.provider}")
             return None
@@ -208,6 +212,19 @@ class LLMModelFactory:
             return ChatAnthropic(model=config.name, api_key=config.api_key, **params)
         except Exception as e:
             logger.error(f"Failed to create Claude model: {str(e)}")
+            return None
+
+    def _create_ollama_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatOllama]:
+        """Create Ollama chat model instance backed by a local/remote Ollama server."""
+
+        try:
+            if config.base_url:
+                return ChatOllama(model=config.name, base_url=config.base_url, **params)
+            return ChatOllama(model=config.name, **params)
+        except Exception as e:
+            logger.error(f"Failed to create Ollama model: {str(e)}")
             return None
 
     def get_available_models(self) -> Dict[str, bool]:

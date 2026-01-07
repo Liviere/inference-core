@@ -27,6 +27,7 @@ class ModelProvider(str, Enum):
     CUSTOM_OPENAI_COMPATIBLE = "custom_openai_compatible"
     GEMINI = "gemini"
     CLAUDE = "claude"
+    OLLAMA = "ollama"
 
 
 class ProviderConfig(BaseModel):
@@ -947,6 +948,10 @@ class LLMConfig:
         # Gemini (explicit check retained though requires_api_key should cover)
         if config.provider == ModelProvider.GEMINI:
             return bool(config.api_key and config.api_key.strip())
+
+        # Ollama: defaults to local runtime; base_url optional
+        if config.provider == ModelProvider.OLLAMA:
+            return True if not config.base_url else bool(config.base_url.strip())
 
         return False
 
