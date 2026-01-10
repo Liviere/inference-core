@@ -10,7 +10,11 @@ from langchain.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.store.memory import InMemoryStore
+from langgraph.store.postgres import PostgresStore
+from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel
+from sentence_transformers import SentenceTransformer
 
 from inference_core.agents.middleware import (
     CostTrackingMiddleware,
@@ -18,12 +22,15 @@ from inference_core.agents.middleware import (
     ToolBasedModelSwitchMiddleware,
     create_tool_model_switch_middleware,
 )
-from inference_core.agents.tools.memory_tools import get_memory_tools
+from inference_core.agents.tools.memory_tools_alt import (
+    generate_memory_tools_system_instructions,
+    get_memory_tools_alt,
+)
 from inference_core.core.config import get_settings
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
-from inference_core.services.agent_memory_service import get_agent_memory_service
+from inference_core.services.agent_memory_service_alt import AgentMemoryStoreService
 
 
 class AgentMetadata(BaseModel):
@@ -57,11 +64,11 @@ class AgentService:
         agent_name: Optional[str] = "default_agent",
         tools: Optional[list[Callable]] = None,
         use_checkpoints: bool = False,
+        use_memory: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
         context_schema: Optional[Any] = None,
         middleware: Optional[list[Any]] = None,
         enable_cost_tracking: bool = True,
-        enable_memory: bool = False,
         user_id: Optional[uuid.UUID] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -72,14 +79,14 @@ class AgentService:
             agent_name: Name of the agent configuration to use.
             tools: List of tools to provide to the agent.
             use_checkpoints: Whether to enable checkpointing for conversation history.
+            use_memory: Whether to automatically add memory tools and MemoryMiddleware.
+                        Requires agent_memory_enabled=True in settings and user_id.
             checkpoint_config: Configuration for the checkpointer (required if use_checkpoints=True).
             context_schema: Optional schema for agent context.
             middleware: List of middleware to apply to the agent. If None and
                        enable_cost_tracking=True, CostTrackingMiddleware is added automatically.
             enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
                                   Set to False to disable cost tracking.
-            enable_memory: Whether to automatically add memory tools and MemoryMiddleware.
-                          Requires agent_memory_enabled=True in settings and user_id.
             user_id: Optional user ID for cost tracking and memory attribution.
             session_id: Optional session ID for grouping related requests.
             request_id: Optional correlation ID (e.g., Celery task ID).
@@ -112,18 +119,29 @@ class AgentService:
         else:
             self.checkpointer = None
 
+        # Memory setup
+        self.use_memory = use_memory
+        if use_memory:
+            self.memory_store = self._initialize_memory_store()
+            self._enable_memory = True
+        else:
+            self.memory_store = None
+
         # Middleware setup
         self._middleware = middleware or []
         self._enable_cost_tracking = enable_cost_tracking
-        self._enable_memory = enable_memory
         self._user_id = user_id
         self._session_id = session_id
         self._request_id = request_id
 
-        # Memory service reference (lazy loaded)
+        # Memory service reference (store-backed)
         self._memory_service = None
+        self._memory_store_service = None
+        self._enhanced_system_prompt = None
 
-    async def create_agent(self, **kwargs) -> Callable:
+    async def create_agent(
+        self, system_prompt: Optional[str] = None, **kwargs
+    ) -> Callable:
         """Create and configure the agent with tools and middleware.
 
         This method:
@@ -131,6 +149,13 @@ class AgentService:
         2. Loads MCP tools if configured
         3. Builds middleware list (including CostTrackingMiddleware if enabled)
         4. Creates the agent with all configurations
+        5. Appends memory tools instructions to system_prompt if memory is enabled
+
+        Args:
+            system_prompt: Optional system prompt/instructions for the agent.
+                          If memory is enabled, memory tools usage instructions
+                          will be automatically appended.
+            **kwargs: Additional arguments passed to create_agent.
 
         Returns:
             The configured agent callable.
@@ -141,8 +166,11 @@ class AgentService:
         # Load tools from MCP if configured
         await self._load_mcp_tools()
 
-        # Build memory tools if memory is enabled
+        # Load tools from memory if configured
         await self._load_memory_tools()
+
+        # Build enhanced system prompt with memory instructions if enabled
+        self._enhanced_system_prompt = self._build_system_prompt(system_prompt)
 
         # Build middleware list
         middleware = self._build_middleware()
@@ -154,6 +182,7 @@ class AgentService:
             checkpointer=self.checkpointer,
             context_schema=self.context_schema,
             middleware=middleware,
+            system_prompt=self._enhanced_system_prompt,
             **kwargs,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
@@ -205,35 +234,59 @@ class AgentService:
                     f"Added CostTrackingMiddleware for agent '{self.agent_name}'"
                 )
 
-        # Add MemoryMiddleware if enabled and service available
-        if self._enable_memory and self._memory_service and self._user_id:
-            has_memory = any(isinstance(m, MemoryMiddleware) for m in middleware)
+        # # Add MemoryMiddleware if enabled and service available
+        # if self._enable_memory and self._memory_service and self._user_id:
+        #     has_memory = any(isinstance(m, MemoryMiddleware) for m in middleware)
 
-            if not has_memory:
-                try:
-                    settings = get_settings()
-                    memory_middleware = MemoryMiddleware(
-                        memory_service=self._memory_service,
-                        user_id=str(self._user_id),
-                        auto_recall=settings.agent_memory_auto_recall,
-                        max_recall_results=settings.agent_memory_max_results,
-                    )
-                    # Insert after cost tracking (if present) so memory context is logged
-                    insert_pos = 1 if self._enable_cost_tracking else 0
-                    middleware.insert(insert_pos, memory_middleware)
-                    logging.debug(
-                        f"Added MemoryMiddleware for agent '{self.agent_name}'"
-                    )
-                except Exception as e:
-                    logging.error(
-                        f"Failed to add MemoryMiddleware for agent '{self.agent_name}': {e}",
-                        exc_info=True,
-                    )
+        #     if not has_memory:
+        #         try:
+        #             settings = get_settings()
+        #             memory_middleware = MemoryMiddleware(
+        #                 memory_service=self._memory_service,
+        #                 user_id=str(self._user_id),
+        #                 auto_recall=settings.agent_memory_auto_recall,
+        #                 max_recall_results=settings.agent_memory_max_results,
+        #             )
+        #             # Insert after cost tracking (if present) so memory context is logged
+        #             insert_pos = 1 if self._enable_cost_tracking else 0
+        #             middleware.insert(insert_pos, memory_middleware)
+        #             logging.debug(
+        #                 f"Added MemoryMiddleware for agent '{self.agent_name}'"
+        #             )
+        #         except Exception as e:
+        #             logging.error(
+        #                 f"Failed to add MemoryMiddleware for agent '{self.agent_name}': {e}",
+        #                 exc_info=True,
+        #             )
 
         # Add ToolBasedModelSwitchMiddleware if configured in agent config
         self._add_tool_model_switch_middleware(middleware)
 
         return middleware
+
+    def _build_system_prompt(self, base_prompt: Optional[str] = None) -> Optional[str]:
+        """Build enhanced system prompt with memory instructions if enabled.
+
+        Args:
+            base_prompt: Base system prompt provided by user.
+
+        Returns:
+            Enhanced system prompt with memory instructions appended,
+            or None if no prompt and no memory.
+        """
+        # If memory is enabled and we have memory tools, append instructions
+        if self._memory_service and self.use_memory:
+            memory_instructions = generate_memory_tools_system_instructions()
+
+            if base_prompt:
+                # Append memory instructions to existing prompt
+                return f"{base_prompt}\n\n{memory_instructions}"
+            else:
+                # Use memory instructions as the system prompt
+                return memory_instructions
+
+        # No memory or no base prompt - return as is
+        return base_prompt
 
     def _add_tool_model_switch_middleware(self, middleware: list[Any]) -> None:
         """Add ToolBasedModelSwitchMiddleware if tool_model_overrides is configured.
@@ -384,10 +437,10 @@ class AgentService:
         """Load memory tools if memory is enabled for this agent.
 
         Memory tools (save_memory, recall_memories) are added when:
-        - enable_memory=True was passed to constructor
+        - use_memory=True was passed to constructor
         - agent_memory_enabled=True in settings
         - user_id is available for namespace isolation
-        - Vector store backend is configured
+        - Store backend is configured
         """
         if not self._enable_memory:
             return
@@ -399,19 +452,39 @@ class AgentService:
             )
             return
 
-        # Get memory service (lazy initialization)
-        self._memory_service = get_agent_memory_service()
-        if not self._memory_service:
+        settings = get_settings()
+
+        # Store-based memory only
+        if not (self.use_memory and self.memory_store):
             logging.warning(
-                f"Memory enabled for agent '{self.agent_name}' but AgentMemoryService "
-                "unavailable. Check agent_memory_enabled and vector_backend settings."
+                "Memory enabled but store not initialized; set use_memory=True and ensure store setup."
             )
             return
 
+        if not self._memory_store_service:
+            try:
+                base_namespace = (settings.agent_memory_collection,)
+                self._memory_store_service = AgentMemoryStoreService(
+                    store=self.memory_store,
+                    base_namespace=base_namespace,
+                    max_results=settings.agent_memory_max_results,
+                    upsert_by_similarity=settings.agent_memory_upsert_by_similarity,
+                    similarity_threshold=settings.agent_memory_similarity_threshold,
+                )
+            except Exception as exc:
+                logging.error(
+                    "Failed to initialize AgentMemoryStoreService: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
+
+        # Expose store service as _memory_service so MemoryMiddleware can use it
+        self._memory_service = self._memory_store_service
+
         try:
-            settings = get_settings()
-            memory_tools = get_memory_tools(
-                memory_service=self._memory_service,
+            memory_tools = get_memory_tools_alt(
+                memory_service=self._memory_store_service,
                 user_id=str(self._user_id),
                 session_id=self._session_id,
                 upsert_mode=settings.agent_memory_upsert_by_similarity,
@@ -419,11 +492,15 @@ class AgentService:
             )
             self.tools.extend(memory_tools)
             logging.info(
-                f"Added {len(memory_tools)} memory tools to agent '{self.agent_name}'"
+                "Added %d store memory tools to agent '%s'",
+                len(memory_tools),
+                self.agent_name,
             )
-        except Exception as e:
+        except Exception as exc:
             logging.error(
-                f"Error loading memory tools for agent '{self.agent_name}': {e}",
+                "Error loading store memory tools for agent '%s': %s",
+                self.agent_name,
+                exc,
                 exc_info=True,
             )
 
@@ -441,6 +518,73 @@ class AgentService:
             checkpointer.setup()
 
         return checkpointer
+
+    def _get_memory_store(self):
+        """Initialize and return a memory store for the agent."""
+        url = self._sync_connection_string()
+        embed_fn, dims, embeddings_obj = self._init_embeddings()
+        if "sqlite" in url:
+            return SqliteStore.from_conn_string(
+                url, index={"embed": embed_fn, "dims": dims}
+            )
+        elif "postgresql" in url:
+            return PostgresStore.from_conn_string(
+                url, index={"embed": embed_fn, "dims": dims}
+            )
+        elif "mysql" in url:
+            logging.warning(
+                "MySQL memory store not implemented, using in-memory store."
+            )
+            return InMemoryStore(index={"embed": embed_fn, "dims": dims})
+        else:
+            logging.warning(
+                "Unknown database type for memory store, using in-memory store."
+            )
+            return InMemoryStore(index={"embed": embed_fn, "dims": dims})
+
+    def _initialize_memory_store(self):
+        """Enter memory store context managers and run setup if available."""
+        store_obj = self._get_memory_store()
+        if hasattr(store_obj, "__enter__") and hasattr(store_obj, "__exit__"):
+            store = self._exit_stack.enter_context(store_obj)
+        else:
+            store = store_obj
+
+        if hasattr(store, "setup") and callable(store.setup):
+            store.setup()
+
+        return store
+
+    def _init_embeddings(self):
+        """Prepare embedding function and dimension for store semantic search."""
+
+        settings = get_settings()
+        model_name = settings.vector_embedding_model
+
+        try:
+            model = SentenceTransformer(model_name)
+        except Exception as exc:  # pragma: no cover - runtime safeguard
+            logging.error("Failed to load embedding model %s: %s", model_name, exc)
+            # fallback tiny embedder
+            model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+        sample = model.encode(["test"], convert_to_tensor=False)
+        dims = settings.vector_dim
+        try:
+            # sample may be ndarray or list of lists
+            if hasattr(sample, "shape") and len(getattr(sample, "shape")) >= 2:
+                dims = int(sample.shape[1])
+            elif isinstance(sample, (list, tuple)) and sample and sample[0] is not None:
+                dims = len(sample[0])
+        except Exception as exc:  # pragma: no cover - fallback
+            logging.warning(
+                "Falling back to configured vector_dim; dim detection failed: %s", exc
+            )
+
+        def embed_fn(texts: list[str]) -> list[list[float]]:
+            return model.encode(texts, convert_to_tensor=False).tolist()
+
+        return embed_fn, dims, model
 
     @staticmethod
     def _sync_connection_string() -> str:
@@ -583,10 +727,10 @@ class DeepAgentService(AgentService):
         tools: Optional[list[Callable]] = None,
         subagents: Optional[list["AgentService"]] = None,
         use_checkpoints: bool = False,
+        use_memory: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
         middleware: Optional[list[Any]] = None,
         enable_cost_tracking: bool = True,
-        enable_memory: bool = False,
         user_id: Optional[uuid.UUID] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -598,10 +742,10 @@ class DeepAgentService(AgentService):
             tools: List of tools to provide to the agent.
             subagents: List of sub-agents that can be invoked by this agent.
             use_checkpoints: Whether to enable checkpointing for conversation history.
+            use_memory: Whether to automatically add memory tools and MemoryMiddleware.
             checkpoint_config: Configuration for the checkpointer.
             middleware: List of middleware to apply to the agent.
             enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
-            enable_memory: Whether to automatically add memory tools and MemoryMiddleware.
             user_id: Optional user ID for cost tracking and memory attribution.
             session_id: Optional session ID for grouping related requests.
             request_id: Optional correlation ID (e.g., Celery task ID).
@@ -613,15 +757,23 @@ class DeepAgentService(AgentService):
             checkpoint_config=checkpoint_config,
             middleware=middleware,
             enable_cost_tracking=enable_cost_tracking,
-            enable_memory=enable_memory,
+            use_memory=use_memory,
             user_id=user_id,
             session_id=session_id,
             request_id=request_id,
         )
         self.subagents = [s.agent for s in subagents] if subagents else []
 
-    async def create_agent(self) -> Callable:
+    async def create_agent(
+        self, system_prompt: Optional[str] = None, **kwargs
+    ) -> Callable:
         """Create and configure the deep agent with tools, middleware, and sub-agents.
+
+        Args:
+            system_prompt: Optional system prompt/instructions for the agent.
+                          If memory is enabled, memory tools usage instructions
+                          will be automatically appended.
+            **kwargs: Additional arguments passed to create_deep_agent.
 
         Returns:
             The configured deep agent callable.
@@ -632,6 +784,12 @@ class DeepAgentService(AgentService):
         # Load tools from MCP if configured
         await self._load_mcp_tools()
 
+        # Load memory tools if configured
+        await self._load_memory_tools()
+
+        # Build enhanced system prompt with memory instructions if enabled
+        self._enhanced_system_prompt = self._build_system_prompt(system_prompt)
+
         # Build middleware list
         middleware = self._build_middleware()
 
@@ -640,6 +798,8 @@ class DeepAgentService(AgentService):
             self.model,
             tools=self.tools,
             middleware=middleware,
+            system_prompt=self._enhanced_system_prompt,
+            **kwargs,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
         return self.agent

@@ -201,7 +201,7 @@ app = create_application(
 
 ### Custom Router Using Core Dependencies
 
-```python
+````python
 # app/api/v1/turns.py
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -261,7 +261,7 @@ async def run_default_agent(*, user_input: str, user_id: str) -> dict:
     agent_service = AgentService(
         agent_name="default_agent",
         use_checkpoints=True,
-        enable_memory=False,
+        use_memory=False,
         checkpoint_config=checkpoint_config,
         user_id=agent_user_id,
         session_id=session_id,
@@ -281,7 +281,7 @@ async def run_default_agent(*, user_input: str, user_id: str) -> dict:
 def run_default_agent_sync(*, user_input: str, user_id: str) -> dict:
     """Sync wrapper for contexts where you can't/ don't want async."""
     return asyncio.run(run_default_agent(user_input=user_input, user_id=user_id))
-```
+````
 
 ### Celery task factory (extend background workers)
 
