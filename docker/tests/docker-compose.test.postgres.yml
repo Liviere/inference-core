@@ -101,7 +101,7 @@ services:
 
   # PostgreSQL Database (Test)
   postgres-test:
-    image: postgres:17
+    image: pgvector/pgvector:pg17-trixie
     container_name: ${APP_NAME:-inference-core-test}-postgres
     restart: unless-stopped
     environment:
