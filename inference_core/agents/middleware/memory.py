@@ -46,7 +46,11 @@ from langgraph.runtime import Runtime
 from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
-    from inference_core.services.agent_memory_service import AgentMemoryService
+    from inference_core.services.agent_memory_service_alt import (
+        AgentMemoryStoreService,
+    )
+
+from inference_core.services.agent_memory_service_alt import MemoryType
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +94,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
     Attributes:
         state_schema: The custom state schema with memory tracking fields
-        memory_service: AgentMemoryService instance for memory operations
+        memory_service: AgentMemoryStoreService instance for memory operations
         user_id: User ID for memory namespace isolation
         auto_recall: Whether to automatically recall memories in before_agent
         max_recall_results: Maximum number of memories to recall
@@ -101,7 +105,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
     def __init__(
         self,
-        memory_service: "AgentMemoryService",
+        memory_service: "AgentMemoryStoreService",
         user_id: str,
         auto_recall: bool = True,
         max_recall_results: int = 5,
@@ -110,22 +114,22 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         """Initialize the memory middleware.
 
         Args:
-            memory_service: AgentMemoryService instance for memory operations.
+            memory_service: AgentMemoryStoreService instance for memory operations.
             user_id: User ID for memory namespace isolation.
             auto_recall: Whether to automatically recall memories in before_agent.
                         If False, memories can still be accessed via tools.
             max_recall_results: Maximum number of memories to recall.
             include_memory_types: Memory types to include in context.
-                                 Defaults to ["preference", "fact", "instruction"].
+                                 Defaults to preferences, facts, instructions.
         """
         self.memory_service = memory_service
         self.user_id = user_id
         self.auto_recall = auto_recall
         self.max_recall_results = max_recall_results
         self.include_memory_types = include_memory_types or [
-            "preference",
-            "fact",
-            "instruction",
+            MemoryType.PREFERENCES.value,
+            MemoryType.FACTS.value,
+            MemoryType.INSTRUCTION.value,
         ]
 
         # Per-invocation context
@@ -310,7 +314,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
 
 def create_memory_middleware(
-    memory_service: "AgentMemoryService",
+    memory_service: AgentMemoryStoreService,
     user_id: str,
     auto_recall: bool = True,
     max_recall_results: int = 5,
@@ -320,11 +324,11 @@ def create_memory_middleware(
     Factory function to create MemoryMiddleware instance.
 
     Args:
-        memory_service: AgentMemoryService instance
+        memory_service: AgentMemoryStoreService instance
         user_id: User ID for memory namespace
         auto_recall: Enable automatic memory recall in before_agent
         max_recall_results: Max memories to recall
-        include_memory_types: Memory types to include
+        include_memory_types: Memory types to include (uses canonical MemoryType values)
 
     Returns:
         Configured MemoryMiddleware instance

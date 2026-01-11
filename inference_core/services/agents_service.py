@@ -234,30 +234,31 @@ class AgentService:
                     f"Added CostTrackingMiddleware for agent '{self.agent_name}'"
                 )
 
-        # # Add MemoryMiddleware if enabled and service available
-        # if self._enable_memory and self._memory_service and self._user_id:
-        #     has_memory = any(isinstance(m, MemoryMiddleware) for m in middleware)
+        # Add MemoryMiddleware if enabled and service available
+        if self.use_memory and self._memory_service and self._user_id:
+            has_memory = any(isinstance(m, MemoryMiddleware) for m in middleware)
 
-        #     if not has_memory:
-        #         try:
-        #             settings = get_settings()
-        #             memory_middleware = MemoryMiddleware(
-        #                 memory_service=self._memory_service,
-        #                 user_id=str(self._user_id),
-        #                 auto_recall=settings.agent_memory_auto_recall,
-        #                 max_recall_results=settings.agent_memory_max_results,
-        #             )
-        #             # Insert after cost tracking (if present) so memory context is logged
-        #             insert_pos = 1 if self._enable_cost_tracking else 0
-        #             middleware.insert(insert_pos, memory_middleware)
-        #             logging.debug(
-        #                 f"Added MemoryMiddleware for agent '{self.agent_name}'"
-        #             )
-        #         except Exception as e:
-        #             logging.error(
-        #                 f"Failed to add MemoryMiddleware for agent '{self.agent_name}': {e}",
-        #                 exc_info=True,
-        #             )
+            if not has_memory:
+                try:
+                    settings = get_settings()
+                    memory_middleware = MemoryMiddleware(
+                        memory_service=self._memory_service,
+                        user_id=str(self._user_id),
+                        auto_recall=settings.agent_memory_auto_recall,
+                        max_recall_results=settings.agent_memory_max_results,
+                        # Uses canonical MemoryType values from service by default
+                    )
+                    # Insert after cost tracking (if present) so memory context is logged
+                    insert_pos = 1 if self._enable_cost_tracking else 0
+                    middleware.insert(insert_pos, memory_middleware)
+                    logging.debug(
+                        f"Added MemoryMiddleware for agent '{self.agent_name}'"
+                    )
+                except Exception as e:
+                    logging.error(
+                        f"Failed to add MemoryMiddleware for agent '{self.agent_name}': {e}",
+                        exc_info=True,
+                    )
 
         # Add ToolBasedModelSwitchMiddleware if configured in agent config
         self._add_tool_model_switch_middleware(middleware)
@@ -518,6 +519,12 @@ class AgentService:
             checkpointer.setup()
 
         return checkpointer
+
+    def get_memory_store(self):
+        """Return the initialized memory store."""
+        if self.memory_store is None:
+            raise ValueError("Memory store is not initialized.")
+        return self.memory_store
 
     def _get_memory_store(self):
         """Initialize and return a memory store for the agent."""

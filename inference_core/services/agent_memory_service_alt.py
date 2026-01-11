@@ -13,7 +13,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+
+if TYPE_CHECKING:
+    from inference_core.services.agents_service import AgentService
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +205,10 @@ class AgentMemoryStoreService:
         upsert_by_similarity: Optional[bool] = None,
     ) -> str:
         """Persist a memory item in the configured store."""
+
+        # TODO: Add a mechanism where the model decides whether to update an existing memory
+        # when a similar entry is found, or preserve and reuse the existing entry.
+        # (e.g., extra model calling with `tracable` decorator )
 
         should_upsert = (
             upsert_by_similarity
