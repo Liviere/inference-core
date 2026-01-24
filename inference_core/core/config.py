@@ -331,16 +331,6 @@ class Settings(BaseSettings):
         ge=1,
         le=50,
     )
-    agent_memory_upsert_by_similarity: bool = Field(
-        default=False,
-        description="When True, check similarity before adding memory to avoid duplicates",
-    )
-    agent_memory_similarity_threshold: float = Field(
-        default=0.85,
-        description="Similarity threshold for upsert deduplication (0.0-1.0)",
-        ge=0.0,
-        le=1.0,
-    )
     agent_memory_auto_recall: bool = Field(
         default=True,
         description="Automatically recall relevant memories in before_agent middleware hook",

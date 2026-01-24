@@ -116,14 +116,12 @@ Environment variables grouped by functional domain.
 
 Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be configured.
 
-| Variable                            | Default      | Description                                              |
-| ----------------------------------- | ------------ | -------------------------------------------------------- |
-| `AGENT_MEMORY_ENABLED`              | false        | Enable long-term memory for agents                       |
-| `AGENT_MEMORY_COLLECTION`           | agent_memory | Collection name for memory storage (separate from RAG)   |
-| `AGENT_MEMORY_MAX_RESULTS`          | 5            | Max memories to retrieve during recall                   |
-| `AGENT_MEMORY_UPSERT_BY_SIMILARITY` | false        | Check similarity before saving to avoid duplicates       |
-| `AGENT_MEMORY_SIMILARITY_THRESHOLD` | 0.85         | Similarity threshold for deduplication (0.0-1.0)         |
-| `AGENT_MEMORY_AUTO_RECALL`          | true         | Auto-recall relevant memories in middleware before_agent |
+| Variable                   | Default      | Description                                              |
+| -------------------------- | ------------ | -------------------------------------------------------- |
+| `AGENT_MEMORY_ENABLED`     | false        | Enable long-term memory for agents                       |
+| `AGENT_MEMORY_COLLECTION`  | agent_memory | Collection name for memory storage (separate from RAG)   |
+| `AGENT_MEMORY_MAX_RESULTS` | 5            | Max memories to retrieve during recall                   |
+| `AGENT_MEMORY_AUTO_RECALL` | true         | Auto-recall relevant memories in middleware before_agent |
 
 ## Email / Notifications
 

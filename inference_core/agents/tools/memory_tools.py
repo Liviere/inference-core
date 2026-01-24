@@ -59,7 +59,6 @@ Arguments:
     memory_service: Any = Field(exclude=True)
     user_id: str = Field(exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
-    upsert_mode: bool = Field(default=False, exclude=True)
 
     def _run(
         self,
@@ -77,7 +76,6 @@ Arguments:
                     memory_type=validated_type,
                     session_id=self.session_id,
                     topic=topic,
-                    upsert_by_similarity=self.upsert_mode,
                 )
             )
             return f"✓ Memory saved successfully (id: {memory_id[:8]}...)"
@@ -103,7 +101,6 @@ Arguments:
                 memory_type=validated_type,
                 session_id=self.session_id,
                 topic=topic,
-                upsert_by_similarity=self.upsert_mode,
             )
             return f"✓ Memory saved successfully (id: {memory_id[:8]}...)"
         except ValueError as exc:
@@ -193,7 +190,9 @@ Arguments:
             )
             mem_type = mem.memory_type or "general"
             mem_topic = mem.topic
-            mem_string = f"{idx}. [{mem_type}] - "
+            mem_id = getattr(mem, "id", "unknown")
+
+            mem_string = f"{idx}. [id: {mem_id}] [{mem_type}] - "
             if mem_topic:
                 mem_string += f"({mem_topic}) "
             mem_string += f"{score_str}: {mem.content}"
@@ -201,11 +200,128 @@ Arguments:
         return "\n".join(lines)
 
 
+class UpdateMemoryStoreTool(BaseTool):
+    """Tool for updating existing user memories in store-backed memory."""
+
+    name: str = "update_memory_store"
+    description: str = f"""Update an existing memory entry with new content or details.
+Use when correcting information or adding details to a specific memory ID found via recall_memories_store.
+
+Arguments:
+  - memory_id (required): The unique identifier of the memory to update
+  - content (required): The new information to save
+  - memory_type (optional): Category of memory. Default: 'general'
+  - topic (optional): Subject or theme tag
+
+{format_memory_types_for_description()}
+"""
+
+    memory_service: Any = Field(exclude=True)
+    user_id: str = Field(exclude=True)
+    session_id: Optional[str] = Field(default=None, exclude=True)
+
+    def _run(
+        self,
+        memory_id: str,
+        content: str,
+        memory_type: MemoryType = MemoryType.GENERAL,
+        topic: Optional[str] = None,
+    ) -> str:
+        try:
+            # Runtime validation against canonical enum
+            validated_type = validate_memory_type(memory_type)
+            updated_id = _run_async_in_thread(
+                self.memory_service.save_memory(
+                    user_id=self.user_id,
+                    content=content,
+                    memory_type=validated_type,
+                    session_id=self.session_id,
+                    topic=topic,
+                    memory_id=memory_id,
+                )
+            )
+            return f"✓ Memory updated successfully (id: {updated_id})"
+        except ValueError as exc:
+            logger.error("Invalid memory type: %s", exc)
+            return f"✗ {exc}"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to update memory: %s", exc)
+            return f"✗ Failed to update memory: {exc}"
+
+    async def _arun(
+        self,
+        memory_id: str,
+        content: str,
+        memory_type: MemoryType = MemoryType.GENERAL,
+        topic: Optional[str] = None,
+    ) -> str:
+        try:
+            # Runtime validation against canonical enum
+            validated_type = validate_memory_type(memory_type)
+            updated_id = await self.memory_service.save_memory(
+                user_id=self.user_id,
+                content=content,
+                memory_type=validated_type,
+                session_id=self.session_id,
+                topic=topic,
+                memory_id=memory_id,
+            )
+            return f"✓ Memory updated successfully (id: {updated_id})"
+        except ValueError as exc:
+            logger.error("Invalid memory type: %s", exc)
+            return f"✗ {exc}"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to update memory: %s", exc)
+            return f"✗ Failed to update memory: {exc}"
+
+
+class DeleteMemoryStoreTool(BaseTool):
+    """Tool for deleting user memories from store-backed memory."""
+
+    name: str = "delete_memory_store"
+    description: str = """Delete a specific memory entry.
+Use when information is incorrect, outdated, or when user requests to forget something.
+
+Arguments:
+  - memory_id (required): The unique identifier of the memory to delete (from recall_memories_store)
+"""
+
+    memory_service: Any = Field(exclude=True)
+    user_id: str = Field(exclude=True)
+
+    def _run(self, memory_id: str) -> str:
+        try:
+            success = _run_async_in_thread(
+                self.memory_service.delete_memory(
+                    user_id=self.user_id,
+                    memory_id=memory_id,
+                )
+            )
+            if success:
+                return f"✓ Memory deleted successfully (id: {memory_id})"
+            return f"✗ Failed to delete memory (id: {memory_id} not found or error)"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to delete memory: %s", exc)
+            return f"✗ Failed to delete memory: {exc}"
+
+    async def _arun(self, memory_id: str) -> str:
+        try:
+            success = await self.memory_service.delete_memory(
+                user_id=self.user_id,
+                memory_id=memory_id,
+            )
+            if success:
+                return f"✓ Memory deleted successfully (id: {memory_id})"
+            return f"✗ Failed to delete memory (id: {memory_id} not found or error)"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to delete memory: %s", exc)
+            return f"✗ Failed to delete memory: {exc}"
+
+
 def get_memory_tools(
     memory_service: "AgentMemoryStoreService",
     user_id: str,
     session_id: Optional[str] = None,
-    upsert_mode: bool = False,
     max_recall_results: int = 5,
 ) -> List[BaseTool]:
     """Factory for store-backed memory tools to ease agent wiring."""
@@ -214,7 +330,6 @@ def get_memory_tools(
         memory_service=memory_service,
         user_id=user_id,
         session_id=session_id,
-        upsert_mode=upsert_mode,
     )
 
     recall_tool = RecallMemoryStoreTool(
@@ -223,20 +338,30 @@ def get_memory_tools(
         default_max_results=max_recall_results,
     )
 
-    logger.debug(
-        "Created store memory tools for user=%s, upsert=%s",
-        user_id,
-        upsert_mode,
+    update_tool = UpdateMemoryStoreTool(
+        memory_service=memory_service,
+        user_id=user_id,
+        session_id=session_id,
     )
 
-    return [save_tool, recall_tool]
+    delete_tool = DeleteMemoryStoreTool(
+        memory_service=memory_service,
+        user_id=user_id,
+    )
+
+    logger.debug(
+        "Created store memory tools for user=%s",
+        user_id,
+    )
+
+    return [save_tool, recall_tool, update_tool, delete_tool]
 
 
 def generate_memory_tools_system_instructions() -> str:
     """Generate system prompt instructions for memory tools usage.
 
     Returns formatted instructions explaining when and how to use
-    save_memory_store and recall_memories_store tools.
+    save_memory_store, recall_memories_store, update_memory_store, and delete_memory_store tools.
 
     Use this to append to agent system prompts when memory is enabled.
     """
@@ -265,10 +390,26 @@ Use this tool to retrieve relevant memories before responding to user requests.
 - Before providing recommendations or suggestions
 - When context from previous interactions would be helpful
 - When user references something from past conversations
+- **Before updating or deleting memories, to get the correct memory_id**
+
+### update_memory_store
+Use this tool to correct or update existing memories.
+**When to use:**
+- User corrects previously saved information
+- Additional details need to be added to an existing memory
+- Preferences change over time
+- **Requires memory_id obtained from recall_memories_store**
+
+### delete_memory_store
+Use this tool to remove specific memories.
+**When to use:**
+- User asks to forget specific information
+- Information is no longer valid or relevant and shouldn't be kept
+- **Requires memory_id obtained from recall_memories_store**
 
 **Best practices:**
 - Query memories proactively to personalize responses
-- Use specific queries to find relevant information
+- Use specific queries to find relevant information and IDs
 - Filter by memory_type when looking for specific categories
 
 {format_memory_types_for_description()}
@@ -277,7 +418,8 @@ Use this tool to retrieve relevant memories before responding to user requests.
 1. User asks a question → recall relevant memories first
 2. Use recalled context to personalize your response
 3. If user shares new information → save it with appropriate memory_type
-4. Continue conversation with personalized context
+4. If user corrects information → recall to find ID, then update or delete
+5. Continue conversation with personalized context
 """
 
 

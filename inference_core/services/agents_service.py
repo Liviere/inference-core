@@ -469,8 +469,6 @@ class AgentService:
                     store=self.memory_store,
                     base_namespace=base_namespace,
                     max_results=settings.agent_memory_max_results,
-                    upsert_by_similarity=settings.agent_memory_upsert_by_similarity,
-                    similarity_threshold=settings.agent_memory_similarity_threshold,
                 )
             except Exception as exc:
                 logging.error(
@@ -488,7 +486,6 @@ class AgentService:
                 memory_service=self._memory_store_service,
                 user_id=str(self._user_id),
                 session_id=self._session_id,
-                upsert_mode=settings.agent_memory_upsert_by_similarity,
                 max_recall_results=settings.agent_memory_max_results,
             )
             self.tools.extend(memory_tools)

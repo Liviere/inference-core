@@ -179,14 +179,10 @@ class AgentMemoryStoreService:
         store: Any,
         base_namespace: Sequence[str] = (MEMORIES_STORE_NAME,),
         max_results: int = 5,
-        upsert_by_similarity: bool = False,
-        similarity_threshold: float = 0.85,
     ) -> None:
         self.store = store
         self.base_namespace = tuple(base_namespace)
         self.max_results = max_results
-        self.upsert_by_similarity = upsert_by_similarity
-        self.similarity_threshold = similarity_threshold
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def _namespace(self, user_id: str) -> tuple:
@@ -202,29 +198,9 @@ class AgentMemoryStoreService:
         session_id: Optional[str] = None,
         topic: Optional[str] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
-        upsert_by_similarity: Optional[bool] = None,
+        memory_id: Optional[str] = None,
     ) -> str:
         """Persist a memory item in the configured store."""
-
-        # TODO: Add a mechanism where the model decides whether to update an existing memory
-        # when a similar entry is found, or preserve and reuse the existing entry.
-        # (e.g., extra model calling with `tracable` decorator )
-
-        should_upsert = (
-            upsert_by_similarity
-            if upsert_by_similarity is not None
-            else self.upsert_by_similarity
-        )
-
-        if should_upsert:
-            existing = await self._find_similar_memory(user_id, content)
-            if existing:
-                self.logger.debug(
-                    "Found similar memory (score=%.3f), skipping duplicate: %s",
-                    existing.score or 0.0,
-                    existing.id,
-                )
-                return existing.id
 
         assert (
             memory_type in MemoryType._value2member_map_
@@ -236,7 +212,9 @@ class AgentMemoryStoreService:
         if not extra_metadata:
             extra_metadata = {}
 
-        memory_id = str(uuid.uuid4())
+        if not memory_id:
+            memory_id = str(uuid.uuid4())
+
         memory_data = MemoryData(
             content=content,
             memory_type=memory_type,
@@ -377,40 +355,6 @@ class AgentMemoryStoreService:
             memory_type or "all",
         )
         return deleted
-
-    async def _find_similar_memory(
-        self,
-        user_id: str,
-        content: str,
-    ) -> Optional[MemoryStoreDocument]:
-        """Heuristic duplicate check using store search results."""
-
-        namespace = self._namespace(user_id)
-        results = self.store.search(
-            namespace,
-            query=content,
-            limit=1,
-        )
-
-        if not results:
-            return None
-
-        item = results[0]
-        score = getattr(item, "score", None)
-        if score is None:
-            return None
-
-        # Treat higher score as better similarity; invert if distance-like (<0.5 heuristic)
-        similarity = 1 - score if score < 0.5 else score
-        if similarity >= self.similarity_threshold:
-            return MemoryStoreDocument(
-                id=getattr(item, "key", getattr(item, "id", "")),
-                value=getattr(item, "value", {}),
-                metadata=getattr(item, "value", {}).get("extra_metadata", {}),
-                score=score,
-            )
-
-        return None
 
     async def format_context_for_prompt(
         self,
