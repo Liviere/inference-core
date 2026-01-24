@@ -3210,6 +3210,26 @@ langchain-core = ">=1.1.0,<2.0.0"
 pydantic = ">=2.0.0,<3.0.0"
 
 [[package]]
+name = "langchain-huggingface"
+version = "1.2.0"
+description = "An integration package connecting Hugging Face and LangChain."
+optional = false
+python-versions = "<4.0.0,>=3.10.0"
+groups = ["main"]
+files = [
+    {file = "langchain_huggingface-1.2.0-py3-none-any.whl", hash = "sha256:0ff6a17d3eb36ce2304f446e3285c74b59358703e8f7916c15bfcf9ec7b57bf1"},
+    {file = "langchain_huggingface-1.2.0.tar.gz", hash = "sha256:18a2d79955271261fb245b233fea6aa29625576e841f2b4f5bee41e51cc70949"},
+]
+
+[package.dependencies]
+huggingface-hub = ">=0.33.4,<1.0.0"
+langchain-core = ">=1.2.0,<2.0.0"
+tokenizers = ">=0.19.1,<1.0.0"
+
+[package.extras]
+full = ["sentence-transformers (>=2.6.0,<3.0.0)", "transformers (>=4.39.0,<5.0.0)"]
+
+[[package]]
 name = "langchain-mcp-adapters"
 version = "0.2.1"
 description = "Make Anthropic Model Context Protocol (MCP) tools compatible with LangChain and LangGraph agents."
@@ -8258,4 +8278,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.14,<3.15"
-content-hash = "4e20f7143a0a6106d6406b6ff2746df8da6cf598c2def4782b0fa9baef64bf8b"
+content-hash = "073b98c848fbc8a4fb3eb147f6a928da176fafcac5c021eadde05a755c4f0c12"
