@@ -1,22 +1,8 @@
 """
-Memory Tools for LangChain v1 Agents
+Memory Tools (Store-based)
 
-Provides tools for agents to save and recall long-term memories.
-These tools integrate with AgentMemoryService for vector-based storage.
-
-Tools:
-- save_memory: Save important information about the user
-- recall_memories: Search for relevant memories
-
-Usage:
-    from inference_core.agents.tools.memory_tools import get_memory_tools
-
-    # In AgentService
-    tools = get_memory_tools(
-        memory_service=memory_service,
-        user_id="user-uuid",
-    )
-    agent = create_agent(model, tools=tools, ...)
+Replicates the original memory tools but uses LangGraph Store-backed
+AgentMemoryStoreService for persistence instead of vector stores.
 """
 
 from __future__ import annotations
@@ -24,24 +10,23 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-from typing import TYPE_CHECKING, Any, List, Literal, Optional
+from typing import Any, List, Optional
 
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-if TYPE_CHECKING:
-    from inference_core.services.agent_memory_service import AgentMemoryService
+from inference_core.services.agent_memory_service import (
+    AgentMemoryStoreService,
+    MemoryType,
+    format_memory_types_for_description,
+    validate_memory_type,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _run_async_in_thread(coro):
-    """Run an async coroutine in a dedicated thread with its own event loop.
-
-    This is necessary because LangChain tool _run methods are synchronous,
-    but our memory service is async. Using asyncio.run() doesn't work when
-    already inside an event loop (e.g., Jupyter notebooks).
-    """
+    """Run an async coroutine in an isolated loop for sync tool calls."""
 
     def _run_in_thread():
         loop = asyncio.new_event_loop()
@@ -56,32 +41,22 @@ def _run_async_in_thread(coro):
         return future.result(timeout=30.0)
 
 
-class SaveMemoryTool(BaseTool):
-    """
-    Tool for agents to save important information to long-term memory.
+class SaveMemoryStoreTool(BaseTool):
+    """Tool for persisting user information into store-backed memory."""
 
-    The agent can use this tool to remember user preferences, facts,
-    or other important context for future conversations.
-    """
+    name: str = "save_memory_store"
+    description: str = f"""Save important information about the user to store-backed long-term memory.
+Use when the user shares preferences, facts, or instructions to remember.
 
-    name: str = "save_memory"
-    description: str = """Save important information about the user to long-term memory.
-Use this tool when the user shares preferences, personal facts, or instructions
-that should be remembered for future conversations.
+Arguments:
+  - content (required): The information to save
+  - memory_type (optional): Category of memory. Default: 'general'
+  - topic (optional): Subject or theme tag for easier retrieval
 
-Args:
-    content: The information to remember (be specific and clear)
-    memory_type: Category - one of: preference, fact, context, instruction, general
-    topic: Optional topic/category for organization (e.g., "food", "work", "health")
-
-Examples:
-- User says they prefer dark mode → save_memory("User prefers dark mode UI", "preference", "ui")
-- User mentions their name is John → save_memory("User's name is John", "fact", "personal")
-- User asks to always use formal language → save_memory("User wants formal language", "instruction")
+{format_memory_types_for_description()}
 """
 
-    # Configuration fields (not part of tool args)
-    memory_service: Any = Field(exclude=True)  # AgentMemoryService
+    memory_service: Any = Field(exclude=True)
     user_id: str = Field(exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
     upsert_mode: bool = Field(default=False, exclude=True)
@@ -89,90 +64,84 @@ Examples:
     def _run(
         self,
         content: str,
-        memory_type: Literal[
-            "preference", "fact", "context", "instruction", "general"
-        ] = "general",
+        memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
     ) -> str:
-        """Save memory synchronously using ThreadPoolExecutor."""
         try:
+            # Runtime validation against canonical enum
+            validated_type = validate_memory_type(memory_type)
             memory_id = _run_async_in_thread(
                 self.memory_service.save_memory(
                     user_id=self.user_id,
                     content=content,
-                    memory_type=memory_type,
+                    memory_type=validated_type,
                     session_id=self.session_id,
                     topic=topic,
                     upsert_by_similarity=self.upsert_mode,
                 )
             )
             return f"✓ Memory saved successfully (id: {memory_id[:8]}...)"
-        except Exception as e:
-            logger.error("Failed to save memory: %s", e)
-            return f"✗ Failed to save memory: {str(e)}"
+        except ValueError as exc:
+            logger.error("Invalid memory type: %s", exc)
+            return f"✗ {exc}"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to save memory: %s", exc)
+            return f"✗ Failed to save memory: {exc}"
 
     async def _arun(
         self,
         content: str,
-        memory_type: Literal[
-            "preference", "fact", "context", "instruction", "general"
-        ] = "general",
+        memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
     ) -> str:
-        """Save memory asynchronously."""
         try:
+            # Runtime validation against canonical enum
+            validated_type = validate_memory_type(memory_type)
             memory_id = await self.memory_service.save_memory(
                 user_id=self.user_id,
                 content=content,
-                memory_type=memory_type,
+                memory_type=validated_type,
                 session_id=self.session_id,
                 topic=topic,
                 upsert_by_similarity=self.upsert_mode,
             )
             return f"✓ Memory saved successfully (id: {memory_id[:8]}...)"
-        except Exception as e:
-            logger.error("Failed to save memory: %s", e)
-            return f"✗ Failed to save memory: {str(e)}"
+        except ValueError as exc:
+            logger.error("Invalid memory type: %s", exc)
+            return f"✗ {exc}"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to save memory: %s", exc)
+            return f"✗ Failed to save memory: {exc}"
 
 
-class RecallMemoryTool(BaseTool):
-    """
-    Tool for agents to search and recall relevant memories.
+class RecallMemoryStoreTool(BaseTool):
+    """Tool for retrieving store-backed user memories by semantic search."""
 
-    The agent can use this tool to retrieve previously stored information
-    about the user based on semantic similarity.
-    """
+    name: str = "recall_memories_store"
+    description: str = f"""Search store-backed long-term memory for user preferences, facts, or context.
 
-    name: str = "recall_memories"
-    description: str = """Search long-term memory for relevant information about the user.
-Use this tool when you need to recall user preferences, facts, or previous context.
+Arguments:
+  - query (required): Search query describing what to find
+  - memory_type (optional): Filter by specific category. If omitted, searches all types
+  - max_results (optional): Maximum number of memories to return
 
-Args:
-    query: What to search for (describe what information you need)
-    memory_type: Optional filter by type (preference, fact, context, instruction, general)
-    max_results: How many memories to retrieve (default: 5)
-
-Examples:
-- Need user's UI preferences → recall_memories("UI preferences", "preference")
-- Need user's name → recall_memories("user name", "fact")
-- General context about user → recall_memories("user background")
+{format_memory_types_for_description()}
 """
 
-    # Configuration fields
-    memory_service: Any = Field(exclude=True)  # AgentMemoryService
+    memory_service: Any = Field(exclude=True)
     user_id: str = Field(exclude=True)
     default_max_results: int = Field(default=5, exclude=True)
 
     def _run(
         self,
         query: str,
-        memory_type: Optional[
-            Literal["preference", "fact", "context", "instruction", "general"]
-        ] = None,
+        memory_type: Optional[MemoryType] = None,
         max_results: Optional[int] = None,
     ) -> str:
-        """Recall memories synchronously using ThreadPoolExecutor."""
         try:
+            # Runtime validation if memory_type provided
+            if memory_type:
+                memory_type = validate_memory_type(memory_type)
             memories = _run_async_in_thread(
                 self.memory_service.recall_memories(
                     user_id=self.user_id,
@@ -182,20 +151,23 @@ Examples:
                 )
             )
             return self._format_results(memories)
-        except Exception as e:
-            logger.error("Failed to recall memories: %s", e)
-            return f"✗ Failed to recall memories: {str(e)}"
+        except ValueError as exc:
+            logger.error("Invalid memory type: %s", exc)
+            return f"✗ {exc}"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to recall memories: %s", exc)
+            return f"✗ Failed to recall memories: {exc}"
 
     async def _arun(
         self,
         query: str,
-        memory_type: Optional[
-            Literal["preference", "fact", "context", "instruction", "general"]
-        ] = None,
+        memory_type: Optional[MemoryType] = None,
         max_results: Optional[int] = None,
     ) -> str:
-        """Recall memories asynchronously."""
         try:
+            # Runtime validation if memory_type provided
+            if memory_type:
+                memory_type = validate_memory_type(memory_type)
             memories = await self.memory_service.recall_memories(
                 user_id=self.user_id,
                 query=query,
@@ -203,59 +175,56 @@ Examples:
                 memory_type=memory_type,
             )
             return self._format_results(memories)
-        except Exception as e:
-            logger.error("Failed to recall memories: %s", e)
-            return f"✗ Failed to recall memories: {str(e)}"
+        except ValueError as exc:
+            logger.error("Invalid memory type: %s", exc)
+            return f"✗ {exc}"
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to recall memories: %s", exc)
+            return f"✗ Failed to recall memories: {exc}"
 
     def _format_results(self, memories: list) -> str:
-        """Format memory results for agent consumption."""
         if not memories:
             return "No relevant memories found."
 
         lines = [f"Found {len(memories)} relevant memories:"]
-        for i, mem in enumerate(memories, 1):
-            score_str = f" (relevance: {mem.score:.2f})" if mem.score else ""
-            mem_type = mem.metadata.get("memory_type", "unknown")
-            lines.append(f"{i}. [{mem_type}]{score_str}: {mem.content}")
-
+        for idx, mem in enumerate(memories, 1):
+            score_str = (
+                f" (relevance: {mem.score:.2f})" if getattr(mem, "score", None) else ""
+            )
+            mem_type = mem.memory_type or "general"
+            mem_topic = mem.topic
+            mem_string = f"{idx}. [{mem_type}] - "
+            if mem_topic:
+                mem_string += f"({mem_topic}) "
+            mem_string += f"{score_str}: {mem.content}"
+            lines.append(mem_string)
         return "\n".join(lines)
 
 
 def get_memory_tools(
-    memory_service: "AgentMemoryService",
+    memory_service: "AgentMemoryStoreService",
     user_id: str,
     session_id: Optional[str] = None,
     upsert_mode: bool = False,
     max_recall_results: int = 5,
 ) -> List[BaseTool]:
-    """
-    Factory function to create memory tools for an agent.
+    """Factory for store-backed memory tools to ease agent wiring."""
 
-    Args:
-        memory_service: AgentMemoryService instance
-        user_id: User identifier for namespace isolation
-        session_id: Optional session identifier for metadata
-        upsert_mode: If True, check similarity before saving (avoid duplicates)
-        max_recall_results: Default max results for recall queries
-
-    Returns:
-        List of configured memory tools [SaveMemoryTool, RecallMemoryTool]
-    """
-    save_tool = SaveMemoryTool(
+    save_tool = SaveMemoryStoreTool(
         memory_service=memory_service,
         user_id=user_id,
         session_id=session_id,
         upsert_mode=upsert_mode,
     )
 
-    recall_tool = RecallMemoryTool(
+    recall_tool = RecallMemoryStoreTool(
         memory_service=memory_service,
         user_id=user_id,
         default_max_results=max_recall_results,
     )
 
     logger.debug(
-        "Created memory tools for user=%s, upsert=%s",
+        "Created store memory tools for user=%s, upsert=%s",
         user_id,
         upsert_mode,
     )
@@ -263,8 +232,58 @@ def get_memory_tools(
     return [save_tool, recall_tool]
 
 
+def generate_memory_tools_system_instructions() -> str:
+    """Generate system prompt instructions for memory tools usage.
+
+    Returns formatted instructions explaining when and how to use
+    save_memory_store and recall_memories_store tools.
+
+    Use this to append to agent system prompts when memory is enabled.
+    """
+    return f"""## Memory Tools Usage
+
+You have access to long-term memory tools to remember important information about the user:
+
+### save_memory_store
+Use this tool to save important information that should be remembered for future conversations.
+**When to use:**
+- User explicitly asks you to remember something
+- User shares personal preferences (communication style, format preferences, etc.)
+- User provides factual information (location, job, interests, etc.)
+- User gives specific instructions for future interactions
+- User mentions goals or objectives they're working towards
+
+**Do NOT use for:**
+- Temporary context within the same conversation
+- General knowledge or facts not specific to the user
+- Information that's already common knowledge
+
+### recall_memories_store
+Use this tool to retrieve relevant memories before responding to user requests.
+**When to use:**
+- At the start of conversations to understand user preferences
+- Before providing recommendations or suggestions
+- When context from previous interactions would be helpful
+- When user references something from past conversations
+
+**Best practices:**
+- Query memories proactively to personalize responses
+- Use specific queries to find relevant information
+- Filter by memory_type when looking for specific categories
+
+{format_memory_types_for_description()}
+
+**Example workflow:**
+1. User asks a question → recall relevant memories first
+2. Use recalled context to personalize your response
+3. If user shares new information → save it with appropriate memory_type
+4. Continue conversation with personalized context
+"""
+
+
 __all__ = [
-    "SaveMemoryTool",
-    "RecallMemoryTool",
+    "SaveMemoryStoreTool",
+    "RecallMemoryStoreTool",
     "get_memory_tools",
+    "generate_memory_tools_system_instructions",
 ]

@@ -1,71 +1,113 @@
 """
-Agent Memory Service
+Agent Memory Service (Store-based)
 
-Provides long-term memory capabilities for LangChain v1 agents.
-Stores and retrieves user-specific memories using vector similarity search.
-
-Features:
-- Save memories with user_id namespace and metadata
-- Recall relevant memories via semantic search
-- Get user context (preferences, facts) for system prompts
-- Upsert by similarity to avoid duplicates (optional)
-- Delete memories by ID or user
-
-Usage:
-    from inference_core.services.agent_memory_service import get_agent_memory_service
-
-    memory_service = get_agent_memory_service()
-    if memory_service:
-        # Save a memory
-        memory_id = await memory_service.save_memory(
-            user_id="user-uuid",
-            content="User prefers dark mode UI",
-            memory_type="preference",
-        )
-
-        # Recall memories
-        memories = await memory_service.recall_memories(
-            user_id="user-uuid",
-            query="UI preferences",
-        )
+Implements long-term memory operations using LangGraph Store backends
+instead of vector store providers. Mirrors the public surface of the
+vector-based service to simplify migration toward LangGraph-native
+persistence (SqliteStore/PostgresStore/InMemoryStore).
 """
 
-from __future__ import annotations
-
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
-from inference_core.core.config import get_settings
-from inference_core.vectorstores.base import (
-    BaseVectorStoreProvider,
-    VectorStoreDocument,
-)
-from inference_core.vectorstores.factory import get_vector_store_provider
+if TYPE_CHECKING:
+    from inference_core.services.agents_service import AgentService
 
 logger = logging.getLogger(__name__)
+
+
+MEMORIES_STORE_NAME = os.getenv("MEMORIES_STORE_NAME", "memories")
+INDEXED_FIELDS = ["content", "topic"]
 
 
 class MemoryType(str, Enum):
     """Standard memory type categories."""
 
-    PREFERENCE = "preference"  # User preferences (UI, language, etc.)
-    FACT = "fact"  # Facts about user (name, location, etc.)
-    CONTEXT = "context"  # Conversation context to remember
-    INSTRUCTION = "instruction"  # User-specific instructions
-    GENERAL = "general"  # General memories
+    PREFERENCES = "preferences"
+    FACTS = "facts"
+    CONTEXT = "context"
+    INSTRUCTION = "instructions"
+    GOALS = "goals"
+    GENERAL = "general"
+
+
+MEMORY_TYPES = [mt.value for mt in MemoryType]
+
+
+def get_memory_type_literal():
+    """Generate Literal type hint from MemoryType enum for runtime consistency.
+
+    Use this in tool signatures instead of hardcoding Literal values.
+    Example: memory_type: get_memory_type_literal() = MemoryType.GENERAL.value
+    """
+    from typing import Literal, get_args
+
+    return Literal[tuple(mt.value for mt in MemoryType)]
+
+
+def validate_memory_type(value: str) -> str:
+    """Runtime validator ensuring memory_type matches canonical enum.
+
+    Raises ValueError if invalid type provided.
+    Use in Pydantic validators or explicit checks.
+    """
+    # Unwrap Enum if passed instead of str
+    if not isinstance(value, str):
+        if hasattr(value, "value"):
+            value = value.value
+
+    if value not in MEMORY_TYPES:
+        valid_types = ", ".join(MEMORY_TYPES)
+        raise ValueError(
+            f"Invalid memory_type '{value}'. Must be one of: {valid_types}"
+        )
+    return value
+
+
+def format_memory_types_for_description() -> str:
+    """Generate formatted list of memory types with descriptions for tool docs.
+
+    Returns multi-line string suitable for embedding in tool description.
+    """
+    lines = ["Available memory types:"]
+    for mtype in MemoryType:
+        desc_enum = MemoryTypeDescription[mtype.name]
+        # Extract first sentence only for brevity
+        first_sentence = desc_enum.value.split(".")[0] + "."
+        lines.append(f"  - {mtype.value}: {first_sentence}")
+    return "\n".join(lines)
+
+
+class MemoryTypeDescription(str, Enum):
+    """Descriptions for memory type categories."""
+
+    PREFERENCES = """Personal preferences, communication styles, and behavioral patterns that should be remembered for future interactions. These memories help maintain consistency in responses and adapt to individual needs and expectations.
+    Examples: 'Prefers concise answers with bullet points', 'Enjoys humor in casual conversations'"""
+
+    FACTS = """Factual information about entities, relationships, locations, or any objective data that remains stable over time. These memories store verifiable information that can be referenced to provide accurate and personalized responses.
+    Examples: 'Lives in Warsaw, Poland', 'Company headquarters located in New York'"""
+
+    CONTEXT = """Situational awareness and environmental information that provides background for current or recent activities. These memories capture the immediate circumstances and ongoing situations that may influence decision-making.
+    Examples: 'Meeting scheduled for tomorrow at 2 PM', 'Weather forecast shows rain this week'"""
+
+    INSTRUCTION = """Operational guidelines, rules, or specific directions about how tasks should be performed or processes should be followed. These memories ensure consistent execution of established procedures and methodologies.
+    Examples: 'Always backup files before making changes', 'Send weekly reports every Friday morning'"""
+
+    GOALS = """Objectives, aspirations, and desired outcomes that represent what someone or something is working towards. These memories help maintain focus on long-term vision and provide context for prioritizing actions and decisions.
+    Examples: 'Improve team collaboration and communication', 'Reduce system response time by 30%'"""
+
+    GENERAL = """Miscellaneous observations, notes, and information that may be useful but doesn't fit into other specific categories. These memories serve as a repository for various insights and details that could be relevant in future contexts.
+    Examples: 'Noticed increased activity during evening hours', 'Client mentioned budget concerns during last meeting'"""
 
 
 @dataclass
 class MemoryMetadata:
-    """
-    Core metadata schema for memories.
-    Ensures consistent structure across all memory operations.
-    """
+    """Consistent metadata schema for stored memories."""
 
     user_id: str
     memory_type: str = MemoryType.GENERAL.value
@@ -77,7 +119,8 @@ class MemoryMetadata:
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to flat dictionary for vector store metadata."""
+        """Flatten metadata for storage and filtering."""
+
         result = {
             "user_id": self.user_id,
             "memory_type": self.memory_type,
@@ -92,38 +135,64 @@ class MemoryMetadata:
         return result
 
 
-class AgentMemoryService:
-    """
-    Service for managing agent long-term memories.
+@dataclass
+class MemoryStoreDocument:
+    """Lightweight record wrapper for store search results."""
 
-    Uses vector store backend for semantic similarity search.
-    Memories are namespaced by user_id for isolation.
-    """
+    id: str
+    value: Dict[str, Any]
+    metadata: Dict[str, Any]
+    score: Optional[float] = None
+
+    @property
+    def content(self) -> str:
+        return self.value.get("content", "")
+
+    @property
+    def topic(self) -> Optional[str]:
+        return self.value.get("topic", None)
+
+    @property
+    def memory_type(self) -> Optional[str]:
+        return self.value.get("memory_type", None)
+
+
+@dataclass
+class MemoryData:
+    """Structured memory data for storage."""
+
+    content: str
+    memory_type: str
+    session_id: Optional[str] = None
+    topic: Optional[str] = None
+    extra_metadata: Optional[Dict[str, Any]] = None
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
+class AgentMemoryStoreService:
+    """Store-backed memory service to align with LangGraph persistence."""
 
     def __init__(
         self,
-        provider: BaseVectorStoreProvider,
-        collection: str,
+        store: Any,
+        base_namespace: Sequence[str] = (MEMORIES_STORE_NAME,),
         max_results: int = 5,
         upsert_by_similarity: bool = False,
         similarity_threshold: float = 0.85,
-    ):
-        """
-        Initialize AgentMemoryService.
-
-        Args:
-            provider: Vector store provider instance
-            collection: Collection name for memories
-            max_results: Default max results for recall queries
-            upsert_by_similarity: Check similarity before adding to avoid duplicates
-            similarity_threshold: Threshold for considering memories as duplicates (0.0-1.0)
-        """
-        self.provider = provider
-        self.collection = collection
+    ) -> None:
+        self.store = store
+        self.base_namespace = tuple(base_namespace)
         self.max_results = max_results
         self.upsert_by_similarity = upsert_by_similarity
         self.similarity_threshold = similarity_threshold
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+
+    def _namespace(self, user_id: str) -> tuple:
+        """Build a namespaced tuple for store isolation per user."""
+
+        return (str(user_id), *self.base_namespace)
 
     async def save_memory(
         self,
@@ -135,67 +204,55 @@ class AgentMemoryService:
         extra_metadata: Optional[Dict[str, Any]] = None,
         upsert_by_similarity: Optional[bool] = None,
     ) -> str:
-        """
-        Save a memory for a user.
+        """Persist a memory item in the configured store."""
 
-        Args:
-            user_id: User identifier (namespace)
-            content: Memory content text
-            memory_type: Type of memory (preference, fact, context, etc.)
-            session_id: Optional session identifier
-            topic: Optional topic/category
-            extra_metadata: Additional metadata fields
-            upsert_by_similarity: Override global setting for this call
+        # TODO: Add a mechanism where the model decides whether to update an existing memory
+        # when a similar entry is found, or preserve and reuse the existing entry.
+        # (e.g., extra model calling with `tracable` decorator )
 
-        Returns:
-            Memory ID (existing ID if duplicate found during upsert)
-        """
-        # Determine upsert behavior
         should_upsert = (
             upsert_by_similarity
             if upsert_by_similarity is not None
             else self.upsert_by_similarity
         )
 
-        # Check for similar existing memory if upsert mode
         if should_upsert:
             existing = await self._find_similar_memory(user_id, content)
             if existing:
                 self.logger.debug(
                     "Found similar memory (score=%.3f), skipping duplicate: %s",
-                    existing.score,
+                    existing.score or 0.0,
                     existing.id,
                 )
                 return existing.id
 
-        # Build metadata
-        metadata = MemoryMetadata(
-            user_id=user_id,
+        assert (
+            memory_type in MemoryType._value2member_map_
+        ), f"Invalid memory type: {memory_type}"
+
+        user_id = str(user_id)
+        namespace_for_memory = (user_id, MEMORIES_STORE_NAME)
+
+        if not extra_metadata:
+            extra_metadata = {}
+
+        memory_id = str(uuid.uuid4())
+        memory_data = MemoryData(
+            content=content,
             memory_type=memory_type,
             session_id=session_id,
             topic=topic,
-            extra=extra_metadata or {},
+            extra_metadata=extra_metadata,
         )
 
-        # Generate ID
-        memory_id = str(uuid.uuid4())
-
-        # Add to vector store
-        ids = await self.provider.add_texts(
-            texts=[content],
-            metadatas=[metadata.to_dict()],
-            ids=[memory_id],
-            collection=self.collection,
+        self.store.put(
+            namespace_for_memory,
+            memory_id,
+            memory_data.__dict__,
+            index=INDEXED_FIELDS,
         )
 
-        self.logger.info(
-            "Saved memory for user=%s, type=%s, id=%s",
-            user_id,
-            memory_type,
-            ids[0] if ids else memory_id,
-        )
-
-        return ids[0] if ids else memory_id
+        return memory_id
 
     async def recall_memories(
         self,
@@ -203,47 +260,42 @@ class AgentMemoryService:
         query: str,
         k: Optional[int] = None,
         memory_type: Optional[str] = None,
-        topic: Optional[str] = None,
         include_scores: bool = True,
-    ) -> List[VectorStoreDocument]:
-        """
-        Recall relevant memories for a user based on semantic query.
+    ) -> List[MemoryStoreDocument]:
+        """Retrieve relevant memories from the store for the user."""
 
-        Args:
-            user_id: User identifier (namespace filter)
-            query: Search query text
-            k: Max number of results (uses default if None)
-            memory_type: Filter by memory type
-            topic: Filter by topic
-            include_scores: Include similarity scores in results
+        limit = k or self.max_results
 
-        Returns:
-            List of matching memory documents
-        """
-        k = k or self.max_results
-
-        # Build filters
-        filters: Dict[str, Any] = {"user_id": user_id}
+        namespace_for_memory = (user_id, MEMORIES_STORE_NAME)
+        filters = {}
         if memory_type:
             filters["memory_type"] = memory_type
-        if topic:
-            filters["topic"] = topic
 
-        memories = await self.provider.similarity_search(
+        results = self.store.search(
+            namespace_for_memory,
             query=query,
-            k=k,
-            collection=self.collection,
-            filters=filters,
+            limit=limit,
+            filter=filters,
         )
+
+        documents: List[MemoryStoreDocument] = []
+        for item in results or []:
+            documents.append(
+                MemoryStoreDocument(
+                    id=getattr(item, "key", getattr(item, "id", "")),
+                    value=getattr(item, "value", {}),
+                    metadata=getattr(item, "value", {}).get("extra_metadata", {}),
+                    score=getattr(item, "score", None) if include_scores else None,
+                )
+            )
 
         self.logger.debug(
             "Recalled %d memories for user=%s, query='%s'",
-            len(memories),
+            len(documents),
             user_id,
             query[:50] + "..." if len(query) > 50 else query,
         )
-
-        return memories
+        return documents
 
     async def get_user_context(
         self,
@@ -251,69 +303,42 @@ class AgentMemoryService:
         memory_types: Optional[List[str]] = None,
         max_per_type: int = 3,
     ) -> Dict[str, List[str]]:
-        """
-        Get user context organized by memory type.
-        Useful for building system prompts with user preferences/facts.
+        """Aggregate memories per type for prompt construction."""
 
-        Args:
-            user_id: User identifier
-            memory_types: Types to fetch (defaults to preference, fact, instruction)
-            max_per_type: Max memories per type
-
-        Returns:
-            Dictionary mapping memory_type to list of content strings
-        """
         if memory_types is None:
             memory_types = [
-                MemoryType.PREFERENCE.value,
-                MemoryType.FACT.value,
+                MemoryType.PREFERENCES.value,
+                MemoryType.FACTS.value,
                 MemoryType.INSTRUCTION.value,
             ]
 
         context: Dict[str, List[str]] = {}
-
-        for memory_type in memory_types:
-            # Use a generic query to get recent memories of this type
-            memories = await self.provider.similarity_search(
-                query=f"user {memory_type}",  # Generic query
+        for mtype in memory_types:
+            memories = await self.recall_memories(
+                user_id=user_id,
+                query=mtype,
                 k=max_per_type,
-                collection=self.collection,
-                filters={
-                    "user_id": user_id,
-                    "memory_type": memory_type,
-                },
+                memory_type=mtype,
             )
             if memories:
-                context[memory_type] = [m.content for m in memories]
+                context[mtype] = [m.content for m in memories]
 
         return context
 
-    async def delete_memory(self, memory_id: str) -> bool:
-        """
-        Delete a specific memory by ID.
+    async def delete_memory(self, user_id: str, memory_id: str) -> bool:
+        """Remove a specific memory key from the store."""
 
-        Args:
-            memory_id: Memory document ID
+        namespace = self._namespace(user_id)
+        if not hasattr(self.store, "delete"):
+            self.logger.warning("Store does not support delete; skipping")
+            return False
 
-        Returns:
-            True if deleted successfully
-        """
         try:
-            # Check if provider has delete method
-            if hasattr(self.provider, "delete_documents"):
-                await self.provider.delete_documents(
-                    ids=[memory_id],
-                    collection=self.collection,
-                )
-                self.logger.info("Deleted memory id=%s", memory_id)
-                return True
-            else:
-                self.logger.warning(
-                    "Provider does not support delete_documents, memory not deleted"
-                )
-                return False
-        except Exception as e:
-            self.logger.error("Failed to delete memory id=%s: %s", memory_id, e)
+            self.store.delete(namespace, memory_id)
+            self.logger.info("Deleted memory id=%s for user=%s", memory_id, user_id)
+            return True
+        except Exception as exc:  # pragma: no cover - log and continue
+            self.logger.error("Failed to delete memory id=%s: %s", memory_id, exc)
             return False
 
     async def delete_user_memories(
@@ -321,106 +346,69 @@ class AgentMemoryService:
         user_id: str,
         memory_type: Optional[str] = None,
     ) -> int:
-        """
-        Delete all memories for a user (optionally filtered by type).
+        """Bulk-delete user memories by type or all."""
 
-        Args:
-            user_id: User identifier
-            memory_type: Optional type filter
+        namespace = self._namespace(user_id)
+        filters: Dict[str, Any] = {}
+        if memory_type:
+            filters["memory_type"] = memory_type
 
-        Returns:
-            Number of memories deleted
-        """
         try:
-            # Check if provider supports filtered deletion
-            if hasattr(self.provider, "delete_by_filter"):
-                filters = {"user_id": user_id}
-                if memory_type:
-                    filters["memory_type"] = memory_type
-                count = await self.provider.delete_by_filter(
-                    filters=filters,
-                    collection=self.collection,
-                )
-                self.logger.info(
-                    "Deleted %d memories for user=%s, type=%s",
-                    count,
-                    user_id,
-                    memory_type or "all",
-                )
-                return count
+            results = self.store.search(namespace, query="", filter=filters)
+        except TypeError:
+            results = self.store.search(namespace, query=None, filter=filters)
 
-            # Fallback: list and delete individually
-            if hasattr(self.provider, "list_documents"):
-                filters = {"user_id": user_id}
-                if memory_type:
-                    filters["memory_type"] = memory_type
-                docs = await self.provider.list_documents(
-                    collection=self.collection,
-                    filters=filters,
-                    limit=1000,
-                )
-                if docs and hasattr(self.provider, "delete_documents"):
-                    ids = [d.id for d in docs]
-                    await self.provider.delete_documents(
-                        ids=ids,
-                        collection=self.collection,
-                    )
-                    self.logger.info(
-                        "Deleted %d memories for user=%s", len(ids), user_id
-                    )
-                    return len(ids)
+        deleted = 0
+        if hasattr(self.store, "delete"):
+            for item in results or []:
+                key = getattr(item, "key", getattr(item, "id", None))
+                if key is None:
+                    continue
+                try:
+                    self.store.delete(namespace, key)
+                    deleted += 1
+                except Exception as exc:  # pragma: no cover
+                    self.logger.error("Failed to delete memory %s: %s", key, exc)
 
-            self.logger.warning("Provider does not support bulk deletion")
-            return 0
-
-        except Exception as e:
-            self.logger.error("Failed to delete user memories: %s", e)
-            return 0
+        self.logger.info(
+            "Deleted %d memories for user=%s, type=%s",
+            deleted,
+            user_id,
+            memory_type or "all",
+        )
+        return deleted
 
     async def _find_similar_memory(
         self,
         user_id: str,
         content: str,
-    ) -> Optional[VectorStoreDocument]:
-        """
-        Find existing memory similar to content (for upsert deduplication).
+    ) -> Optional[MemoryStoreDocument]:
+        """Heuristic duplicate check using store search results."""
 
-        Args:
-            user_id: User identifier
-            content: Content to check for similarity
-
-        Returns:
-            Existing similar memory if found above threshold, None otherwise
-        """
-        results = await self.provider.similarity_search(
+        namespace = self._namespace(user_id)
+        results = self.store.search(
+            namespace,
             query=content,
-            k=1,
-            collection=self.collection,
-            filters={"user_id": user_id},
+            limit=1,
         )
 
-        if results and results[0].score is not None:
-            # Score interpretation depends on distance metric
-            # For cosine similarity: higher is more similar (0-1)
-            # For cosine distance: lower is more similar (0-2)
-            score = results[0].score
+        if not results:
+            return None
 
-            # Qdrant returns cosine distance as score, convert to similarity
-            # cosine_similarity = 1 - cosine_distance
-            # But some providers return similarity directly
-            # We assume score > threshold means similar enough
-            # For cosine distance: score < (1 - threshold) means similar
-            # Let's use a heuristic: if score < 0.5, treat as distance
+        item = results[0]
+        score = getattr(item, "score", None)
+        if score is None:
+            return None
 
-            if score < 0.5:
-                # Likely cosine distance, convert to similarity
-                similarity = 1 - score
-            else:
-                # Likely similarity score
-                similarity = score
-
-            if similarity >= self.similarity_threshold:
-                return results[0]
+        # Treat higher score as better similarity; invert if distance-like (<0.5 heuristic)
+        similarity = 1 - score if score < 0.5 else score
+        if similarity >= self.similarity_threshold:
+            return MemoryStoreDocument(
+                id=getattr(item, "key", getattr(item, "id", "")),
+                value=getattr(item, "value", {}),
+                metadata=getattr(item, "value", {}).get("extra_metadata", {}),
+                score=score,
+            )
 
         return None
 
@@ -430,107 +418,51 @@ class AgentMemoryService:
         query: Optional[str] = None,
         include_types: Optional[List[str]] = None,
     ) -> str:
-        """
-        Format user memories as context string for system prompt injection.
+        """Render stored memories as textual context for prompts."""
 
-        Args:
-            user_id: User identifier
-            query: Optional query for relevance-based recall
-            include_types: Memory types to include
-
-        Returns:
-            Formatted context string ready for prompt injection
-        """
-        lines = []
-
-        # Get structured context by type
-        if include_types is None:
-            include_types = [
-                MemoryType.PREFERENCE.value,
-                MemoryType.FACT.value,
-                MemoryType.INSTRUCTION.value,
-            ]
+        lines: List[str] = []
+        include_types = include_types or [
+            MemoryType.PREFERENCES.value,
+            MemoryType.FACTS.value,
+            MemoryType.INSTRUCTION.value,
+        ]
 
         context = await self.get_user_context(user_id, include_types)
 
-        # Format preferences
-        if MemoryType.PREFERENCE.value in context:
-            prefs = context[MemoryType.PREFERENCE.value]
+        if MemoryType.PREFERENCES.value in context:
+            prefs = context[MemoryType.PREFERENCES.value]
             if prefs:
                 lines.append("User preferences:")
-                for pref in prefs:
-                    lines.append(f"  - {pref}")
+                lines.extend([f"  - {pref}" for pref in prefs])
 
-        # Format facts
-        if MemoryType.FACT.value in context:
-            facts = context[MemoryType.FACT.value]
+        if MemoryType.FACTS.value in context:
+            facts = context[MemoryType.FACTS.value]
             if facts:
                 lines.append("Known facts about user:")
-                for fact in facts:
-                    lines.append(f"  - {fact}")
+                lines.extend([f"  - {fact}" for fact in facts])
 
-        # Format instructions
         if MemoryType.INSTRUCTION.value in context:
             instructions = context[MemoryType.INSTRUCTION.value]
             if instructions:
                 lines.append("User-specific instructions:")
-                for instr in instructions:
-                    lines.append(f"  - {instr}")
+                lines.extend([f"  - {instr}" for instr in instructions])
 
-        # Add query-relevant memories if query provided
         if query:
-            relevant = await self.recall_memories(
-                user_id=user_id,
-                query=query,
-                k=3,
-            )
+            relevant = await self.recall_memories(user_id=user_id, query=query, k=3)
             if relevant:
                 lines.append("\nRelevant context from memory:")
-                for mem in relevant:
-                    lines.append(f"  - {mem.content}")
+                lines.extend([f"  - {mem.content}" for mem in relevant])
 
         return "\n".join(lines) if lines else ""
 
 
-# ============================================================================
-# Factory / Singleton
-# ============================================================================
-
-
-@lru_cache(maxsize=1)
-def get_agent_memory_service() -> Optional[AgentMemoryService]:
-    """
-    Get or create singleton AgentMemoryService.
-
-    Returns None if agent memory is not enabled or vector store not configured.
-    """
-    settings = get_settings()
-
-    if not settings.agent_memory_enabled:
-        logger.debug("Agent memory is disabled in settings")
-        return None
-
-    if not settings.vector_backend:
-        logger.warning(
-            "Agent memory enabled but vector_backend not configured. "
-            "Set vector_backend='qdrant' or 'memory' to enable."
-        )
-        return None
-
-    provider = get_vector_store_provider()
-    if not provider:
-        logger.warning("Agent memory enabled but vector store provider unavailable")
-        return None
-
-    return AgentMemoryService(
-        provider=provider,
-        collection=settings.agent_memory_collection,
-        max_results=settings.agent_memory_max_results,
-        upsert_by_similarity=settings.agent_memory_upsert_by_similarity,
-        similarity_threshold=settings.agent_memory_similarity_threshold,
-    )
-
-
-def clear_memory_service_cache() -> None:
-    """Clear the singleton cache (useful for testing)."""
-    get_agent_memory_service.cache_clear()
+__all__ = [
+    "AgentMemoryStoreService",
+    "MemoryMetadata",
+    "MemoryStoreDocument",
+    "MemoryType",
+    "MemoryTypeDescription",
+    "validate_memory_type",
+    "format_memory_types_for_description",
+    "get_memory_type_literal",
+]

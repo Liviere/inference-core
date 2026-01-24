@@ -46,11 +46,11 @@ from langgraph.runtime import Runtime
 from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
-    from inference_core.services.agent_memory_service_alt import (
+    from inference_core.services.agent_memory_service import (
         AgentMemoryStoreService,
     )
 
-from inference_core.services.agent_memory_service_alt import MemoryType
+from inference_core.services.agent_memory_service import MemoryType
 
 logger = logging.getLogger(__name__)
 

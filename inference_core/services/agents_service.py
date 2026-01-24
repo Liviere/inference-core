@@ -22,15 +22,15 @@ from inference_core.agents.middleware import (
     ToolBasedModelSwitchMiddleware,
     create_tool_model_switch_middleware,
 )
-from inference_core.agents.tools.memory_tools_alt import (
+from inference_core.agents.tools.memory_tools import (
     generate_memory_tools_system_instructions,
-    get_memory_tools_alt,
+    get_memory_tools,
 )
 from inference_core.core.config import get_settings
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.models import get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
-from inference_core.services.agent_memory_service_alt import AgentMemoryStoreService
+from inference_core.services.agent_memory_service import AgentMemoryStoreService
 
 
 class AgentMetadata(BaseModel):
@@ -484,7 +484,7 @@ class AgentService:
         self._memory_service = self._memory_store_service
 
         try:
-            memory_tools = get_memory_tools_alt(
+            memory_tools = get_memory_tools(
                 memory_service=self._memory_store_service,
                 user_id=str(self._user_id),
                 session_id=self._session_id,
