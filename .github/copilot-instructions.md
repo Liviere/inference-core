@@ -59,7 +59,7 @@ Task: add an endpoint that streams LLM output.
 
 **Prerequisites:**
 
-- Python 3.12+ (verified working with Python 3.12.3)
+- Python 3.14+ (verified working with Python 3.14.2)
 - Poetry for dependency management (install via pip if not available)
 
 **Setup Commands (validated and timed):**
