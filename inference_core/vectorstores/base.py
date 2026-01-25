@@ -338,21 +338,17 @@ class InMemoryVectorStoreProvider(BaseVectorStoreProvider):
             def _get_relevant_documents(
                 self, query: str, *, run_manager: CallbackManagerForRetrieverRun
             ) -> List[Document]:
-                import asyncio
+                from inference_core.celery.async_utils import run_async_safely
 
-                # Run the async method in a sync context
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    results = loop.run_until_complete(
-                        self.provider.similarity_search(
-                            query=query,
-                            collection=self.collection,
-                            **self.search_kwargs,
-                        )
+                # Run the async method in a sync context using run_async_safely
+                # to reuse the Celery worker loop when available
+                results = run_async_safely(
+                    self.provider.similarity_search(
+                        query=query,
+                        collection=self.collection,
+                        **self.search_kwargs,
                     )
-                finally:
-                    loop.close()
+                )
 
                 # Convert to LangChain Documents
                 return [

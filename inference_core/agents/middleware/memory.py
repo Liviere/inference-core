@@ -34,8 +34,6 @@ Source references:
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import logging
 import time
 from dataclasses import dataclass, field
@@ -44,6 +42,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langgraph.runtime import Runtime
 from typing_extensions import NotRequired
+
+from inference_core.celery.async_utils import run_async_safely
 
 if TYPE_CHECKING:
     from inference_core.services.agent_memory_service import (
@@ -246,9 +246,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     def _recall_and_format(self, user_input: str) -> tuple[str, Dict[str, Any]]:
         """Recall memories and format as context string.
 
-        Uses ThreadPoolExecutor with a dedicated event loop to execute async
-        memory operations from sync hook. This approach is compatible with
-        Jupyter notebooks and other environments with existing event loops.
+        Uses run_async_safely() to reuse the Celery worker loop when available,
+        avoiding creation of conflicting event loops. Falls back to creating
+        a temporary loop in a thread if not in worker context.
 
         Args:
             user_input: User's query for relevance-based recall
@@ -273,26 +273,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
             return context, memories_by_type
 
-        def _run_in_thread():
-            """Run the async recall in a new event loop in this thread."""
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(_async_recall())
-            finally:
-                loop.close()
-
-        # Use a thread pool to run the async code (avoids nested event loop issues)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_run_in_thread)
-            try:
-                context, memories_by_type = future.result(timeout=10.0)
-            except concurrent.futures.TimeoutError:
-                logger.error("Memory recall timed out after 10 seconds")
-                return "", {"count": 0, "latency_ms": 0, "types": []}
-            except Exception as e:
-                logger.error("Memory recall failed: %s", e)
-                return "", {"count": 0, "latency_ms": 0, "types": []}
+        try:
+            context, memories_by_type = run_async_safely(_async_recall(), timeout=10.0)
+        except TimeoutError:
+            logger.error("Memory recall timed out after 10 seconds")
+            return "", {"count": 0, "latency_ms": 0, "types": []}
+        except Exception as e:
+            logger.error("Memory recall failed: %s", e)
+            return "", {"count": 0, "latency_ms": 0, "types": []}
 
         latency_ms = (time.monotonic() - start_time) * 1000
 

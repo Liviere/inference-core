@@ -5,17 +5,16 @@ Handles usage normalization, pricing calculation, and persistent logging
 for all LLM interactions (standard, streaming, Celery).
 """
 
-import asyncio
 import logging
 import time
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.celery.async_utils import run_async_safely
 from inference_core.database.sql.connection import get_async_session
 from inference_core.database.sql.models.llm_request_log import LLMRequestLog
 from inference_core.database.sql.models.pricing_snapshot import LLMPricingSnapshot
@@ -443,10 +442,13 @@ class UsageSession:
         partial: bool = False,
         details: Optional[Dict[str, Any]] = None,
     ):
-        """Synchronous wrapper for finalize() - runs in a dedicated thread with its own event loop.
+        """Synchronous wrapper for finalize() - uses run_async_safely().
+
+        Uses run_async_safely() to reuse the Celery worker loop when available,
+        avoiding creation of conflicting event loops. Falls back to creating
+        a temporary loop in a thread if not in worker context.
 
         Use this method when calling from synchronous code (e.g., LangChain v1 middleware hooks).
-        This avoids issues with nested event loops in FastAPI/async contexts.
 
         Args:
             success: Whether the request succeeded
@@ -456,40 +458,25 @@ class UsageSession:
             partial: Whether response was partial/aborted
             details: Extended execution details (agent steps, tool calls, etc.)
         """
-        import concurrent.futures
-        import threading
-
-        def _run_in_thread():
-            """Run the async finalize in a new event loop in this thread."""
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(
-                    self.finalize(
-                        success=success,
-                        error=error,
-                        final_usage=final_usage,
-                        streamed=streamed,
-                        partial=partial,
-                        details=details,
-                    )
-                )
-            finally:
-                loop.close()
-
-        # Use a thread pool to run the async code
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_run_in_thread)
-            try:
-                # Wait for completion with a reasonable timeout
-                future.result(timeout=30.0)
-            except concurrent.futures.TimeoutError:
-                logger.error("Usage logging finalization timed out after 30 seconds")
-            except Exception as e:
-                if self.logging_config.fail_open:
-                    logger.error(f"Usage logging sync finalization failed: {e}")
-                else:
-                    raise
+        try:
+            run_async_safely(
+                self.finalize(
+                    success=success,
+                    error=error,
+                    final_usage=final_usage,
+                    streamed=streamed,
+                    partial=partial,
+                    details=details,
+                ),
+                timeout=30.0,
+            )
+        except TimeoutError:
+            logger.error("Usage logging finalization timed out after 30 seconds")
+        except Exception as e:
+            if self.logging_config.fail_open:
+                logger.error(f"Usage logging sync finalization failed: {e}")
+            else:
+                raise
 
 
 class UsageLogger:

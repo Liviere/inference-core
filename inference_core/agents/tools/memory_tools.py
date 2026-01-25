@@ -3,18 +3,20 @@ Memory Tools (Store-based)
 
 Replicates the original memory tools but uses LangGraph Store-backed
 AgentMemoryStoreService for persistence instead of vector stores.
+
+Uses run_async_safely() to reuse the Celery worker loop when available,
+avoiding creation of conflicting event loops in nested tool calls.
 """
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import logging
 from typing import Any, List, Optional
 
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
+from inference_core.celery.async_utils import run_async_safely
 from inference_core.services.agent_memory_service import (
     AgentMemoryStoreService,
     MemoryType,
@@ -23,22 +25,6 @@ from inference_core.services.agent_memory_service import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _run_async_in_thread(coro):
-    """Run an async coroutine in an isolated loop for sync tool calls."""
-
-    def _run_in_thread():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_run_in_thread)
-        return future.result(timeout=30.0)
 
 
 class SaveMemoryStoreTool(BaseTool):
@@ -69,7 +55,7 @@ Arguments:
         try:
             # Runtime validation against canonical enum
             validated_type = validate_memory_type(memory_type)
-            memory_id = _run_async_in_thread(
+            memory_id = run_async_safely(
                 self.memory_service.save_memory(
                     user_id=self.user_id,
                     content=content,
@@ -139,7 +125,7 @@ Arguments:
             # Runtime validation if memory_type provided
             if memory_type:
                 memory_type = validate_memory_type(memory_type)
-            memories = _run_async_in_thread(
+            memories = run_async_safely(
                 self.memory_service.recall_memories(
                     user_id=self.user_id,
                     query=query,
@@ -230,7 +216,7 @@ Arguments:
         try:
             # Runtime validation against canonical enum
             validated_type = validate_memory_type(memory_type)
-            updated_id = _run_async_in_thread(
+            updated_id = run_async_safely(
                 self.memory_service.save_memory(
                     user_id=self.user_id,
                     content=content,
@@ -291,7 +277,7 @@ Arguments:
 
     def _run(self, memory_id: str) -> str:
         try:
-            success = _run_async_in_thread(
+            success = run_async_safely(
                 self.memory_service.delete_memory(
                     user_id=self.user_id,
                     memory_id=memory_id,

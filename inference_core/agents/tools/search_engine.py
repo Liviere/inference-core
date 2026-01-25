@@ -100,7 +100,8 @@ class InternetSearchTool(BaseTool):
         include_domains: Optional[list[str]] = None,
         exclude_domains: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
-        loop = asyncio.get_event_loop()
+
+        loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.max_workers
         ) as executor:
