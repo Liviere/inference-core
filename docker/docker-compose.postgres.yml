@@ -20,7 +20,7 @@ services:
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:-db_password}
 
   postgres:
-    image: pgvector/pgvector:17
+    image: pgvector/pgvector:pg17
     container_name: ${APP_NAME:-backend-template}-postgres
     restart: unless-stopped
     environment:
