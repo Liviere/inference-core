@@ -2,12 +2,12 @@
 Memory Middleware for LangChain v1 Agents.
 
 This middleware provides automatic memory context injection for agents using
-the LangChain v1 middleware API. It hooks into the before_agent event to
-recall relevant user memories and inject them as context.
+the LangChain v1 middleware API. It uses wrap_model_call to inject memory
+context into the system prompt before each model call.
 
 Key features:
 - Auto-recalls relevant memories based on user input
-- Injects memory context into agent state
+- Injects memory context into system prompt via wrap_model_call
 - Tracks memory operations for observability
 - Uses ThreadPoolExecutor for async memory operations in sync hooks
   (compatible with Jupyter notebooks and other async contexts)
@@ -29,7 +29,7 @@ Usage:
     )
 
 Source references:
-  - LangChain v1 middleware docs: context-engineering, long-term-memory
+  - LangChain v1 middleware docs: context-engineering, long-term-memory, custom
 """
 
 from __future__ import annotations
@@ -37,9 +37,15 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+)
+from langchain.messages import SystemMessage
 from langgraph.runtime import Runtime
 from typing_extensions import NotRequired
 
@@ -84,13 +90,14 @@ class _MemoryMiddlewareContext:
 
 
 class MemoryMiddleware(AgentMiddleware[MemoryState]):
-    """Middleware for automatic memory context injection.
+    """Middleware for automatic memory context injection into system prompt.
 
     This middleware automatically recalls relevant memories for the user
-    at the start of agent execution and injects them as context.
+    and injects them into the system prompt before each model call.
 
     The middleware uses the following hooks:
-    - before_agent: Recall relevant memories and inject context
+    - before_agent: Recall relevant memories and store in state
+    - wrap_model_call: Inject memory context into system prompt
 
     Attributes:
         state_schema: The custom state schema with memory tracking fields
@@ -132,8 +139,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             MemoryType.INSTRUCTION.value,
         ]
 
-        # Per-invocation context
+        # Per-invocation context (persists across hooks within same invocation)
         self._ctx: Optional[_MemoryMiddlewareContext] = None
+        # Cached memory context for injection into system prompt
+        self._cached_memory_context: Optional[str] = None
 
     # -------------------------------------------------------------------------
     # Node-style hooks
@@ -142,13 +151,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     def before_agent(
         self, state: MemoryState, runtime: Runtime
     ) -> Dict[str, Any] | None:
-        """Recall relevant memories and inject context at start of execution.
+        """Recall relevant memories and store in state at start of execution.
 
         This hook:
         1. Extracts the user's input from the messages
         2. Recalls relevant memories based on the input
-        3. Formats memories as context string
-        4. Returns state updates with memory context
+        3. Caches memory context for wrap_model_call injection
+        4. Returns state updates with memory tracking metrics
 
         Args:
             state: Current agent state with messages
@@ -165,6 +174,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         # Initialize context
         self._ctx = _MemoryMiddlewareContext()
         self._ctx.recall_start_time = time.monotonic()
+        # Reset cached context for new invocation
+        self._cached_memory_context = None
 
         # Extract user input from messages
         user_input = self._extract_user_input(state)
@@ -183,10 +194,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                     "memory_recall_latency_ms": metrics.get("latency_ms", 0),
                 }
 
+            # Cache context for wrap_model_call to inject into system prompt
+            self._cached_memory_context = memory_context
             self._ctx.context_injected = True
 
             logger.info(
-                "Injected memory context: %d memories for user=%s (%.1fms)",
+                "Recalled memory context: %d memories for user=%s (%.1fms)",
                 metrics.get("count", 0),
                 self.user_id,
                 metrics.get("latency_ms", 0),
@@ -205,6 +218,62 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 "memories_recalled": 0,
                 "memory_context": "",
             }
+
+    # -------------------------------------------------------------------------
+    # Wrap-style hooks
+    # -------------------------------------------------------------------------
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Inject memory context into system prompt before model call.
+
+        This hook modifies the system message to include recalled memory context,
+        ensuring the model has access to relevant user memories when generating
+        responses.
+
+        Args:
+            request: ModelRequest containing messages, model, and system_message
+            handler: Function to call the underlying model
+
+        Returns:
+            ModelResponse from the handler
+        """
+        # If no memory context was recalled, pass through unchanged
+        if not self._cached_memory_context:
+            return handler(request)
+
+        try:
+            # Get current system message content blocks
+            current_blocks = list(request.system_message.content_blocks)
+
+            # Create memory context block to prepend
+            memory_block = {
+                "type": "text",
+                "text": f"\n<user_memory_context>\n{self._cached_memory_context}\n</user_memory_context>\n\n",
+            }
+
+            # Prepend memory context to system message
+            new_content = current_blocks + [memory_block]
+            new_system_message = SystemMessage(content=new_content)
+
+            logger.debug(
+                "Injected memory context into system prompt for user=%s",
+                self.user_id,
+            )
+
+            return handler(request.override(system_message=new_system_message))
+
+        except Exception as e:
+            logger.error(
+                "Failed to inject memory context into system prompt: %s",
+                e,
+                exc_info=True,
+            )
+            # Fall back to original request on error
+            return handler(request)
 
     # -------------------------------------------------------------------------
     # Helper methods
