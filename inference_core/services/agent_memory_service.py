@@ -11,9 +11,9 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from inference_core.services.agents_service import AgentService
@@ -137,12 +137,18 @@ class MemoryMetadata:
 
 @dataclass
 class MemoryStoreDocument:
-    """Lightweight record wrapper for store search results."""
+    """Lightweight record wrapper for store search results.
+
+    Includes temporal fields (created_at, updated_at) extracted from
+    LangGraph Store Item metadata for time-aware memory operations.
+    """
 
     id: str
     value: Dict[str, Any]
     metadata: Dict[str, Any]
     score: Optional[float] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     @property
     def content(self) -> str:
@@ -155,6 +161,20 @@ class MemoryStoreDocument:
     @property
     def memory_type(self) -> Optional[str]:
         return self.value.get("memory_type", None)
+
+    @property
+    def created_at_iso(self) -> Optional[str]:
+        """Return created_at as ISO 8601 string or None."""
+        if self.created_at:
+            return self.created_at.isoformat()
+        return None
+
+    @property
+    def updated_at_iso(self) -> Optional[str]:
+        """Return updated_at as ISO 8601 string or None."""
+        if self.updated_at:
+            return self.updated_at.isoformat()
+        return None
 
 
 @dataclass
@@ -239,9 +259,22 @@ class AgentMemoryStoreService:
         k: Optional[int] = None,
         memory_type: Optional[str] = None,
         include_scores: bool = True,
+        sort_by_time: bool = False,
     ) -> List[MemoryStoreDocument]:
-        """Retrieve relevant memories from the store for the user."""
+        """Retrieve relevant memories from the store for the user.
 
+        Args:
+            user_id: User identifier for namespace isolation.
+            query: Semantic search query string.
+            k: Maximum number of results to return.
+            memory_type: Optional filter by memory type.
+            include_scores: Whether to include relevance scores.
+            sort_by_time: If True, sort results by created_at descending (newest first).
+                          Otherwise, results are ordered by semantic relevance.
+
+        Returns:
+            List of MemoryStoreDocument with temporal metadata (created_at, updated_at).
+        """
         limit = k or self.max_results
 
         namespace_for_memory = (user_id, MEMORIES_STORE_NAME)
@@ -258,20 +291,37 @@ class AgentMemoryStoreService:
 
         documents: List[MemoryStoreDocument] = []
         for item in results or []:
+            # Extract timestamps from Store Item (automatically managed by LangGraph Store)
+            item_created_at = getattr(item, "created_at", None)
+            item_updated_at = getattr(item, "updated_at", None)
+
             documents.append(
                 MemoryStoreDocument(
                     id=getattr(item, "key", getattr(item, "id", "")),
                     value=getattr(item, "value", {}),
                     metadata=getattr(item, "value", {}).get("extra_metadata", {}),
                     score=getattr(item, "score", None) if include_scores else None,
+                    created_at=item_created_at,
+                    updated_at=item_updated_at,
                 )
             )
 
+        # Sort by time if requested (newest first); fallback None timestamps to end
+        if sort_by_time:
+            documents.sort(
+                key=lambda d: (
+                    d.created_at is not None,
+                    d.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                ),
+                reverse=True,
+            )
+
         self.logger.debug(
-            "Recalled %d memories for user=%s, query='%s'",
+            "Recalled %d memories for user=%s, query='%s', sort_by_time=%s",
             len(documents),
             user_id,
             query[:50] + "..." if len(query) > 50 else query,
+            sort_by_time,
         )
         return documents
 
@@ -281,8 +331,10 @@ class AgentMemoryStoreService:
         memory_types: Optional[List[str]] = None,
         max_per_type: int = 3,
     ) -> Dict[str, List[str]]:
-        """Aggregate memories per type for prompt construction."""
+        """Aggregate memories per type for prompt construction (legacy, content-only).
 
+        For time-aware context, use get_user_context_with_timestamps() instead.
+        """
         if memory_types is None:
             memory_types = [
                 MemoryType.PREFERENCES.value,
@@ -300,6 +352,44 @@ class AgentMemoryStoreService:
             )
             if memories:
                 context[mtype] = [m.content for m in memories]
+
+        return context
+
+    async def get_user_context_with_timestamps(
+        self,
+        user_id: str,
+        memory_types: Optional[List[str]] = None,
+        max_per_type: int = 10,
+    ) -> Dict[str, List[MemoryStoreDocument]]:
+        """Aggregate memories per type with full temporal metadata.
+
+        Args:
+            user_id: User identifier.
+            memory_types: List of memory types to include.
+            max_per_type: Maximum memories per type.
+
+        Returns:
+            Dict mapping memory_type to list of MemoryStoreDocument objects
+            (includes created_at, updated_at for temporal processing).
+        """
+        if memory_types is None:
+            memory_types = [
+                MemoryType.PREFERENCES.value,
+                MemoryType.FACTS.value,
+                MemoryType.INSTRUCTION.value,
+            ]
+
+        context: Dict[str, List[MemoryStoreDocument]] = {}
+        for mtype in memory_types:
+            memories = await self.recall_memories(
+                user_id=user_id,
+                query=mtype,
+                k=max_per_type,
+                memory_type=mtype,
+                sort_by_time=True,
+            )
+            if memories:
+                context[mtype] = memories
 
         return context
 
@@ -361,43 +451,215 @@ class AgentMemoryStoreService:
         user_id: str,
         query: Optional[str] = None,
         include_types: Optional[List[str]] = None,
+        max_memories: int = 30,
     ) -> str:
-        """Render stored memories as textual context for prompts."""
+        """Render stored memories as textual context for prompts with temporal bucketing.
 
-        lines: List[str] = []
+        Memories are organized into time-based buckets (today, yesterday, last 5 days,
+        last 90 days, older) to give the agent temporal context about when information
+        was remembered. Newer memories are prioritized as more relevant/accurate.
+
+        Args:
+            user_id: User identifier.
+            query: Optional semantic search query for relevance-based recall.
+            include_types: Memory types to include in context.
+            max_memories: Maximum total memories to retrieve for bucketing.
+
+        Returns:
+            Formatted string with memories organized by temporal buckets.
+        """
         include_types = include_types or [
             MemoryType.PREFERENCES.value,
             MemoryType.FACTS.value,
             MemoryType.INSTRUCTION.value,
         ]
 
-        context = await self.get_user_context(user_id, include_types)
-
-        if MemoryType.PREFERENCES.value in context:
-            prefs = context[MemoryType.PREFERENCES.value]
-            if prefs:
-                lines.append("User preferences:")
-                lines.extend([f"  - {pref}" for pref in prefs])
-
-        if MemoryType.FACTS.value in context:
-            facts = context[MemoryType.FACTS.value]
-            if facts:
-                lines.append("Known facts about user:")
-                lines.extend([f"  - {fact}" for fact in facts])
-
-        if MemoryType.INSTRUCTION.value in context:
-            instructions = context[MemoryType.INSTRUCTION.value]
-            if instructions:
-                lines.append("User-specific instructions:")
-                lines.extend([f"  - {instr}" for instr in instructions])
+        # Collect all memories with timestamps
+        all_memories: List[MemoryStoreDocument] = []
 
         if query:
-            relevant = await self.recall_memories(user_id=user_id, query=query, k=3)
-            if relevant:
-                lines.append("\nRelevant context from memory:")
-                lines.extend([f"  - {mem.content}" for mem in relevant])
+            # Use semantic search with provided query
+            memories = await self.recall_memories(
+                user_id=user_id,
+                query=query,
+                k=max_memories,
+                sort_by_time=False,  # Keep relevance order, will bucket later
+            )
+            # Filter by type if specified
+            all_memories = [
+                m
+                for m in memories
+                if m.memory_type in include_types or m.memory_type is None
+            ]
+        else:
+            # Fetch memories by type
+            context = await self.get_user_context_with_timestamps(
+                user_id=user_id,
+                memory_types=include_types,
+                max_per_type=(
+                    max_memories // len(include_types) if include_types else 10
+                ),
+            )
+            for mtype_memories in context.values():
+                all_memories.extend(mtype_memories)
 
-        return "\n".join(lines) if lines else ""
+        if not all_memories:
+            return ""
+
+        # Bucket memories by time
+        buckets = self._bucket_memories_by_time(all_memories)
+
+        # Build formatted output
+        return self._format_bucketed_memories(buckets, query)
+
+    def _bucket_memories_by_time(
+        self,
+        memories: List[MemoryStoreDocument],
+    ) -> Dict[str, List[MemoryStoreDocument]]:
+        """Group memories into temporal buckets.
+
+        Buckets:
+        - today: Memories from today
+        - yesterday: Memories from yesterday
+        - prev5_before_yesterday: Memories from D-2 to D-6 (5 days before yesterday)
+        - prev90_excluding_above: Memories from D-7 to D-96
+        - older: Memories older than 96 days
+
+        Args:
+            memories: List of MemoryStoreDocument with created_at timestamps.
+
+        Returns:
+            Dict mapping bucket name to list of memories, each bucket sorted newest-first.
+        """
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        yesterday = today - timedelta(days=1)
+        # D-2 to D-6 (5 days counting back from the day before yesterday)
+        prev5_start = today - timedelta(days=6)  # D-6
+        prev5_end = today - timedelta(days=2)  # D-2
+        # D-7 to D-96 (90 days excluding the above)
+        prev90_start = today - timedelta(days=96)  # D-96
+        prev90_end = today - timedelta(days=7)  # D-7
+
+        buckets: Dict[str, List[MemoryStoreDocument]] = {
+            "today": [],
+            "yesterday": [],
+            "prev5_before_yesterday": [],
+            "prev90_excluding_above": [],
+            "older": [],
+        }
+
+        # De-duplicate by content
+        seen_contents: set[str] = set()
+
+        for mem in memories:
+            content = mem.content
+            if not content or content in seen_contents:
+                continue
+            seen_contents.add(content)
+
+            # Parse timestamp
+            mem_date = self._get_memory_date(mem)
+
+            # Assign to bucket
+            if mem_date == today:
+                buckets["today"].append(mem)
+            elif mem_date == yesterday:
+                buckets["yesterday"].append(mem)
+            elif mem_date and prev5_start <= mem_date <= prev5_end:
+                buckets["prev5_before_yesterday"].append(mem)
+            elif mem_date and prev90_start <= mem_date <= prev90_end:
+                buckets["prev90_excluding_above"].append(mem)
+            else:
+                buckets["older"].append(mem)
+
+        # Sort each bucket by timestamp descending (newest first)
+        for bucket_name in buckets:
+            buckets[bucket_name].sort(
+                key=lambda m: (
+                    m.created_at is not None,
+                    m.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                ),
+                reverse=True,
+            )
+
+        return buckets
+
+    def _get_memory_date(self, mem: MemoryStoreDocument) -> Optional[datetime.date]:
+        """Extract date from memory's created_at timestamp.
+
+        Args:
+            mem: MemoryStoreDocument instance.
+
+        Returns:
+            Date object or None if timestamp unavailable.
+        """
+        if mem.created_at:
+            dt = mem.created_at
+            # Ensure timezone-aware
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt.date()
+        return None
+
+    def _format_bucketed_memories(
+        self,
+        buckets: Dict[str, List[MemoryStoreDocument]],
+        query: Optional[str] = None,
+    ) -> str:
+        """Format bucketed memories as text for prompt injection.
+
+        Args:
+            buckets: Dict of bucket_name -> list of MemoryStoreDocument.
+            query: Optional original query for context header.
+
+        Returns:
+            Formatted string with temporal sections, prefixed with current date.
+        """
+        # Current date/time for temporal context awareness
+        now = datetime.now(timezone.utc)
+        current_datetime_str = now.isoformat().replace("+00:00", "Z")
+
+        header = (
+            f"Current datetime (UTC): {current_datetime_str}\n\n"
+            "Relevant information from previous conversations. Each memory includes created_at (UTC) "
+            "indicating when the information was remembered/saved. Pay attention to the temporal context: "
+            "some information remains valid regardless of age (e.g., user's name, stable preferences, permanent facts), "
+            "while other information may be time-sensitive (e.g., current projects, temporary preferences, scheduled events). "
+            "When memories conflict, consider both recency AND the nature of the information to determine which is most relevant. "
+            "Use the timestamps to understand the timeline of user's interactions and evolving context:"
+        )
+
+        sections: List[str] = [header]
+
+        def render_bucket(title: str, items: List[MemoryStoreDocument]) -> None:
+            """Render a single bucket section."""
+            if not items:
+                return
+            sections.append(f"\n{title}:")
+            for item in items:
+                ts_label = ""
+                if item.created_at:
+                    ts_label = f"[{item.created_at.isoformat()}] "
+                type_label = f" (type: {item.memory_type})" if item.memory_type else ""
+                topic_label = f" [topic: {item.topic}]" if item.topic else ""
+                sections.append(f"- {ts_label}{item.content}{type_label}{topic_label}")
+
+        render_bucket("Data from today", buckets.get("today", []))
+        render_bucket("Data from yesterday", buckets.get("yesterday", []))
+        render_bucket(
+            "Data from the previous 5 days (counting back from yesterday)",
+            buckets.get("prev5_before_yesterday", []),
+        )
+        render_bucket(
+            "Data from the previous 90 days (excluding the above)",
+            buckets.get("prev90_excluding_above", []),
+        )
+        render_bucket("Older entries", buckets.get("older", []))
+
+        return "\n".join(sections) if len(sections) > 1 else ""
 
 
 __all__ = [

@@ -166,6 +166,11 @@ Arguments:
             return f"✗ Failed to recall memories: {exc}"
 
     def _format_results(self, memories: list) -> str:
+        """Format recalled memories with temporal context.
+
+        Includes created_at timestamp for each memory to give the agent
+        awareness of when information was saved.
+        """
         if not memories:
             return "No relevant memories found."
 
@@ -178,7 +183,16 @@ Arguments:
             mem_topic = mem.topic
             mem_id = getattr(mem, "id", "unknown")
 
-            mem_string = f"{idx}. [id: {mem_id}] [{mem_type}] - "
+            # Include created_at timestamp for temporal context
+            created_at = getattr(mem, "created_at", None)
+            created_str = ""
+            if created_at:
+                if hasattr(created_at, "strftime"):
+                    created_str = f" [created: {created_at.strftime('%Y-%m-%d %H:%M')}]"
+                elif isinstance(created_at, str):
+                    created_str = f" [created: {created_at[:16]}]"
+
+            mem_string = f"{idx}. [id: {mem_id}] [{mem_type}]{created_str} - "
             if mem_topic:
                 mem_string += f"({mem_topic}) "
             mem_string += f"{score_str}: {mem.content}"
