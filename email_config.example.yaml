@@ -7,6 +7,10 @@ email:
   default_host: primary
   # Default polling interval for IMAP (seconds) - can be overridden per-host
   default_poll_interval_seconds: 60
+  # TTL for tracking processed email UIDs in Redis (seconds)
+  # Processed emails won't trigger callbacks again within this period
+  # Default: 604800 (7 days). Min: 3600 (1 hour), Max: 2592000 (30 days)
+  processed_ttl_seconds: 604800
 
   # Host configurations (SMTP + optional IMAP)
   hosts:

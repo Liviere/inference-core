@@ -5,44 +5,42 @@ Tests for email Celery tasks
 import base64
 import smtplib
 import ssl
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from celery.exceptions import Retry
 
 from inference_core.celery.tasks.email_tasks import (
-    send_email_task,
-    send_email_async,
-    encode_attachment,
-    _is_retryable_error,
     EmailTaskError,
+    _is_retryable_error,
+    encode_attachment,
+    send_email_async,
+    send_email_task,
 )
 
 
 class TestSendEmailTask:
     """Test send_email_task Celery task"""
 
-    @patch('inference_core.celery.tasks.email_tasks.get_email_service')
+    @patch("inference_core.celery.tasks.email_tasks.get_email_service")
     def test_send_simple_email_task(self, mock_get_service):
         """Test successful email sending via task"""
         # Mock email service
         mock_service = Mock()
         mock_service.send_email.return_value = "test-message-id"
         mock_get_service.return_value = mock_service
-        
+
         # Execute task
         result = send_email_task(
-            to="test@example.com",
-            subject="Test Subject",
-            text="Test message"
+            to="test@example.com", subject="Test Subject", text="Test message"
         )
-        
+
         # Verify result
         assert result["status"] == "success"
         assert result["message_id"] == "test-message-id"
         assert "task_id" in result
         assert "duration" in result
-        
+
         # Verify email service was called correctly
         mock_service.send_email.assert_called_once_with(
             to="test@example.com",
@@ -54,26 +52,28 @@ class TestSendEmailTask:
             cc=None,
             bcc=None,
             reply_to=None,
-            headers=None
+            headers=None,
         )
 
-    @patch('inference_core.celery.tasks.email_tasks.get_email_service')
+    @patch("inference_core.celery.tasks.email_tasks.get_email_service")
     def test_send_email_task_with_all_options(self, mock_get_service):
         """Test email task with all options"""
         mock_service = Mock()
         mock_service.send_email.return_value = "test-message-id"
         mock_get_service.return_value = mock_service
-        
+
         # Prepare attachment
         attachment_content = b"test file content"
-        attachment_b64 = base64.b64encode(attachment_content).decode('ascii')
-        
-        attachments = [{
-            "filename": "test.txt",
-            "content_b64": attachment_b64,
-            "mime": "text/plain"
-        }]
-        
+        attachment_b64 = base64.b64encode(attachment_content).decode("ascii")
+
+        attachments = [
+            {
+                "filename": "test.txt",
+                "content_b64": attachment_b64,
+                "mime": "text/plain",
+            }
+        ]
+
         result = send_email_task(
             to=["test1@example.com", "test2@example.com"],
             subject="Test Subject",
@@ -84,100 +84,98 @@ class TestSendEmailTask:
             cc=["cc@example.com"],
             bcc=["bcc@example.com"],
             reply_to="reply@example.com",
-            headers={"X-Custom": "value"}
+            headers={"X-Custom": "value"},
         )
-        
+
         assert result["status"] == "success"
-        
+
         # Verify attachments were processed correctly
         call_args = mock_service.send_email.call_args
         processed_attachments = call_args.kwargs["attachments"]
         assert len(processed_attachments) == 1
-        assert processed_attachments[0] == ("test.txt", attachment_content, "text/plain")
+        assert processed_attachments[0] == (
+            "test.txt",
+            attachment_content,
+            "text/plain",
+        )
 
-    @patch('inference_core.celery.tasks.email_tasks.get_email_service')
+    @patch("inference_core.celery.tasks.email_tasks.get_email_service")
     def test_email_service_not_available(self, mock_get_service):
         """Test task failure when email service not available"""
         mock_get_service.return_value = None
-        
-        with pytest.raises(EmailTaskError, match="Email service not available"):
-            send_email_task(
-                to="test@example.com",
-                subject="Test",
-                text="Test message"
-            )
 
-    @patch('inference_core.celery.tasks.email_tasks.get_email_service')
+        with pytest.raises(EmailTaskError, match="Email service not available"):
+            send_email_task(to="test@example.com", subject="Test", text="Test message")
+
+    @patch("inference_core.celery.tasks.email_tasks.get_email_service")
     def test_invalid_attachment_format(self, mock_get_service):
         """Test task failure with invalid attachment format"""
         mock_service = Mock()
         mock_get_service.return_value = mock_service
-        
+
         # Missing required keys in attachment
         invalid_attachments = [{"filename": "test.txt"}]  # Missing content_b64 and mime
-        
+
         with pytest.raises(EmailTaskError, match="Invalid attachment format"):
             send_email_task(
                 to="test@example.com",
                 subject="Test",
                 text="Test message",
-                attachments=invalid_attachments
+                attachments=invalid_attachments,
             )
 
-    @patch('inference_core.celery.tasks.email_tasks.get_email_service')
+    @patch("inference_core.celery.tasks.email_tasks.get_email_service")
     def test_invalid_base64_attachment(self, mock_get_service):
         """Test task failure with invalid base64 attachment content"""
         mock_service = Mock()
         mock_get_service.return_value = mock_service
-        
-        # Invalid base64 content 
-        invalid_attachments = [{
-            "filename": "test.txt",
-            "content_b64": "###invalid###",
-            "mime": "text/plain"
-        }]
-        
+
+        # Invalid base64 content
+        invalid_attachments = [
+            {
+                "filename": "test.txt",
+                "content_b64": "###invalid###",
+                "mime": "text/plain",
+            }
+        ]
+
         with pytest.raises(EmailTaskError, match="Failed to decode attachment"):
             send_email_task(
                 to="test@example.com",
                 subject="Test",
                 text="Test message",
-                attachments=invalid_attachments
+                attachments=invalid_attachments,
             )
 
-    @patch('inference_core.celery.tasks.email_tasks.get_email_service')
+    @patch("inference_core.celery.tasks.email_tasks.get_email_service")
     def test_retryable_smtp_error(self, mock_get_service):
         """Test task retry on retryable SMTP errors"""
         mock_service = Mock()
-        mock_service.send_email.side_effect = smtplib.SMTPConnectError(421, "Connection failed")
+        mock_service.send_email.side_effect = smtplib.SMTPConnectError(
+            421, "Connection failed"
+        )
         mock_get_service.return_value = mock_service
-        
+
         # Mock the task's retry method
-        with patch.object(send_email_task, 'retry') as mock_retry:
+        with patch.object(send_email_task, "retry") as mock_retry:
             mock_retry.side_effect = Retry("Retrying")
-            
+
             with pytest.raises(Retry):
                 send_email_task(
-                    to="test@example.com",
-                    subject="Test",
-                    text="Test message"
+                    to="test@example.com", subject="Test", text="Test message"
                 )
-            
+
             mock_retry.assert_called_once()
 
-    @patch('inference_core.celery.tasks.email_tasks.get_email_service')
+    @patch("inference_core.celery.tasks.email_tasks.get_email_service")
     def test_non_retryable_error(self, mock_get_service):
         """Test task failure on non-retryable errors"""
         mock_service = Mock()
         mock_service.send_email.side_effect = ValueError("Invalid recipient")
         mock_get_service.return_value = mock_service
-        
+
         with pytest.raises(EmailTaskError, match="Email task failed"):
-            send_email_task(
-                to="test@example.com",
-                subject="Test",
-                text="Test message"
-            )
+            send_email_task(to="test@example.com", subject="Test", text="Test message")
 
 
 class TestRetryableErrorDetection:
@@ -187,11 +185,14 @@ class TestRetryableErrorDetection:
         """Test that SMTP connection errors are retryable"""
         assert _is_retryable_error(smtplib.SMTPConnectError(421, "Connection failed"))
         assert _is_retryable_error(smtplib.SMTPServerDisconnected())
-        assert _is_retryable_error(smtplib.SMTPResponseException(421, "Service not available"))
+        assert _is_retryable_error(
+            smtplib.SMTPResponseException(421, "Service not available")
+        )
 
     def test_retryable_network_errors(self):
         """Test that network errors are retryable"""
         import socket
+
         assert _is_retryable_error(socket.timeout())
         assert _is_retryable_error(socket.gaierror("Name resolution failed"))
         assert _is_retryable_error(ConnectionError("Connection failed"))
@@ -209,7 +210,9 @@ class TestRetryableErrorDetection:
         """Test that permanent SMTP errors are not retryable"""
         # Permanent failures (5xx codes)
         assert not _is_retryable_error(smtplib.SMTPException("550 Mailbox not found"))
-        assert not _is_retryable_error(smtplib.SMTPException("553 Mailbox name invalid"))
+        assert not _is_retryable_error(
+            smtplib.SMTPException("553 Mailbox name invalid")
+        )
 
     def test_non_retryable_other_errors(self):
         """Test that other errors are not retryable"""
@@ -221,22 +224,22 @@ class TestRetryableErrorDetection:
 class TestAsyncEmailHelpers:
     """Test helper functions for async email sending"""
 
-    @patch('inference_core.celery.tasks.email_tasks.send_email_task.apply_async')
+    @patch("inference_core.celery.tasks.email_tasks.send_email_task.apply_async")
     def test_send_email_async(self, mock_apply_async):
         """Test send_email_async helper function"""
         mock_result = Mock()
         mock_apply_async.return_value = mock_result
-        
+
         result = send_email_async(
             to="test@example.com",
             subject="Test",
             text="Test message",
             html="<p>Test</p>",
-            countdown=60
+            countdown=60,
         )
-        
+
         assert result == mock_result
-        
+
         # Verify apply_async was called correctly
         mock_apply_async.assert_called_once_with(
             args=["test@example.com", "Test", "Test message"],
@@ -250,7 +253,7 @@ class TestAsyncEmailHelpers:
                 "headers": None,
             },
             countdown=60,
-            eta=None
+            eta=None,
         )
 
     def test_encode_attachment(self):
@@ -258,12 +261,12 @@ class TestAsyncEmailHelpers:
         filename = "test.txt"
         content = b"test file content"
         mime_type = "text/plain"
-        
+
         encoded = encode_attachment(filename, content, mime_type)
-        
+
         assert encoded["filename"] == filename
         assert encoded["mime"] == mime_type
-        
+
         # Verify content can be decoded back
         decoded_content = base64.b64decode(encoded["content_b64"])
         assert decoded_content == content
@@ -273,9 +276,9 @@ class TestAsyncEmailHelpers:
         filename = "image.jpg"
         content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"  # PNG header
         mime_type = "image/png"
-        
+
         encoded = encode_attachment(filename, content, mime_type)
-        
+
         # Verify binary content is encoded correctly
         decoded_content = base64.b64decode(encoded["content_b64"])
         assert decoded_content == content
@@ -287,20 +290,196 @@ class TestTaskConfiguration:
     def test_task_configuration(self):
         """Test that task has correct Celery configuration"""
         task = send_email_task
-        
+
         # Verify task configuration
-        assert hasattr(task, 'autoretry_for')
-        assert hasattr(task, 'retry_backoff')
-        assert hasattr(task, 'max_retries')
-        assert hasattr(task, 'acks_late')
-        
+        assert hasattr(task, "autoretry_for")
+        assert hasattr(task, "retry_backoff")
+        assert hasattr(task, "max_retries")
+        assert hasattr(task, "acks_late")
+
         # Verify specific settings
         assert task.max_retries == 5
         assert task.acks_late is True
         assert task.retry_backoff is True
         assert task.retry_backoff_max == 120
-        
+
         # Verify retryable exceptions
         assert smtplib.SMTPException in task.autoretry_for
         assert ssl.SSLError in task.autoretry_for
         assert ConnectionError in task.autoretry_for
+
+
+class TestImapProcessedUidTracking:
+    """Test Redis UID tracking functions for IMAP polling"""
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_mark_email_as_processed(self, mock_get_redis):
+        """Test marking email UID as processed"""
+        from inference_core.celery.tasks.email_tasks import mark_email_as_processed
+
+        mock_redis = MagicMock()
+        mock_redis.sadd.return_value = 1  # New member added
+        mock_get_redis.return_value = mock_redis
+
+        result = mark_email_as_processed(
+            host_alias="primary",
+            folder="INBOX",
+            uid="12345",
+            ttl_seconds=86400,
+        )
+
+        assert result is True
+        mock_redis.sadd.assert_called_once_with("imap:processed:primary:INBOX", "12345")
+        mock_redis.expire.assert_called_once_with("imap:processed:primary:INBOX", 86400)
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_mark_email_as_processed_already_exists(self, mock_get_redis):
+        """Test marking already processed email returns False"""
+        from inference_core.celery.tasks.email_tasks import mark_email_as_processed
+
+        mock_redis = MagicMock()
+        mock_redis.sadd.return_value = 0  # Already exists
+        mock_get_redis.return_value = mock_redis
+
+        result = mark_email_as_processed(
+            host_alias="primary",
+            folder="INBOX",
+            uid="12345",
+        )
+
+        assert result is False
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_is_email_processed_true(self, mock_get_redis):
+        """Test checking if email is processed - returns True"""
+        from inference_core.celery.tasks.email_tasks import is_email_processed
+
+        mock_redis = MagicMock()
+        mock_redis.sismember.return_value = 1
+        mock_get_redis.return_value = mock_redis
+
+        result = is_email_processed("primary", "INBOX", "12345")
+
+        assert result is True
+        mock_redis.sismember.assert_called_once_with(
+            "imap:processed:primary:INBOX", "12345"
+        )
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_is_email_processed_false(self, mock_get_redis):
+        """Test checking if email is processed - returns False"""
+        from inference_core.celery.tasks.email_tasks import is_email_processed
+
+        mock_redis = MagicMock()
+        mock_redis.sismember.return_value = 0
+        mock_get_redis.return_value = mock_redis
+
+        result = is_email_processed("primary", "INBOX", "12345")
+
+        assert result is False
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_get_processed_uids(self, mock_get_redis):
+        """Test getting all processed UIDs"""
+        from inference_core.celery.tasks.email_tasks import get_processed_uids
+
+        mock_redis = MagicMock()
+        mock_redis.smembers.return_value = {"12345", "12346", "12347"}
+        mock_get_redis.return_value = mock_redis
+
+        result = get_processed_uids("primary", "INBOX")
+
+        assert result == {"12345", "12346", "12347"}
+        mock_redis.smembers.assert_called_once_with("imap:processed:primary:INBOX")
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_clear_processed_uids_all(self, mock_get_redis):
+        """Test clearing all processed UIDs"""
+        from inference_core.celery.tasks.email_tasks import clear_processed_uids
+
+        mock_redis = MagicMock()
+        mock_redis.scard.return_value = 5
+        mock_get_redis.return_value = mock_redis
+
+        result = clear_processed_uids("primary", "INBOX")
+
+        assert result == 5
+        mock_redis.scard.assert_called_once_with("imap:processed:primary:INBOX")
+        mock_redis.delete.assert_called_once_with("imap:processed:primary:INBOX")
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_clear_processed_uids_specific(self, mock_get_redis):
+        """Test clearing specific UIDs"""
+        from inference_core.celery.tasks.email_tasks import clear_processed_uids
+
+        mock_redis = MagicMock()
+        mock_redis.srem.return_value = 2
+        mock_get_redis.return_value = mock_redis
+
+        result = clear_processed_uids("primary", "INBOX", ["12345", "12346"])
+
+        assert result == 2
+        mock_redis.srem.assert_called_once_with(
+            "imap:processed:primary:INBOX", "12345", "12346"
+        )
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_clear_processed_uids_empty_list(self, mock_get_redis):
+        """Test clearing with empty UID list"""
+        from inference_core.celery.tasks.email_tasks import clear_processed_uids
+
+        mock_redis = MagicMock()
+        mock_get_redis.return_value = mock_redis
+
+        result = clear_processed_uids("primary", "INBOX", [])
+
+        assert result == 0
+        mock_redis.srem.assert_not_called()
+
+    def test_get_processed_key_pattern(self):
+        """Test Redis key pattern generation"""
+        from inference_core.celery.tasks.email_tasks import _get_processed_key
+
+        key = _get_processed_key("support", "Sent")
+        assert key == "imap:processed:support:Sent"
+
+    @patch("inference_core.core.email_config.get_email_config")
+    def test_get_processed_ttl_seconds_from_config(self, mock_get_config):
+        """Test getting TTL from email config"""
+        from inference_core.celery.tasks.email_tasks import get_processed_ttl_seconds
+
+        mock_config = MagicMock()
+        mock_config.email.processed_ttl_seconds = 3 * 24 * 3600  # 3 days
+        mock_get_config.return_value = mock_config
+
+        result = get_processed_ttl_seconds()
+
+        assert result == 3 * 24 * 3600
+
+    @patch("inference_core.core.email_config.get_email_config")
+    def test_get_processed_ttl_seconds_fallback(self, mock_get_config):
+        """Test TTL fallback when config not available"""
+        from inference_core.celery.tasks.email_tasks import (
+            IMAP_PROCESSED_TTL_SECONDS_DEFAULT,
+            get_processed_ttl_seconds,
+        )
+
+        mock_get_config.return_value = None
+
+        result = get_processed_ttl_seconds()
+
+        assert result == IMAP_PROCESSED_TTL_SECONDS_DEFAULT
+
+    @patch("inference_core.core.email_config.get_email_config")
+    def test_get_processed_ttl_seconds_exception(self, mock_get_config):
+        """Test TTL fallback when config raises exception"""
+        from inference_core.celery.tasks.email_tasks import (
+            IMAP_PROCESSED_TTL_SECONDS_DEFAULT,
+            get_processed_ttl_seconds,
+        )
+
+        mock_get_config.side_effect = Exception("Config error")
+
+        result = get_processed_ttl_seconds()
+
+        assert result == IMAP_PROCESSED_TTL_SECONDS_DEFAULT

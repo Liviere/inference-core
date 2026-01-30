@@ -319,11 +319,141 @@ def encode_attachment(filename: str, content: bytes, mime_type: str) -> Dict[str
 # IMAP Polling Tasks
 # =============================================================================
 
+# Redis key patterns for UID tracking
+IMAP_PROCESSED_KEY_PATTERN = "imap:processed:{host_alias}:{folder}"
+IMAP_PROCESSED_TTL_SECONDS_DEFAULT = 7 * 24 * 3600  # 7 days default (fallback)
+
+
+def get_processed_ttl_seconds() -> int:
+    """Get configured TTL for processed email tracking from email config.
+
+    Returns the configured value from email_config.yaml or default (7 days).
+    """
+    from inference_core.core.email_config import get_email_config
+
+    try:
+        config = get_email_config()
+        if config:
+            return config.email.processed_ttl_seconds
+    except Exception:
+        pass
+    return IMAP_PROCESSED_TTL_SECONDS_DEFAULT
+
 
 class ImapPollError(Exception):
     """Exception for IMAP polling task errors."""
 
     pass
+
+
+def _get_processed_key(host_alias: str, folder: str) -> str:
+    """Generate Redis key for tracking processed UIDs."""
+    return IMAP_PROCESSED_KEY_PATTERN.format(host_alias=host_alias, folder=folder)
+
+
+def mark_email_as_processed(
+    host_alias: str,
+    folder: str,
+    uid: str,
+    ttl_seconds: Optional[int] = None,
+) -> bool:
+    """Mark email UID as processed in Redis.
+
+    Use this in callbacks after successfully processing an email.
+    This prevents the same email from being dispatched again on next poll.
+
+    Args:
+        host_alias: IMAP host alias
+        folder: Mailbox folder
+        uid: Email UID to mark as processed
+        ttl_seconds: Time-to-live for the processed marker.
+                     If None, uses configured value from email_config.yaml (default 7 days).
+
+    Returns:
+        True if newly marked, False if already processed
+    """
+    from inference_core.core.redis_client import get_sync_redis
+
+    if ttl_seconds is None:
+        ttl_seconds = get_processed_ttl_seconds()
+
+    redis_client = get_sync_redis()
+    key = _get_processed_key(host_alias, folder)
+
+    # SADD returns 1 if new member, 0 if already exists
+    added = redis_client.sadd(key, uid)
+    redis_client.expire(key, ttl_seconds)
+
+    return bool(added)
+
+
+def is_email_processed(host_alias: str, folder: str, uid: str) -> bool:
+    """Check if email UID was already processed.
+
+    Args:
+        host_alias: IMAP host alias
+        folder: Mailbox folder
+        uid: Email UID to check
+
+    Returns:
+        True if already processed, False otherwise
+    """
+    from inference_core.core.redis_client import get_sync_redis
+
+    redis_client = get_sync_redis()
+    key = _get_processed_key(host_alias, folder)
+
+    return bool(redis_client.sismember(key, uid))
+
+
+def get_processed_uids(host_alias: str, folder: str) -> set[str]:
+    """Get all processed UIDs for a host/folder combination.
+
+    Args:
+        host_alias: IMAP host alias
+        folder: Mailbox folder
+
+    Returns:
+        Set of processed UID strings
+    """
+    from inference_core.core.redis_client import get_sync_redis
+
+    redis_client = get_sync_redis()
+    key = _get_processed_key(host_alias, folder)
+
+    return redis_client.smembers(key)
+
+
+def clear_processed_uids(
+    host_alias: str, folder: str, uids: Optional[List[str]] = None
+) -> int:
+    """Clear processed UIDs from tracking.
+
+    Use to allow re-processing of specific emails or clear all tracking.
+
+    Args:
+        host_alias: IMAP host alias
+        folder: Mailbox folder
+        uids: Specific UIDs to clear. If None, clears all for this host/folder.
+
+    Returns:
+        Number of UIDs removed
+    """
+    from inference_core.core.redis_client import get_sync_redis
+
+    redis_client = get_sync_redis()
+    key = _get_processed_key(host_alias, folder)
+
+    if uids is None:
+        # Clear all - get count first, then delete
+        count = redis_client.scard(key)
+        redis_client.delete(key)
+        return count
+    else:
+        # Remove specific UIDs
+        if not uids:
+            return 0
+        return redis_client.srem(key, *uids)
 
 
 @celery_app.task(
@@ -349,11 +479,17 @@ def poll_imap_task(
     limit: int = 50,
     callback_task: Optional[str] = None,
     callback_kwargs: Optional[Dict[str, Any]] = None,
+    skip_processed: bool = True,
+    processed_ttl_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Poll IMAP mailbox for new emails.
 
     Fetches unseen emails and optionally dispatches them to a callback task
-    for processing (e.g., agent-based email handling).
+    for processing. Uses Redis to track processed UIDs and avoid duplicate
+    processing across poll cycles.
+
+    The email remains UNSEEN on the mail server (user sees it as unread).
+    Only the internal Redis tracking prevents re-dispatch to callbacks.
 
     Args:
         host_alias: IMAP host alias (uses default if None)
@@ -362,9 +498,17 @@ def poll_imap_task(
         callback_task: Optional Celery task name to invoke for each email.
                        Task receives: (email_data: dict, host_alias: str)
         callback_kwargs: Additional kwargs to pass to callback task
+        skip_processed: If True, skip emails already processed (tracked in Redis).
+                        Set to False to re-process all unseen emails.
+        processed_ttl_seconds: TTL for processed UID tracking.
+                               If None, uses configured value from email_config.yaml (default 7 days).
 
     Returns:
-        Dict with poll results (count, message_ids)
+        Dict with poll results (count, message_ids, skipped_count)
+
+    Note:
+        Callbacks should call `mark_email_as_processed()` after successful
+        processing to prevent re-dispatch on next poll cycle.
     """
     start_time = time.time()
     task_id = current_task.request.id if current_task else "unknown"
@@ -386,22 +530,35 @@ def poll_imap_task(
                 "host_alias": alias,
                 "folder": folder,
                 "limit": limit,
+                "skip_processed": skip_processed,
             },
         )
 
-        # Fetch unseen emails
+        # Fetch unseen emails from IMAP
         messages = imap_service.fetch_unseen_emails(
             host_alias=alias,
             folder=folder,
             limit=limit,
-            mark_as_read=False,  # Let callback decide
+            mark_as_read=False,  # Keep as UNSEEN on mail server
         )
 
-        message_ids = []
+        # Get already processed UIDs from Redis (if skip_processed enabled)
+        processed_uids: set[str] = set()
+        if skip_processed:
+            processed_uids = get_processed_uids(alias, folder)
+
+        new_message_ids = []
+        skipped_ids = []
         callback_results = []
 
         for msg in messages:
-            message_ids.append(msg.uid)
+            # Check if already processed
+            if skip_processed and msg.uid in processed_uids:
+                skipped_ids.append(msg.uid)
+                logger.debug("Skipping already processed email UID %s", msg.uid)
+                continue
+
+            new_message_ids.append(msg.uid)
 
             # Dispatch to callback if configured
             if callback_task:
@@ -418,6 +575,10 @@ def poll_imap_task(
                     "has_attachments": msg.has_attachments,
                     "attachment_names": msg.attachment_names,
                     "folder": msg.folder,
+                    # Include tracking info for callback to use
+                    "_host_alias": alias,
+                    "_processed_ttl": processed_ttl_seconds
+                    or get_processed_ttl_seconds(),
                 }
 
                 try:
@@ -442,6 +603,8 @@ def poll_imap_task(
                 "task_id": task_id,
                 "host_alias": alias,
                 "emails_found": len(messages),
+                "new_emails": len(new_message_ids),
+                "skipped_processed": len(skipped_ids),
                 "callbacks_dispatched": len(callback_results),
                 "duration_seconds": round(duration, 3),
             },
@@ -452,7 +615,10 @@ def poll_imap_task(
             "host_alias": alias,
             "folder": folder,
             "emails_found": len(messages),
-            "message_ids": message_ids,
+            "new_emails": len(new_message_ids),
+            "skipped_processed": len(skipped_ids),
+            "message_ids": new_message_ids,
+            "skipped_ids": skipped_ids,
             "callback_results": callback_results,
             "duration": round(duration, 3),
         }

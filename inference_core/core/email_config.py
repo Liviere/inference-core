@@ -234,6 +234,12 @@ class EmailConfig(BaseModel):
     default_poll_interval_seconds: int = Field(
         default=60, ge=10, le=3600, description="Default IMAP poll interval in seconds"
     )
+    processed_ttl_seconds: int = Field(
+        default=7 * 24 * 3600,
+        ge=3600,
+        le=30 * 24 * 3600,
+        description="TTL for tracking processed email UIDs in Redis (default 7 days)",
+    )
 
     @model_validator(mode="after")
     def validate_default_host_exists(self):

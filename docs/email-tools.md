@@ -140,6 +140,79 @@ agents:
 
 ## Celery Background Tasks
 
+### Processed Email Tracking (Redis)
+
+When polling IMAP accounts, you typically want to avoid processing the same email multiple times. The polling system uses Redis to track processed email UIDs:
+
+- **Emails remain UNSEEN** on the mail server (end-user sees them as unread in their email client)
+- **Redis SET tracks processed UIDs** internally to prevent duplicate callback dispatches
+- **Configurable TTL** determines how long processed state is remembered (default: 7 days)
+
+#### Configuration
+
+In `email_config.yaml`:
+
+```yaml
+email:
+  default_host: primary
+  default_poll_interval_seconds: 60
+  # TTL for tracking processed email UIDs in Redis (seconds)
+  # Default: 604800 (7 days). Min: 3600 (1 hour), Max: 2592000 (30 days)
+  processed_ttl_seconds: 604800
+```
+
+#### Marking Emails as Processed
+
+Callbacks should mark emails as processed after successful handling:
+
+```python
+from inference_core.celery.tasks.email_tasks import mark_email_as_processed
+
+@celery_app.task
+def process_email(email_data: dict, host_alias: str):
+    try:
+        # Process the email...
+        handle_email(email_data)
+
+        # Mark as processed to prevent re-dispatch
+        mark_email_as_processed(
+            host_alias=host_alias,
+            folder=email_data.get('folder', 'INBOX'),
+            uid=email_data['uid'],
+            # Optional: override TTL (uses config value if None)
+            ttl_seconds=None,
+        )
+    except Exception as e:
+        # Don't mark as processed - will retry on next poll
+        raise
+```
+
+#### Helper Functions
+
+```python
+from inference_core.celery.tasks.email_tasks import (
+    mark_email_as_processed,  # Mark UID as processed
+    is_email_processed,       # Check if UID was processed
+    get_processed_uids,       # Get all processed UIDs for host/folder
+    clear_processed_uids,     # Clear tracking (allow re-processing)
+    get_processed_ttl_seconds,  # Get configured TTL value
+)
+
+# Check if email was already processed
+if is_email_processed('primary', 'INBOX', '12345'):
+    print("Email already handled")
+
+# Get all processed UIDs
+processed = get_processed_uids('primary', 'INBOX')
+print(f"Processed {len(processed)} emails")
+
+# Clear specific UIDs to allow re-processing
+clear_processed_uids('primary', 'INBOX', ['12345', '12346'])
+
+# Clear ALL processed UIDs for a host/folder
+clear_processed_uids('primary', 'INBOX')
+```
+
 ### Poll Single Account
 
 ```python
@@ -148,12 +221,19 @@ from inference_core.celery.tasks.email_tasks import poll_imap_task
 # Poll default account
 result = poll_imap_task.delay()
 
-# Poll specific account
+# Poll specific account with callback
 result = poll_imap_task.delay(
     host_alias='support',
     folder='INBOX',
     limit=50,
     callback_task='myapp.tasks.process_email',  # Optional callback
+    skip_processed=True,  # Skip already processed emails (default)
+)
+
+# Force re-process all unseen emails (ignore Redis tracking)
+result = poll_imap_task.delay(
+    host_alias='support',
+    skip_processed=False,
 )
 ```
 

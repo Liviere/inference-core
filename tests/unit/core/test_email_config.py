@@ -234,6 +234,48 @@ class TestEmailConfig:
         assert "backup" in aliases
         assert len(aliases) == 2
 
+    def test_processed_ttl_seconds_default(self):
+        """Test default processed_ttl_seconds value (7 days)"""
+        host_config = make_host_config()
+
+        config = EmailConfig(default_host="primary", hosts={"primary": host_config})
+
+        assert config.processed_ttl_seconds == 7 * 24 * 3600  # 7 days in seconds
+
+    def test_processed_ttl_seconds_custom(self):
+        """Test custom processed_ttl_seconds value"""
+        host_config = make_host_config()
+
+        config = EmailConfig(
+            default_host="primary",
+            hosts={"primary": host_config},
+            processed_ttl_seconds=3 * 24 * 3600,  # 3 days
+        )
+
+        assert config.processed_ttl_seconds == 3 * 24 * 3600
+
+    def test_processed_ttl_seconds_validation_min(self):
+        """Test processed_ttl_seconds minimum validation (1 hour)"""
+        host_config = make_host_config()
+
+        with pytest.raises(ValidationError):
+            EmailConfig(
+                default_host="primary",
+                hosts={"primary": host_config},
+                processed_ttl_seconds=1800,  # 30 minutes - below minimum
+            )
+
+    def test_processed_ttl_seconds_validation_max(self):
+        """Test processed_ttl_seconds maximum validation (30 days)"""
+        host_config = make_host_config()
+
+        with pytest.raises(ValidationError):
+            EmailConfig(
+                default_host="primary",
+                hosts={"primary": host_config},
+                processed_ttl_seconds=31 * 24 * 3600,  # 31 days - above maximum
+            )
+
 
 class TestEmailSettings:
     """Test EmailSettings validation"""
