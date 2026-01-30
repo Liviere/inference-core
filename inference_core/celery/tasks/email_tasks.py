@@ -313,3 +313,326 @@ def encode_attachment(filename: str, content: bytes, mime_type: str) -> Dict[str
         "content_b64": base64.b64encode(content).decode("ascii"),
         "mime": mime_type,
     }
+
+
+# =============================================================================
+# IMAP Polling Tasks
+# =============================================================================
+
+
+class ImapPollError(Exception):
+    """Exception for IMAP polling task errors."""
+
+    pass
+
+
+@celery_app.task(
+    bind=True,
+    name="email.poll_imap",
+    queue="mail",
+    autoretry_for=(
+        ConnectionError,
+        socket.timeout,
+        ssl.SSLError,
+    ),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=3,
+    acks_late=True,
+    time_limit=120,
+)
+def poll_imap_task(
+    self,
+    host_alias: Optional[str] = None,
+    folder: str = "INBOX",
+    limit: int = 50,
+    callback_task: Optional[str] = None,
+    callback_kwargs: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Poll IMAP mailbox for new emails.
+
+    Fetches unseen emails and optionally dispatches them to a callback task
+    for processing (e.g., agent-based email handling).
+
+    Args:
+        host_alias: IMAP host alias (uses default if None)
+        folder: Mailbox folder to poll
+        limit: Maximum emails to fetch per poll
+        callback_task: Optional Celery task name to invoke for each email.
+                       Task receives: (email_data: dict, host_alias: str)
+        callback_kwargs: Additional kwargs to pass to callback task
+
+    Returns:
+        Dict with poll results (count, message_ids)
+    """
+    start_time = time.time()
+    task_id = current_task.request.id if current_task else "unknown"
+
+    try:
+        from inference_core.services.imap_service import get_imap_service
+
+        imap_service = get_imap_service()
+        if not imap_service:
+            raise ImapPollError("IMAP service not available - check configuration")
+
+        # Determine which host to poll
+        alias = host_alias or imap_service.config.email.default_host
+
+        logger.info(
+            "Starting IMAP poll task",
+            extra={
+                "task_id": task_id,
+                "host_alias": alias,
+                "folder": folder,
+                "limit": limit,
+            },
+        )
+
+        # Fetch unseen emails
+        messages = imap_service.fetch_unseen_emails(
+            host_alias=alias,
+            folder=folder,
+            limit=limit,
+            mark_as_read=False,  # Let callback decide
+        )
+
+        message_ids = []
+        callback_results = []
+
+        for msg in messages:
+            message_ids.append(msg.uid)
+
+            # Dispatch to callback if configured
+            if callback_task:
+                email_data = {
+                    "uid": msg.uid,
+                    "message_id": msg.message_id,
+                    "subject": msg.subject,
+                    "from_address": msg.from_address,
+                    "from_name": msg.from_name,
+                    "to_addresses": msg.to_addresses,
+                    "date": msg.date.isoformat() if msg.date else None,
+                    "body_text": msg.body_text,
+                    "body_html": msg.body_html,
+                    "has_attachments": msg.has_attachments,
+                    "attachment_names": msg.attachment_names,
+                    "folder": msg.folder,
+                }
+
+                try:
+                    result = celery_app.send_task(
+                        callback_task,
+                        args=[email_data, alias],
+                        kwargs=callback_kwargs or {},
+                    )
+                    callback_results.append({"uid": msg.uid, "task_id": str(result.id)})
+                except Exception as e:
+                    logger.error(
+                        "Failed to dispatch callback for email %s: %s",
+                        msg.uid,
+                        e,
+                    )
+
+        duration = time.time() - start_time
+
+        logger.info(
+            "IMAP poll completed",
+            extra={
+                "task_id": task_id,
+                "host_alias": alias,
+                "emails_found": len(messages),
+                "callbacks_dispatched": len(callback_results),
+                "duration_seconds": round(duration, 3),
+            },
+        )
+
+        return {
+            "status": "success",
+            "host_alias": alias,
+            "folder": folder,
+            "emails_found": len(messages),
+            "message_ids": message_ids,
+            "callback_results": callback_results,
+            "duration": round(duration, 3),
+        }
+
+    except ImapPollError:
+        raise
+    except Exception as e:
+        duration = time.time() - start_time
+        logger.error(
+            "IMAP poll failed",
+            extra={
+                "task_id": task_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "duration_seconds": round(duration, 3),
+            },
+        )
+
+        if _is_imap_retryable_error(e):
+            raise self.retry(exc=e)
+
+        raise ImapPollError(f"IMAP poll failed: {e}")
+
+
+@celery_app.task(
+    bind=True,
+    name="email.poll_all_imap",
+    queue="mail",
+    time_limit=300,
+)
+def poll_all_imap_accounts_task(
+    self,
+    folder: str = "INBOX",
+    limit: int = 50,
+    callback_task: Optional[str] = None,
+    callback_kwargs: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Poll all configured IMAP accounts for new emails.
+
+    Dispatches individual poll_imap_task for each configured IMAP host.
+
+    Args:
+        folder: Mailbox folder to poll (same for all accounts)
+        limit: Maximum emails to fetch per account
+        callback_task: Celery task name for processing emails
+        callback_kwargs: Additional kwargs for callback
+
+    Returns:
+        Dict with dispatched task info per account
+    """
+    start_time = time.time()
+    task_id = current_task.request.id if current_task else "unknown"
+
+    try:
+        from inference_core.services.imap_service import get_imap_service
+
+        imap_service = get_imap_service()
+        if not imap_service:
+            return {
+                "status": "skipped",
+                "reason": "No IMAP service configured",
+            }
+
+        imap_hosts = imap_service.list_configured_hosts()
+        if not imap_hosts:
+            return {
+                "status": "skipped",
+                "reason": "No IMAP hosts configured",
+            }
+
+        logger.info(
+            "Starting poll for all IMAP accounts",
+            extra={
+                "task_id": task_id,
+                "account_count": len(imap_hosts),
+                "accounts": imap_hosts,
+            },
+        )
+
+        dispatched = []
+        for host_alias in imap_hosts:
+            try:
+                result = poll_imap_task.delay(
+                    host_alias=host_alias,
+                    folder=folder,
+                    limit=limit,
+                    callback_task=callback_task,
+                    callback_kwargs=callback_kwargs,
+                )
+                dispatched.append(
+                    {
+                        "host_alias": host_alias,
+                        "task_id": str(result.id),
+                    }
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to dispatch poll task for %s: %s",
+                    host_alias,
+                    e,
+                )
+                dispatched.append(
+                    {
+                        "host_alias": host_alias,
+                        "error": str(e),
+                    }
+                )
+
+        duration = time.time() - start_time
+
+        return {
+            "status": "success",
+            "accounts_polled": len(dispatched),
+            "dispatched_tasks": dispatched,
+            "duration": round(duration, 3),
+        }
+
+    except Exception as e:
+        logger.error("Failed to poll all IMAP accounts: %s", e)
+        raise
+
+
+def _is_imap_retryable_error(error: Exception) -> bool:
+    """Determine if IMAP error is retryable."""
+    import imaplib
+
+    if isinstance(
+        error,
+        (
+            socket.timeout,
+            socket.gaierror,
+            ConnectionError,
+            ssl.SSLError,
+            imaplib.IMAP4.abort,
+        ),
+    ):
+        return True
+
+    # Check for temporary IMAP errors
+    if isinstance(error, imaplib.IMAP4.error):
+        error_str = str(error).lower()
+        if any(
+            term in error_str
+            for term in ["temporary", "try again", "connection", "timeout"]
+        ):
+            return True
+
+    return False
+
+
+def schedule_imap_polling(
+    host_alias: Optional[str] = None,
+    folder: str = "INBOX",
+    limit: int = 50,
+    callback_task: Optional[str] = None,
+    callback_kwargs: Optional[Dict[str, Any]] = None,
+    countdown: Optional[int] = None,
+) -> Any:
+    """Schedule IMAP polling task.
+
+    Convenience function for scheduling poll task with options.
+
+    Args:
+        host_alias: Specific host to poll (None = default)
+        folder: Mailbox folder
+        limit: Max emails per poll
+        callback_task: Task to process each email
+        callback_kwargs: Additional callback kwargs
+        countdown: Delay in seconds
+
+    Returns:
+        Celery AsyncResult
+    """
+    return poll_imap_task.apply_async(
+        kwargs={
+            "host_alias": host_alias,
+            "folder": folder,
+            "limit": limit,
+            "callback_task": callback_task,
+            "callback_kwargs": callback_kwargs,
+        },
+        countdown=countdown,
+    )

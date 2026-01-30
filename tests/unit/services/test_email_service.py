@@ -14,8 +14,31 @@ from inference_core.core.email_config import (
     EmailHostConfig,
     EmailSettings,
     FullEmailConfig,
+    SmtpHostConfig,
 )
 from inference_core.services.email_service import EmailSendError, EmailService
+
+
+def make_smtp_config(**overrides) -> SmtpHostConfig:
+    """Helper to create SmtpHostConfig with sensible defaults."""
+    defaults = {
+        "host": "smtp.example.com",
+        "port": 465,
+        "use_ssl": True,
+        "use_starttls": False,
+        "username": "test@example.com",
+        "password_env": "TEST_PASSWORD",
+        "from_email": "no-reply@example.com",
+        "from_name": "Test Service",
+    }
+    defaults.update(overrides)
+    return SmtpHostConfig(**defaults)
+
+
+def make_host_config(smtp_overrides: dict = None, **host_overrides) -> EmailHostConfig:
+    """Helper to create EmailHostConfig with sensible defaults."""
+    smtp = make_smtp_config(**(smtp_overrides or {}))
+    return EmailHostConfig(smtp=smtp, **host_overrides)
 
 
 class TestEmailService:
@@ -23,16 +46,7 @@ class TestEmailService:
 
     def setup_method(self):
         """Set up test configuration"""
-        self.host_config = EmailHostConfig(
-            host="smtp.example.com",
-            port=465,
-            use_ssl=True,
-            use_starttls=False,
-            username="test@example.com",
-            password_env="TEST_PASSWORD",
-            from_email="no-reply@example.com",
-            from_name="Test Service",
-        )
+        self.host_config = make_host_config()
 
         self.email_config = EmailConfig(
             default_host="primary", hosts={"primary": self.host_config}
@@ -159,15 +173,7 @@ class TestEmailService:
     def test_attachment_size_limit_exceeded(self):
         """Test that large attachments are rejected"""
         # Create config with small attachment limit
-        host_config = EmailHostConfig(
-            host="smtp.example.com",
-            port=465,
-            use_ssl=True,
-            username="test@example.com",
-            password_env="TEST_PASSWORD",
-            from_email="no-reply@example.com",
-            max_attachment_mb=1,  # 1MB limit
-        )
+        host_config = make_host_config(smtp_overrides={"max_attachment_mb": 1})
 
         config = FullEmailConfig(
             email=EmailConfig(default_host="primary", hosts={"primary": host_config}),
@@ -225,14 +231,12 @@ class TestEmailService:
     def test_send_email_with_starttls(self, mock_smtp):
         """Test sending email with STARTTLS"""
         # Create STARTTLS config
-        host_config = EmailHostConfig(
-            host="smtp.example.com",
-            port=587,
-            use_ssl=False,
-            use_starttls=True,
-            username="test@example.com",
-            password_env="TEST_PASSWORD",
-            from_email="no-reply@example.com",
+        host_config = make_host_config(
+            smtp_overrides={
+                "port": 587,
+                "use_ssl": False,
+                "use_starttls": True,
+            }
         )
 
         config = FullEmailConfig(
@@ -329,14 +333,16 @@ class TestEmailService:
     def test_get_host_config_with_alias(self):
         """Test using specific host alias"""
         # Add second host
-        backup_host = EmailHostConfig(
-            host="backup.example.com",
-            port=587,
-            use_ssl=False,
-            use_starttls=True,
-            username="backup@example.com",
-            password_env="BACKUP_PASSWORD",
-            from_email="backup@example.com",
+        backup_host = make_host_config(
+            smtp_overrides={
+                "host": "backup.example.com",
+                "port": 587,
+                "use_ssl": False,
+                "use_starttls": True,
+                "username": "backup@example.com",
+                "password_env": "BACKUP_PASSWORD",
+                "from_email": "backup@example.com",
+            }
         )
 
         config = FullEmailConfig(

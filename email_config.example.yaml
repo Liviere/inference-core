@@ -5,65 +5,105 @@
 email:
   # Default host alias to use when none specified
   default_host: primary
-  
-  # SMTP host configurations
+  # Default polling interval for IMAP (seconds) - can be overridden per-host
+  default_poll_interval_seconds: 60
+
+  # Host configurations (SMTP + optional IMAP)
   hosts:
     primary:
-      host: smtp.gmail.com
-      port: 465
-      use_ssl: true
-      use_starttls: false
-      username: ${SMTP_PRIMARY_USERNAME}
-      password_env: SMTP_PRIMARY_PASSWORD
-      from_email: no-reply@example.com
-      from_name: Inference Core
-      timeout: 10
-      verify_hostname: true
-      rate_limit_per_minute: 60
-      max_attachment_mb: 10
-    
+      # SMTP settings (required for sending)
+      smtp:
+        host: smtp.gmail.com
+        port: 465
+        use_ssl: true
+        use_starttls: false
+        username: ${SMTP_PRIMARY_USERNAME}
+        password_env: SMTP_PRIMARY_PASSWORD
+        from_email: no-reply@example.com
+        from_name: Inference Core
+        timeout: 10
+        verify_hostname: true
+        rate_limit_per_minute: 60
+        max_attachment_mb: 10
+
+      # IMAP settings (optional - for reading emails)
+      imap:
+        host: imap.gmail.com
+        port: 993
+        use_ssl: true
+        username: ${IMAP_PRIMARY_USERNAME}
+        password_env: IMAP_PRIMARY_PASSWORD
+        default_folder: INBOX
+        timeout: 30
+        poll_interval_seconds: 45 # Override default poll interval
+
+      # Account metadata for agent tools (optional)
+      context: 'Primary company inbox for customer support inquiries'
+      signature: |
+        Best regards,
+        Customer Support Team
+        Example Corp
+
     backup:
-      host: smtp.mailgun.org
-      port: 587
-      use_ssl: false
-      use_starttls: true
-      username: ${SMTP_BACKUP_USERNAME}
-      password_env: SMTP_BACKUP_PASSWORD
-      from_email: no-reply@example.com
-      from_name: Inference Core Backup
-      timeout: 15
-      verify_hostname: true
-      rate_limit_per_minute: 30
-      max_attachment_mb: 5
-    
-    # Example for Office 365
+      # Send-only configuration (no IMAP)
+      smtp:
+        host: smtp.mailgun.org
+        port: 587
+        use_ssl: false
+        use_starttls: true
+        username: ${SMTP_BACKUP_USERNAME}
+        password_env: SMTP_BACKUP_PASSWORD
+        from_email: no-reply@example.com
+        from_name: Inference Core Backup
+        timeout: 15
+        verify_hostname: true
+        rate_limit_per_minute: 30
+        max_attachment_mb: 5
+      # No IMAP configured - this host is send-only
+
+    # Example for Office 365 with full IMAP support
     office365:
-      host: smtp.office365.com
-      port: 587
-      use_ssl: false
-      use_starttls: true
-      username: ${SMTP_O365_USERNAME}
-      password_env: SMTP_O365_PASSWORD
-      from_email: noreply@yourcompany.com
-      from_name: Inference Core
-      timeout: 20
-      verify_hostname: true
-      rate_limit_per_minute: 120
-      max_attachment_mb: 25
+      smtp:
+        host: smtp.office365.com
+        port: 587
+        use_ssl: false
+        use_starttls: true
+        username: ${SMTP_O365_USERNAME}
+        password_env: SMTP_O365_PASSWORD
+        from_email: noreply@yourcompany.com
+        from_name: Inference Core
+        timeout: 20
+        verify_hostname: true
+        rate_limit_per_minute: 120
+        max_attachment_mb: 25
+
+      imap:
+        host: outlook.office365.com
+        port: 993
+        use_ssl: true
+        username: ${IMAP_O365_USERNAME}
+        password_env: IMAP_O365_PASSWORD
+        default_folder: INBOX
+        timeout: 30
+
+      context: 'Office 365 corporate email for internal communications'
+      signature: |
+        Regards,
+        Your Company Name
 
 # Global email settings
 settings:
   # Public URL for email links (password reset, etc.)
   app_public_url: ${APP_PUBLIC_URL}
-  
+
   # Default settings applied to all hosts
   default_timeout: 10
   default_verify_hostname: true
   default_max_attachment_mb: 10
-  
+
   # Template settings
   template_directory: templates/email
-  
+
   # Development settings
   development:
     # When true, emails are logged instead of sent
