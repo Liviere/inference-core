@@ -267,7 +267,7 @@ class ImapService:
             folder_name = folder or conn.imap_config.default_folder
 
             # Search for unseen messages
-            typ, data = conn._connection.search(None, "UNSEEN")
+            typ, data = conn._connection.uid("SEARCH", None, "UNSEEN")
             if typ != "OK":
                 raise ImapReadError("Search failed", alias, folder_name)
 
@@ -283,7 +283,7 @@ class ImapService:
                         messages.append(msg)
 
                         if mark_as_read:
-                            conn._connection.store(uid, "+FLAGS", "\\Seen")
+                            conn._connection.uid("STORE", uid, "+FLAGS", "\\Seen")
 
                 except Exception as e:
                     logger.error(
@@ -329,7 +329,7 @@ class ImapService:
             conn.select_folder(folder)
             folder_name = folder or conn.imap_config.default_folder
 
-            typ, data = conn._connection.search(None, search_criteria)
+            typ, data = conn._connection.uid("SEARCH", None, search_criteria)
             if typ != "OK":
                 raise ImapReadError(
                     f"Search failed: {search_criteria}", alias, folder_name
@@ -367,11 +367,24 @@ class ImapService:
         self, conn: ImapConnection, uid: bytes, folder: str
     ) -> Optional[EmailMessage]:
         """Fetch and parse a single message by UID."""
-        typ, data = conn._connection.fetch(uid, "(RFC822)")
+        typ, data = conn._connection.uid("FETCH", uid, "(RFC822)")
         if typ != "OK" or not data or not data[0]:
             return None
 
-        raw_msg = data[0][1]
+        # Data format is slightly different for UID FETCH
+        # data[0] is tuple (b'SEQ (UID 123 RFC822 {size}', b'content')
+        # or b'SEQ (UID 123 RFC822 {size})' if content is empty?
+        # Usually it's a list containing a tuple.
+
+        raw_msg = None
+        for item in data:
+            if isinstance(item, tuple):
+                raw_msg = item[1]
+                break
+
+        if raw_msg is None:
+            return None
+
         msg = email.message_from_bytes(raw_msg)
 
         return self._parse_message(msg, uid.decode(), folder)
