@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional
 
 from deepagents import create_deep_agent
 from langchain.agents import create_agent
-from langchain.messages import HumanMessage, SystemMessage
+from langchain.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -121,6 +121,7 @@ class AgentService:
 
         # Memory setup
         self.use_memory = use_memory
+        self._enable_memory = False
         if use_memory:
             self.memory_store = self._initialize_memory_store()
             self._enable_memory = True
