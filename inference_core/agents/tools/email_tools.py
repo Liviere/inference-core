@@ -173,23 +173,127 @@ Returns structured email data including: subject, sender, date, body preview, at
         return "\n".join(lines)
 
 
+# Valid IMAP SEARCH keywords for query validation
+IMAP_SEARCH_KEYWORDS = {
+    "ALL",
+    "ANSWERED",
+    "BCC",
+    "BEFORE",
+    "BODY",
+    "CC",
+    "DELETED",
+    "DRAFT",
+    "FLAGGED",
+    "FROM",
+    "HEADER",
+    "KEYWORD",
+    "LARGER",
+    "NEW",
+    "NOT",
+    "OLD",
+    "ON",
+    "OR",
+    "RECENT",
+    "SEEN",
+    "SENTBEFORE",
+    "SENTON",
+    "SENTSINCE",
+    "SINCE",
+    "SMALLER",
+    "SUBJECT",
+    "TEXT",
+    "TO",
+    "UID",
+    "UNANSWERED",
+    "UNDELETED",
+    "UNDRAFT",
+    "UNFLAGGED",
+    "UNKEYWORD",
+    "UNSEEN",
+}
+
+
+def normalize_imap_query(query: str) -> str:
+    """
+    Normalize and validate IMAP search query.
+
+    If query doesn't start with a valid IMAP keyword, wraps it in SUBJECT "..."
+    to prevent agent from passing free-form text that causes IMAP errors.
+
+    Also removes non-ASCII characters that would cause encoding errors.
+    """
+    query = query.strip()
+    if not query:
+        return "ALL"
+
+    # Check if query starts with a valid IMAP keyword
+    first_word = query.split()[0].upper()
+    if first_word not in IMAP_SEARCH_KEYWORDS:
+        # Agent passed free-form text - wrap in SUBJECT search
+        # Remove non-ASCII characters to prevent encoding errors
+        safe_query = query.encode("ascii", errors="ignore").decode("ascii").strip()
+        if not safe_query:
+            # If nothing left after removing non-ASCII, search ALL
+            logger.warning(
+                "Query '%s' contains only non-ASCII characters, defaulting to ALL",
+                query[:50],
+            )
+            return "ALL"
+        # Escape quotes in the search term
+        safe_query = safe_query.replace('"', '\\"')
+        logger.info("Normalized free-form query '%s' to SUBJECT search", query[:50])
+        return f'SUBJECT "{safe_query}"'
+
+    # Valid IMAP query - still sanitize non-ASCII in string arguments
+    # This is a simplified approach; full parsing would be more complex
+    try:
+        # Test if it can be encoded as ASCII
+        query.encode("ascii")
+        return query
+    except UnicodeEncodeError:
+        # Remove non-ASCII characters
+        safe_query = query.encode("ascii", errors="ignore").decode("ascii").strip()
+        logger.warning(
+            "Removed non-ASCII characters from query: '%s' -> '%s'",
+            query[:50],
+            safe_query[:50],
+        )
+        return safe_query if safe_query else "ALL"
+
+
 class SearchEmailsTool(BaseTool):
     """Tool for searching emails by various criteria.
 
     Supports IMAP search syntax for flexible queries.
+    Automatically normalizes invalid queries to prevent errors.
     """
 
     name: str = "search_emails"
-    description: str = """Search emails in mailbox by criteria.
+    description: str = """Search emails in mailbox using IMAP search syntax.
 Use when you need to find specific emails.
 
+⚠️ IMPORTANT: The query MUST use valid IMAP search syntax. Do NOT pass free-form text.
+
 Arguments:
-  - query (required): Search query. Examples:
-    - "FROM sender@example.com" - emails from specific sender
-    - "SUBJECT meeting" - emails with 'meeting' in subject
-    - "SINCE 01-Jan-2026" - emails since date
-    - "UNSEEN" - unread emails only
-    - "ALL" - all emails
+  - query (required): IMAP search query. MUST start with a valid keyword:
+    - FROM "address@example.com" - emails from specific sender
+    - TO "address@example.com" - emails to specific recipient  
+    - SUBJECT "keyword" - emails with keyword in subject (ASCII only!)
+    - BODY "keyword" - emails with keyword in body (ASCII only!)
+    - TEXT "keyword" - search in entire message (ASCII only!)
+    - SINCE 01-Jan-2026 - emails since date (format: DD-Mon-YYYY)
+    - BEFORE 01-Jan-2026 - emails before date
+    - ON 01-Jan-2026 - emails on specific date
+    - UNSEEN - unread emails only
+    - SEEN - read emails only
+    - ALL - all emails
+    - Combine with OR/NOT: OR FROM "a@x.com" FROM "b@x.com"
+
+  ⚠️ RESTRICTIONS:
+    - Use ASCII characters only in search terms (no Polish: ą,ę,ó,ł etc.)
+    - Always quote string arguments: SUBJECT "meeting" not SUBJECT meeting
+    - Date format must be DD-Mon-YYYY (e.g., 01-Jan-2026)
+
   - account_name (optional): Email account alias to use
   - folder (optional): Mailbox folder to search. Default: INBOX
   - limit (optional): Maximum results. Default: 10
@@ -210,13 +314,23 @@ Returns list of matching emails with details.
     ) -> str:
         try:
             account = self._resolve_account(account_name)
+
+            # Normalize query to prevent IMAP errors from malformed agent input
+            normalized_query = normalize_imap_query(query)
+            if normalized_query != query:
+                logger.info(
+                    "SearchEmailsTool: normalized query '%s' -> '%s'",
+                    query[:100],
+                    normalized_query[:100],
+                )
+
             messages = self.imap_service.fetch_emails(
                 host_alias=account,
                 folder=folder,
                 limit=limit,
-                search_criteria=query,
+                search_criteria=normalized_query,
             )
-            return self._format_search_results(messages, query, account)
+            return self._format_search_results(messages, normalized_query, account)
 
         except ValueError as e:
             logger.error("Search error: %s", e)
