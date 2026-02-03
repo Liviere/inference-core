@@ -79,7 +79,7 @@ Arguments:
   - limit (optional): Maximum number of emails to fetch. Default: 10
   - mark_as_read (optional): Whether to mark emails as read. Default: false
 
-Returns structured email data including: subject, sender, date, body preview, attachments info.
+Returns structured email data including: UID, subject, sender, date, body preview, attachments info.
 """
 
     imap_service: Any = Field(exclude=True)
@@ -298,7 +298,7 @@ Arguments:
   - folder (optional): Mailbox folder to search. Default: INBOX
   - limit (optional): Maximum results. Default: 10
 
-Returns list of matching emails with details.
+Returns list of matching emails with details (UID, sender, subject, date).
 """
 
     imap_service: Any = Field(exclude=True)
@@ -377,8 +377,122 @@ Returns list of matching emails with details.
             read_status = "📖" if msg.is_read else "📬"
 
             lines.append(
-                f"{idx}. {read_status} [{msg.uid}] {date_str} | {sender} | {msg.subject[:60]}"
+                f"{idx}. UID: {msg.uid} | {read_status} | {date_str} | {sender} | {msg.subject[:60]}"
             )
+
+        return "\n".join(lines)
+
+
+class GetEmailTool(BaseTool):
+    """Tool for getting full content of a specific email.
+
+    Fetches a single email by UID and returns full details including body.
+    """
+
+    name: str = "get_email"
+    description: str = """Get full content of a specific email by UID.
+Use when you need to read the full body of an email found via search or listing.
+
+Arguments:
+  - uid (required): The UID of the email to fetch (e.g., from search results)
+  - account_name (optional): Email account alias to use
+  - folder (optional): Mailbox folder. Default: INBOX
+
+Returns full email details including headers and body.
+"""
+
+    imap_service: Any = Field(exclude=True)
+    allowed_accounts: Optional[List[str]] = Field(default=None, exclude=True)
+    default_account: Optional[str] = Field(default=None, exclude=True)
+
+    def _run(
+        self,
+        uid: str,
+        account_name: Optional[str] = None,
+        folder: str = "INBOX",
+    ) -> str:
+        try:
+            account = self._resolve_account(account_name)
+
+            # Validate UID is numeric
+            if not uid.isdigit():
+                return f"✗ Invalid UID '{uid}'. UID must be a number."
+
+            # Fetch specific UID
+            messages = self.imap_service.fetch_emails(
+                host_alias=account,
+                folder=folder,
+                limit=1,
+                search_criteria=f"UID {uid}",
+            )
+
+            if not messages:
+                return (
+                    f"✗ Email with UID {uid} not found in {folder} (account: {account})"
+                )
+
+            return self._format_message(messages[0])
+
+        except ValueError as e:
+            logger.error("Get email error: %s", e)
+            return f"✗ {e}"
+        except Exception as e:
+            logger.error("Failed to get email: %s", e, exc_info=True)
+            return f"✗ Failed to get email: {e}"
+
+    async def _arun(
+        self,
+        uid: str,
+        account_name: Optional[str] = None,
+        folder: str = "INBOX",
+    ) -> str:
+        return self._run(uid, account_name, folder)
+
+    def _resolve_account(self, account_name: Optional[str]) -> Optional[str]:
+        """Resolve and validate account access."""
+        account = account_name or self.default_account
+
+        if self.allowed_accounts and account:
+            if account not in self.allowed_accounts:
+                available = ", ".join(self.allowed_accounts)
+                raise ValueError(
+                    f"Account '{account}' not allowed. Available: {available}"
+                )
+
+        return account
+
+    def _format_message(self, msg: Any) -> str:
+        """Format full email message for agent."""
+        lines = [f"--- Email Details [UID: {msg.uid}] ---"]
+
+        date_str = msg.date.strftime("%Y-%m-%d %H:%M:%S") if msg.date else "unknown"
+        sender = (
+            f"{msg.from_name} <{msg.from_address}>"
+            if msg.from_name
+            else msg.from_address
+        )
+        recipients = ", ".join(msg.to_addresses)
+
+        lines.append(f"Subject: {msg.subject}")
+        lines.append(f"Date: {date_str}")
+        lines.append(f"From: {sender}")
+        lines.append(f"To: {recipients}")
+
+        if msg.cc_addresses:
+            lines.append(f"CC: {', '.join(msg.cc_addresses)}")
+
+        if msg.is_read:
+            lines.append("Status: Read")
+        else:
+            lines.append("Status: Unread")
+
+        if msg.has_attachments:
+            att_list = ", ".join(msg.attachment_names)
+            lines.append(f"Attachments: {att_list}")
+
+        lines.append("-" * 30)
+        lines.append("Body:")
+        lines.append(msg.body_text)
 
         return "\n".join(lines)
 
@@ -703,6 +817,13 @@ def get_email_tools(
                 default_account=default_account,
             )
         )
+        tools.append(
+            GetEmailTool(
+                imap_service=imap_service,
+                allowed_accounts=allowed_accounts,
+                default_account=default_account,
+            )
+        )
 
     # Add SMTP tool if service available
     if email_service:
@@ -759,6 +880,13 @@ Fetch unread emails from a mailbox.
 - Reviewing inbox at start of conversation
 - Monitoring for important messages
 
+### get_email
+Get full content of a specific email by UID.
+**When to use:**
+- Reading the full body of an email found via search
+- When you need details not shown in the summary list
+- Retrieving attachments info and full headers
+
 ### search_emails
 Search emails by various criteria.
 **When to use:**
@@ -803,6 +931,7 @@ Quickly analyze email content.
 __all__ = [
     "ReadUnseenEmailsTool",
     "SearchEmailsTool",
+    "GetEmailTool",
     "SendEmailTool",
     "SummarizeEmailTool",
     "ListEmailAccountsTool",
