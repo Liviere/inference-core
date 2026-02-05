@@ -9,6 +9,7 @@ Central index of project documentation
 | Quickstart & Overview              | Entry point for newcomers                   | `../README.md`                       |
 | Configuration Reference            | All environment variables grouped by domain | `configuration.md`                   |
 | LLM Configuration                  | Reference for `llm_config.yaml`             | `llm_config_summary.md`              |
+| Dynamic & DB Configuration         | DB overrides & user-specific preferences    | `dynamic-configuration.md`           |
 | Repository Structure Snapshot      | Auto/Manual snapshot of directories         | `structure.md`                       |
 | Custom Prompts (Jinja2)            | How to add your own prompt templates        | `custom-prompts.md`                  |
 | LangChain Agents                   | YAML-configured agents, tools, middleware   | `agents.md`                          |

@@ -6,6 +6,7 @@
 
 - **YAML loader:** `inference_core/llm/config.py` → `LLMConfig._load_config()` (path: `repo_root/llm_config.yaml`).
 - **Singleton:** `get_llm_config()` creates a global `LLMConfig` object (module-level `llm_config`) and returns it to consumers.
+- **Dynamic Resolution:** `LLMConfigService` merges YAML config with database-backed overrides (Admin/User). See [Dynamic Configuration](dynamic-configuration.md) for details.
 - **Fallback:** when the file is missing or YAML parsing fails, `_load_fallback_config()` is used to set default models and settings.
 
 **YAML sections → what they configure**

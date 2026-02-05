@@ -136,6 +136,15 @@ Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be config
 | `SMTP_O365_USERNAME`    | (none)                | Office 365 username     |
 | `SMTP_O365_PASSWORD`    | (none)                | Office 365 password     |
 
+## Dynamic Configuration Overrides
+
+In addition to environment variables and YAML files, this project supports dynamic overrides stored in the database.
+
+- **Admin Overrides**: Global or scoped system changes managed by administrators.
+- **User Preferences**: Per-user configuration for models and tasks (subject to allowlist constraints).
+
+For detailed information on how these layers interact and how to manage them via API, see [Dynamic LLM Configuration](dynamic-configuration.md).
+
 ## Notes
 
 - Restrict `CORS_ORIGINS` & set explicit `ALLOWED_HOSTS` in production.
