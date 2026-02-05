@@ -32,7 +32,11 @@ def public_access_client():
 
     # Override auth dependencies to allow public access
     async def override_no_auth():
-        return {"id": "public-user", "username": "public", "is_superuser": True}
+        return {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "username": "public",
+            "is_superuser": True,
+        }
 
     # Override both user and superuser dependencies to allow access
     app.dependency_overrides[get_current_active_user] = override_no_auth
@@ -51,7 +55,11 @@ async def public_access_async_client():
 
     # Override auth dependencies to allow public access
     async def override_no_auth():
-        return {"id": "public-user", "username": "public", "is_superuser": True}
+        return {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "username": "public",
+            "is_superuser": True,
+        }
 
     # Override both user and superuser dependencies to allow access
     app.dependency_overrides[get_current_active_user] = override_no_auth
