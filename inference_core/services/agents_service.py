@@ -27,8 +27,8 @@ from inference_core.agents.tools.memory_tools import (
     get_memory_tools,
 )
 from inference_core.core.config import get_settings
-from inference_core.llm.config import get_llm_config
-from inference_core.llm.models import get_model_factory
+from inference_core.llm.config import LLMConfig, get_llm_config
+from inference_core.llm.models import LLMModelFactory, get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 from inference_core.services.agent_memory_service import AgentMemoryStoreService
 
@@ -72,6 +72,7 @@ class AgentService:
         user_id: Optional[uuid.UUID] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
+        config: Optional[LLMConfig] = None,
     ):
         """Initialize the AgentService.
 
@@ -90,10 +91,17 @@ class AgentService:
             user_id: Optional user ID for cost tracking and memory attribution.
             session_id: Optional session ID for grouping related requests.
             request_id: Optional correlation ID (e.g., Celery task ID).
+            config: Optional LLMConfig instance with overrides (e.g. user preferences).
         """
         # Model and tools setup
         self.agent_name = agent_name
-        self.model_factory = get_model_factory()
+        self.config = config
+
+        if self.config:
+            self.model_factory = LLMModelFactory(self.config)
+        else:
+            self.model_factory = get_model_factory()
+
         self.agent_config = self.model_factory.config.get_specific_agent_config(
             agent_name
         )

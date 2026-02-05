@@ -1119,6 +1119,7 @@ class LLMConfig:
         self,
         model_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         task_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+        agent_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         global_overrides: Optional[Dict[str, Any]] = None,
     ) -> "LLMConfig":
         """
@@ -1131,6 +1132,7 @@ class LLMConfig:
         Args:
             model_overrides: Dict of model_name -> {param: value} overrides
             task_overrides: Dict of task_name -> {param: value} overrides
+            agent_overrides: Dict of agent_name -> {param: value} overrides
             global_overrides: Dict of global param overrides (default_timeout, etc.)
 
         Returns:
@@ -1147,6 +1149,10 @@ class LLMConfig:
         new_config.task_models = dict(self.task_models)
         new_config.task_configs = {
             name: copy.deepcopy(config) for name, config in self.task_configs.items()
+        }
+        new_config.agent_models = dict(self.agent_models)
+        new_config.agent_configs = {
+            name: copy.deepcopy(config) for name, config in self.agent_configs.items()
         }
 
         # Apply model overrides
@@ -1171,6 +1177,20 @@ class LLMConfig:
                     for key, value in overrides.items():
                         if hasattr(task_cfg, key):
                             setattr(task_cfg, key, value)
+
+        # Apply agent overrides
+        if agent_overrides:
+            for agent_name, overrides in agent_overrides.items():
+                # Update agent_models (primary model)
+                if "primary" in overrides:
+                    new_config.agent_models[agent_name] = overrides["primary"]
+
+                # Update agent_configs
+                if agent_name in new_config.agent_configs:
+                    agent_cfg = new_config.agent_configs[agent_name]
+                    for key, value in overrides.items():
+                        if hasattr(agent_cfg, key):
+                            setattr(agent_cfg, key, value)
 
         # Apply global overrides
         if global_overrides:

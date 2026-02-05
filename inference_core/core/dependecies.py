@@ -274,3 +274,24 @@ async def get_effective_model_params_dependency(
         model_name=model_name,
         task_type=task_type,
     )
+
+
+async def get_configured_llm_config_dependency(
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get LLMConfig instance with all overrides applied for the current user.
+
+    WHY: For passing to services (like AgentService) that need user-specific config.
+    Returns:
+        LLMConfig: A new config instance with user/admin overrides merged in.
+    """
+
+    service = LLMConfigService(db)
+
+    user_id = None
+    if current_user:
+        user_id = UUID(current_user["id"])
+
+    return await service.get_config_with_overrides(user_id=user_id)

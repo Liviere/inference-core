@@ -316,6 +316,16 @@ class ResolvedTaskConfig(BaseModel):
     default_params: Optional[Dict[str, Any]] = None
 
 
+class ResolvedAgentConfig(BaseModel):
+    """Resolved configuration for a specific agent."""
+
+    primary_model: str
+    fallback_models: Optional[List[str]] = None
+    allowed_tools: Optional[List[str]] = None
+    mcp_profile: Optional[str] = None
+    description: Optional[str] = None
+
+
 class ResolvedConfigResponse(BaseModel):
     """
     Full resolved configuration for a user.
@@ -340,6 +350,12 @@ class ResolvedConfigResponse(BaseModel):
     tasks: Dict[str, ResolvedTaskConfig] = Field(
         default_factory=dict,
         description="Resolved task configurations",
+    )
+
+    # Agent configurations
+    agents: Dict[str, ResolvedAgentConfig] = Field(
+        default_factory=dict,
+        description="Resolved agent configurations",
     )
 
     # User's effective default settings
@@ -394,6 +410,9 @@ class AvailableOptionsResponse(BaseModel):
         ..., description="Models the user can select as defaults"
     )
     available_tasks: List[str] = Field(..., description="Tasks that can be configured")
+    available_agents: List[str] = Field(
+        ..., description="Agents that can be configured"
+    )
 
 
 class ConfigValidationError(BaseModel):
