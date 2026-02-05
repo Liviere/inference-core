@@ -550,21 +550,21 @@ class LLMConfigService:
 
         # Build available models list (from YAML, filtered by admin)
         available_models = list(base.models.keys())
+        sources: Dict[str, str] = {}
 
         # Apply admin global model overrides (full replacement)
         if "models" in admin_overrides["global"]:
             available_models = list(admin_overrides["global"]["models"].keys())
             sources["available_models"] = "admin"
-        else:
-            # Apply admin global disables
-            if "disabled_models" in admin_overrides["global"]:
-                disabled = admin_overrides["global"]["disabled_models"].get("value", [])
-                available_models = [m for m in available_models if m not in disabled]
-                sources["available_models"] = "admin"
+
+        # Apply admin global disables
+        elif "disabled_models" in admin_overrides["global"]:
+            disabled = admin_overrides["global"]["disabled_models"].get("value", [])
+            available_models = [m for m in available_models if m not in disabled]
+            sources["available_models"] = "admin"
 
         # Build task configs
         tasks: Dict[str, ResolvedTaskConfig] = {}
-        sources: Dict[str, str] = {}
 
         for task_name, task_config in base.task_configs.items():
             primary = task_config.primary
