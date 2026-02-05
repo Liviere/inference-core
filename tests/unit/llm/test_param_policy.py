@@ -45,6 +45,7 @@ class TestPoliciesDefinition:
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
+            ModelProvider.OLLAMA,
         }
 
         assert set(POLICIES.keys()) == expected_providers
@@ -285,6 +286,7 @@ class TestGetSupportedProviders:
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
+            ModelProvider.OLLAMA,
         }
 
         assert providers == expected
