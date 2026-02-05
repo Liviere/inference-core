@@ -816,9 +816,6 @@ class LLMConfigService:
                     admin_overrides["agent"][ag_name].update(overrides)
 
         # Construct overrides dicts from admin_overrides (which now includes merged user agent prefs)
-        # Note: In a full implementation, we should be more careful about priority (user vs admin).
-        # Here we mashed them together, but ideally we pass them separately if with_overrides supported it.
-        # But with_overrides takes dictionaries. We can construct them.
 
         final_agent_overrides = copy.deepcopy(admin_overrides.get("agent", {}))
 
