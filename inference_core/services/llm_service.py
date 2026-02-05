@@ -26,8 +26,9 @@ from inference_core.llm.chains import create_chat_chain, create_completion_chain
 from inference_core.llm.config import get_llm_config
 from inference_core.llm.mcp_tools import get_mcp_tool_manager
 from inference_core.llm.models import get_model_factory, task_override
-from inference_core.llm.prompts import ChatPrompts, render_custom_mcp_instructions
+from inference_core.llm.prompts import render_custom_mcp_instructions
 from inference_core.llm.usage_logging import UsageLogger
+from inference_core.services.llm_config_service import LLMConfigService
 from inference_core.services.llm_usage_service import get_llm_usage_service
 
 logger = logging.getLogger(__name__)
@@ -475,6 +476,65 @@ class LLMService:
         base.update(runtime_params)
         return base
 
+    async def _merge_params_with_user_prefs(
+        self,
+        task: str,
+        model_name: str,
+        runtime_params: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Merge parameters with user preferences from database.
+
+        WHY: Enables user-specific configuration (temperature, max_tokens, etc.)
+        stored in the database to be applied to LLM calls.
+
+        Resolution order (later wins):
+        1. YAML model defaults
+        2. Admin DB overrides
+        3. User preferences
+        4. Runtime params (from API request)
+
+        Args:
+            task: Task type (e.g., 'chat', 'completion')
+            model_name: Resolved model name
+            runtime_params: Parameters from the API request
+            user_id: Optional user ID for preference lookup
+
+        Returns:
+            Merged parameters dictionary
+        """
+        # Start with base params
+        base = self._merge_params(task, runtime_params)
+
+        # If no user_id, return base params
+        if not user_id:
+            return base
+
+        try:
+            from inference_core.database.sql.connection import get_async_session
+
+            async with get_async_session() as db:
+                config_service = LLMConfigService(db)
+                user_params = await config_service.get_effective_model_params(
+                    user_id=uuid.UUID(user_id),
+                    model_name=model_name,
+                    task_type=task,
+                )
+
+                # Resolution order (later wins): YAML defaults < admin (DB) overrides < runtime parameters.
+                # Therefore runtime parameters should take precedence over user_params from the DB.
+                final_params = dict(user_params)
+                final_params.update(base)
+                return final_params
+
+        except Exception as e:
+            # Fail-open: if we can't get user prefs, use base params
+            logger.warning(
+                f"Failed to load user preferences for user_id={user_id}: {e}"
+            )
+            return base
+
     def _build_completion_chain(
         self,
         *,
@@ -661,7 +721,10 @@ class LLMService:
                 }.items()
                 if v is not None
             }
-            model_params = self._merge_params(effective_task, runtime_params)
+            # Merge with user preferences from DB (if user_id provided)
+            model_params = await self._merge_params_with_user_prefs(
+                effective_task, resolved_model_name, runtime_params, user_id
+            )
             # Use factory hook (supports prompt overrides)
             with task_override(effective_task):
                 chain = self._build_completion_chain(
@@ -817,7 +880,10 @@ class LLMService:
                 }.items()
                 if v is not None
             }
-            model_params = self._merge_params(effective_task, runtime_params)
+            # Merge with user preferences from DB (if user_id provided)
+            model_params = await self._merge_params_with_user_prefs(
+                effective_task, resolved_model_name, runtime_params, user_id
+            )
 
             # Check for MCP tooling context
             # Pass user_id into tooling context so local providers can scope tools.
@@ -965,7 +1031,7 @@ class LLMService:
         )
 
         try:
-            # Build model parameters
+            # Build model parameters from request
             model_params: Dict[str, Any] = {}
             if temperature is not None:
                 model_params["temperature"] = temperature
@@ -983,8 +1049,13 @@ class LLMService:
                 model_params["reasoning_effort"] = reasoning_effort
             if verbosity is not None:
                 model_params["verbosity"] = verbosity
-            # Merge with defaults for task
-            model_params = self._merge_params(effective_task, model_params)
+
+            # Resolve model name for user prefs lookup
+            resolved_model = self._effective_model_name(effective_task, model_name)
+            # Merge with user preferences from DB (if user_id provided)
+            model_params = await self._merge_params_with_user_prefs(
+                effective_task, resolved_model, model_params, user_id
+            )
 
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):
@@ -1071,7 +1142,7 @@ class LLMService:
         )
 
         try:
-            # Build model parameters
+            # Build model parameters from request
             model_params: Dict[str, Any] = {}
             if temperature is not None:
                 model_params["temperature"] = temperature
@@ -1089,8 +1160,13 @@ class LLMService:
                 model_params["reasoning_effort"] = reasoning_effort
             if verbosity is not None:
                 model_params["verbosity"] = verbosity
-            # Merge with defaults for task
-            model_params = self._merge_params(effective_task, model_params)
+
+            # Resolve model name for user prefs lookup
+            resolved_model = self._effective_model_name(effective_task, model_name)
+            # Merge with user preferences from DB (if user_id provided)
+            model_params = await self._merge_params_with_user_prefs(
+                effective_task, resolved_model, model_params, user_id
+            )
 
             # Map request_timeout to factory's expected 'timeout'
             if model_name and model_name.startswith("gpt-5"):

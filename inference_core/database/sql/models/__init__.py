@@ -7,6 +7,13 @@ registered with SQLAlchemy metadata for table creation.
 
 # Import all models here so SQLAlchemy can discover them
 from .batch import BatchEvent, BatchItem, BatchJob
+from .llm_config import (
+    AllowedUserOverride,
+    ConfigScope,
+    LLMConfigOverride,
+    UserLLMPreference,
+    UserLLMPreferenceType,
+)
 from .llm_request_log import LLMRequestLog
 from .pricing_snapshot import LLMPricingSnapshot
 from .user import User
@@ -19,4 +26,10 @@ __all__ = [
     "BatchEvent",
     "LLMRequestLog",
     "LLMPricingSnapshot",
+    # LLM Config models
+    "LLMConfigOverride",
+    "UserLLMPreference",
+    "AllowedUserOverride",
+    "ConfigScope",
+    "UserLLMPreferenceType",
 ]

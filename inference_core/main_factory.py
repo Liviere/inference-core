@@ -9,7 +9,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api.v1.routes import auth, batch, health, llm, metrics, tasks, vector
+from .api.v1.routes import auth, batch, config, health, llm, metrics, tasks, vector
 from .core.config import Settings, get_settings
 from .core.dependecies import get_current_active_user, get_current_superuser
 from .core.lifecycle import init_resources, shutdown_resources
@@ -223,6 +223,7 @@ def setup_routers(
     api_v1.include_router(auth.router)
     api_v1.include_router(tasks.router)
     api_v1.include_router(llm.router)
+    api_v1.include_router(config.router)  # LLM configuration management
     # Apply same access control to batch endpoints (public/user/superuser) derived from settings
     api_v1.include_router(batch.router, dependencies=_llm_deps_for_settings())
 

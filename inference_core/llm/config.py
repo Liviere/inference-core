@@ -5,6 +5,7 @@ Handles configuration for different LLM models and providers.
 Supports OpenAI-compatible endpoints including open source models.
 """
 
+import copy
 import logging
 import os
 from enum import Enum
@@ -1113,6 +1114,71 @@ class LLMConfig:
     def get_specific_agent_config(self, agent_name: str) -> Optional[AgentConfig]:
         """Get full configuration for a specific agent"""
         return self.agent_configs.get(agent_name)
+
+    def with_overrides(
+        self,
+        model_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+        task_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+        global_overrides: Optional[Dict[str, Any]] = None,
+    ) -> "LLMConfig":
+        """
+        Create a new LLMConfig instance with applied overrides.
+
+        WHY: Enables creating user-specific config without modifying the global
+        singleton. Used by LLMConfigService to apply DB overrides and user
+        preferences at request time.
+
+        Args:
+            model_overrides: Dict of model_name -> {param: value} overrides
+            task_overrides: Dict of task_name -> {param: value} overrides
+            global_overrides: Dict of global param overrides (default_timeout, etc.)
+
+        Returns:
+            New LLMConfig instance with overrides applied
+        """
+
+        # Create a shallow copy of self
+        new_config = copy.copy(self)
+
+        # Deep copy mutable structures we'll modify
+        new_config.models = {
+            name: copy.deepcopy(config) for name, config in self.models.items()
+        }
+        new_config.task_models = dict(self.task_models)
+        new_config.task_configs = {
+            name: copy.deepcopy(config) for name, config in self.task_configs.items()
+        }
+
+        # Apply model overrides
+        if model_overrides:
+            for model_name, overrides in model_overrides.items():
+                if model_name in new_config.models:
+                    model = new_config.models[model_name]
+                    for key, value in overrides.items():
+                        if hasattr(model, key):
+                            setattr(model, key, value)
+
+        # Apply task overrides
+        if task_overrides:
+            for task_name, overrides in task_overrides.items():
+                # Update task_models (primary model)
+                if "primary" in overrides:
+                    new_config.task_models[task_name] = overrides["primary"]
+
+                # Update task_configs
+                if task_name in new_config.task_configs:
+                    task_cfg = new_config.task_configs[task_name]
+                    for key, value in overrides.items():
+                        if hasattr(task_cfg, key):
+                            setattr(task_cfg, key, value)
+
+        # Apply global overrides
+        if global_overrides:
+            for key, value in global_overrides.items():
+                if hasattr(new_config, key):
+                    setattr(new_config, key, value)
+
+        return new_config
 
 
 def get_llm_config() -> LLMConfig:

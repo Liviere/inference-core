@@ -6,6 +6,7 @@ authentication, pagination, and other shared functionality.
 """
 
 from typing import AsyncGenerator, List, Optional
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -16,6 +17,7 @@ from inference_core.core.security import get_current_user_token, security_manage
 from inference_core.database.sql.connection import get_async_session
 from inference_core.database.sql.models.user import User
 from inference_core.schemas.auth import TokenData
+from inference_core.services.llm_config_service import LLMConfigService
 
 
 class CommonQueryParams:
@@ -202,3 +204,73 @@ def get_llm_router_dependencies() -> List[Depends]:
     else:
         # This should not happen due to Literal typing, but handle gracefully
         return [Depends(get_current_superuser)]
+
+
+# =========================================================
+# LLM Config Dependencies
+# =========================================================
+
+
+async def get_llm_config_service(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Dependency to get LLMConfigService instance.
+
+    WHY: Provides database-aware config service for resolving
+    dynamic configuration (admin overrides + user preferences).
+    """
+
+    return LLMConfigService(db)
+
+
+async def get_user_resolved_config(
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Dependency to get resolved LLM configuration for current user.
+
+    WHY: Used in LLM routes to get effective configuration that merges
+    YAML base → admin overrides → user preferences.
+
+    Returns:
+        ResolvedConfigResponse for authenticated user, or base config for anonymous.
+    """
+    from uuid import UUID
+
+    from inference_core.services.llm_config_service import LLMConfigService
+
+    service = LLMConfigService(db)
+
+    user_id = None
+    if current_user:
+        user_id = UUID(current_user["id"])
+
+    return await service.get_resolved_config(user_id=user_id)
+
+
+async def get_effective_model_params_dependency(
+    model_name: str,
+    task_type: Optional[str] = None,
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Dependency to get effective model parameters for a specific request.
+
+    WHY: Used by LLMService when making actual LLM calls to apply
+    user preferences and admin overrides to model parameters.
+    """
+
+    service = LLMConfigService(db)
+
+    user_id = None
+    if current_user:
+        user_id = UUID(current_user["id"])
+
+    return await service.get_effective_model_params(
+        user_id=user_id,
+        model_name=model_name,
+        task_type=task_type,
+    )
