@@ -747,12 +747,23 @@ class LLMConfigService:
         allowed = await self.get_allowed_overrides(active_only=True)
         resolved = await self.get_resolved_config(user_id)
 
-        return AvailableOptionsResponse(
-            options=[
+        options = []
+        for a in allowed:
+            constraints = a.constraints.copy() if a.constraints else None
+            # Populate allowed_values for select constraints that need dynamic values
+            if (
+                a.config_key == "default_model"
+                and constraints
+                and constraints.get("type") == "select"
+                and "allowed_values" not in constraints
+            ):
+                constraints["allowed_values"] = resolved.available_models
+
+            options.append(
                 AllowedOverrideResponse(
                     id=a.id,
                     config_key=a.config_key,
-                    constraints=a.constraints,
+                    constraints=constraints,
                     allowed_scopes=(
                         a.allowed_scopes.get("scopes") if a.allowed_scopes else None
                     ),
@@ -762,8 +773,10 @@ class LLMConfigService:
                     created_at=a.created_at,
                     updated_at=a.updated_at,
                 )
-                for a in allowed
-            ],
+            )
+
+        return AvailableOptionsResponse(
+            options=options,
             available_models=resolved.available_models,
             available_tasks=list(resolved.tasks.keys()),
             available_agents=list(resolved.agents.keys()),
