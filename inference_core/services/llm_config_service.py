@@ -158,7 +158,7 @@ class LLMConfigService:
             # Exclude expired overrides
             conditions.append(
                 or_(
-                    LLMConfigOverride.expires_at is None,
+                    LLMConfigOverride.expires_at.is_(None),
                     LLMConfigOverride.expires_at > datetime.now(UTC),
                 )
             )
@@ -173,6 +173,7 @@ class LLMConfigService:
             .where(and_(*conditions))
             .order_by(LLMConfigOverride.priority.desc())
         )
+        query_debug = str(stmt.compile(compile_kwargs={"literal_binds": True}))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
@@ -550,10 +551,16 @@ class LLMConfigService:
         # Build available models list (from YAML, filtered by admin)
         available_models = list(base.models.keys())
 
-        # Apply admin global disables
-        if "disabled_models" in admin_overrides["global"]:
-            disabled = admin_overrides["global"]["disabled_models"].get("value", [])
-            available_models = [m for m in available_models if m not in disabled]
+        # Apply admin global model overrides (full replacement)
+        if "models" in admin_overrides["global"]:
+            available_models = list(admin_overrides["global"]["models"].keys())
+            sources["available_models"] = "admin"
+        else:
+            # Apply admin global disables
+            if "disabled_models" in admin_overrides["global"]:
+                disabled = admin_overrides["global"]["disabled_models"].get("value", [])
+                available_models = [m for m in available_models if m not in disabled]
+                sources["available_models"] = "admin"
 
         # Build task configs
         tasks: Dict[str, ResolvedTaskConfig] = {}
