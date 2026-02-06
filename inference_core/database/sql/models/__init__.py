@@ -17,6 +17,7 @@ from .llm_config import (
 from .llm_request_log import LLMRequestLog
 from .pricing_snapshot import LLMPricingSnapshot
 from .user import User
+from .user_agent_instance import UserAgentInstance
 
 # Export all models for easy importing
 __all__ = [
@@ -32,4 +33,6 @@ __all__ = [
     "AllowedUserOverride",
     "ConfigScope",
     "UserLLMPreferenceType",
+    # User Agent Instance
+    "UserAgentInstance",
 ]
