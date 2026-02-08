@@ -451,17 +451,27 @@ class ImapService:
 
         if msg.is_multipart():
             for part in msg.walk():
-                content_type = part.get_content_type()
-                disposition = part.get_content_disposition()
+                # skip multipart container parts
+                if part.is_multipart():
+                    continue
 
+                content_type = part.get_content_type()
+                disposition = str(part.get_content_disposition() or "").lower()
+
+                # Some email clients put the body in 'inline' disposition
                 if disposition == "attachment":
                     continue
 
-                if content_type == "text/plain" and not body_text:
-                    body_text = self._decode_payload(part)
-                elif content_type == "text/html" and not body_html:
-                    body_html = self._decode_payload(part)
+                if content_type == "text/plain":
+                    text = self._decode_payload(part)
+                    if text and not body_text:
+                        body_text = text
+                elif content_type == "text/html":
+                    html = self._decode_payload(part)
+                    if html and not body_html:
+                        body_html = html
         else:
+            # Single part message
             content_type = msg.get_content_type()
             payload = self._decode_payload(msg)
             if content_type == "text/html":
@@ -469,19 +479,73 @@ class ImapService:
             else:
                 body_text = payload
 
+        # Final check 1: if is_multipart was True but no sub-parts were processed
+        # (e.g. broken boundary parsing), try to decode the whole message as a fallback
+        if msg.is_multipart() and not body_text and not body_html:
+            fallback_payload = self._decode_payload(msg)
+            if fallback_payload:
+                if (
+                    "<html>" in fallback_payload.lower()
+                    or "<body>" in fallback_payload.lower()
+                ):
+                    body_html = fallback_payload
+                else:
+                    body_text = fallback_payload
+
+        # Final check 2: if we have HTML but no text, try to generate text from HTML
+        if not body_text.strip() and body_html:
+            try:
+                import re
+
+                # Very simple HTML to text conversion for LLM consumption
+                text = re.sub(
+                    r"<(script|style)[^>]*>.*?</\1>",
+                    "",
+                    body_html,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+                text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+                text = re.sub(
+                    r"</(p|div|h1|h2|h3|h4|h5|h6)>", "\n", text, flags=re.IGNORECASE
+                )
+                text = re.sub(r"<[^>]+>", "", text)
+                # Decode HTML entities (basic)
+                from html import unescape
+
+                body_text = unescape(text).strip()
+            except Exception as e:
+                logger.warning("Failed to convert HTML to text: %s", e)
+
         return body_text, body_html
 
     def _decode_payload(self, part: Message) -> str:
         """Decode message payload with charset handling."""
-        payload = part.get_payload(decode=True)
-        if not payload:
-            return ""
-
-        charset = part.get_content_charset() or "utf-8"
         try:
-            return payload.decode(charset, errors="replace")
-        except (LookupError, UnicodeDecodeError):
-            return payload.decode("utf-8", errors="replace")
+            # get_payload(decode=True) handles Content-Transfer-Encoding (base64, etc.)
+            payload = part.get_payload(decode=True)
+
+            if payload is None:
+                # This can happen if it's a multipart part or parsing failed
+                raw_payload = part.get_payload()
+                if isinstance(raw_payload, list):
+                    return ""  # It's a multipart container
+                return str(raw_payload) if raw_payload else ""
+
+            if isinstance(payload, str):
+                return payload
+
+            # At this point payload is bytes, need to decode using charset
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                return payload.decode(charset, errors="replace")
+            except (LookupError, UnicodeDecodeError):
+                # Fallback to utf-8 if specified charset fails
+                return payload.decode("utf-8", errors="replace")
+        except Exception as e:
+            logger.warning(
+                "Failed to decode payload for part %s: %s", part.get_content_type(), e
+            )
+            return ""
 
     def _decode_header(self, value: str) -> str:
         """Decode MIME-encoded header value."""
