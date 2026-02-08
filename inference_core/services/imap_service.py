@@ -367,7 +367,7 @@ class ImapService:
         self, conn: ImapConnection, uid: bytes, folder: str
     ) -> Optional[EmailMessage]:
         """Fetch and parse a single message by UID."""
-        typ, data = conn._connection.uid("FETCH", uid, "(RFC822)")
+        typ, data = conn._connection.uid("FETCH", uid, "(BODY.PEEK[])")
         if typ != "OK" or not data or not data[0]:
             return None
 
