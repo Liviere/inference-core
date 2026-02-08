@@ -13,6 +13,7 @@ This service complements EmailService (SMTP) for bidirectional email operations.
 import email
 import imaplib
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.header import decode_header, make_header
@@ -495,8 +496,6 @@ class ImapService:
         # Final check 2: if we have HTML but no text, try to generate text from HTML
         if not body_text.strip() and body_html:
             try:
-                import re
-
                 # Very simple HTML to text conversion for LLM consumption
                 text = re.sub(
                     r"<(script|style)[^>]*>.*?</\1>",
