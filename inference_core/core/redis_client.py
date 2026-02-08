@@ -4,8 +4,6 @@ Async Redis client
 Provides a shared, lazily-initialized Async Redis connection for the inference_core.
 """
 
-from __future__ import annotations
-
 from functools import lru_cache
 
 import redis

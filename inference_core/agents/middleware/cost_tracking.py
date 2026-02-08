@@ -31,8 +31,6 @@ Source references:
   - Custom state schema pattern from LangChain middleware documentation
 """
 
-from __future__ import annotations
-
 import logging
 import time
 import uuid

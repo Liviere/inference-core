@@ -4,8 +4,6 @@ Refresh token session store (Redis)
 Stores refresh token sessions keyed by a token ID (jti), with TTL matching token expiry.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from typing import Optional
 

@@ -31,8 +31,6 @@ Source references:
   - Context engineering: https://docs.langchain.com/oss/python/langchain/context-engineering
 """
 
-from __future__ import annotations
-
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional

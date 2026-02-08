@@ -28,15 +28,13 @@ Source references:
   - OpenAI / Anthropic chat model `llm_output.token_usage` pattern
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, Dict, Optional
 
 from langchain_core.callbacks import BaseCallbackHandler, UsageMetadataCallbackHandler
 
 from .config import PricingConfig
-from .usage_logging import UsageNormalizer, UsageSession
+from .usage_logging import UsageSession
 
 logger = logging.getLogger(__name__)
 

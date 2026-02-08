@@ -21,8 +21,6 @@ WHY this module exists:
   3. `get_current_loop()` - get the appropriate loop for the current context
 """
 
-from __future__ import annotations
-
 import asyncio
 import concurrent.futures
 import contextvars

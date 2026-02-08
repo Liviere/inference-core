@@ -5,8 +5,6 @@ and exposes a sync `_run` path so it can be used in sync agent executions. The
 async `_arun` is implemented via a thread executor for parity.
 """
 
-from __future__ import annotations
-
 import asyncio
 import concurrent.futures
 import logging

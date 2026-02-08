@@ -7,8 +7,6 @@ YAML base → Admin DB overrides → User preferences.
 Uses Redis for caching resolved configurations to minimize DB queries.
 """
 
-from __future__ import annotations
-
 import copy
 import json
 import logging

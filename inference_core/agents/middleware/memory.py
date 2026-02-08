@@ -32,8 +32,6 @@ Source references:
   - LangChain v1 middleware docs: context-engineering, long-term-memory, custom
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from dataclasses import dataclass, field

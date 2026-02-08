@@ -11,8 +11,6 @@ startup / shutdown. Consolidating this logic here avoids duplication and
 keeps `main_factory` focused on assembling the ASGI app.
 """
 
-from __future__ import annotations
-
 import inspect
 import logging
 from typing import Any, Dict

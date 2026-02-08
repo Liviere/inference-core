@@ -4,8 +4,6 @@ for each task in llm_config.yaml. These tests will be skipped if the configured
 models are not available (e.g., missing API keys).
 """
 
-from __future__ import annotations
-
 import os
 import re
 from pathlib import Path

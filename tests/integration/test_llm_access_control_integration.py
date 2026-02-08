@@ -5,8 +5,6 @@ This module tests the actual behavior of LLM endpoints under different
 access control modes, including authentication requirements and HTTP responses.
 """
 
-from __future__ import annotations
-
 from unittest.mock import patch
 
 import pytest

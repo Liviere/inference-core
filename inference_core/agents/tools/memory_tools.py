@@ -8,8 +8,6 @@ Uses run_async_safely() to reuse the Celery worker loop when available,
 avoiding creation of conflicting event loops in nested tool calls.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, List, Optional
 

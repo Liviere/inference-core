@@ -5,8 +5,6 @@ CRUD service for managing user-created agent configuration instances.
 Handles validation, default management, and template listing.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID

@@ -5,8 +5,6 @@ End-to-end tests: FastAPI API -> Celery task submission -> Task result retrieval
 - Stubs LLM chains to avoid network calls.
 """
 
-from __future__ import annotations
-
 import re
 import types
 from typing import Any, Dict, Optional

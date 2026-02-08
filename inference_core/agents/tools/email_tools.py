@@ -10,10 +10,7 @@ Tools:
 - SendEmailTool: Compose and send emails
 - SummarizeEmailTool: Summarize email content using LLM
 
-Uses run_async_safely() for Celery worker compatibility.
 """
-
-from __future__ import annotations
 
 import logging
 from enum import Enum
@@ -21,8 +18,6 @@ from typing import TYPE_CHECKING, Any, List, Optional
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
-
-from inference_core.celery.async_utils import run_async_safely
 
 if TYPE_CHECKING:
     from inference_core.services.email_service import EmailService
