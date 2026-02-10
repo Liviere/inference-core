@@ -13,6 +13,7 @@ from fastapi.security import HTTPBearer
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.api.v1.shared import get_iso_timestamp
 from inference_core.core.config import Settings, get_settings
 from inference_core.core.dependecies import get_current_active_user, get_db
 from inference_core.core.security import (
@@ -269,7 +270,7 @@ async def change_password(
     return SuccessResponse(
         success=True,
         message="Password changed successfully",
-        timestamp=str(datetime.now(UTC).isoformat()),
+        timestamp=get_iso_timestamp(),
     )
 
 
@@ -295,7 +296,7 @@ async def forgot_password(
     return SuccessResponse(
         success=True,
         message="Password reset instructions sent to email",
-        timestamp=str(datetime.now(UTC).isoformat()),
+        timestamp=get_iso_timestamp(),
     )
 
 
@@ -332,7 +333,7 @@ async def reset_password(
     return SuccessResponse(
         success=True,
         message="Password reset successfully",
-        timestamp=str(datetime.now(UTC).isoformat()),
+        timestamp=get_iso_timestamp(),
     )
 
 
@@ -488,7 +489,7 @@ async def logout(
     return SuccessResponse(
         success=True,
         message="Logged out successfully",
-        timestamp=str(datetime.now(UTC).isoformat()),
+        timestamp=get_iso_timestamp(),
     )
 
 
@@ -514,7 +515,7 @@ async def request_verification_email(
     return SuccessResponse(
         success=True,
         message="Verification email sent if account exists",
-        timestamp=str(datetime.now(UTC).isoformat()),
+        timestamp=get_iso_timestamp(),
     )
 
 
@@ -549,5 +550,5 @@ async def verify_email(
     return SuccessResponse(
         success=True,
         message="Email verified successfully",
-        timestamp=str(datetime.now(UTC).isoformat()),
+        timestamp=get_iso_timestamp(),
     )

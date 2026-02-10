@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.api.v1.shared import get_user_id_from_context
 from inference_core.core.dependecies import (
     get_current_active_user,
     get_db,
@@ -88,7 +89,7 @@ async def list_agent_instances(
 
     Returns active instances by default. Set include_inactive=True to see all.
     """
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     service = get_user_agent_instance_service(db, llm_config_service)
 
     instances = await service.list_instances(
@@ -120,7 +121,7 @@ async def create_agent_instance(
     The instance is based on a base agent template (from YAML config)
     and can override model, system prompt, tools, and other parameters.
     """
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     service = get_user_agent_instance_service(db, llm_config_service)
 
     try:
@@ -157,7 +158,7 @@ async def get_agent_instance(
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
     """Get details of a specific agent instance."""
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     service = get_user_agent_instance_service(db, llm_config_service)
 
     instance = await service.get_instance(user_id, instance_id)
@@ -183,7 +184,7 @@ async def update_agent_instance(
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
     """Update an existing agent instance."""
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     service = get_user_agent_instance_service(db, llm_config_service)
 
     updates = data.model_dump(exclude_unset=True)
@@ -226,7 +227,7 @@ async def delete_agent_instance(
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
     """Delete (soft-delete) an agent instance."""
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     service = get_user_agent_instance_service(db, llm_config_service)
 
     deleted = await service.delete_instance(user_id, instance_id)

@@ -13,6 +13,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from inference_core.api.v1.shared import get_user_id_from_context
 from inference_core.core.dependecies import (
     get_current_active_user,
     get_current_superuser,
@@ -65,7 +66,7 @@ async def list_user_preferences(
 
     Optionally filter by preference type (default_model, model_params, etc.).
     """
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     preferences = await config_service.get_user_preferences(
         user_id=user_id,
         preference_type=preference_type,
@@ -107,7 +108,7 @@ async def create_user_preference(
     Preferences are validated against the allowed overrides list.
     """
     try:
-        user_id = UUID(current_user["id"])
+        user_id = get_user_id_from_context(current_user)
         result = await config_service.create_user_preference(
             user_id=user_id,
             preference_type=preference.preference_type,
@@ -147,7 +148,7 @@ async def bulk_update_preferences(
 
     Useful for saving an entire settings form in one request.
     """
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     results = []
     errors = []
 
@@ -202,7 +203,7 @@ async def delete_user_preference(
 
     The preference_key can include dots (e.g., 'chat.temperature').
     """
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     deleted = await config_service.delete_user_preference(
         user_id=user_id,
         preference_key=preference_key,
@@ -235,7 +236,7 @@ async def get_resolved_config(
     Merges: YAML base config → Admin DB overrides → User preferences.
     Returns effective models, tasks, and default parameters.
     """
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     return await config_service.get_resolved_config(user_id=user_id)
 
 
@@ -255,7 +256,7 @@ async def get_available_options(
     available models, and available tasks. Used by frontend to build
     dynamic settings UI.
     """
-    user_id = UUID(current_user["id"])
+    user_id = get_user_id_from_context(current_user)
     return await config_service.get_available_options(user_id=user_id)
 
 
