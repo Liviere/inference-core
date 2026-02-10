@@ -218,13 +218,11 @@ async def get_batch_job(
     try:
         job = await batch_service.get_batch_job(job_id)
         user_id = get_user_id_from_context(current_user)
-        
         if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
             )
-        
         verify_resource_ownership(
             resource_owner_id=job.created_by,
             current_user_id=user_id,
@@ -339,13 +337,11 @@ async def get_batch_items(
         # Verify job exists
         job = await batch_service.get_batch_job(job_id)
         user_id = get_user_id_from_context(current_user)
-        
         if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
             )
-        
         verify_resource_ownership(
             resource_owner_id=job.created_by,
             current_user_id=user_id,
@@ -435,13 +431,11 @@ async def cancel_batch_job(
         # Get the job
         job = await batch_service.get_batch_job(job_id)
         user_id = get_user_id_from_context(current_user)
-        
         if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
             )
-        
         verify_resource_ownership(
             resource_owner_id=job.created_by,
             current_user_id=user_id,

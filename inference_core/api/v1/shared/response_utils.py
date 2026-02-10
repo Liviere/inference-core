@@ -24,7 +24,7 @@ def get_iso_timestamp() -> str:
         >>> print(timestamp)
         "2024-01-15T10:30:00.123456+00:00"
     """
-    return str(datetime.now(UTC).isoformat())
+    return datetime.now(UTC).isoformat()
 
 
 def create_pagination_response(
