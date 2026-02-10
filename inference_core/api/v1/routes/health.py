@@ -5,13 +5,13 @@ FastAPI endpoints for monitoring application health,
 system status, and diagnostic information.
 """
 
-from datetime import UTC, datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.api.v1.shared import get_iso_timestamp
 from inference_core.core.config import get_settings
 from inference_core.core.dependecies import get_db
 from inference_core.database.sql.connection import db_manager
@@ -63,7 +63,7 @@ async def health_check(
     Returns:
         Health status of all components
     """
-    timestamp = str(datetime.now(UTC).isoformat())
+    timestamp = get_iso_timestamp()
 
     # Check database health
     db_healthy = await db_manager.health_check(db_session)
@@ -195,7 +195,7 @@ async def database_health(db_session: AsyncSession = Depends(get_db)) -> StatusR
     return StatusResponse(
         status=db_info["status"],
         details=db_info,
-        last_updated=str(datetime.now(UTC).isoformat()),
+        last_updated=get_iso_timestamp(),
     )
 
 
@@ -209,6 +209,6 @@ async def ping() -> Dict[str, Any]:
     """
     return {
         "message": "pong",
-        "timestamp": str(datetime.now(UTC).isoformat()),
+        "timestamp": get_iso_timestamp(),
         "status": "ok",
     }

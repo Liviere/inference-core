@@ -12,6 +12,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from inference_core.api.v1.shared import (
+    get_user_id_from_context,
+    handle_api_errors,
+    verify_resource_ownership,
+)
 from inference_core.core.dependecies import get_current_active_user, get_db
 from inference_core.database.sql.models.batch import BatchItemStatus, BatchJobStatus
 from inference_core.llm.batch.registry import BatchProviderRegistry, get_global_registry
@@ -143,7 +148,7 @@ async def create_batch_job(
             config_json=request.params,
         )
 
-        user_id = UUID(current_user["id"])
+        user_id = get_user_id_from_context(current_user)
         job = await batch_service.create_batch_job(job_data, created_by=user_id)
 
         # Create batch items
@@ -212,13 +217,20 @@ async def get_batch_job(
     """
     try:
         job = await batch_service.get_batch_job(job_id)
-        user_id = UUID(current_user["id"])
-        if not job or job.created_by != user_id:
-            # Return 404 to avoid leaking existence of other users' jobs
+        user_id = get_user_id_from_context(current_user)
+        
+        if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
             )
+        
+        verify_resource_ownership(
+            resource_owner_id=job.created_by,
+            current_user_id=user_id,
+            resource_type="Batch job",
+            resource_id=str(job_id),
+        )
 
         # Get job events for the timeline
         events = await batch_service.get_batch_events(job_id)
@@ -326,12 +338,20 @@ async def get_batch_items(
     try:
         # Verify job exists
         job = await batch_service.get_batch_job(job_id)
-        user_id = UUID(current_user["id"])
-        if not job or job.created_by != user_id:
+        user_id = get_user_id_from_context(current_user)
+        
+        if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
             )
+        
+        verify_resource_ownership(
+            resource_owner_id=job.created_by,
+            current_user_id=user_id,
+            resource_type="Batch job",
+            resource_id=str(job_id),
+        )
 
         # Get items with filtering
         items = await batch_service.get_batch_items(job_id, status=item_status)
@@ -414,12 +434,20 @@ async def cancel_batch_job(
     try:
         # Get the job
         job = await batch_service.get_batch_job(job_id)
-        user_id = UUID(current_user["id"])
-        if not job or job.created_by != user_id:
+        user_id = get_user_id_from_context(current_user)
+        
+        if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Batch job {job_id} not found",
             )
+        
+        verify_resource_ownership(
+            resource_owner_id=job.created_by,
+            current_user_id=user_id,
+            resource_type="Batch job",
+            resource_id=str(job_id),
+        )
 
         # Check if job can be cancelled
         if job.status in [
