@@ -149,7 +149,6 @@ class UserAgentInstance(BaseModel):
         UniqueConstraint(
             "user_id",
             "instance_name",
-            "is_deleted",
             name="uq_user_agent_instance_user_name",
         ),
         Index("ix_user_agent_instances_user_active", "user_id", "is_active"),

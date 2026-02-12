@@ -43,7 +43,6 @@ class UserAgentInstanceService:
         """List all agent instances for a user."""
         filters = [
             UserAgentInstance.user_id == user_id,
-            UserAgentInstance.is_deleted == False,  # noqa: E712
         ]
         if active_only:
             filters.append(UserAgentInstance.is_active == True)  # noqa: E712
@@ -68,7 +67,6 @@ class UserAgentInstanceService:
             and_(
                 UserAgentInstance.id == instance_id,
                 UserAgentInstance.user_id == user_id,
-                UserAgentInstance.is_deleted == False,  # noqa: E712
             )
         )
         result = await self.db.execute(query)
@@ -84,7 +82,6 @@ class UserAgentInstanceService:
             and_(
                 UserAgentInstance.instance_name == instance_name,
                 UserAgentInstance.user_id == user_id,
-                UserAgentInstance.is_deleted == False,  # noqa: E712
             )
         )
         result = await self.db.execute(query)
@@ -100,7 +97,6 @@ class UserAgentInstanceService:
                 UserAgentInstance.user_id == user_id,
                 UserAgentInstance.is_default == True,  # noqa: E712
                 UserAgentInstance.is_active == True,  # noqa: E712
-                UserAgentInstance.is_deleted == False,  # noqa: E712
             )
         )
         result = await self.db.execute(query)
@@ -232,13 +228,12 @@ class UserAgentInstanceService:
         user_id: UUID,
         instance_id: UUID,
     ) -> bool:
-        """Soft-delete an agent instance."""
+        """Hard-delete an agent instance."""
         instance = await self.get_instance(user_id, instance_id)
         if not instance:
             return False
 
-        instance.soft_delete()
-        instance.is_active = False
+        await self.db.delete(instance)
         await self.db.commit()
 
         logger.info(
@@ -290,7 +285,6 @@ class UserAgentInstanceService:
                 and_(
                     UserAgentInstance.user_id == user_id,
                     UserAgentInstance.is_default == True,  # noqa: E712
-                    UserAgentInstance.is_deleted == False,  # noqa: E712
                 )
             )
             .values(is_default=False)

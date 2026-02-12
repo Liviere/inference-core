@@ -100,7 +100,7 @@ class User(FullAuditModel):
 
     def can_access(self) -> bool:
         """Check if user can access the system"""
-        return self.is_active and not self.is_deleted
+        return self.is_active
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username={self.username}, email={self.email})>"

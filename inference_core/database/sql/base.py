@@ -82,36 +82,13 @@ class TimestampMixin:
     )
 
 
-@declarative_mixin
-class SoftDeleteMixin:
-    """Mixin for soft delete functionality"""
-
-    is_deleted: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, index=True, doc="Soft delete flag"
-    )
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True, doc="Soft delete timestamp"
-    )
-
-    def soft_delete(self):
-        """Mark record as deleted"""
-        self.is_deleted = True
-        self.deleted_at = datetime.now(UTC)
-
-    def restore(self):
-        """Restore soft deleted record"""
-        self.is_deleted = False
-        self.deleted_at = None
-
-
-class BaseModel(Base, TimestampMixin, SoftDeleteMixin):
+class BaseModel(Base, TimestampMixin):
     """
     Base model class with common fields and functionality
 
     Provides:
     - UUID primary key
     - Timestamp fields (created_at, updated_at)
-    - Soft delete functionality
     - Common utility methods
     """
 

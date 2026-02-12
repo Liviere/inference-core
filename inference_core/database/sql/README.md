@@ -24,13 +24,12 @@ This file defines the base classes and mixins for all database models, promoting
 - **`BaseModel`**: The primary base class for all models. It automatically provides:
   - A `UUID` primary key (`id`).
   - `TimestampMixin`: `created_at` and `updated_at` timestamp fields.
-  - `SoftDeleteMixin`: `is_deleted` flag and `deleted_at` timestamp for soft-deleting records instead of permanently removing them.
   - Helper methods like `to_dict()` and `update_from_dict()`.
 - **`AuditMixin`**: Adds `created_by` and `updated_by` fields to track which user created or last updated a record.
 - **`MetadataMixin`**: Provides flexible `metadata_json` (JSON) and `tags` (string) fields for storing unstructured data:
   - `metadata_json`: Uses `SmartJSON` type for cross-database compatibility
   - `tags`: Uses `String(500)` to ensure MySQL compatibility
-- **`FullAuditModel`**: A comprehensive base model that includes all the features from `BaseModel`, `AuditMixin`, and `MetadataMixin`. New models should typically inherit from this.
+- **`FullAuditModel`**: A comprehensive base model that includes all the features from `BaseModel`, `AuditMixin`, and `MetadataMixin`.
 
 ### `serializers.py`
 

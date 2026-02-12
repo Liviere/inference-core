@@ -77,7 +77,7 @@ class LLMRequestLog(Base, TimestampMixin):
 
     # User association (nullable)
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
         doc="Associated user ID (nullable)",

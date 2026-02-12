@@ -149,7 +149,7 @@ class LLMConfigService:
             scope_key: Filter by scope key (e.g., model name)
             active_only: Only return active, non-expired overrides
         """
-        conditions = [LLMConfigOverride.is_deleted == False]
+        conditions = []
 
         if active_only:
             conditions.append(LLMConfigOverride.is_active == True)
@@ -212,7 +212,6 @@ class LLMConfigService:
         """Update an existing admin override."""
         stmt = select(LLMConfigOverride).where(
             LLMConfigOverride.id == override_id,
-            LLMConfigOverride.is_deleted == False,
         )
         result = await self.db.execute(stmt)
         override = result.scalar_one_or_none()
@@ -230,10 +229,9 @@ class LLMConfigService:
         return override
 
     async def delete_admin_override(self, override_id: UUID) -> bool:
-        """Soft-delete an admin override."""
+        """Hard-delete an admin override."""
         stmt = select(LLMConfigOverride).where(
             LLMConfigOverride.id == override_id,
-            LLMConfigOverride.is_deleted == False,
         )
         result = await self.db.execute(stmt)
         override = result.scalar_one_or_none()
@@ -241,7 +239,7 @@ class LLMConfigService:
         if not override:
             return False
 
-        override.soft_delete()
+        await self.db.delete(override)
         await self.db.commit()
         await self._invalidate_admin_cache()
         return True
@@ -259,7 +257,6 @@ class LLMConfigService:
         """Fetch user LLM preferences from database."""
         conditions = [
             UserLLMPreference.user_id == user_id,
-            UserLLMPreference.is_deleted == False,
         ]
 
         if active_only:
@@ -277,7 +274,7 @@ class LLMConfigService:
         self, active_only: bool = True
     ) -> List[AllowedUserOverride]:
         """Fetch list of configuration keys users are allowed to override."""
-        conditions = [AllowedUserOverride.is_deleted == False]
+        conditions = []
         if active_only:
             conditions.append(AllowedUserOverride.is_active == True)
 
@@ -378,7 +375,6 @@ class LLMConfigService:
             UserLLMPreference.user_id == user_id,
             UserLLMPreference.preference_type == preference_type.value,
             UserLLMPreference.preference_key == preference_key,
-            UserLLMPreference.is_deleted == False,
         )
         result = await self.db.execute(stmt)
         existing = result.scalar_one_or_none()
@@ -413,7 +409,6 @@ class LLMConfigService:
         stmt = select(UserLLMPreference).where(
             UserLLMPreference.user_id == user_id,
             UserLLMPreference.preference_key == preference_key,
-            UserLLMPreference.is_deleted == False,
         )
         result = await self.db.execute(stmt)
         preference = result.scalar_one_or_none()
@@ -421,7 +416,7 @@ class LLMConfigService:
         if not preference:
             return False
 
-        preference.soft_delete()
+        await self.db.delete(preference)
         await self.db.commit()
         await self._invalidate_user_cache(user_id)
         return True

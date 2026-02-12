@@ -71,9 +71,7 @@ class BatchService:
     async def get_batch_job(self, job_id: UUID) -> Optional[BatchJob]:
         """Get batch job by ID"""
         result = await self.session.execute(
-            select(BatchJob).where(
-                and_(BatchJob.id == job_id, BatchJob.is_deleted == False)
-            )
+            select(BatchJob).where(BatchJob.id == job_id)
         )
         return result.scalar_one_or_none()
 
@@ -82,7 +80,7 @@ class BatchService:
         result = await self.session.execute(
             select(BatchJob)
             .options(selectinload(BatchJob.items))
-            .where(and_(BatchJob.id == job_id, BatchJob.is_deleted == False))
+            .where(BatchJob.id == job_id)
         )
         return result.scalar_one_or_none()
 
@@ -121,7 +119,7 @@ class BatchService:
 
     async def query_batch_jobs(self, query: BatchJobQuery) -> List[BatchJob]:
         """Query batch jobs with filters"""
-        stmt = select(BatchJob).where(BatchJob.is_deleted == False)
+        stmt = select(BatchJob)
 
         if query.provider:
             stmt = stmt.where(BatchJob.provider == query.provider)
@@ -143,15 +141,12 @@ class BatchService:
     async def get_pending_jobs(self, provider: Optional[str] = None) -> List[BatchJob]:
         """Get jobs that are pending processing"""
         stmt = select(BatchJob).where(
-            and_(
-                BatchJob.is_deleted == False,
-                BatchJob.status.in_(
-                    [
-                        BatchJobStatus.CREATED,
-                        BatchJobStatus.SUBMITTED,
-                        BatchJobStatus.IN_PROGRESS,
-                    ]
-                ),
+            BatchJob.status.in_(
+                [
+                    BatchJobStatus.CREATED,
+                    BatchJobStatus.SUBMITTED,
+                    BatchJobStatus.IN_PROGRESS,
+                ]
             )
         )
 
@@ -164,14 +159,12 @@ class BatchService:
         return list(result.scalars().all())
 
     async def delete_batch_job(self, job_id: UUID) -> bool:
-        """Soft delete batch job"""
+        """Hard delete batch job"""
         job = await self.get_batch_job(job_id)
         if not job:
             return False
 
-        job.is_deleted = True
-        job.deleted_at = datetime.now(UTC)
-
+        await self.session.delete(job)
         await self.session.commit()
         logger.info(f"Deleted batch job {job.id}")
         return True
@@ -217,9 +210,7 @@ class BatchService:
         self, job_id: UUID, status: Optional[BatchItemStatus] = None
     ) -> List[BatchItem]:
         """Get batch items for a job"""
-        stmt = select(BatchItem).where(
-            and_(BatchItem.batch_job_id == job_id, BatchItem.is_deleted == False)
-        )
+        stmt = select(BatchItem).where(BatchItem.batch_job_id == job_id)
 
         if status:
             stmt = stmt.where(BatchItem.status == status)
@@ -237,9 +228,7 @@ class BatchService:
     ) -> Optional[BatchItem]:
         """Update batch item and propagate status changes to job"""
         result = await self.session.execute(
-            select(BatchItem).where(
-                and_(BatchItem.id == item_id, BatchItem.is_deleted == False)
-            )
+            select(BatchItem).where(BatchItem.id == item_id)
         )
         item = result.scalar_one_or_none()
         if not item:
@@ -356,24 +345,20 @@ class BatchService:
     async def get_batch_stats(self) -> BatchJobStats:
         """Get batch processing statistics"""
         # Total jobs
-        total_jobs_result = await self.session.execute(
-            select(func.count(BatchJob.id)).where(BatchJob.is_deleted == False)
-        )
+        total_jobs_result = await self.session.execute(select(func.count(BatchJob.id)))
         total_jobs = total_jobs_result.scalar() or 0
 
         # Jobs by status
         status_result = await self.session.execute(
-            select(BatchJob.status, func.count(BatchJob.id))
-            .where(BatchJob.is_deleted == False)
-            .group_by(BatchJob.status)
+            select(BatchJob.status, func.count(BatchJob.id)).group_by(BatchJob.status)
         )
         jobs_by_status = {status: count for status, count in status_result.fetchall()}
 
         # Jobs by provider
         provider_result = await self.session.execute(
-            select(BatchJob.provider, func.count(BatchJob.id))
-            .where(BatchJob.is_deleted == False)
-            .group_by(BatchJob.provider)
+            select(BatchJob.provider, func.count(BatchJob.id)).group_by(
+                BatchJob.provider
+            )
         )
         jobs_by_provider = {
             provider: count for provider, count in provider_result.fetchall()
@@ -385,7 +370,7 @@ class BatchService:
                 func.sum(BatchJob.request_count),
                 func.sum(BatchJob.success_count),
                 func.sum(BatchJob.error_count),
-            ).where(BatchJob.is_deleted == False)
+            )
         )
         total_requests, total_successes, total_errors = stats_result.fetchone() or (
             0,

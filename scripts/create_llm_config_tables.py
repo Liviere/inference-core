@@ -117,8 +117,7 @@ async def seed_default_allowed_overrides():
         for override_data in default_overrides:
             # Check if already exists
             stmt = select(AllowedUserOverride).where(
-                AllowedUserOverride.config_key == override_data["config_key"],
-                AllowedUserOverride.is_deleted == False,
+                AllowedUserOverride.config_key == override_data["config_key"]
             )
             result = await db.execute(stmt)
             existing = result.scalar_one_or_none()

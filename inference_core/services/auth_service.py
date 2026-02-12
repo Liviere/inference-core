@@ -63,9 +63,7 @@ class AuthService:
                 # This handles cases like "nonexistent-id" which tests expect to be passed to the database
                 pass
 
-        result = await self.db.execute(
-            select(User).where(User.id == user_id, User.is_deleted == False)
-        )
+        result = await self.db.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
     async def get_user_by_email(self, email: str) -> Optional[User]:
@@ -78,9 +76,7 @@ class AuthService:
         Returns:
             User instance or None
         """
-        result = await self.db.execute(
-            select(User).where(User.email == email, User.is_deleted == False)
-        )
+        result = await self.db.execute(select(User).where(User.email == email))
         return result.scalar_one_or_none()
 
     async def get_user_by_username(self, username: str) -> Optional[User]:
@@ -93,9 +89,7 @@ class AuthService:
         Returns:
             User instance or None
         """
-        result = await self.db.execute(
-            select(User).where(User.username == username, User.is_deleted == False)
-        )
+        result = await self.db.execute(select(User).where(User.username == username))
         return result.scalar_one_or_none()
 
     async def authenticate_user(self, username: str, password: str) -> Optional[User]:
