@@ -18,6 +18,7 @@ Central index of project documentation
 | Vector Store Guide                 | Semantic search & ingestion                 | `vector-store.md`                    |
 | Provider Extensions (OpenAI batch) | Provider specific behavior                  | `providers/openai-batch-provider.md` |
 | Docker Test Environments           | Isolated test setup                         | `testing-docker.md`                  |
+| Database Migrations (Alembic)      | Schema management & history                 | `database-migrations.md`             |
 | LLM Usage Logging                  | Cost / usage persistence & privacy notes    | `observability/llm-usage-logging.md` |
 
 ## How to Navigate
