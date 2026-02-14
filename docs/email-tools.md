@@ -31,7 +31,10 @@ email:
       use_ssl: true
       use_starttls: false
       username: ${SMTP_USERNAME}
+      # Authentication options: 'password' (default) or 'oauth'
+      auth_type: password
       password_env: SMTP_PASSWORD
+      # access_token: ${OAUTH_TOKEN} # Required if auth_type: oauth
       from_email: support@example.com
       from_name: Support Team
 
@@ -47,7 +50,9 @@ email:
         port: 993
         use_ssl: true
         username: ${IMAP_USERNAME}
+        auth_type: password
         password_env: IMAP_PASSWORD
+        # access_token: ${OAUTH_TOKEN}
         default_folder: INBOX
         timeout: 30
         poll_interval_seconds: 45 # Override default

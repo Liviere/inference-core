@@ -113,7 +113,7 @@ class ImapConnection:
                 self._connection = None
 
         password = self.imap_config.get_password()
-        if not password:
+        if self.imap_config.auth_type != "oauth" and not password:
             raise ImapConnectionError(
                 f"Password not found in env var: {self.imap_config.password_env}",
                 self.host_alias,
@@ -140,7 +140,11 @@ class ImapConnection:
                     timeout=self.imap_config.timeout,
                 )
 
-            self._connection.login(self.imap_config.username, password)
+            if self.imap_config.auth_type == "oauth" and self.imap_config.access_token:
+                auth_string = f"user={self.imap_config.username}\x01auth=Bearer {self.imap_config.access_token}\x01\x01"
+                self._connection.authenticate("XOAUTH2", lambda x: auth_string)
+            else:
+                self._connection.login(self.imap_config.username, password)
             logger.info("[%s] IMAP login successful", self.host_alias)
 
         except imaplib.IMAP4.error as e:

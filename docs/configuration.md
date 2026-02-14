@@ -135,6 +135,7 @@ Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be config
 | `SMTP_BACKUP_PASSWORD`  | (none)                | Backup SMTP password    |
 | `SMTP_O365_USERNAME`    | (none)                | Office 365 username     |
 | `SMTP_O365_PASSWORD`    | (none)                | Office 365 password     |
+| `SMTP_OAUTH_TOKEN`      | (none)                | OAuth2 Access Token     |
 
 ## Dynamic Configuration Overrides
 

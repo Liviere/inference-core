@@ -31,8 +31,15 @@ class SmtpHostConfig(BaseModel):
         default=False, description="Use STARTTLS after connection"
     )
     username: str = Field(..., description="SMTP username (supports ${ENV_VAR} syntax)")
-    password_env: str = Field(
-        ..., description="Environment variable name containing password"
+    password_env: Optional[str] = Field(
+        default=None,
+        description="Environment variable name containing password (required for password auth)",
+    )
+    auth_type: str = Field(
+        default="password", description="Authentication type: 'password' or 'oauth'"
+    )
+    access_token: Optional[str] = Field(
+        default=None, description="OAuth2 access token (required for oauth auth)"
     )
     from_email: str = Field(..., description="From email address")
     from_name: Optional[str] = Field(default=None, description="From display name")
@@ -67,6 +74,8 @@ class SmtpHostConfig(BaseModel):
 
     def get_password(self) -> Optional[str]:
         """Get password from environment variable."""
+        if not self.password_env:
+            return None
         return os.getenv(self.password_env)
 
 
@@ -81,9 +90,13 @@ class ImapHostConfig(BaseModel):
     port: int = Field(default=993, ge=1, le=65535, description="IMAP server port")
     use_ssl: bool = Field(default=True, description="Use SSL connection (IMAPS)")
     username: str = Field(..., description="IMAP username (supports ${ENV_VAR} syntax)")
-    password_env: str = Field(
-        ..., description="Environment variable name containing password"
+    password_env: Optional[str] = Field(
+        default=None, description="Environment variable name containing password"
     )
+    auth_type: str = Field(
+        default="password", description="Authentication type: 'password' or 'oauth'"
+    )
+    access_token: Optional[str] = Field(default=None, description="OAuth2 access token")
     default_folder: str = Field(
         default="INBOX", description="Default mailbox folder to read"
     )
@@ -102,6 +115,8 @@ class ImapHostConfig(BaseModel):
 
     def get_password(self) -> Optional[str]:
         """Get password from environment variable."""
+        if not self.password_env:
+            return None
         return os.getenv(self.password_env)
 
 
@@ -193,6 +208,16 @@ class EmailHostConfig(BaseModel):
     def max_attachment_mb(self) -> int:
         """SMTP max_attachment_mb (convenience accessor)."""
         return self.smtp.max_attachment_mb
+
+    @property
+    def auth_type(self) -> str:
+        """SMTP auth_type (convenience accessor)."""
+        return self.smtp.auth_type
+
+    @property
+    def access_token(self) -> Optional[str]:
+        """SMTP access_token (convenience accessor)."""
+        return self.smtp.access_token
 
 
 class EmailSettings(BaseModel):

@@ -278,7 +278,7 @@ class EmailService:
 
         # Get password
         password = host_config.get_password()
-        if not password:
+        if host_config.auth_type != "oauth" and not password:
             raise ValueError(
                 f"Password not found in environment variable: {host_config.password_env}"
             )
@@ -309,7 +309,11 @@ class EmailService:
                 server.starttls(context=ssl_context)
 
             # Authenticate
-            server.login(host_config.username, password)
+            if host_config.auth_type == "oauth" and host_config.access_token:
+                auth_string = f"user={host_config.username}\x01auth=Bearer {host_config.access_token}\x01\x01"
+                server.auth("XOAUTH2", lambda: auth_string)
+            else:
+                server.login(host_config.username, password)
 
             # Send message
             server.send_message(message, to_addrs=all_recipients)

@@ -95,6 +95,26 @@ email:
         Regards,
         Your Company Name
 
+    # Example for OAuth2 authentication (Gmail/Outlook)
+    oauth2_example:
+      smtp:
+        host: smtp.gmail.com
+        port: 465
+        use_ssl: true
+        username: ${SMTP_OAUTH_EMAIL}
+        auth_type: oauth
+        access_token: ${SMTP_OAUTH_TOKEN}
+        from_email: ${SMTP_OAUTH_EMAIL}
+        from_name: OAuth User
+      imap:
+        host: imap.gmail.com
+        port: 993
+        use_ssl: true
+        username: ${IMAP_OAUTH_EMAIL}
+        auth_type: oauth
+        access_token: ${IMAP_OAUTH_TOKEN}
+      context: 'OAuth2 authenticated account'
+
 # Global email settings
 settings:
   # Public URL for email links (password reset, etc.)
