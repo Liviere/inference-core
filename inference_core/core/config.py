@@ -327,13 +327,27 @@ class Settings(BaseSettings):
     )
     agent_memory_max_results: int = Field(
         default=5,
-        description="Maximum number of memory items to retrieve during recall",
+        description="Maximum number of memory items to retrieve per category during recall",
         ge=1,
         le=50,
     )
     agent_memory_auto_recall: bool = Field(
         default=True,
         description="Automatically recall relevant memories in before_agent middleware hook",
+    )
+    agent_memory_categories: str = Field(
+        default="semantic,episodic,procedural",
+        description=(
+            "Comma-separated list of CoALA memory categories to enable for auto-recall. "
+            "Valid values: semantic, episodic, procedural"
+        ),
+    )
+    agent_memory_agent_scope_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True, episodic and procedural memories are scoped per agent_name. "
+            "When False, all categories are shared across agents."
+        ),
     )
 
     # Cookie settings for refresh tokens

@@ -478,6 +478,7 @@ class AgentService:
                     store=self.memory_store,
                     base_namespace=base_namespace,
                     max_results=settings.agent_memory_max_results,
+                    agent_name=self.agent_name,
                 )
             except Exception as exc:
                 logging.error(

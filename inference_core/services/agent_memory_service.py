@@ -1,10 +1,18 @@
 """
-Agent Memory Service (Store-based)
+Agent Memory Service (Store-based) – CoALA Architecture
 
 Implements long-term memory operations using LangGraph Store backends
-instead of vector store providers. Mirrors the public surface of the
-vector-based service to simplify migration toward LangGraph-native
-persistence (SqliteStore/PostgresStore/InMemoryStore).
+following the Cognitive Architectures for Language Agents (CoALA) framework.
+
+Memory is organized into three CoALA categories:
+  - Semantic: stable world-knowledge & user facts (preferences, facts, goals, general)
+  - Episodic: sequences of past experiences (context, session_summary, interaction)
+  - Procedural: operational rules & skills (instructions, workflow, skill)
+
+Each category has its own namespace to enable independent retrieval and
+scoped isolation (shared vs per-agent).
+
+Source: CoALA whitepaper – arxiv:2309.02427
 """
 
 import logging
@@ -25,15 +33,145 @@ MEMORIES_STORE_NAME = os.getenv("MEMORIES_STORE_NAME", "memories")
 INDEXED_FIELDS = ["content", "topic"]
 
 
-class MemoryType(str, Enum):
-    """Standard memory type categories."""
+# =============================================================================
+# CoALA Memory Categories
+# =============================================================================
 
+
+class MemoryCategory(str, Enum):
+    """Top-level CoALA memory categories.
+
+    Semantic – stable facts about the world and the user.
+    Episodic  – sequences of past agent/user interactions.
+    Procedural – operational rules, workflows, and learned skills.
+    """
+
+    SEMANTIC = "semantic"
+    EPISODIC = "episodic"
+    PROCEDURAL = "procedural"
+
+
+MEMORY_CATEGORIES = [mc.value for mc in MemoryCategory]
+
+
+class MemoryType(str, Enum):
+    """Fine-grained memory types, each mapped to a CoALA category."""
+
+    # --- Semantic (stable world-knowledge) ---
     PREFERENCES = "preferences"
     FACTS = "facts"
-    CONTEXT = "context"
-    INSTRUCTION = "instructions"
     GOALS = "goals"
     GENERAL = "general"
+
+    # --- Episodic (past experiences / interactions) ---
+    CONTEXT = "context"
+    SESSION_SUMMARY = "session_summary"
+    INTERACTION = "interaction"
+
+    # --- Procedural (rules / skills / workflows) ---
+    INSTRUCTION = "instructions"
+    WORKFLOW = "workflow"
+    SKILL = "skill"
+
+
+MEMORY_TYPES = [mt.value for mt in MemoryType]
+
+
+# Canonical mapping from MemoryType → MemoryCategory
+MEMORY_TYPE_TO_CATEGORY: Dict[str, MemoryCategory] = {
+    # Semantic
+    MemoryType.PREFERENCES.value: MemoryCategory.SEMANTIC,
+    MemoryType.FACTS.value: MemoryCategory.SEMANTIC,
+    MemoryType.GOALS.value: MemoryCategory.SEMANTIC,
+    MemoryType.GENERAL.value: MemoryCategory.SEMANTIC,
+    # Episodic
+    MemoryType.CONTEXT.value: MemoryCategory.EPISODIC,
+    MemoryType.SESSION_SUMMARY.value: MemoryCategory.EPISODIC,
+    MemoryType.INTERACTION.value: MemoryCategory.EPISODIC,
+    # Procedural
+    MemoryType.INSTRUCTION.value: MemoryCategory.PROCEDURAL,
+    MemoryType.WORKFLOW.value: MemoryCategory.PROCEDURAL,
+    MemoryType.SKILL.value: MemoryCategory.PROCEDURAL,
+}
+
+
+def get_category_for_type(memory_type: str) -> MemoryCategory:
+    """Resolve CoALA category for a given memory type.
+
+    Falls back to SEMANTIC for unknown types to preserve backward compatibility.
+    """
+    return MEMORY_TYPE_TO_CATEGORY.get(memory_type, MemoryCategory.SEMANTIC)
+
+
+def get_types_for_category(category: MemoryCategory) -> List[str]:
+    """Return all memory types belonging to the given CoALA category."""
+    return [t for t, c in MEMORY_TYPE_TO_CATEGORY.items() if c == category]
+
+
+# =============================================================================
+# Namespace Builder (CoALA-aware)
+# =============================================================================
+
+
+class MemoryNamespaceBuilder:
+    """Builds store namespaces following the CoALA isolation model.
+
+    Namespace structure:
+      Shared:     (user_id, "semantic")
+      Per-agent:  (user_id, "procedural", agent_name)
+
+    Rules:
+      - Semantic memory is ALWAYS shared across agents (user-global facts).
+      - Episodic memory is per-agent by default (each agent has its own history).
+      - Procedural memory is per-agent by default (agent-specific skills/rules).
+      - When agent_name is None, per-agent categories fall back to shared.
+    """
+
+    def __init__(
+        self,
+        base_collection: str = "agent_memory",
+        agent_name: Optional[str] = None,
+    ) -> None:
+        self.base_collection = base_collection
+        self.agent_name = agent_name
+
+    def namespace_for(
+        self,
+        user_id: str,
+        category: MemoryCategory,
+    ) -> Tuple[str, ...]:
+        """Build namespace tuple for a given user and CoALA category."""
+        user_id = str(user_id)
+
+        if category == MemoryCategory.SEMANTIC:
+            # Always shared – user-global knowledge
+            return (user_id, MemoryCategory.SEMANTIC.value)
+
+        if category == MemoryCategory.EPISODIC:
+            if self.agent_name:
+                return (user_id, MemoryCategory.EPISODIC.value, self.agent_name)
+            return (user_id, MemoryCategory.EPISODIC.value)
+
+        if category == MemoryCategory.PROCEDURAL:
+            if self.agent_name:
+                return (user_id, MemoryCategory.PROCEDURAL.value, self.agent_name)
+            return (user_id, MemoryCategory.PROCEDURAL.value)
+
+        # Fallback (should not happen with Enum)
+        return (user_id, MEMORIES_STORE_NAME)
+
+    def namespace_for_type(
+        self,
+        user_id: str,
+        memory_type: str,
+    ) -> Tuple[str, ...]:
+        """Convenience: resolve category from memory_type, then build namespace."""
+        category = get_category_for_type(memory_type)
+        return self.namespace_for(user_id, category)
+
+    def legacy_namespace(self, user_id: str) -> Tuple[str, ...]:
+        """Return old-style namespace for migration compatibility."""
+        return (str(user_id), MEMORIES_STORE_NAME)
 
 
 MEMORY_TYPES = [mt.value for mt in MemoryType]
@@ -48,6 +186,13 @@ def get_memory_type_literal():
     from typing import Literal, get_args
 
     return Literal[tuple(mt.value for mt in MemoryType)]
+
+
+def get_memory_category_literal():
+    """Generate Literal type hint from MemoryCategory enum."""
+    from typing import Literal
+
+    return Literal[tuple(mc.value for mc in MemoryCategory)]
 
 
 def validate_memory_type(value: str) -> str:
@@ -69,22 +214,38 @@ def validate_memory_type(value: str) -> str:
     return value
 
 
+def validate_memory_category(value: str) -> str:
+    """Runtime validator ensuring memory category matches canonical enum."""
+    if not isinstance(value, str):
+        if hasattr(value, "value"):
+            value = value.value
+
+    if value not in MEMORY_CATEGORIES:
+        valid = ", ".join(MEMORY_CATEGORIES)
+        raise ValueError(f"Invalid memory_category '{value}'. Must be one of: {valid}")
+    return value
+
+
 def format_memory_types_for_description() -> str:
-    """Generate formatted list of memory types with descriptions for tool docs.
+    """Generate formatted list of memory types grouped by CoALA category.
 
     Returns multi-line string suitable for embedding in tool description.
     """
-    lines = ["Available memory types:"]
-    for mtype in MemoryType:
-        desc_enum = MemoryTypeDescription[mtype.name]
-        # Extract first sentence only for brevity
-        first_sentence = desc_enum.value.split(".")[0] + "."
-        lines.append(f"  - {mtype.value}: {first_sentence}")
+    lines = ["Available memory types (grouped by CoALA category):"]
+    for category in MemoryCategory:
+        lines.append(f"\n  [{category.value.upper()}]")
+        for mtype in MemoryType:
+            if MEMORY_TYPE_TO_CATEGORY.get(mtype.value) == category:
+                desc_enum = MemoryTypeDescription[mtype.name]
+                first_sentence = desc_enum.value.split(".")[0] + "."
+                lines.append(f"    - {mtype.value}: {first_sentence}")
     return "\n".join(lines)
 
 
 class MemoryTypeDescription(str, Enum):
     """Descriptions for memory type categories."""
+
+    # --- Semantic ---
 
     PREFERENCES = """Personal preferences, communication styles, and behavioral patterns that should be remembered for future interactions. These memories help maintain consistency in responses and adapt to individual needs and expectations.
     Examples: 'Prefers concise answers with bullet points', 'Enjoys humor in casual conversations'"""
@@ -92,17 +253,33 @@ class MemoryTypeDescription(str, Enum):
     FACTS = """Factual information about entities, relationships, locations, or any objective data that remains stable over time. These memories store verifiable information that can be referenced to provide accurate and personalized responses.
     Examples: 'Lives in Warsaw, Poland', 'Company headquarters located in New York'"""
 
-    CONTEXT = """Situational awareness and environmental information that provides background for current or recent activities. These memories capture the immediate circumstances and ongoing situations that may influence decision-making.
-    Examples: 'Meeting scheduled for tomorrow at 2 PM', 'Weather forecast shows rain this week'"""
-
-    INSTRUCTION = """Operational guidelines, rules, or specific directions about how tasks should be performed or processes should be followed. These memories ensure consistent execution of established procedures and methodologies.
-    Examples: 'Always backup files before making changes', 'Send weekly reports every Friday morning'"""
-
     GOALS = """Objectives, aspirations, and desired outcomes that represent what someone or something is working towards. These memories help maintain focus on long-term vision and provide context for prioritizing actions and decisions.
     Examples: 'Improve team collaboration and communication', 'Reduce system response time by 30%'"""
 
     GENERAL = """Miscellaneous observations, notes, and information that may be useful but doesn't fit into other specific categories. These memories serve as a repository for various insights and details that could be relevant in future contexts.
     Examples: 'Noticed increased activity during evening hours', 'Client mentioned budget concerns during last meeting'"""
+
+    # --- Episodic ---
+
+    CONTEXT = """Situational awareness and environmental information that provides background for current or recent activities. These memories capture the immediate circumstances and ongoing situations that may influence decision-making.
+    Examples: 'Meeting scheduled for tomorrow at 2 PM', 'Weather forecast shows rain this week'"""
+
+    SESSION_SUMMARY = """Condensed summary of a completed conversation session, capturing key decisions, action items, and outcomes. Provides efficient recall of past interactions without replaying full transcripts.
+    Examples: 'Session on 2025-01-15: discussed Q1 goals, decided to prioritize API redesign', 'Reviewed deployment pipeline, identified 3 bottlenecks'"""
+
+    INTERACTION = """Notable interaction events or exchanges worth remembering for continuity across sessions. Captures specific moments, questions, or patterns that inform future behavior.
+    Examples: 'User asked about async patterns twice — may need a tutorial', 'Successfully helped debug CORS issue using proxy approach'"""
+
+    # --- Procedural ---
+
+    INSTRUCTION = """Operational guidelines, rules, or specific directions about how tasks should be performed or processes should be followed. These memories ensure consistent execution of established procedures and methodologies.
+    Examples: 'Always backup files before making changes', 'Send weekly reports every Friday morning'"""
+
+    WORKFLOW = """Multi-step processes or standard operating procedures that the agent should follow for recurring tasks. Captures the sequence and dependencies between steps.
+    Examples: 'Deploy process: run tests → build image → push to staging → smoke test → promote to prod', 'Code review checklist: types, tests, docs, perf'"""
+
+    SKILL = """Learned capabilities or techniques that the agent has acquired through interaction, including tool usage patterns, domain-specific approaches, or optimized strategies.
+    Examples: 'Use pandas .query() instead of boolean indexing for readability', 'For this user, always include type annotations in code examples'"""
 
 
 @dataclass
@@ -111,11 +288,13 @@ class MemoryMetadata:
 
     user_id: str
     memory_type: str = MemoryType.GENERAL.value
+    memory_category: str = MemoryCategory.SEMANTIC.value
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     session_id: Optional[str] = None
     topic: Optional[str] = None
+    agent_name: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -124,12 +303,15 @@ class MemoryMetadata:
         result = {
             "user_id": self.user_id,
             "memory_type": self.memory_type,
+            "memory_category": self.memory_category,
             "created_at": self.created_at,
         }
         if self.session_id:
             result["session_id"] = self.session_id
         if self.topic:
             result["topic"] = self.topic
+        if self.agent_name:
+            result["agent_name"] = self.agent_name
         if self.extra:
             result.update(self.extra)
         return result
@@ -163,6 +345,14 @@ class MemoryStoreDocument:
         return self.value.get("memory_type", None)
 
     @property
+    def memory_category(self) -> Optional[str]:
+        """Resolve CoALA category from stored memory_type."""
+        mt = self.memory_type
+        if mt:
+            return get_category_for_type(mt).value
+        return None
+
+    @property
     def created_at_iso(self) -> Optional[str]:
         """Return created_at as ISO 8601 string or None."""
         if self.created_at:
@@ -183,30 +373,48 @@ class MemoryData:
 
     content: str
     memory_type: str
+    memory_category: str = ""
     session_id: Optional[str] = None
     topic: Optional[str] = None
+    agent_name: Optional[str] = None
     extra_metadata: Optional[Dict[str, Any]] = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
+    def __post_init__(self):
+        """Auto-resolve category from memory_type if not explicitly set."""
+        if not self.memory_category:
+            self.memory_category = get_category_for_type(self.memory_type).value
+
 
 class AgentMemoryStoreService:
-    """Store-backed memory service to align with LangGraph persistence."""
+    """Store-backed memory service following CoALA architecture.
+
+    Uses MemoryNamespaceBuilder to route memories into category-specific
+    namespaces (semantic / episodic / procedural) while maintaining
+    backward compatibility with the flat namespace layout.
+    """
 
     def __init__(
         self,
         store: Any,
         base_namespace: Sequence[str] = (MEMORIES_STORE_NAME,),
         max_results: int = 5,
+        agent_name: Optional[str] = None,
     ) -> None:
         self.store = store
         self.base_namespace = tuple(base_namespace)
         self.max_results = max_results
+        self.agent_name = agent_name
+        self.ns_builder = MemoryNamespaceBuilder(
+            base_collection=base_namespace[0] if base_namespace else "agent_memory",
+            agent_name=agent_name,
+        )
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def _namespace(self, user_id: str) -> tuple:
-        """Build a namespaced tuple for store isolation per user."""
+        """Build a namespaced tuple for store isolation per user (legacy)."""
 
         return (str(user_id), *self.base_namespace)
 
@@ -219,15 +427,24 @@ class AgentMemoryStoreService:
         topic: Optional[str] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
         memory_id: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> str:
-        """Persist a memory item in the configured store."""
+        """Persist a memory item, routed to the correct CoALA namespace.
+
+        The category is auto-resolved from memory_type when not provided.
+        """
 
         assert (
             memory_type in MemoryType._value2member_map_
         ), f"Invalid memory type: {memory_type}"
 
         user_id = str(user_id)
-        namespace_for_memory = (user_id, MEMORIES_STORE_NAME)
+
+        # Resolve category
+        resolved_category = (
+            MemoryCategory(category) if category else get_category_for_type(memory_type)
+        )
+        namespace_for_memory = self.ns_builder.namespace_for(user_id, resolved_category)
 
         if not extra_metadata:
             extra_metadata = {}
@@ -238,8 +455,10 @@ class AgentMemoryStoreService:
         memory_data = MemoryData(
             content=content,
             memory_type=memory_type,
+            memory_category=resolved_category.value,
             session_id=session_id,
             topic=topic,
+            agent_name=self.agent_name,
             extra_metadata=extra_metadata,
         )
 
@@ -260,8 +479,13 @@ class AgentMemoryStoreService:
         memory_type: Optional[str] = None,
         include_scores: bool = True,
         sort_by_time: bool = False,
+        category: Optional[str] = None,
     ) -> List[MemoryStoreDocument]:
         """Retrieve relevant memories from the store for the user.
+
+        When category is specified, searches only that CoALA namespace.
+        When memory_type is specified, category is auto-resolved.
+        When neither is specified, searches across all categories.
 
         Args:
             user_id: User identifier for namespace isolation.
@@ -270,44 +494,62 @@ class AgentMemoryStoreService:
             memory_type: Optional filter by memory type.
             include_scores: Whether to include relevance scores.
             sort_by_time: If True, sort results by created_at descending (newest first).
-                          Otherwise, results are ordered by semantic relevance.
+            category: Optional CoALA category to search within.
 
         Returns:
             List of MemoryStoreDocument with temporal metadata (created_at, updated_at).
         """
         limit = k or self.max_results
 
-        namespace_for_memory = (user_id, MEMORIES_STORE_NAME)
+        # Determine which namespaces to search
+        if category:
+            cat = MemoryCategory(category)
+            namespaces = [self.ns_builder.namespace_for(user_id, cat)]
+        elif memory_type:
+            cat = get_category_for_type(memory_type)
+            namespaces = [self.ns_builder.namespace_for(user_id, cat)]
+        else:
+            # Search all categories
+            namespaces = [
+                self.ns_builder.namespace_for(user_id, cat) for cat in MemoryCategory
+            ]
+
         filters = {}
         if memory_type:
             filters["memory_type"] = memory_type
 
-        results = self.store.search(
-            namespace_for_memory,
-            query=query,
-            limit=limit,
-            filter=filters,
-        )
-
         documents: List[MemoryStoreDocument] = []
-        for item in results or []:
-            # Extract timestamps from Store Item (automatically managed by LangGraph Store)
-            item_created_at = getattr(item, "created_at", None)
-            item_updated_at = getattr(item, "updated_at", None)
-
-            documents.append(
-                MemoryStoreDocument(
-                    id=getattr(item, "key", getattr(item, "id", "")),
-                    value=getattr(item, "value", {}),
-                    metadata=getattr(item, "value", {}).get("extra_metadata", {}),
-                    score=getattr(item, "score", None) if include_scores else None,
-                    created_at=item_created_at,
-                    updated_at=item_updated_at,
-                )
+        for ns in namespaces:
+            results = self.store.search(
+                ns,
+                query=query,
+                limit=limit,
+                filter=filters,
             )
 
-        # Sort by time if requested (newest first); fallback None timestamps to end
-        if sort_by_time:
+            for item in results or []:
+                item_created_at = getattr(item, "created_at", None)
+                item_updated_at = getattr(item, "updated_at", None)
+
+                documents.append(
+                    MemoryStoreDocument(
+                        id=getattr(item, "key", getattr(item, "id", "")),
+                        value=getattr(item, "value", {}),
+                        metadata=getattr(item, "value", {}).get("extra_metadata", {}),
+                        score=getattr(item, "score", None) if include_scores else None,
+                        created_at=item_created_at,
+                        updated_at=item_updated_at,
+                    )
+                )
+
+        # Re-sort by score across namespaces when not sorting by time
+        if not sort_by_time:
+            documents.sort(
+                key=lambda d: (d.score or 0.0),
+                reverse=True,
+            )
+            documents = documents[:limit]
+        else:
             documents.sort(
                 key=lambda d: (
                     d.created_at is not None,
@@ -315,6 +557,7 @@ class AgentMemoryStoreService:
                 ),
                 reverse=True,
             )
+            documents = documents[:limit]
 
         self.logger.debug(
             "Recalled %d memories for user=%s, query='%s', sort_by_time=%s",
@@ -324,6 +567,23 @@ class AgentMemoryStoreService:
             sort_by_time,
         )
         return documents
+
+    async def recall_by_category(
+        self,
+        user_id: str,
+        category: MemoryCategory,
+        query: str,
+        k: Optional[int] = None,
+        memory_type: Optional[str] = None,
+    ) -> List[MemoryStoreDocument]:
+        """Convenience: recall memories from a single CoALA category namespace."""
+        return await self.recall_memories(
+            user_id=user_id,
+            query=query,
+            k=k,
+            memory_type=memory_type,
+            category=category.value,
+        )
 
     async def get_user_context(
         self,
@@ -393,56 +653,92 @@ class AgentMemoryStoreService:
 
         return context
 
-    async def delete_memory(self, user_id: str, memory_id: str) -> bool:
-        """Remove a specific memory key from the store."""
+    async def delete_memory(
+        self,
+        user_id: str,
+        memory_id: str,
+        category: Optional[str] = None,
+    ) -> bool:
+        """Remove a specific memory key from the store.
 
-        namespace = self._namespace(user_id)
+        When category is unknown, searches all namespaces to locate the key.
+        """
         if not hasattr(self.store, "delete"):
             self.logger.warning("Store does not support delete; skipping")
             return False
 
-        try:
-            self.store.delete(namespace, memory_id)
-            self.logger.info("Deleted memory id=%s for user=%s", memory_id, user_id)
-            return True
-        except Exception as exc:  # pragma: no cover - log and continue
-            self.logger.error("Failed to delete memory id=%s: %s", memory_id, exc)
-            return False
+        if category:
+            ns = self.ns_builder.namespace_for(user_id, MemoryCategory(category))
+            try:
+                self.store.delete(ns, memory_id)
+                self.logger.info("Deleted memory id=%s for user=%s", memory_id, user_id)
+                return True
+            except Exception as exc:
+                self.logger.error("Failed to delete memory id=%s: %s", memory_id, exc)
+                return False
+
+        # Category unknown – try all namespaces
+        for cat in MemoryCategory:
+            ns = self.ns_builder.namespace_for(user_id, cat)
+            try:
+                self.store.delete(ns, memory_id)
+                self.logger.info(
+                    "Deleted memory id=%s from %s for user=%s",
+                    memory_id,
+                    cat.value,
+                    user_id,
+                )
+                return True
+            except Exception:
+                continue
+
+        self.logger.warning("Memory id=%s not found in any namespace", memory_id)
+        return False
 
     async def delete_user_memories(
         self,
         user_id: str,
         memory_type: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> int:
-        """Bulk-delete user memories by type or all."""
+        """Bulk-delete user memories by type, category, or all."""
 
-        namespace = self._namespace(user_id)
+        if category:
+            cats = [MemoryCategory(category)]
+        elif memory_type:
+            cats = [get_category_for_type(memory_type)]
+        else:
+            cats = list(MemoryCategory)
+
         filters: Dict[str, Any] = {}
         if memory_type:
             filters["memory_type"] = memory_type
 
-        try:
-            results = self.store.search(namespace, query="", filter=filters)
-        except TypeError:
-            results = self.store.search(namespace, query=None, filter=filters)
-
         deleted = 0
-        if hasattr(self.store, "delete"):
-            for item in results or []:
-                key = getattr(item, "key", getattr(item, "id", None))
-                if key is None:
-                    continue
-                try:
-                    self.store.delete(namespace, key)
-                    deleted += 1
-                except Exception as exc:  # pragma: no cover
-                    self.logger.error("Failed to delete memory %s: %s", key, exc)
+        for cat in cats:
+            ns = self.ns_builder.namespace_for(user_id, cat)
+            try:
+                results = self.store.search(ns, query="", filter=filters)
+            except TypeError:
+                results = self.store.search(ns, query=None, filter=filters)
+
+            if hasattr(self.store, "delete"):
+                for item in results or []:
+                    key = getattr(item, "key", getattr(item, "id", None))
+                    if key is None:
+                        continue
+                    try:
+                        self.store.delete(ns, key)
+                        deleted += 1
+                    except Exception as exc:  # pragma: no cover
+                        self.logger.error("Failed to delete memory %s: %s", key, exc)
 
         self.logger.info(
-            "Deleted %d memories for user=%s, type=%s",
+            "Deleted %d memories for user=%s, type=%s, category=%s",
             deleted,
             user_id,
             memory_type or "all",
+            category or "all",
         )
         return deleted
 
@@ -452,65 +748,82 @@ class AgentMemoryStoreService:
         query: Optional[str] = None,
         include_types: Optional[List[str]] = None,
         max_memories: int = 30,
+        include_categories: Optional[List[str]] = None,
     ) -> str:
-        """Render stored memories as textual context for prompts with temporal bucketing.
+        """Render stored memories as CoALA-structured XML context for prompts.
 
-        Memories are organized into time-based buckets (today, yesterday, last 5 days,
-        last 90 days, older) to give the agent temporal context about when information
-        was remembered. Newer memories are prioritized as more relevant/accurate.
+        Memories are organized first by CoALA category (semantic / episodic / procedural),
+        then within each category by temporal buckets for rich temporal awareness.
 
         Args:
             user_id: User identifier.
             query: Optional semantic search query for relevance-based recall.
             include_types: Memory types to include in context.
             max_memories: Maximum total memories to retrieve for bucketing.
+            include_categories: CoALA categories to include. Defaults to all.
 
         Returns:
-            Formatted string with memories organized by temporal buckets.
+            Formatted string with memories organized by category and time buckets.
         """
-        include_types = include_types or [
-            MemoryType.PREFERENCES.value,
-            MemoryType.FACTS.value,
-            MemoryType.INSTRUCTION.value,
-        ]
-
-        # Collect all memories with timestamps
-        all_memories: List[MemoryStoreDocument] = []
-
-        if query:
-            # Use semantic search with provided query
-            memories = await self.recall_memories(
-                user_id=user_id,
-                query=query,
-                k=max_memories,
-                sort_by_time=False,  # Keep relevance order, will bucket later
-            )
-            # Filter by type if specified
-            all_memories = [
-                m
-                for m in memories
-                if m.memory_type in include_types or m.memory_type is None
-            ]
+        # Resolve which categories & types to search
+        if include_categories:
+            cats = [MemoryCategory(c) for c in include_categories]
         else:
-            # Fetch memories by type
-            context = await self.get_user_context_with_timestamps(
-                user_id=user_id,
-                memory_types=include_types,
-                max_per_type=(
-                    max_memories // len(include_types) if include_types else 10
-                ),
-            )
-            for mtype_memories in context.values():
-                all_memories.extend(mtype_memories)
+            cats = list(MemoryCategory)
 
-        if not all_memories:
+        if include_types is None:
+            include_types = [
+                MemoryType.PREFERENCES.value,
+                MemoryType.FACTS.value,
+                MemoryType.INSTRUCTION.value,
+                MemoryType.GOALS.value,
+                MemoryType.CONTEXT.value,
+            ]
+
+        # Collect memories per category
+        category_memories: Dict[str, List[MemoryStoreDocument]] = {}
+
+        per_cat_limit = max(max_memories // len(cats), 5) if cats else max_memories
+
+        for cat in cats:
+            cat_types = [t for t in get_types_for_category(cat) if t in include_types]
+            if not cat_types and not query:
+                continue
+
+            cat_docs: List[MemoryStoreDocument] = []
+
+            if query:
+                docs = await self.recall_memories(
+                    user_id=user_id,
+                    query=query,
+                    k=per_cat_limit,
+                    category=cat.value,
+                    sort_by_time=False,
+                )
+                cat_docs.extend(
+                    d
+                    for d in docs
+                    if d.memory_type in include_types or d.memory_type is None
+                )
+            else:
+                for mtype in cat_types:
+                    docs = await self.recall_memories(
+                        user_id=user_id,
+                        query=mtype,
+                        k=per_cat_limit // max(len(cat_types), 1),
+                        memory_type=mtype,
+                        category=cat.value,
+                        sort_by_time=True,
+                    )
+                    cat_docs.extend(docs)
+
+            if cat_docs:
+                category_memories[cat.value] = cat_docs
+
+        if not category_memories:
             return ""
 
-        # Bucket memories by time
-        buckets = self._bucket_memories_by_time(all_memories)
-
-        # Build formatted output
-        return self._format_bucketed_memories(buckets, query)
+        return self._format_coala_context(category_memories, query)
 
     def _bucket_memories_by_time(
         self,
@@ -661,14 +974,94 @@ class AgentMemoryStoreService:
 
         return "\n".join(sections) if len(sections) > 1 else ""
 
+    # -----------------------------------------------------------------
+    # CoALA-structured formatting
+    # -----------------------------------------------------------------
+
+    def _format_coala_context(
+        self,
+        category_memories: Dict[str, List[MemoryStoreDocument]],
+        query: Optional[str] = None,
+    ) -> str:
+        """Format memories grouped by CoALA category with temporal buckets inside."""
+        now = datetime.now(timezone.utc)
+        current_datetime_str = now.isoformat().replace("+00:00", "Z")
+
+        header = (
+            f"Current datetime (UTC): {current_datetime_str}\n\n"
+            "Relevant information retrieved from long-term memory, organized by CoALA category. "
+            "Semantic = stable user facts & preferences; Episodic = past interaction history; "
+            "Procedural = operational rules & learned skills. "
+            "Timestamps indicate when information was saved. Use both recency and information "
+            "nature to judge relevance:"
+        )
+
+        sections: List[str] = [header]
+
+        category_labels = {
+            MemoryCategory.SEMANTIC.value: "SEMANTIC MEMORY (facts, preferences, goals)",
+            MemoryCategory.EPISODIC.value: "EPISODIC MEMORY (past experiences, sessions)",
+            MemoryCategory.PROCEDURAL.value: "PROCEDURAL MEMORY (instructions, workflows, skills)",
+        }
+
+        for cat_value, label in category_labels.items():
+            docs = category_memories.get(cat_value, [])
+            if not docs:
+                continue
+
+            sections.append(f"\n<{cat_value}_memory>")
+            sections.append(f"## {label}")
+
+            # Bucket within category
+            buckets = self._bucket_memories_by_time(docs)
+
+            def render_cat_bucket(title: str, items: List[MemoryStoreDocument]) -> None:
+                if not items:
+                    return
+                sections.append(f"\n  {title}:")
+                for item in items:
+                    ts_label = ""
+                    if item.created_at:
+                        ts_label = f"[{item.created_at.isoformat()}] "
+                    type_label = (
+                        f" (type: {item.memory_type})" if item.memory_type else ""
+                    )
+                    topic_label = f" [topic: {item.topic}]" if item.topic else ""
+                    sections.append(
+                        f"  - {ts_label}{item.content}{type_label}{topic_label}"
+                    )
+
+            render_cat_bucket("Recent (today)", buckets.get("today", []))
+            render_cat_bucket("Yesterday", buckets.get("yesterday", []))
+            render_cat_bucket(
+                "Previous 5 days", buckets.get("prev5_before_yesterday", [])
+            )
+            render_cat_bucket(
+                "Previous 90 days", buckets.get("prev90_excluding_above", [])
+            )
+            render_cat_bucket("Older", buckets.get("older", []))
+
+            sections.append(f"</{cat_value}_memory>")
+
+        return "\n".join(sections) if len(sections) > 1 else ""
+
 
 __all__ = [
     "AgentMemoryStoreService",
+    "MemoryCategory",
+    "MemoryData",
     "MemoryMetadata",
+    "MemoryNamespaceBuilder",
     "MemoryStoreDocument",
     "MemoryType",
     "MemoryTypeDescription",
+    "MEMORY_CATEGORIES",
+    "MEMORY_TYPE_TO_CATEGORY",
     "validate_memory_type",
+    "validate_memory_category",
     "format_memory_types_for_description",
+    "get_category_for_type",
+    "get_types_for_category",
     "get_memory_type_literal",
+    "get_memory_category_literal",
 ]

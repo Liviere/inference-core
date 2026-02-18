@@ -1,11 +1,14 @@
 """
-Memory Tools (Store-based)
+Memory Tools (Store-based) – CoALA Architecture
 
-Replicates the original memory tools but uses LangGraph Store-backed
-AgentMemoryStoreService for persistence instead of vector stores.
+Provides LangChain BaseTool subclasses for agent memory CRUD operations,
+organized following the CoALA (Cognitive Architectures for Language Agents)
+framework with semantic / episodic / procedural memory categories.
 
 Uses run_async_safely() to reuse the Celery worker loop when available,
 avoiding creation of conflicting event loops in nested tool calls.
+
+Source: CoALA whitepaper – arxiv:2309.02427
 """
 
 import logging
@@ -19,6 +22,7 @@ from inference_core.services.agent_memory_service import (
     AgentMemoryStoreService,
     MemoryType,
     format_memory_types_for_description,
+    get_category_for_type,
     validate_memory_type,
 )
 
@@ -26,16 +30,18 @@ logger = logging.getLogger(__name__)
 
 
 class SaveMemoryStoreTool(BaseTool):
-    """Tool for persisting user information into store-backed memory."""
+    """Tool for persisting user information into store-backed memory (CoALA-aware)."""
 
     name: str = "save_memory_store"
-    description: str = f"""Save important information about the user to store-backed long-term memory.
-Use when the user shares preferences, facts, or instructions to remember.
+    description: str = f"""Save important information about the user to long-term memory.
+Use when the user shares preferences, facts, instructions, or experiences to remember.
 
 Arguments:
   - content (required): The information to save
-  - memory_type (optional): Category of memory. Default: 'general'
+  - memory_type (optional): Fine-grained type of memory. Default: 'general'
   - topic (optional): Subject or theme tag for easier retrieval
+  - category (optional): CoALA category override (semantic/episodic/procedural).
+                         Auto-resolved from memory_type when omitted.
 
 {format_memory_types_for_description()}
 """
@@ -49,9 +55,9 @@ Arguments:
         content: str,
         memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> str:
         try:
-            # Runtime validation against canonical enum
             validated_type = validate_memory_type(memory_type)
             memory_id = run_async_safely(
                 self.memory_service.save_memory(
@@ -60,9 +66,11 @@ Arguments:
                     memory_type=validated_type,
                     session_id=self.session_id,
                     topic=topic,
+                    category=category,
                 )
             )
-            return f"✓ Memory saved successfully (id: {memory_id[:8]}...)"
+            resolved_cat = category or get_category_for_type(validated_type).value
+            return f"✓ Memory saved (id: {memory_id[:8]}..., category: {resolved_cat})"
         except ValueError as exc:
             logger.error("Invalid memory type: %s", exc)
             return f"✗ {exc}"
@@ -75,9 +83,9 @@ Arguments:
         content: str,
         memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> str:
         try:
-            # Runtime validation against canonical enum
             validated_type = validate_memory_type(memory_type)
             memory_id = await self.memory_service.save_memory(
                 user_id=self.user_id,
@@ -85,8 +93,10 @@ Arguments:
                 memory_type=validated_type,
                 session_id=self.session_id,
                 topic=topic,
+                category=category,
             )
-            return f"✓ Memory saved successfully (id: {memory_id[:8]}...)"
+            resolved_cat = category or get_category_for_type(validated_type).value
+            return f"✓ Memory saved (id: {memory_id[:8]}..., category: {resolved_cat})"
         except ValueError as exc:
             logger.error("Invalid memory type: %s", exc)
             return f"✗ {exc}"
@@ -96,15 +106,18 @@ Arguments:
 
 
 class RecallMemoryStoreTool(BaseTool):
-    """Tool for retrieving store-backed user memories by semantic search."""
+    """Tool for retrieving store-backed user memories by semantic search (CoALA-aware)."""
 
     name: str = "recall_memories_store"
-    description: str = f"""Search store-backed long-term memory for user preferences, facts, or context.
+    description: str = f"""Search long-term memory for user preferences, facts, instructions, or experiences.
+You can scope the search to a specific CoALA category for more precise results.
 
 Arguments:
   - query (required): Search query describing what to find
-  - memory_type (optional): Filter by specific category. If omitted, searches all types
+  - memory_type (optional): Filter by specific type. If omitted, searches all types
   - max_results (optional): Maximum number of memories to return
+  - category (optional): CoALA category to search (semantic/episodic/procedural).
+                         If omitted, searches all categories.
 
 {format_memory_types_for_description()}
 """
@@ -118,9 +131,9 @@ Arguments:
         query: str,
         memory_type: Optional[MemoryType] = None,
         max_results: Optional[int] = None,
+        category: Optional[str] = None,
     ) -> str:
         try:
-            # Runtime validation if memory_type provided
             if memory_type:
                 memory_type = validate_memory_type(memory_type)
             memories = run_async_safely(
@@ -129,6 +142,7 @@ Arguments:
                     query=query,
                     k=max_results or self.default_max_results,
                     memory_type=memory_type,
+                    category=category,
                 )
             )
             return self._format_results(memories)
@@ -144,9 +158,9 @@ Arguments:
         query: str,
         memory_type: Optional[MemoryType] = None,
         max_results: Optional[int] = None,
+        category: Optional[str] = None,
     ) -> str:
         try:
-            # Runtime validation if memory_type provided
             if memory_type:
                 memory_type = validate_memory_type(memory_type)
             memories = await self.memory_service.recall_memories(
@@ -154,6 +168,7 @@ Arguments:
                 query=query,
                 k=max_results or self.default_max_results,
                 memory_type=memory_type,
+                category=category,
             )
             return self._format_results(memories)
         except ValueError as exc:
@@ -164,11 +179,7 @@ Arguments:
             return f"✗ Failed to recall memories: {exc}"
 
     def _format_results(self, memories: list) -> str:
-        """Format recalled memories with temporal context.
-
-        Includes created_at timestamp for each memory to give the agent
-        awareness of when information was saved.
-        """
+        """Format recalled memories with temporal and category context."""
         if not memories:
             return "No relevant memories found."
 
@@ -178,6 +189,7 @@ Arguments:
                 f" (relevance: {mem.score:.2f})" if getattr(mem, "score", None) else ""
             )
             mem_type = mem.memory_type or "general"
+            mem_cat = getattr(mem, "memory_category", None) or ""
             mem_topic = mem.topic
             mem_id = getattr(mem, "id", "unknown")
 
@@ -190,7 +202,10 @@ Arguments:
                 elif isinstance(created_at, str):
                     created_str = f" [created: {created_at[:16]}]"
 
-            mem_string = f"{idx}. [id: {mem_id}] [{mem_type}]{created_str} - "
+            cat_label = f" [{mem_cat}]" if mem_cat else ""
+            mem_string = (
+                f"{idx}. [id: {mem_id}]{cat_label} [{mem_type}]{created_str} - "
+            )
             if mem_topic:
                 mem_string += f"({mem_topic}) "
             mem_string += f"{score_str}: {mem.content}"
@@ -199,7 +214,7 @@ Arguments:
 
 
 class UpdateMemoryStoreTool(BaseTool):
-    """Tool for updating existing user memories in store-backed memory."""
+    """Tool for updating existing user memories in store-backed memory (CoALA-aware)."""
 
     name: str = "update_memory_store"
     description: str = f"""Update an existing memory entry with new content or details.
@@ -208,8 +223,9 @@ Use when correcting information or adding details to a specific memory ID found 
 Arguments:
   - memory_id (required): The unique identifier of the memory to update
   - content (required): The new information to save
-  - memory_type (optional): Category of memory. Default: 'general'
+  - memory_type (optional): Fine-grained type of memory. Default: 'general'
   - topic (optional): Subject or theme tag
+  - category (optional): CoALA category override (semantic/episodic/procedural)
 
 {format_memory_types_for_description()}
 """
@@ -224,9 +240,9 @@ Arguments:
         content: str,
         memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> str:
         try:
-            # Runtime validation against canonical enum
             validated_type = validate_memory_type(memory_type)
             updated_id = run_async_safely(
                 self.memory_service.save_memory(
@@ -236,6 +252,7 @@ Arguments:
                     session_id=self.session_id,
                     topic=topic,
                     memory_id=memory_id,
+                    category=category,
                 )
             )
             return f"✓ Memory updated successfully (id: {updated_id})"
@@ -252,9 +269,9 @@ Arguments:
         content: str,
         memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> str:
         try:
-            # Runtime validation against canonical enum
             validated_type = validate_memory_type(memory_type)
             updated_id = await self.memory_service.save_memory(
                 user_id=self.user_id,
@@ -263,6 +280,7 @@ Arguments:
                 session_id=self.session_id,
                 topic=topic,
                 memory_id=memory_id,
+                category=category,
             )
             return f"✓ Memory updated successfully (id: {updated_id})"
         except ValueError as exc:
@@ -356,39 +374,53 @@ def get_memory_tools(
 
 
 def generate_memory_tools_system_instructions() -> str:
-    """Generate system prompt instructions for memory tools usage.
+    """Generate system prompt instructions explaining CoALA memory architecture.
 
-    Returns formatted instructions explaining when and how to use
-    save_memory_store, recall_memories_store, update_memory_store, and delete_memory_store tools.
-
-    Use this to append to agent system prompts when memory is enabled.
+    Returns formatted instructions explaining the three memory categories
+    and how/when to use each memory tool.
     """
-    return f"""## Memory Tools Usage
+    return f"""## Memory Tools Usage (CoALA Architecture)
 
-You have access to long-term memory tools to remember important information about the user:
+NOTE: Memory tools are internal cognitive processes. 
+Never verbally confirm, announce, or reference the act of saving or retrieving 
+information unless the user explicitly asks "did you remember/save that?". 
+Just use the information naturally, the way a human would.
 
-### save_memory_store
-Use this tool to save important information that should be remembered for future conversations.
+Your long-term memory is organized following the Cognitive Architectures for Language Agents (CoALA) framework
+into three categories:
+
+### Memory Categories
+
+**SEMANTIC MEMORY** — Stable facts about the world and the user.
+  Types: preferences, facts, goals, general.
+  Shared across all agents for this user.
+
+**EPISODIC MEMORY** — Sequences of past experiences and interactions.
+  Types: context, session_summary, interaction.
+  Scoped per-agent (each agent has its own history).
+
+**PROCEDURAL MEMORY** — Operational rules, workflows, and learned skills.
+  Types: instructions, workflow, skill.
+  Scoped per-agent (agent-specific capabilities).
+
+### Tools
+
+#### save_memory_store
+Save important information to long-term memory.
 **When to use:**
-- User explicitly asks you to remember something
-- User shares personal preferences (communication style, format preferences, etc.)
-- User provides factual information (location, job, interests, etc.)
-- User gives specific instructions for future interactions
-- User mentions goals or objectives they're working towards
+- User explicitly asks you to remember something (→ semantic/preferences or facts)
+- User shares personal preferences, facts, goals (→ semantic)
+- User gives instructions for future interactions (→ procedural/instructions)
+- You learn a useful technique or pattern (→ procedural/skill)
+- A conversation yields important decisions or outcomes (→ episodic/session_summary)
 
-**Do NOT use for:**
-- Temporary context within the same conversation
-- General knowledge or facts not specific to the user
-- Information that's already common knowledge
-
-### recall_memories_store
-Use this tool to retrieve relevant memories before responding to user requests.
+#### recall_memories_store
+Retrieve relevant memories. Use `category` to scope search.
 **When to use:**
-- At the start of conversations to understand user preferences
-- Before providing recommendations or suggestions
-- When context from previous interactions would be helpful
-- When user references something from past conversations
-- **Before updating or deleting memories, to get the correct memory_id**
+- At the start of conversations to understand user context (→ category: semantic)
+- When providing recommendations (→ semantic + procedural)
+- When user references past interactions (→ category: episodic)
+- Before updating/deleting memories (to get memory_id)
 
 ### update_memory_store
 Use this tool to correct or update existing memories.
@@ -406,18 +438,19 @@ Use this tool to remove specific memories.
 - **Requires memory_id obtained from recall_memories_store**
 
 **Best practices:**
+- Use `category` parameter to scope searches for precision
+- Save stable user facts as semantic, interaction history as episodic
+- Save learned agent skills and rules as procedural
 - Query memories proactively to personalize responses
-- Use specific queries to find relevant information and IDs
-- Filter by memory_type when looking for specific categories
 
 {format_memory_types_for_description()}
 
 **Example workflow:**
-1. User asks a question → recall relevant memories first
-2. Use recalled context to personalize your response
-3. If user shares new information → save it with appropriate memory_type
-4. If user corrects information → recall to find ID, then update or delete
-5. Continue conversation with personalized context
+1. User asks a question → recall semantic memories for context
+2. Use recalled context to personalize response
+3. If user shares new info → save with appropriate type (auto-categorized)
+4. If user corrects info → recall to find ID, then update
+5. At session end → optionally save session_summary as episodic memory
 """
 
 

@@ -1,35 +1,18 @@
 """
-Memory Middleware for LangChain v1 Agents.
+Memory Middleware for LangChain v1 Agents (CoALA Architecture).
 
 This middleware provides automatic memory context injection for agents using
-the LangChain v1 middleware API. It uses wrap_model_call to inject memory
-context into the system prompt before each model call.
+the LangChain v1 middleware API. It uses wrap_model_call to inject CoALA-structured
+memory context (semantic / episodic / procedural) into the system prompt
+before each model call.
 
 Key features:
-- Auto-recalls relevant memories based on user input
-- Injects memory context into system prompt via wrap_model_call
+- Auto-recalls relevant memories across CoALA categories
+- Injects CoALA-structured XML context into system prompt via wrap_model_call
 - Tracks memory operations for observability
 - Uses ThreadPoolExecutor for async memory operations in sync hooks
-  (compatible with Jupyter notebooks and other async contexts)
 
-Usage:
-    from langchain.agents import create_agent
-    from inference_core.agents.middleware import MemoryMiddleware
-
-    middleware = MemoryMiddleware(
-        memory_service=memory_service,
-        user_id="user-uuid",
-        auto_recall=True,
-    )
-
-    agent = create_agent(
-        model="gpt-4o",
-        tools=[...],
-        middleware=[middleware],
-    )
-
-Source references:
-  - LangChain v1 middleware docs: context-engineering, long-term-memory, custom
+Source: CoALA whitepaper – arxiv:2309.02427
 """
 
 import logging
@@ -54,28 +37,27 @@ if TYPE_CHECKING:
         AgentMemoryStoreService,
     )
 
-from inference_core.services.agent_memory_service import MemoryType
+from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryState(AgentState):
-    """Extended agent state for memory middleware.
-
-    This state schema extends the base AgentState with fields for tracking
-    memory operations and injected context.
+    """Extended agent state for memory middleware (CoALA-aware).
 
     Attributes:
-        memory_context: Formatted memory context string injected into conversation
+        memory_context: Formatted CoALA-structured memory context string
         memories_recalled: Number of memories retrieved during recall
         memory_recall_latency_ms: Time taken for memory recall in milliseconds
         memory_types_recalled: List of memory types that were retrieved
+        memory_categories_recalled: List of CoALA categories that had results
     """
 
     memory_context: NotRequired[str]
     memories_recalled: NotRequired[int]
     memory_recall_latency_ms: NotRequired[float]
     memory_types_recalled: NotRequired[List[str]]
+    memory_categories_recalled: NotRequired[List[str]]
 
 
 @dataclass
@@ -88,22 +70,19 @@ class _MemoryMiddlewareContext:
 
 
 class MemoryMiddleware(AgentMiddleware[MemoryState]):
-    """Middleware for automatic memory context injection into system prompt.
+    """Middleware for automatic CoALA memory context injection into system prompt.
 
-    This middleware automatically recalls relevant memories for the user
-    and injects them into the system prompt before each model call.
-
-    The middleware uses the following hooks:
-    - before_agent: Recall relevant memories and store in state
-    - wrap_model_call: Inject memory context into system prompt
+    Recalls memories across configured CoALA categories (semantic, episodic,
+    procedural) and injects structured XML context before each model call.
 
     Attributes:
         state_schema: The custom state schema with memory tracking fields
         memory_service: AgentMemoryStoreService instance for memory operations
         user_id: User ID for memory namespace isolation
         auto_recall: Whether to automatically recall memories in before_agent
-        max_recall_results: Maximum number of memories to recall
+        max_recall_results: Maximum number of memories to recall per category
         include_memory_types: Memory types to include in context recall
+        include_categories: CoALA categories to recall (defaults to all three)
     """
 
     state_schema = MemoryState
@@ -115,6 +94,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         auto_recall: bool = True,
         max_recall_results: int = 5,
         include_memory_types: Optional[List[str]] = None,
+        include_categories: Optional[List[str]] = None,
     ):
         """Initialize the memory middleware.
 
@@ -122,10 +102,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             memory_service: AgentMemoryStoreService instance for memory operations.
             user_id: User ID for memory namespace isolation.
             auto_recall: Whether to automatically recall memories in before_agent.
-                        If False, memories can still be accessed via tools.
-            max_recall_results: Maximum number of memories to recall.
+            max_recall_results: Maximum number of memories to recall per category.
             include_memory_types: Memory types to include in context.
-                                 Defaults to preferences, facts, instructions.
+                                 Defaults to preferences, facts, instructions, goals, context.
+            include_categories: CoALA categories to recall.
+                               Defaults to all three (semantic, episodic, procedural).
         """
         self.memory_service = memory_service
         self.user_id = user_id
@@ -135,6 +116,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             MemoryType.PREFERENCES.value,
             MemoryType.FACTS.value,
             MemoryType.INSTRUCTION.value,
+            MemoryType.GOALS.value,
+            MemoryType.CONTEXT.value,
+        ]
+        self.include_categories = include_categories or [
+            MemoryCategory.SEMANTIC.value,
+            MemoryCategory.EPISODIC.value,
+            MemoryCategory.PROCEDURAL.value,
         ]
 
         # Per-invocation context (persists across hooks within same invocation)
@@ -208,6 +196,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 "memories_recalled": metrics.get("count", 0),
                 "memory_recall_latency_ms": metrics.get("latency_ms", 0),
                 "memory_types_recalled": metrics.get("types", []),
+                "memory_categories_recalled": metrics.get("categories", []),
             }
 
         except Exception as e:
@@ -311,11 +300,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         return None
 
     def _recall_and_format(self, user_input: str) -> tuple[str, Dict[str, Any]]:
-        """Recall memories and format as context string.
+        """Recall memories across CoALA categories and format as structured context.
 
-        Uses run_async_safely() to reuse the Celery worker loop when available,
-        avoiding creation of conflicting event loops. Falls back to creating
-        a temporary loop in a thread if not in worker context.
+        Uses run_async_safely() to reuse the Celery worker loop when available.
 
         Args:
             user_input: User's query for relevance-based recall
@@ -326,11 +313,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         start_time = time.monotonic()
 
         async def _async_recall():
-            """Async function to perform memory recall operations."""
+            """Async function to perform CoALA multi-category recall."""
             context = await self.memory_service.format_context_for_prompt(
                 user_id=self.user_id,
                 query=user_input,
                 include_types=self.include_memory_types,
+                include_categories=self.include_categories,
             )
 
             memories_by_type = await self.memory_service.get_user_context(
@@ -344,20 +332,28 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             context, memories_by_type = run_async_safely(_async_recall(), timeout=10.0)
         except TimeoutError:
             logger.error("Memory recall timed out after 10 seconds")
-            return "", {"count": 0, "latency_ms": 0, "types": []}
+            return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
         except Exception as e:
             logger.error("Memory recall failed: %s", e)
-            return "", {"count": 0, "latency_ms": 0, "types": []}
+            return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
 
         latency_ms = (time.monotonic() - start_time) * 1000
 
         total_count = sum(len(mems) for mems in memories_by_type.values())
         types_with_memories = [t for t, mems in memories_by_type.items() if mems]
 
+        # Determine which categories had results
+        from inference_core.services.agent_memory_service import get_category_for_type
+
+        categories_with_memories = list(
+            {get_category_for_type(t).value for t in types_with_memories}
+        )
+
         metrics = {
             "count": total_count,
             "latency_ms": latency_ms,
             "types": types_with_memories,
+            "categories": categories_with_memories,
         }
 
         return context, metrics
@@ -374,16 +370,18 @@ def create_memory_middleware(
     auto_recall: bool = True,
     max_recall_results: int = 5,
     include_memory_types: Optional[List[str]] = None,
+    include_categories: Optional[List[str]] = None,
 ) -> MemoryMiddleware:
     """
-    Factory function to create MemoryMiddleware instance.
+    Factory function to create MemoryMiddleware instance (CoALA-aware).
 
     Args:
         memory_service: AgentMemoryStoreService instance
         user_id: User ID for memory namespace
         auto_recall: Enable automatic memory recall in before_agent
-        max_recall_results: Max memories to recall
+        max_recall_results: Max memories to recall per category
         include_memory_types: Memory types to include (uses canonical MemoryType values)
+        include_categories: CoALA categories to recall (defaults to all three)
 
     Returns:
         Configured MemoryMiddleware instance
@@ -394,6 +392,7 @@ def create_memory_middleware(
         auto_recall=auto_recall,
         max_recall_results=max_recall_results,
         include_memory_types=include_memory_types,
+        include_categories=include_categories,
     )
 
 
