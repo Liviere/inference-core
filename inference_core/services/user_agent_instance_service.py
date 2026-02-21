@@ -19,6 +19,11 @@ from inference_core.services.llm_config_service import LLMConfigService
 logger = logging.getLogger(__name__)
 
 
+INSTANCE_LOAD_OPTIONS = (
+    selectinload(UserAgentInstance.subagents).selectinload(UserAgentInstance.subagents),
+)
+
+
 class UserAgentInstanceService:
     """
     Service for managing user agent instances.
@@ -50,7 +55,7 @@ class UserAgentInstanceService:
 
         query = (
             select(UserAgentInstance)
-            .options(selectinload(UserAgentInstance.subagents))
+            .options(*INSTANCE_LOAD_OPTIONS)
             .where(and_(*filters))
             .order_by(
                 UserAgentInstance.is_default.desc(), UserAgentInstance.display_name
@@ -67,7 +72,7 @@ class UserAgentInstanceService:
         """Get a specific agent instance by ID."""
         query = (
             select(UserAgentInstance)
-            .options(selectinload(UserAgentInstance.subagents))
+            .options(*INSTANCE_LOAD_OPTIONS)
             .where(
                 and_(
                     UserAgentInstance.id == instance_id,
@@ -86,7 +91,7 @@ class UserAgentInstanceService:
         """Get a specific agent instance by name."""
         query = (
             select(UserAgentInstance)
-            .options(selectinload(UserAgentInstance.subagents))
+            .options(*INSTANCE_LOAD_OPTIONS)
             .where(
                 and_(
                     UserAgentInstance.instance_name == instance_name,
@@ -104,7 +109,7 @@ class UserAgentInstanceService:
         """Get the user's default agent instance."""
         query = (
             select(UserAgentInstance)
-            .options(selectinload(UserAgentInstance.subagents))
+            .options(*INSTANCE_LOAD_OPTIONS)
             .where(
                 and_(
                     UserAgentInstance.user_id == user_id,
@@ -212,7 +217,7 @@ class UserAgentInstanceService:
         # Refresh with eager loading of subagents to avoid MissingGreenlet error
         query = (
             select(UserAgentInstance)
-            .options(selectinload(UserAgentInstance.subagents))
+            .options(*INSTANCE_LOAD_OPTIONS)
             .where(UserAgentInstance.id == instance.id)
         )
         result = await self.db.execute(query)
@@ -237,7 +242,7 @@ class UserAgentInstanceService:
         # We need to eager load subagents if we are going to update them
         query = (
             select(UserAgentInstance)
-            .options(selectinload(UserAgentInstance.subagents))
+            .options(*INSTANCE_LOAD_OPTIONS)
             .where(
                 and_(
                     UserAgentInstance.id == instance_id,
@@ -298,7 +303,7 @@ class UserAgentInstanceService:
         # Refresh with eager loading of subagents to avoid MissingGreenlet error
         query = (
             select(UserAgentInstance)
-            .options(selectinload(UserAgentInstance.subagents))
+            .options(*INSTANCE_LOAD_OPTIONS)
             .where(UserAgentInstance.id == instance.id)
         )
         result = await self.db.execute(query)
@@ -345,12 +350,14 @@ class UserAgentInstanceService:
             templates.append(
                 {
                     "agent_name": agent_name,
-                    "primary_model": agent_config.primary_model,
-                    "fallback_models": agent_config.fallback_models,
+                    "primary_model": agent_config.primary,
+                    "fallback_models": agent_config.fallback,
                     "description": agent_config.description,
                     "allowed_tools": agent_config.allowed_tools,
                     "mcp_profile": agent_config.mcp_profile,
-                    "local_tool_providers": [],  # Not in resolved, keep empty or from base if needed
+                    "local_tool_providers": agent_config.local_tool_providers or [],
+                    "skills": agent_config.skills,
+                    "subagents": agent_config.subagents,
                 }
             )
         return templates

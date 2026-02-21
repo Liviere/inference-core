@@ -186,6 +186,7 @@ class UserAgentInstance(BaseModel):
         primaryjoin=id == user_agent_subagents.c.parent_id,
         secondaryjoin=id == user_agent_subagents.c.subagent_id,
         backref="parent_agents",
+        lazy="selectin",
         doc="Subagents assigned to this deep agent instance",
     )
 

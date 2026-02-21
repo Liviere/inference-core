@@ -125,7 +125,7 @@ class AgentInstanceResponse(BaseModel):
     config_overrides: Optional[Dict[str, Any]] = None
     is_default: bool
     is_deepagent: bool
-    subagents: Optional[List["AgentInstanceResponse"]] = None
+    subagents: Optional[List[AgentInstanceResponse]] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -156,6 +156,12 @@ class AgentTemplateResponse(BaseModel):
     mcp_profile: Optional[str] = Field(None, description="MCP profile name")
     local_tool_providers: Optional[List[str]] = Field(
         None, description="Local tool provider names"
+    )
+    skills: Optional[List[str]] = Field(
+        None, description="Pre-defined skills in template"
+    )
+    subagents: Optional[List[str]] = Field(
+        None, description="Pre-defined subagent names in template"
     )
 
 
