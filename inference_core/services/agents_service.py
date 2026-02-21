@@ -739,15 +739,17 @@ class DeepAgentService(AgentService):
         self,
         agent_name: str,
         tools: Optional[list[Callable]] = None,
-        subagents: Optional[list["AgentService"]] = None,
+        subagents: Optional[list[AgentService]] = None,
         use_checkpoints: bool = False,
         use_memory: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
+        context_schema: Optional[Any] = None,
         middleware: Optional[list[Any]] = None,
         enable_cost_tracking: bool = True,
         user_id: Optional[uuid.UUID] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
+        config: Optional[LLMConfig] = None,
     ):
         """Initialize the DeepAgentService.
 
@@ -758,23 +760,27 @@ class DeepAgentService(AgentService):
             use_checkpoints: Whether to enable checkpointing for conversation history.
             use_memory: Whether to automatically add memory tools and MemoryMiddleware.
             checkpoint_config: Configuration for the checkpointer.
+            context_schema: Optional schema for agent context.
             middleware: List of middleware to apply to the agent.
             enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
             user_id: Optional user ID for cost tracking and memory attribution.
             session_id: Optional session ID for grouping related requests.
             request_id: Optional correlation ID (e.g., Celery task ID).
+            config: Optional LLMConfig instance with overrides (e.g. user preferences).
         """
         super().__init__(
             agent_name,
             tools,
             use_checkpoints=use_checkpoints,
+            use_memory=use_memory,
             checkpoint_config=checkpoint_config,
+            context_schema=context_schema,
             middleware=middleware,
             enable_cost_tracking=enable_cost_tracking,
-            use_memory=use_memory,
             user_id=user_id,
             session_id=session_id,
             request_id=request_id,
+            config=config,
         )
         self.subagents = [s.agent for s in subagents] if subagents else []
 
@@ -811,8 +817,11 @@ class DeepAgentService(AgentService):
         self.agent = create_deep_agent(
             self.model,
             tools=self.tools,
+            checkpointer=self.checkpointer,
+            context_schema=self.context_schema,
             middleware=middleware,
             system_prompt=self._enhanced_system_prompt,
+            subagents=self.subagents,
             **kwargs,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
