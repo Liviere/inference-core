@@ -123,6 +123,26 @@ Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be config
 | `AGENT_MEMORY_MAX_RESULTS` | 5            | Max memories to retrieve during recall                   |
 | `AGENT_MEMORY_AUTO_RECALL` | true         | Auto-recall relevant memories in middleware before_agent |
 
+## Agent Skills & Subagents (DeepAgent)
+
+Specialized capabilities and delegation for `DeepAgentService`. Configured in `llm_config.yaml` under `agents:`.
+
+- **Skills**: Paths to `SKILL.md` directories containing instructions the agent reads on-demand.
+- **Subagents**: List of other agents (from `agents:` section) that the main agent can delegate tasks to using the `task()` tool.
+
+Example `llm_config.yaml`:
+
+```yaml
+agents:
+  research_agent:
+    primary: 'gpt-5-mini'
+    skills: ['./skills/research/']
+    subagents: ['web_searcher']
+  web_searcher:
+    primary: 'gpt-5-mini'
+    local_tool_providers: ['assistant_tools']
+```
+
 ## Email / Notifications
 
 | Variable                | Default               | Description             |

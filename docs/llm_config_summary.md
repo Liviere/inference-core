@@ -35,6 +35,7 @@
   - `AgentConfig` is a dedicated Pydantic model (separate from `TaskConfig`) used to represent agent-specific settings and can be extended independently of tasks.
   - Agent primary model can be overridden via environment variables defined in `settings.env_overrides` (same mechanism as for tasks).
   - `LLMConfig.get_agent_model()` and `LLMConfig.get_agent_model_with_fallback()` resolve the effective model for an agent, including fallback logic and availability checks (API key / base_url).
+  - New fields `skills` (list of paths) and `subagents` (list of agent names) enable delegating tasks and using specialized workflows.
   - Agents are intentionally a separate namespace from `tasks` (no implicit name collision); code first resolves agents from `agents:` and does not mutate existing `tasks` mapping.
 
 - **`settings`**: global behavioral settings (e.g. `enable_caching`, `cache_ttl_seconds`, `default_timeout`, `retry_attempts`, `env_overrides`, `usage_logging`, etc.)

@@ -4,7 +4,7 @@ from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
-from deepagents import create_deep_agent
+from deepagents import CompiledSubAgent, create_deep_agent
 from langchain.agents import create_agent
 from langchain.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -782,7 +782,8 @@ class DeepAgentService(AgentService):
             request_id=request_id,
             config=config,
         )
-        self.subagents = [s.agent for s in subagents] if subagents else []
+        self._explicit_subagents = subagents or []
+        self.subagents = []
 
     async def create_agent(
         self, system_prompt: Optional[str] = None, **kwargs
@@ -813,6 +814,48 @@ class DeepAgentService(AgentService):
         # Build middleware list
         middleware = self._build_middleware()
 
+        # Process explicitly provided subagents
+        for subagent_service in self._explicit_subagents:
+            if not hasattr(subagent_service, "agent") or subagent_service.agent is None:
+                await subagent_service.create_agent()
+
+            compiled_subagent = CompiledSubAgent(
+                name=subagent_service.agent_name,
+                description=subagent_service.agent_config.description
+                or f"Subagent {subagent_service.agent_name}",
+                runnable=subagent_service.agent,
+            )
+            self.subagents.append(compiled_subagent)
+
+        # Process subagents from config
+        if self.agent_config.subagents:
+            added_names = {s.name for s in self.subagents}
+            for subagent_name in self.agent_config.subagents:
+                if subagent_name in added_names:
+                    continue
+
+                subagent_service = AgentService(
+                    agent_name=subagent_name,
+                    use_checkpoints=self.use_checkpoints,
+                    use_memory=self.use_memory,
+                    checkpoint_config=self.checkpoint_config,
+                    context_schema=self.context_schema,
+                    enable_cost_tracking=self._enable_cost_tracking,
+                    user_id=self._user_id,
+                    session_id=self._session_id,
+                    request_id=self._request_id,
+                    config=self.config,
+                )
+                await subagent_service.create_agent()
+
+                compiled_subagent = CompiledSubAgent(
+                    name=subagent_name,
+                    description=subagent_service.agent_config.description
+                    or f"Subagent {subagent_name}",
+                    runnable=subagent_service.agent,
+                )
+                self.subagents.append(compiled_subagent)
+
         # Create the deep agent
         self.agent = create_deep_agent(
             self.model,
@@ -822,6 +865,7 @@ class DeepAgentService(AgentService):
             middleware=middleware,
             system_prompt=self._enhanced_system_prompt,
             subagents=self.subagents,
+            skills=self.agent_config.skills,
             **kwargs,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)

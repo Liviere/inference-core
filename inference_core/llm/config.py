@@ -455,6 +455,12 @@ class AgentConfig(BaseModel):
         description="Model overrides triggered by specific tool calls. "
         "Allows using different models for different tools.",
     )
+    skills: Optional[List[str]] = Field(
+        default=None, description="List of skill source paths for the agent"
+    )
+    subagents: Optional[List[str]] = Field(
+        default=None, description="List of subagent names to be available to this agent"
+    )
 
 
 class TaskConfig(BaseModel):

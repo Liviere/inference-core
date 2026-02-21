@@ -1306,20 +1306,20 @@ files = [
 
 [[package]]
 name = "deepagents"
-version = "0.3.1"
+version = "0.3.3"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 optional = false
 python-versions = "<4.0,>=3.11"
 groups = ["main"]
 files = [
-    {file = "deepagents-0.3.1-py3-none-any.whl", hash = "sha256:f62c735715f8d18edbde6bcd4b54c5a8155f38a3625292ba43503ea947929985"},
-    {file = "deepagents-0.3.1.tar.gz", hash = "sha256:99d89cc5ce4729ac27fd2afdc93a132d8b863e5972ecede1c6d21cd921dae298"},
+    {file = "deepagents-0.3.3-py3-none-any.whl", hash = "sha256:284595438b10cd1a7c781bf035b1b3ef95fe18139433d9f586ae29822a6a0aff"},
+    {file = "deepagents-0.3.3.tar.gz", hash = "sha256:17e08ceef80de8b128e8414bfa6df910128874e684e807520921351d083f20a4"},
 ]
 
 [package.dependencies]
 langchain = ">=1.1.0,<2.0.0"
 langchain-anthropic = ">=1.2.0,<2.0.0"
-langchain-core = ">=1.1.0,<2.0.0"
+langchain-core = ">=1.2.5,<2.0.0"
 langchain-google-genai = "*"
 wcmatch = "*"
 

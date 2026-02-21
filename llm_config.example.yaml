@@ -426,6 +426,19 @@ agents:
     description: 'Agent that switches models based on tool usage'
     local_tool_providers: ['assistant_tools']
 
+  # Example: DeepAgent with skills and subagents
+  research_agent:
+    primary: 'gpt-5-mini'
+    description: 'Agent that uses skills and delegates to subagents for research'
+    skills: ['./skills/web-research/']
+    subagents: ['web_researcher']
+
+  web_researcher:
+    primary: 'gpt-5-mini'
+    description: 'Subagent specialized in web research'
+    local_tool_providers: ['assistant_tools']
+    allowed_tools: ['web_search', 'write_file', 'read_file', 'list_files', 'fetch_url']
+
     # Tool-based model overrides example
     # When a specific tool is called, the next model call will use a different model
     tool_model_overrides:
