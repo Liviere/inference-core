@@ -208,7 +208,15 @@ class UserAgentInstanceService:
 
         self.db.add(instance)
         await self.db.commit()
-        await self.db.refresh(instance)
+
+        # Refresh with eager loading of subagents to avoid MissingGreenlet error
+        query = (
+            select(UserAgentInstance)
+            .options(selectinload(UserAgentInstance.subagents))
+            .where(UserAgentInstance.id == instance.id)
+        )
+        result = await self.db.execute(query)
+        instance = result.scalar_one()
 
         logger.info(
             f"Created agent instance '{instance_name}' (base={base_agent_name}) "
@@ -286,7 +294,15 @@ class UserAgentInstanceService:
                 setattr(instance, key, value)
 
         await self.db.commit()
-        await self.db.refresh(instance)
+
+        # Refresh with eager loading of subagents to avoid MissingGreenlet error
+        query = (
+            select(UserAgentInstance)
+            .options(selectinload(UserAgentInstance.subagents))
+            .where(UserAgentInstance.id == instance.id)
+        )
+        result = await self.db.execute(query)
+        instance = result.scalar_one()
 
         logger.info(
             f"Updated agent instance '{instance.instance_name}' "
