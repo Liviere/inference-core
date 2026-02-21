@@ -13,10 +13,38 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    ForeignKey,
+    Index,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from ..base import BaseModel, SmartJSON
+from ..base import Base, BaseModel, SmartJSON
+
+# Association table for deep agent subagents
+user_agent_subagents = Table(
+    "user_agent_subagents",
+    Base.metadata,
+    Column(
+        "parent_id",
+        Uuid(as_uuid=True),
+        ForeignKey("user_agent_instances.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "subagent_id",
+        Uuid(as_uuid=True),
+        ForeignKey("user_agent_instances.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 class UserAgentInstance(BaseModel):
@@ -132,6 +160,14 @@ class UserAgentInstance(BaseModel):
         doc="Whether this is the user's default agent for new chats",
     )
 
+    # Deep agent flag
+    is_deepagent: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        doc="Whether this instance is a deep agent",
+    )
+
     # Status
     is_active: Mapped[bool] = mapped_column(
         Boolean,
@@ -143,6 +179,15 @@ class UserAgentInstance(BaseModel):
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id])
+
+    subagents: Mapped[List["UserAgentInstance"]] = relationship(
+        "UserAgentInstance",
+        secondary=user_agent_subagents,
+        primaryjoin=id == user_agent_subagents.c.parent_id,
+        secondaryjoin=id == user_agent_subagents.c.subagent_id,
+        backref="parent_agents",
+        doc="Subagents assigned to this deep agent instance",
+    )
 
     __table_args__ = (
         # One instance name per user

@@ -135,6 +135,8 @@ async def create_agent_instance(
             system_prompt_append=data.system_prompt_append,
             config_overrides=data.config_overrides,
             is_default=data.is_default,
+            is_deepagent=data.is_deepagent,
+            subagent_ids=data.subagent_ids,
         )
     except ValueError as e:
         raise HTTPException(

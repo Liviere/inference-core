@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from inference_core.database.sql.models.user_agent_instance import UserAgentInstance
 from inference_core.services.llm_config_service import LLMConfigService
@@ -49,6 +50,7 @@ class UserAgentInstanceService:
 
         query = (
             select(UserAgentInstance)
+            .options(selectinload(UserAgentInstance.subagents))
             .where(and_(*filters))
             .order_by(
                 UserAgentInstance.is_default.desc(), UserAgentInstance.display_name
@@ -63,10 +65,14 @@ class UserAgentInstanceService:
         instance_id: UUID,
     ) -> Optional[UserAgentInstance]:
         """Get a specific agent instance by ID."""
-        query = select(UserAgentInstance).where(
-            and_(
-                UserAgentInstance.id == instance_id,
-                UserAgentInstance.user_id == user_id,
+        query = (
+            select(UserAgentInstance)
+            .options(selectinload(UserAgentInstance.subagents))
+            .where(
+                and_(
+                    UserAgentInstance.id == instance_id,
+                    UserAgentInstance.user_id == user_id,
+                )
             )
         )
         result = await self.db.execute(query)
@@ -78,10 +84,14 @@ class UserAgentInstanceService:
         instance_name: str,
     ) -> Optional[UserAgentInstance]:
         """Get a specific agent instance by name."""
-        query = select(UserAgentInstance).where(
-            and_(
-                UserAgentInstance.instance_name == instance_name,
-                UserAgentInstance.user_id == user_id,
+        query = (
+            select(UserAgentInstance)
+            .options(selectinload(UserAgentInstance.subagents))
+            .where(
+                and_(
+                    UserAgentInstance.instance_name == instance_name,
+                    UserAgentInstance.user_id == user_id,
+                )
             )
         )
         result = await self.db.execute(query)
@@ -92,11 +102,15 @@ class UserAgentInstanceService:
         user_id: UUID,
     ) -> Optional[UserAgentInstance]:
         """Get the user's default agent instance."""
-        query = select(UserAgentInstance).where(
-            and_(
-                UserAgentInstance.user_id == user_id,
-                UserAgentInstance.is_default == True,  # noqa: E712
-                UserAgentInstance.is_active == True,  # noqa: E712
+        query = (
+            select(UserAgentInstance)
+            .options(selectinload(UserAgentInstance.subagents))
+            .where(
+                and_(
+                    UserAgentInstance.user_id == user_id,
+                    UserAgentInstance.is_default == True,  # noqa: E712
+                    UserAgentInstance.is_active == True,  # noqa: E712
+                )
             )
         )
         result = await self.db.execute(query)
@@ -118,6 +132,8 @@ class UserAgentInstanceService:
         system_prompt_append: Optional[str] = None,
         config_overrides: Optional[Dict[str, Any]] = None,
         is_default: bool = False,
+        is_deepagent: bool = False,
+        subagent_ids: Optional[List[UUID]] = None,
     ) -> UserAgentInstance:
         """Create a new agent instance for a user.
 
@@ -125,6 +141,7 @@ class UserAgentInstanceService:
         - base_agent_name exists in resolved config (with admin overrides)
         - primary_model (if provided) exists in available models from resolved config
         - instance_name is unique for this user
+        - subagent_ids (if provided) exist and belong to the user
 
         If is_default=True, clears any existing default for the user.
         """
@@ -153,6 +170,22 @@ class UserAgentInstanceService:
                 f"Agent instance '{instance_name}' already exists for this user"
             )
 
+        # Validate subagents
+        subagents = []
+        if is_deepagent and subagent_ids:
+            query = select(UserAgentInstance).where(
+                and_(
+                    UserAgentInstance.id.in_(subagent_ids),
+                    UserAgentInstance.user_id == user_id,
+                )
+            )
+            result = await self.db.execute(query)
+            subagents = list(result.scalars().all())
+            if len(subagents) != len(subagent_ids):
+                raise ValueError(
+                    "One or more subagents not found or do not belong to the user"
+                )
+
         # Clear existing default if setting new one
         if is_default:
             await self._clear_user_defaults(user_id)
@@ -168,7 +201,9 @@ class UserAgentInstanceService:
             system_prompt_append=system_prompt_append,
             config_overrides=config_overrides,
             is_default=is_default,
+            is_deepagent=is_deepagent,
             is_active=True,
+            subagents=subagents,
         )
 
         self.db.add(instance)
@@ -191,7 +226,20 @@ class UserAgentInstanceService:
 
         Validates model names and manages default flag.
         """
-        instance = await self.get_instance(user_id, instance_id)
+        # We need to eager load subagents if we are going to update them
+        query = (
+            select(UserAgentInstance)
+            .options(selectinload(UserAgentInstance.subagents))
+            .where(
+                and_(
+                    UserAgentInstance.id == instance_id,
+                    UserAgentInstance.user_id == user_id,
+                )
+            )
+        )
+        result = await self.db.execute(query)
+        instance = result.scalar_one_or_none()
+
         if not instance:
             return None
 
@@ -208,6 +256,29 @@ class UserAgentInstanceService:
         # Handle default flag
         if updates.get("is_default") is True and not instance.is_default:
             await self._clear_user_defaults(user_id)
+
+        # Handle subagents update
+        if "subagent_ids" in updates:
+            subagent_ids = updates.pop("subagent_ids")
+            if subagent_ids is not None:
+                if not updates.get("is_deepagent", instance.is_deepagent):
+                    raise ValueError("Cannot assign subagents to a non-deep agent")
+
+                subagents_query = select(UserAgentInstance).where(
+                    and_(
+                        UserAgentInstance.id.in_(subagent_ids),
+                        UserAgentInstance.user_id == user_id,
+                    )
+                )
+                subagents_result = await self.db.execute(subagents_query)
+                subagents = list(subagents_result.scalars().all())
+                if len(subagents) != len(subagent_ids):
+                    raise ValueError(
+                        "One or more subagents not found or do not belong to the user"
+                    )
+                instance.subagents = subagents
+            else:
+                instance.subagents = []
 
         # Apply updates
         for key, value in updates.items():

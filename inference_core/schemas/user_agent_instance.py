@@ -67,6 +67,14 @@ class AgentInstanceCreate(BaseModel):
         default=False,
         description="Set as default agent for new chats",
     )
+    is_deepagent: bool = Field(
+        default=False,
+        description="Whether this instance is a deep agent",
+    )
+    subagent_ids: Optional[List[UUID]] = Field(
+        None,
+        description="List of subagent instance IDs (only valid if is_deepagent=True)",
+    )
 
     @field_validator("instance_name")
     @classmethod
@@ -92,6 +100,8 @@ class AgentInstanceUpdate(BaseModel):
     system_prompt_append: Optional[str] = Field(None, max_length=2000)
     config_overrides: Optional[Dict[str, Any]] = None
     is_default: Optional[bool] = None
+    is_deepagent: Optional[bool] = None
+    subagent_ids: Optional[List[UUID]] = None
     is_active: Optional[bool] = None
 
 
@@ -114,6 +124,8 @@ class AgentInstanceResponse(BaseModel):
     system_prompt_append: Optional[str] = None
     config_overrides: Optional[Dict[str, Any]] = None
     is_default: bool
+    is_deepagent: bool
+    subagents: Optional[List["AgentInstanceResponse"]] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
