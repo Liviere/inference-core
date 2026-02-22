@@ -585,6 +585,9 @@ class LLMConfigService:
             fallback = agent_config.fallback
             allowed_tools = agent_config.allowed_tools
             mcp_profile = agent_config.mcp_profile
+            local_tool_providers = agent_config.local_tool_providers
+            skills = agent_config.skills
+            subagents = agent_config.subagents
 
             # Apply admin agent overrides
             if agent_name in admin_overrides.get("agent", {}):
@@ -604,11 +607,30 @@ class LLMConfigService:
                     )
                     sources[f"agents.{agent_name}.allowed_tools"] = "admin"
 
+                if "local_tool_providers" in agent_override:
+                    local_tool_providers = agent_override["local_tool_providers"].get(
+                        "value", local_tool_providers
+                    )
+                    sources[f"agents.{agent_name}.local_tool_providers"] = "admin"
+
+                if "skills" in agent_override:
+                    skills = agent_override["skills"].get("value", skills)
+                    sources[f"agents.{agent_name}.skills"] = "admin"
+
+                if "subagents" in agent_override:
+                    subagents = agent_override["subagents"].get(
+                        "value", subagents
+                    )
+                    sources[f"agents.{agent_name}.subagents"] = "admin"
+
             agents[agent_name] = ResolvedAgentConfig(
                 primary_model=primary,
                 fallback_models=fallback,
                 allowed_tools=allowed_tools,
                 mcp_profile=mcp_profile,
+                local_tool_providers=local_tool_providers,
+                skills=skills,
+                subagents=subagents,
                 description=agent_config.description,
             )
 

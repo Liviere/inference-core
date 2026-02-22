@@ -350,8 +350,8 @@ class UserAgentInstanceService:
             templates.append(
                 {
                     "agent_name": agent_name,
-                    "primary_model": agent_config.primary,
-                    "fallback_models": agent_config.fallback,
+                    "primary_model": agent_config.primary_model,
+                    "fallback_models": agent_config.fallback_models,
                     "description": agent_config.description,
                     "allowed_tools": agent_config.allowed_tools,
                     "mcp_profile": agent_config.mcp_profile,

@@ -323,6 +323,9 @@ class ResolvedAgentConfig(BaseModel):
     fallback_models: Optional[List[str]] = None
     allowed_tools: Optional[List[str]] = None
     mcp_profile: Optional[str] = None
+    local_tool_providers: Optional[List[str]] = None
+    skills: Optional[List[str]] = None
+    subagents: Optional[List[str]] = None
     description: Optional[str] = None
 
 
