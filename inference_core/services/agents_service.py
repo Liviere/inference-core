@@ -170,7 +170,8 @@ class AgentService:
             The configured agent callable.
         """
         # Load tools from registered providers if any are configured
-        await self._load_providers_tools()
+        provider_context = self._build_provider_user_context(kwargs.get("user_context"))
+        await self._load_providers_tools(user_context=provider_context)
 
         # Load tools from MCP if configured
         await self._load_mcp_tools()
@@ -382,7 +383,32 @@ class AgentService:
             )
             return InMemorySaver()
 
-    async def _load_providers_tools(self) -> None:
+    def _build_provider_user_context(
+        self, user_context: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
+        """Build a stable context payload for provider-level tool scoping.
+
+        This exists to keep per-request and per-user identity fields in one place
+        so every provider gets the same context shape, regardless of how the agent
+        was instantiated.
+        """
+        merged_context = dict(user_context or {})
+
+        if self._user_id and "user_id" not in merged_context:
+            merged_context["user_id"] = str(self._user_id)
+
+        if self._session_id and "session_id" not in merged_context:
+            merged_context["session_id"] = self._session_id
+
+        if self._request_id and "request_id" not in merged_context:
+            merged_context["request_id"] = self._request_id
+
+        return merged_context
+
+    async def _load_providers_tools(
+        self,
+        user_context: Optional[dict[str, Any]] = None,
+    ) -> None:
         """Load tools from registered providers for the agent."""
         # Collect tools from local providers if configured
         configured_providers = self.agent_config.local_tool_providers or []
@@ -406,10 +432,15 @@ class AgentService:
             return
 
         try:
+            provider_context = self._build_provider_user_context(user_context)
             provider_tools = await load_tools_for_agent(
                 self.agent_name,
                 confirmed_providers,
                 allowed_tools=self.agent_config.allowed_tools,
+                user_context=provider_context,
+                user_id=provider_context.get("user_id"),
+                session_id=provider_context.get("session_id"),
+                request_id=provider_context.get("request_id"),
             )
             self.tools.extend(provider_tools)
         except Exception as e:
@@ -800,7 +831,8 @@ class DeepAgentService(AgentService):
             The configured deep agent callable.
         """
         # Load tools from registered providers if any are configured
-        await self._load_providers_tools()
+        provider_context = self._build_provider_user_context(kwargs.get("user_context"))
+        await self._load_providers_tools(user_context=provider_context)
 
         # Load tools from MCP if configured
         await self._load_mcp_tools()

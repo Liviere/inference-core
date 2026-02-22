@@ -2,6 +2,7 @@
 Unit tests for Agent MCP configuration and tools.
 """
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -176,6 +177,79 @@ class TestAgentServiceMCP:
 
             mock_get.return_value = factory
             yield factory
+
+    @pytest.mark.asyncio
+    async def test_load_providers_tools_passes_user_context(self, mock_model_factory):
+        """Test _load_providers_tools forwards user-scoped context to providers."""
+        mock_model_factory.config.get_specific_agent_config.return_value.local_tool_providers = [
+            "test_provider"
+        ]
+        mock_model_factory.config.get_specific_agent_config.return_value.allowed_tools = [
+            "tool1"
+        ]
+
+        service = AgentService(
+            agent_name="test_agent",
+            user_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            session_id="session-123",
+            request_id="request-123",
+        )
+
+        with patch(
+            "inference_core.services.agents_service.get_registered_providers",
+            return_value={"test_provider": MagicMock()},
+        ), patch(
+            "inference_core.services.agents_service.load_tools_for_agent",
+            new=AsyncMock(return_value=[]),
+        ) as mock_loader:
+            await service._load_providers_tools(
+                user_context={"tenant_id": "tenant-1", "user_id": "custom-user"}
+            )
+
+            mock_loader.assert_awaited_once()
+            _, loader_kwargs = mock_loader.await_args
+            assert loader_kwargs["user_context"]["tenant_id"] == "tenant-1"
+            assert loader_kwargs["user_context"]["user_id"] == "custom-user"
+            assert loader_kwargs["session_id"] == "session-123"
+            assert loader_kwargs["request_id"] == "request-123"
+
+    @pytest.mark.asyncio
+    async def test_load_providers_tools_adds_user_id_when_missing(
+        self, mock_model_factory
+    ):
+        """Test _load_providers_tools fills missing user_id from AgentService identity."""
+        mock_model_factory.config.get_specific_agent_config.return_value.local_tool_providers = [
+            "test_provider"
+        ]
+        mock_model_factory.config.get_specific_agent_config.return_value.allowed_tools = (
+            None
+        )
+
+        service = AgentService(
+            agent_name="test_agent",
+            user_id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+            session_id="session-abc",
+            request_id="request-abc",
+        )
+
+        with patch(
+            "inference_core.services.agents_service.get_registered_providers",
+            return_value={"test_provider": MagicMock()},
+        ), patch(
+            "inference_core.services.agents_service.load_tools_for_agent",
+            new=AsyncMock(return_value=[]),
+        ) as mock_loader:
+            await service._load_providers_tools(user_context={})
+
+            mock_loader.assert_awaited_once()
+            _, loader_kwargs = mock_loader.await_args
+            assert loader_kwargs["user_id"] == "22222222-2222-2222-2222-222222222222"
+            assert (
+                loader_kwargs["user_context"]["user_id"]
+                == "22222222-2222-2222-2222-222222222222"
+            )
+            assert loader_kwargs["session_id"] == "session-abc"
+            assert loader_kwargs["request_id"] == "request-abc"
 
     @pytest.mark.asyncio
     async def test_load_mcp_tools_no_profile(self, mock_model_factory):

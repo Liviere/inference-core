@@ -133,8 +133,8 @@ async def load_tools_for_task(
     Args:
         task_type: Task type (e.g., "chat", "completion")
         provider_names: List of provider names to load tools from
-        user_context: Optional user context dict
         allowed_tools: Optional allowlist of tool names
+        **kwargs: Additional context-specific parameters
 
     Returns:
         List of LangChain tools, deduplicated by name
@@ -209,10 +209,10 @@ async def load_tools_for_agent(
     """Load tools from specified providers for a task.
 
     Args:
-        task_type: Task type (e.g., "chat", "completion")
+        agent_name: Agent name (e.g., "assistant")
         provider_names: List of provider names to load tools from
-        user_context: Optional user context dict
         allowed_tools: Optional allowlist of tool names
+        **kwargs: Additional context-specific parameters
 
     Returns:
         List of LangChain tools, deduplicated by name
