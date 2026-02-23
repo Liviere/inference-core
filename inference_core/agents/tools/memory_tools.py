@@ -414,6 +414,13 @@ Save important information to long-term memory.
 - You learn a useful technique or pattern (→ procedural/skill)
 - A conversation yields important decisions or outcomes (→ episodic/session_summary)
 
+**Also save proactively (without being asked):**
+- User corrects your output or expresses dissatisfaction → procedural/instructions
+  (save what went wrong and what they prefer instead)
+- You notice a recurring pattern in how user communicates or works → semantic/preferences
+- User makes a decision that will likely affect future sessions → episodic/interaction
+- You adapt your response style mid-conversation based on feedback → procedural/skill
+
 #### recall_memories_store
 Retrieve relevant memories. Use `category` to scope search.
 **When to use:**
@@ -442,7 +449,9 @@ Use this tool to remove specific memories.
 - Save stable user facts as semantic, interaction history as episodic
 - Save learned agent skills and rules as procedural
 - Query memories proactively to personalize responses
-
+- Before finalizing every response, silently ask: "Did I learn anything 
+  worth saving?" If yes — save it before responding.
+  
 {format_memory_types_for_description()}
 
 **Example workflow:**
