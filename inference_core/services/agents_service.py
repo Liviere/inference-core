@@ -716,6 +716,8 @@ class AgentService:
                     # Track agent result (messages, etc.) - skip middleware-only updates
                     if "messages" in data:
                         last_agent_result = data
+                elif step == "__interrupt__":
+                    last_agent_result = {"__interrupt__": data[0]}
 
         # Use the last result that contained messages, or fallback to last step
         if last_agent_result:
