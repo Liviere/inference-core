@@ -368,6 +368,37 @@ class ImapService:
         except Exception as e:
             raise ImapReadError(str(e), alias, folder or "INBOX", e)
 
+    def get_email_by_uid(
+        self,
+        host_alias: Optional[str] = None,
+        folder: Optional[str] = None,
+        uid: str = "",
+    ) -> Optional[EmailMessage]:
+        """Fetch a single email by UID.
+
+        Args:
+            host_alias: Host alias (uses default if None)
+            folder: Folder to read from
+            uid: UID of the email to fetch
+        Returns:
+            Parsed EmailMessage object or None if not found
+        """
+        if not uid:
+            return None
+
+        conn = self._get_connection(host_alias)
+        alias = host_alias or self.config.email.default_host
+
+        try:
+            conn.select_folder(folder)
+            folder_name = folder or conn.imap_config.default_folder
+            return self._fetch_message(conn, uid.encode(), folder_name)
+
+        except ImapReadError:
+            raise
+        except Exception as e:
+            raise ImapReadError(str(e), alias, folder or "INBOX", e)
+
     def _fetch_message(
         self, conn: ImapConnection, uid: bytes, folder: str
     ) -> Optional[EmailMessage]:
