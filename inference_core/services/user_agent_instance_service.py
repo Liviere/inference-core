@@ -271,7 +271,7 @@ class UserAgentInstanceService:
             await self._clear_user_defaults(user_id)
 
         # Handle subagents update
-        if "subagent_ids" in updates:
+        if updates.get("subagent_ids"):
             subagent_ids = updates.pop("subagent_ids")
             if subagent_ids is not None:
                 if not updates.get("is_deepagent", instance.is_deepagent):
