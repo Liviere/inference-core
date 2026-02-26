@@ -97,26 +97,32 @@ class LLMModelFactory:
     ) -> Optional[BaseChatModel]:
         """Create model instance based on provider"""
 
-        # Merge config with kwargs
-        # Start with provided kwargs (new dynamic params like reasoning_effort, verbosity etc.)
-        raw_params: Dict[str, Any] = dict(kwargs)
+        # Start with config params (including extras)
+        # Exclude internal fields specific to ModelConfig infrastructure
+        exclude_fields = {
+            "name",
+            "provider",
+            "api_key",
+            "base_url",
+            "pricing",
+        }
+        # Dump config to dict, which now includes extra fields (nested dicts etc.)
+        config_params = config.model_dump(exclude=exclude_fields)
 
-        # Backward compatibility: fill legacy sampling params only if not explicitly provided
-        if "temperature" not in raw_params:
-            raw_params["temperature"] = config.temperature
-        if "max_tokens" not in raw_params:
-            raw_params["max_tokens"] = config.max_tokens
-        if "top_p" not in raw_params:
-            raw_params["top_p"] = config.top_p
-        if "frequency_penalty" not in raw_params:
-            raw_params["frequency_penalty"] = config.frequency_penalty
-        if "presence_penalty" not in raw_params:
-            raw_params["presence_penalty"] = config.presence_penalty
-        # Unified timeout key (internal) -> request_timeout or provider mapping via policy rename
-        if "request_timeout" not in raw_params and "timeout" in raw_params:
-            raw_params["request_timeout"] = raw_params.pop("timeout")
-        elif "request_timeout" not in raw_params:
-            raw_params["request_timeout"] = config.timeout
+        # Merge config with kwargs
+        # kwargs take precedence over config_params
+        raw_params: Dict[str, Any] = {**config_params, **kwargs}
+
+        # Handle 'timeout' which is in config but might need to be 'request_timeout'
+        # depending on provider policy, OR just standard normalization.
+        # Below logic preserves existing behavior for timeout mapping
+        if "request_timeout" not in raw_params:
+            if "timeout" in raw_params:
+                # Use timeout if provided (from config or kwargs)
+                raw_params["request_timeout"] = raw_params.pop("timeout")
+            elif hasattr(config, "timeout"):
+                # Fallback to config timeout if still missing (though model_dump should have it)
+                raw_params["request_timeout"] = config.timeout
 
         # Normalize parameters for the specific provider
         try:

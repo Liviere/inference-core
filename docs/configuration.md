@@ -173,6 +173,26 @@ For detailed information on how these layers interact and how to manage them via
 - Reduce Sentry sample rates for high throughput environments.
 - For Qdrant production add persistence volume & consider auth.
 
+## Model Parameters (YAML)
+
+The system supports arbitrary parameters in `llm_config.yaml` within model definitions. These can be simple values or nested structures (dictionaries).
+
+To use an extra parameter, you must also allow it in the `param_policies` section:
+
+```yaml
+models:
+  gpt-5-nano:
+    provider: 'openai'
+    logit_bias:
+      '50256': -100
+
+param_policies:
+  providers:
+    openai:
+      patch:
+        allowed: ['logit_bias']
+```
+
 ## Playwright MCP / Docker timeouts
 
 You can override MCP CLI timeouts via environment variables. The compose files include these variables and provide sensible defaults.

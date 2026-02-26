@@ -20,6 +20,7 @@
 - **`models`**: each named entry becomes a `ModelConfig` in `LLMConfig.models`.
 
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
+  - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
   - directly affects instance creation in `inference_core/llm/models.py`.
   - missing API key / base_url affects `is_model_available()` results.
 

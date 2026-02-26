@@ -242,6 +242,8 @@ class ModelParams(BaseModel):
     verbosity: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
+    model_config = ConfigDict(extra="allow")
+
 
 class ModelConfig(ModelParams):
     """Configuration for a specific model"""
@@ -255,7 +257,7 @@ class ModelConfig(ModelParams):
         default=None, description="Pricing configuration"
     )
 
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
 
 
 class MCPServerTimeouts(BaseModel):
@@ -609,14 +611,21 @@ class LLMConfig:
                 except Exception as e:
                     logging.error(f"Error parsing pricing config for {model_name}: {e}")
 
+            # Prepare initialization data, excluding fields we construct manually
+            init_data = model_data.copy()
+            init_data.pop("provider", None)
+            init_data.pop("name", None)
+            init_data.pop("api_key", None)
+            init_data.pop("base_url", None)
+            init_data.pop("pricing", None)
+
             self.models[model_name] = ModelConfig(
                 name=model_name,
                 provider=ModelProvider(provider_name),
                 api_key=api_key,
                 base_url=base_url,
-                max_tokens=model_data.get("max_tokens", 2048),
-                temperature=model_data.get("temperature", 0.7),
                 pricing=pricing_config,
+                **init_data,
             )
 
         # Parse task model assignments
@@ -923,15 +932,18 @@ class LLMConfig:
         config = self.get_model_config(model_name)
         if not config:
             return None
-        return ModelParams(
-            max_tokens=config.max_tokens,
-            temperature=config.temperature,
-            top_p=config.top_p,
-            frequency_penalty=config.frequency_penalty,
-            presence_penalty=config.presence_penalty,
-            verbosity=config.verbosity,
-            reasoning_effort=config.reasoning_effort,
-        )
+
+        # Create ModelParams from config, including extra fields
+        # Exclude ModelConfig-specific fields
+        exclude_fields = {
+            "name",
+            "provider",
+            "api_key",
+            "base_url",
+            "timeout",
+            "pricing",
+        }
+        return ModelParams(**config.model_dump(exclude=exclude_fields))
 
     def add_custom_model(self, model_config: ModelConfig):
         """Add a custom model configuration"""
@@ -1167,8 +1179,7 @@ class LLMConfig:
                 if model_name in new_config.models:
                     model = new_config.models[model_name]
                     for key, value in overrides.items():
-                        if hasattr(model, key):
-                            setattr(model, key, value)
+                        setattr(model, key, value)
 
         # Apply task overrides
         if task_overrides:

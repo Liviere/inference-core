@@ -93,6 +93,12 @@ models:
     description: 'Fast and efficient for most tasks'
     max_tokens: 4096
     temperature: 0.7
+    # Example of extra/nested parameters supported by the core:
+    # These must also be added to 'allowed' in param_policies for the provider
+    logit_bias:
+      '50256': -100
+    response_format:
+      type: 'json_object'
     # Pricing (sourced from OpenAI pricing page)
     pricing:
       currency: USD
@@ -529,7 +535,7 @@ param_policies:
   providers:
     openai:
       patch:
-        allowed: ['logit_bias']
+        allowed: ['logit_bias', 'response_format']
     claude:
       patch:
         allowed: ['metadata', 'system']

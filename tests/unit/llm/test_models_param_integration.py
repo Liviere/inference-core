@@ -63,6 +63,8 @@ class TestLLMModelFactoryParameterNormalization:
             "frequency_penalty": 0.0,
             "presence_penalty": 0.0,
             "request_timeout": 60,
+            "verbosity": None,  # Added due to dump-based param collection
+            "reasoning_effort": None,  # Added due to dump-based param collection
         }
         mock_normalize.assert_called_once_with(
             ModelProvider.OPENAI, expected_raw_params, model_name=config.name
@@ -119,6 +121,8 @@ class TestLLMModelFactoryParameterNormalization:
             "frequency_penalty": 0.0,
             "presence_penalty": 0.0,
             "request_timeout": 60,
+            "verbosity": None,  # Added due to dump-based param collection
+            "reasoning_effort": None,  # Added due to dump-based param collection
         }
         mock_normalize.assert_called_once_with(
             ModelProvider.GEMINI, expected_raw_params, model_name=config.name
@@ -184,6 +188,8 @@ class TestLLMModelFactoryParameterNormalization:
             "frequency_penalty": 0.0,
             "presence_penalty": 0.0,
             "request_timeout": 60,
+            "verbosity": None,
+            "reasoning_effort": None,
         }
         mock_normalize.assert_called_once_with(
             ModelProvider.CLAUDE, expected_raw_params, model_name=config.name
@@ -272,6 +278,8 @@ class TestLLMModelFactoryParameterNormalization:
             "frequency_penalty": 0.1,  # From kwargs
             "presence_penalty": 0.0,  # From config (not overridden)
             "request_timeout": 30,  # From kwargs (timeout -> request_timeout)
+            "verbosity": None,
+            "reasoning_effort": None,
         }
         mock_normalize.assert_called_once_with(
             ModelProvider.OPENAI, expected_raw_params, model_name=config.name
