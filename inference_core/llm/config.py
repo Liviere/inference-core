@@ -457,11 +457,18 @@ class AgentConfig(BaseModel):
         description="Model overrides triggered by specific tool calls. "
         "Allows using different models for different tools.",
     )
+    system_prompt: Optional[str] = Field(
+        default=None,
+        description="System prompt for the agent, used when spawned as a subagent",
+    )
     skills: Optional[List[str]] = Field(
         default=None, description="List of skill source paths for the agent"
     )
     subagents: Optional[List[str]] = Field(
         default=None, description="List of subagent names to be available to this agent"
+    )
+    interrupt_on: Optional[Dict[str, Any]] = Field(
+        default=None, description="Configuration for human-in-the-loop interruptions"
     )
 
 

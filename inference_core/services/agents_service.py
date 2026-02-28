@@ -4,8 +4,12 @@ from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
-from deepagents import CompiledSubAgent, create_deep_agent
+from deepagents import CompiledSubAgent, SubAgent
+from deepagents.backends import StateBackend
+from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware import SkillsMiddleware, SubAgentMiddleware
 from langchain.agents import create_agent
+from langchain.agents.middleware import InterruptOnConfig
 from langchain.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -762,17 +766,27 @@ class AgentService:
 
 
 class DeepAgentService(AgentService):
-    """Service for creating deep agents with sub-agent support.
+    """Service for creating agents with sub-agent orchestration via SubAgentMiddleware.
 
-    Deep agents are designed for complex multi-step tasks that may require
-    coordination with other specialized agents.
+    Uses the standard langchain `create_agent` with deepagents middleware
+    (SubAgentMiddleware, SkillsMiddleware) instead of the opinionated
+    `create_deep_agent` factory.  This gives full control over the parent
+    agent's middleware stack while still supporting:
+
+    * Declarative subagent specs (SubAgent TypedDict) built from YAML config
+    * Pre-compiled subagent runnables (CompiledSubAgent)
+    * Per-subagent interrupt_on / skills / middleware
+    * SkillsMiddleware for the parent agent itself
     """
+
+    # Source: deepagents v0.4.4 – SubAgentMiddleware, SkillsMiddleware docs
 
     def __init__(
         self,
         agent_name: str,
         tools: Optional[list[Callable]] = None,
-        subagents: Optional[list[AgentService]] = None,
+        subagents: Optional[list["AgentService | SubAgent | CompiledSubAgent"]] = None,
+        interrupt_on: Optional[dict[str, bool | InterruptOnConfig]] = None,
         use_checkpoints: bool = False,
         use_memory: bool = False,
         checkpoint_config: Optional[dict[str, Any]] = None,
@@ -783,23 +797,33 @@ class DeepAgentService(AgentService):
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
         config: Optional[LLMConfig] = None,
+        backend: Optional[BackendProtocol | BackendFactory] = None,
+        _visited_agents: Optional[set[str]] = None,
     ):
         """Initialize the DeepAgentService.
 
         Args:
             agent_name: Name of the agent configuration to use.
-            tools: List of tools to provide to the agent.
-            subagents: List of sub-agents that can be invoked by this agent.
-            use_checkpoints: Whether to enable checkpointing for conversation history.
-            use_memory: Whether to automatically add memory tools and MemoryMiddleware.
-            checkpoint_config: Configuration for the checkpointer.
+            tools: List of tools to provide to the parent agent.
+            subagents: Subagent specifications.  Accepts a mix of:
+                - AgentService instances (compiled into CompiledSubAgent)
+                - SubAgent dicts  (passed directly to SubAgentMiddleware)
+                - CompiledSubAgent dicts (passed directly to SubAgentMiddleware)
+            interrupt_on: Default interrupt_on config applied to config-based
+                subagents that do not declare their own.
+            use_checkpoints: Whether to enable checkpointing.
+            use_memory: Whether to add memory tools and MemoryMiddleware.
+            checkpoint_config: Checkpointer settings.
             context_schema: Optional schema for agent context.
-            middleware: List of middleware to apply to the agent.
-            enable_cost_tracking: Whether to automatically add CostTrackingMiddleware.
-            user_id: Optional user ID for cost tracking and memory attribution.
-            session_id: Optional session ID for grouping related requests.
-            request_id: Optional correlation ID (e.g., Celery task ID).
-            config: Optional LLMConfig instance with overrides (e.g. user preferences).
+            middleware: Extra middleware for the parent agent.
+            enable_cost_tracking: Auto-add CostTrackingMiddleware.
+            user_id: User ID for cost tracking / memory isolation.
+            session_id: Session ID for grouping related requests.
+            request_id: Correlation ID (e.g. Celery task ID).
+            config: LLMConfig instance with overrides.
+            backend: Backend for SubAgentMiddleware / SkillsMiddleware.
+                Defaults to StateBackend (lazy factory).
+            _visited_agents: Internal recursion guard.
         """
         super().__init__(
             agent_name,
@@ -816,91 +840,277 @@ class DeepAgentService(AgentService):
             config=config,
         )
         self._explicit_subagents = subagents or []
-        self.subagents = []
+
+        # Merge interrupt_on: YAML config base + dynamic overrides on top
+        self.interrupt_on: dict[str, Any] = {}
+        if self.agent_config and self.agent_config.interrupt_on:
+            self.interrupt_on.update(self.agent_config.interrupt_on)
+        if interrupt_on:
+            self.interrupt_on.update(interrupt_on)
+
+        # Backend for SubAgentMiddleware / SkillsMiddleware; StateBackend is
+        # a lightweight factory that requires no filesystem root.
+        self._backend: BackendProtocol | BackendFactory = backend or StateBackend
+
+        self._visited_agents = _visited_agents or set()
+        self._visited_agents.add(agent_name)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     async def create_agent(
         self, system_prompt: Optional[str] = None, **kwargs
     ) -> Callable:
-        """Create and configure the deep agent with tools, middleware, and sub-agents.
+        """Create a standard agent with SubAgentMiddleware & SkillsMiddleware.
+
+        Steps:
+        1. Load parent's own tools (providers, MCP, memory)
+        2. Build subagent specs (explicit + YAML-config-based)
+        3. Inject SubAgentMiddleware into middleware stack
+        4. Optionally inject SkillsMiddleware
+        5. Call langchain create_agent (NOT create_deep_agent)
 
         Args:
-            system_prompt: Optional system prompt/instructions for the agent.
-                          If memory is enabled, memory tools usage instructions
-                          will be automatically appended.
-            **kwargs: Additional arguments passed to create_deep_agent.
+            system_prompt: System prompt for the parent agent.
+            **kwargs: Forwarded to ``create_agent``.
 
         Returns:
-            The configured deep agent callable.
+            The compiled agent graph.
         """
-        # Load tools from registered providers if any are configured
+        # 1. Load parent's own tools
         provider_context = self._build_provider_user_context(kwargs.get("user_context"))
         await self._load_providers_tools(user_context=provider_context)
-
-        # Load tools from MCP if configured
         await self._load_mcp_tools()
-
-        # Load memory tools if configured
         await self._load_memory_tools()
 
-        # Build enhanced system prompt with memory instructions if enabled
+        # 2. Build enhanced system prompt
         self._enhanced_system_prompt = self._build_system_prompt(system_prompt)
 
-        # Build middleware list
+        # 3. Build base middleware (cost tracking, memory, tool-model switch)
         middleware = self._build_middleware()
 
-        # Process explicitly provided subagents
-        for subagent_service in self._explicit_subagents:
-            if not hasattr(subagent_service, "agent") or subagent_service.agent is None:
-                await subagent_service.create_agent()
-
-            compiled_subagent = CompiledSubAgent(
-                name=subagent_service.agent_name,
-                description=subagent_service.agent_config.description
-                or f"Subagent {subagent_service.agent_name}",
-                runnable=subagent_service.agent,
+        # 4. Build subagent specs and add SubAgentMiddleware
+        subagent_specs = await self._build_subagent_specs()
+        if subagent_specs:
+            sub_middleware = SubAgentMiddleware(
+                backend=self._backend,
+                subagents=subagent_specs,
             )
-            self.subagents.append(compiled_subagent)
+            middleware.append(sub_middleware)
 
-        # Process subagents from config
-        if self.agent_config.subagents:
-            added_names = {s.name for s in self.subagents}
-            for subagent_name in self.agent_config.subagents:
-                if subagent_name in added_names:
-                    continue
+        # 5. Add SkillsMiddleware if parent has skills configured
+        if self.agent_config and self.agent_config.skills:
+            skills_middleware = SkillsMiddleware(
+                backend=self._backend,
+                sources=self.agent_config.skills,
+            )
+            middleware.append(skills_middleware)
 
-                subagent_service = AgentService(
-                    agent_name=subagent_name,
-                    use_checkpoints=self.use_checkpoints,
-                    use_memory=self.use_memory,
-                    checkpoint_config=self.checkpoint_config,
-                    context_schema=self.context_schema,
-                    enable_cost_tracking=self._enable_cost_tracking,
-                    user_id=self._user_id,
-                    session_id=self._session_id,
-                    request_id=self._request_id,
-                    config=self.config,
-                )
-                await subagent_service.create_agent()
-
-                compiled_subagent = CompiledSubAgent(
-                    name=subagent_name,
-                    description=subagent_service.agent_config.description
-                    or f"Subagent {subagent_name}",
-                    runnable=subagent_service.agent,
-                )
-                self.subagents.append(compiled_subagent)
-
-        # Create the deep agent
-        self.agent = create_deep_agent(
+        # 6. Create the agent via standard create_agent
+        self.agent = create_agent(
             self.model,
             tools=self.tools,
             checkpointer=self.checkpointer,
             context_schema=self.context_schema,
             middleware=middleware,
             system_prompt=self._enhanced_system_prompt,
-            subagents=self.subagents,
-            skills=self.agent_config.skills,
             **kwargs,
         )
         self.model_params = self.model_factory.config.get_model_params(self.model_name)
         return self.agent
+
+    # ------------------------------------------------------------------
+    # Subagent spec builders
+    # ------------------------------------------------------------------
+
+    async def _build_subagent_specs(
+        self,
+    ) -> list[SubAgent | CompiledSubAgent]:
+        """Merge explicit subagents with YAML-config-based ones.
+
+        Explicit subagents are processed first; config-based ones are added
+        only if their name has not already been claimed by an explicit spec.
+        A visited-agents set prevents infinite recursion.
+        """
+        specs: list[SubAgent | CompiledSubAgent] = []
+
+        # --- Explicit subagents (passed via constructor) ---
+        for subagent in self._explicit_subagents:
+            spec = await self._resolve_explicit_subagent(subagent)
+            specs.append(spec)
+
+        # --- Config-defined subagents ---
+        if self.agent_config and self.agent_config.subagents:
+            added_names = self._collect_spec_names(specs)
+            for subagent_name in self.agent_config.subagents:
+                if subagent_name in added_names:
+                    continue
+                if subagent_name in self._visited_agents:
+                    logging.debug(
+                        "Skipping subagent '%s' – already visited (recursion guard)",
+                        subagent_name,
+                    )
+                    continue
+
+                spec = await self._build_subagent_from_config(subagent_name)
+                if spec is not None:
+                    specs.append(spec)
+
+        return specs
+
+    async def _resolve_explicit_subagent(
+        self,
+        subagent: "AgentService | SubAgent | CompiledSubAgent",
+    ) -> SubAgent | CompiledSubAgent:
+        """Turn an explicit subagent into a middleware-ready spec.
+
+        AgentService instances are compiled and wrapped as CompiledSubAgent.
+        Raw SubAgent / CompiledSubAgent dicts are passed through.
+        """
+        if isinstance(subagent, AgentService):
+            if not hasattr(subagent, "agent") or subagent.agent is None:
+                await subagent.create_agent()
+            return CompiledSubAgent(
+                name=subagent.agent_name,
+                description=(
+                    subagent.agent_config.description
+                    or f"Subagent {subagent.agent_name}"
+                ),
+                runnable=subagent.agent,
+            )
+
+        # Already a SubAgent or CompiledSubAgent TypedDict
+        return subagent
+
+    async def _build_subagent_from_config(
+        self, subagent_name: str
+    ) -> Optional[SubAgent | CompiledSubAgent]:
+        """Build a SubAgent spec from YAML agent configuration.
+
+        Constructs a declarative SubAgent dict so that SubAgentMiddleware
+        handles compilation internally.  Falls back to compiling via
+        AgentService if the subagent itself has nested subagents.
+        """
+        sub_config = self.model_factory.config.get_specific_agent_config(subagent_name)
+        if not sub_config:
+            logging.warning(
+                "No config found for subagent '%s' – skipping", subagent_name
+            )
+            return None
+
+        # If the subagent itself has nested subagents, recursively create a
+        # DeepAgentService and wrap it as CompiledSubAgent.
+        if sub_config.subagents:
+            return await self._compile_nested_deep_subagent(subagent_name, sub_config)
+
+        # Otherwise build a declarative SubAgent spec
+        model = self.model_factory.get_model_for_agent(subagent_name)
+        tools = await self._load_tools_for_subagent(subagent_name, sub_config)
+
+        spec: dict[str, Any] = {
+            "name": subagent_name,
+            "description": sub_config.description or f"Subagent {subagent_name}",
+            "system_prompt": (
+                sub_config.system_prompt
+                or sub_config.description
+                or f"You are {subagent_name}."
+            ),
+            "model": model,
+        }
+
+        if tools:
+            spec["tools"] = tools
+
+        # Per-subagent interrupt_on: own config wins, parent's as fallback
+        sub_interrupt = sub_config.interrupt_on or self.interrupt_on
+        if sub_interrupt:
+            spec["interrupt_on"] = sub_interrupt
+
+        if sub_config.skills:
+            spec["skills"] = sub_config.skills
+
+        return spec
+
+    async def _compile_nested_deep_subagent(
+        self, subagent_name: str, sub_config: Any
+    ) -> CompiledSubAgent:
+        """Recursively compile a subagent that itself has subagents.
+
+        Creates a nested DeepAgentService, compiles its graph, and wraps
+        the result as CompiledSubAgent for the parent's SubAgentMiddleware.
+        """
+        nested_service = DeepAgentService(
+            agent_name=subagent_name,
+            use_checkpoints=self.use_checkpoints,
+            use_memory=self.use_memory,
+            checkpoint_config=self.checkpoint_config,
+            context_schema=self.context_schema,
+            enable_cost_tracking=self._enable_cost_tracking,
+            user_id=self._user_id,
+            session_id=self._session_id,
+            request_id=self._request_id,
+            config=self.config,
+            backend=self._backend,
+            _visited_agents=set(self._visited_agents),
+        )
+        await nested_service.create_agent(
+            system_prompt=(
+                sub_config.system_prompt
+                or sub_config.description
+                or f"You are {subagent_name}."
+            )
+        )
+        return CompiledSubAgent(
+            name=subagent_name,
+            description=sub_config.description or f"Subagent {subagent_name}",
+            runnable=nested_service.agent,
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    async def _load_tools_for_subagent(
+        self, agent_name: str, agent_config: Any
+    ) -> list[Any]:
+        """Load tools from registered providers for a config-based subagent.
+
+        Mirrors the tool-loading logic of AgentService._load_providers_tools
+        but returns the tools instead of mutating self.tools.
+        """
+        configured_providers = agent_config.local_tool_providers or []
+        if not configured_providers:
+            return []
+
+        registered_providers = get_registered_providers()
+        confirmed = [
+            name for name in configured_providers if name in registered_providers
+        ]
+        if not confirmed:
+            return []
+
+        try:
+            return await load_tools_for_agent(
+                agent_name,
+                provider_names=confirmed,
+                allowed_tools=agent_config.allowed_tools,
+            )
+        except Exception as e:
+            logging.warning("Failed to load tools for subagent '%s': %s", agent_name, e)
+            return []
+
+    @staticmethod
+    def _collect_spec_names(
+        specs: list[SubAgent | CompiledSubAgent],
+    ) -> set[str]:
+        """Extract the 'name' field from a list of subagent specs."""
+        names: set[str] = set()
+        for s in specs:
+            if isinstance(s, dict):
+                name = s.get("name")
+            else:
+                name = getattr(s, "name", None)
+            if name:
+                names.add(name)
+        return names
