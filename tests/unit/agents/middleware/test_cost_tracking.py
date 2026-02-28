@@ -1,0 +1,559 @@
+"""Tests for CostTrackingMiddleware.
+
+Covers the static helper methods (_extract_usage_fragment, _merge_extra_tokens,
+_detect_provider) and the lifecycle hooks (before_agent, after_model,
+wrap_model_call, wrap_tool_call).
+"""
+
+import time
+import uuid
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from inference_core.agents.middleware.cost_tracking import (
+    CostTrackingMiddleware,
+    CostTrackingState,
+    _MiddlewareContext,
+    create_cost_tracking_middleware,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def middleware():
+    """Basic CostTrackingMiddleware with all external deps mocked away."""
+    return CostTrackingMiddleware(
+        pricing_config=None,
+        user_id=uuid.uuid4(),
+        session_id="sess-1",
+        request_id="req-1",
+        task_type="agent",
+        request_mode="sync",
+        provider="openai",
+        model_name="gpt-4o",
+    )
+
+
+# ---------------------------------------------------------------------------
+# _extract_usage_fragment  (pure static, no mocking needed)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractUsageFragment:
+    """Verify token extraction from LangChain usage_metadata dicts."""
+
+    def test_basic_tokens(self):
+        """Standard input/output/total extraction."""
+        meta = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+        fragment, extras = CostTrackingMiddleware._extract_usage_fragment(meta)
+
+        assert fragment["input_tokens"] == 100
+        assert fragment["output_tokens"] == 50
+        assert fragment["total_tokens"] == 150
+        assert extras == {}
+
+    def test_total_defaults_to_sum(self):
+        """total_tokens defaults to input + output when absent."""
+        meta = {"input_tokens": 30, "output_tokens": 20}
+        fragment, _ = CostTrackingMiddleware._extract_usage_fragment(meta)
+        assert fragment["total_tokens"] == 50
+
+    def test_none_values_treated_as_zero(self):
+        """None token counts are coerced to 0 (total falls back to sum)."""
+        meta = {"input_tokens": None, "output_tokens": None}
+        fragment, _ = CostTrackingMiddleware._extract_usage_fragment(meta)
+        assert fragment["input_tokens"] == 0
+        assert fragment["output_tokens"] == 0
+        # total_tokens defaults to input + output when key is absent
+        assert fragment["total_tokens"] == 0
+
+    def test_input_detail_tokens(self):
+        """Tokens from input_token_details are extracted to extras."""
+        meta = {
+            "input_tokens": 200,
+            "output_tokens": 50,
+            "total_tokens": 250,
+            "input_token_details": {"cached": 80, "audio": 0},
+        }
+        fragment, extras = CostTrackingMiddleware._extract_usage_fragment(meta)
+
+        assert fragment["cached_tokens"] == 80
+        assert extras["cached_tokens"] == 80
+        # audio=0 should be excluded (not > 0)
+        assert "audio_tokens" not in extras
+
+    def test_output_detail_tokens(self):
+        """Tokens from output_token_details are extracted to extras."""
+        meta = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "output_token_details": {"reasoning": 30},
+        }
+        fragment, extras = CostTrackingMiddleware._extract_usage_fragment(meta)
+
+        assert fragment["reasoning_tokens"] == 30
+        assert extras["reasoning_tokens"] == 30
+
+    def test_top_level_extra_tokens(self):
+        """Arbitrary *_tokens keys at top level are captured in extras."""
+        meta = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "cache_read_tokens": 25,
+        }
+        fragment, extras = CostTrackingMiddleware._extract_usage_fragment(meta)
+
+        assert extras["cache_read_tokens"] == 25
+        assert fragment["cache_read_tokens"] == 25
+
+    def test_empty_metadata(self):
+        """Empty dict produces all-zero fragment."""
+        fragment, extras = CostTrackingMiddleware._extract_usage_fragment({})
+        assert fragment["input_tokens"] == 0
+        assert fragment["output_tokens"] == 0
+        assert fragment["total_tokens"] == 0
+        assert extras == {}
+
+
+# ---------------------------------------------------------------------------
+# _merge_extra_tokens  (pure static)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeExtraTokens:
+    """Verify additive merging of extra-token counters."""
+
+    def test_disjoint_keys(self):
+        """Non-overlapping keys are simply combined."""
+        merged = CostTrackingMiddleware._merge_extra_tokens(
+            {"a": 10}, {"b": 20}
+        )
+        assert merged == {"a": 10, "b": 20}
+
+    def test_overlapping_keys_are_summed(self):
+        """Overlapping keys have their values added."""
+        merged = CostTrackingMiddleware._merge_extra_tokens(
+            {"reasoning_tokens": 5}, {"reasoning_tokens": 10}
+        )
+        assert merged == {"reasoning_tokens": 15}
+
+    def test_empty_inputs(self):
+        """Two empty dicts produce empty result."""
+        assert CostTrackingMiddleware._merge_extra_tokens({}, {}) == {}
+
+    def test_original_not_mutated(self):
+        """Accumulated dict must not be mutated in place."""
+        accumulated = {"a": 1}
+        CostTrackingMiddleware._merge_extra_tokens(accumulated, {"a": 2})
+        assert accumulated == {"a": 1}
+
+
+# ---------------------------------------------------------------------------
+# _detect_provider  (static, parametrized)
+# ---------------------------------------------------------------------------
+
+
+class TestDetectProvider:
+    """Verify model-name → provider mapping heuristic."""
+
+    @pytest.mark.parametrize(
+        "model_name, expected_provider",
+        [
+            ("gpt-4o", "openai"),
+            ("gpt-3.5-turbo", "openai"),
+            ("o1-preview", "openai"),
+            ("o3-mini", "openai"),
+            ("davinci-002", "openai"),
+            ("claude-3-opus", "anthropic"),
+            ("anthropic-claude", "anthropic"),
+            ("gemini-1.5-pro", "google"),
+            ("palm-2", "google"),
+            ("llama-3-70b", "meta"),
+            ("mistral-large", "meta"),
+            ("mixtral-8x7b", "meta"),
+            ("deepseek-coder", "deepseek"),
+            ("my-custom-model", "unknown"),
+        ],
+    )
+    def test_detect_provider(self, model_name, expected_provider):
+        """Provider is detected from substrings in model name."""
+        assert CostTrackingMiddleware._detect_provider(model_name) == expected_provider
+
+
+# ---------------------------------------------------------------------------
+# before_agent
+# ---------------------------------------------------------------------------
+
+
+class TestBeforeAgent:
+    """Verify that before_agent initialises context and state counters."""
+
+    def test_initialises_counters(self, middleware):
+        """Returns state dict with all tracking fields zeroed."""
+        state = CostTrackingState(messages=[])
+        runtime = MagicMock()
+
+        updates = middleware.before_agent(state, runtime)
+
+        assert updates is not None
+        assert updates["accumulated_input_tokens"] == 0
+        assert updates["accumulated_output_tokens"] == 0
+        assert updates["accumulated_total_tokens"] == 0
+        assert updates["accumulated_extra_tokens"] == {}
+        assert updates["tool_call_count"] == 0
+        assert updates["model_call_count"] == 0
+        assert updates["model_call_latencies"] == []
+        assert updates["tool_call_latencies"] == []
+        assert "usage_session_id" in updates
+
+    def test_creates_fresh_context(self, middleware):
+        """Internal _ctx is freshly created on each before_agent call."""
+        state = CostTrackingState(messages=[])
+        runtime = MagicMock()
+
+        middleware.before_agent(state, runtime)
+        assert middleware._ctx is not None
+        assert middleware._ctx.model_call_start_time is None
+
+
+# ---------------------------------------------------------------------------
+# wrap_model_call
+# ---------------------------------------------------------------------------
+
+
+class TestWrapModelCall:
+    """Verify that wrap_model_call records start time and delegates."""
+
+    def test_records_start_time(self, middleware):
+        """model_call_start_time is set before calling handler."""
+        middleware._ctx = _MiddlewareContext()
+        request = MagicMock()
+        response = MagicMock()
+        handler = MagicMock(return_value=response)
+
+        result = middleware.wrap_model_call(request, handler)
+
+        assert middleware._ctx.model_call_start_time is not None
+        handler.assert_called_once_with(request)
+        assert result is response
+
+    def test_no_ctx_still_works(self, middleware):
+        """If _ctx is None, handler is still called (no crash)."""
+        middleware._ctx = None
+        handler = MagicMock(return_value="ok")
+
+        result = middleware.wrap_model_call(MagicMock(), handler)
+
+        assert result == "ok"
+        handler.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# wrap_tool_call
+# ---------------------------------------------------------------------------
+
+
+class TestWrapToolCall:
+    """Verify tool call wrapping and error handling."""
+
+    def test_delegates_to_handler(self, middleware):
+        """Handler is called with request and its result is returned."""
+        request = MagicMock()
+        request.tool_call = {"name": "calculator"}
+        response = MagicMock()
+        handler = MagicMock(return_value=response)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        handler.assert_called_once_with(request)
+        assert result is response
+
+    def test_returns_error_dict_on_handler_exception(self, middleware):
+        """When handler raises, an error dict is returned instead of re-raising."""
+        request = MagicMock()
+        request.tool_call = {"name": "broken_tool"}
+        handler = MagicMock(side_effect=RuntimeError("boom"))
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert result == {"error": "boom"}
+
+
+# ---------------------------------------------------------------------------
+# after_model  (requires mocked state + UsageSession)
+# ---------------------------------------------------------------------------
+
+
+class TestAfterModel:
+    """Verify that after_model extracts usage and persists via UsageSession."""
+
+    def test_returns_none_when_no_context(self, middleware):
+        """If _ctx is None, returns None immediately."""
+        middleware._ctx = None
+        state = CostTrackingState(messages=[])
+        result = middleware.after_model(state, MagicMock())
+        assert result is None
+
+    def test_increments_model_call_count(self, middleware):
+        """model_call_count is bumped by 1 on each after_model call."""
+        middleware._ctx = _MiddlewareContext()
+
+        ai_msg = MagicMock()
+        ai_msg.usage_metadata = {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+        }
+        ai_msg.response_metadata = {"model_name": "gpt-4o"}
+
+        state = CostTrackingState(
+            messages=[ai_msg],
+            model_call_count=2,
+            accumulated_input_tokens=0,
+            accumulated_output_tokens=0,
+            accumulated_total_tokens=0,
+            accumulated_extra_tokens={},
+        )
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            mock_session_instance = MagicMock()
+            MockSession.return_value = mock_session_instance
+
+            updates = middleware.after_model(state, MagicMock())
+
+        assert updates["model_call_count"] == 3
+
+    def test_accumulates_tokens(self, middleware):
+        """Token counts are added to running accumulators."""
+        middleware._ctx = _MiddlewareContext()
+
+        ai_msg = MagicMock()
+        ai_msg.usage_metadata = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        }
+        ai_msg.response_metadata = {"model_name": "gpt-4o"}
+
+        state = CostTrackingState(
+            messages=[ai_msg],
+            model_call_count=0,
+            accumulated_input_tokens=200,
+            accumulated_output_tokens=100,
+            accumulated_total_tokens=300,
+            accumulated_extra_tokens={},
+        )
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            mock_session_instance = MagicMock()
+            MockSession.return_value = mock_session_instance
+
+            updates = middleware.after_model(state, MagicMock())
+
+        assert updates["accumulated_input_tokens"] == 300
+        assert updates["accumulated_output_tokens"] == 150
+        assert updates["accumulated_total_tokens"] == 450
+
+    def test_persists_usage_session(self, middleware):
+        """UsageSession.finalize_sync is called for each model step."""
+        middleware._ctx = _MiddlewareContext()
+        middleware._ctx.model_call_start_time = time.monotonic()
+
+        ai_msg = MagicMock()
+        ai_msg.usage_metadata = {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+        }
+        ai_msg.response_metadata = {"model_name": "gpt-4o"}
+
+        state = CostTrackingState(
+            messages=[ai_msg],
+            model_call_count=0,
+            accumulated_input_tokens=0,
+            accumulated_output_tokens=0,
+            accumulated_total_tokens=0,
+            accumulated_extra_tokens={},
+        )
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            mock_session_instance = MagicMock()
+            MockSession.return_value = mock_session_instance
+
+            middleware.after_model(state, MagicMock())
+
+            MockSession.assert_called_once()
+            mock_session_instance.finalize_sync.assert_called_once_with(
+                success=True,
+                error=None,
+                final_usage={
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                },
+                streamed=False,
+                partial=False,
+                details=None,
+            )
+
+    def test_no_messages_returns_count_only(self, middleware):
+        """Empty messages list still increments model_call_count."""
+        middleware._ctx = _MiddlewareContext()
+        state = CostTrackingState(messages=[], model_call_count=0)
+
+        updates = middleware.after_model(state, MagicMock())
+
+        assert updates["model_call_count"] == 1
+        # No token keys since no message to extract from
+        assert "accumulated_input_tokens" not in updates
+
+    def test_clears_model_call_start_time(self, middleware):
+        """After extraction, model_call_start_time is reset to None."""
+        middleware._ctx = _MiddlewareContext()
+        middleware._ctx.model_call_start_time = 12345.0
+
+        ai_msg = MagicMock()
+        ai_msg.usage_metadata = {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "total_tokens": 2,
+        }
+        ai_msg.response_metadata = {}
+
+        state = CostTrackingState(
+            messages=[ai_msg],
+            model_call_count=0,
+            accumulated_input_tokens=0,
+            accumulated_output_tokens=0,
+            accumulated_total_tokens=0,
+            accumulated_extra_tokens={},
+        )
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ):
+            middleware.after_model(state, MagicMock())
+
+        assert middleware._ctx.model_call_start_time is None
+
+
+# ---------------------------------------------------------------------------
+# after_agent  (no-op, just verify contract)
+# ---------------------------------------------------------------------------
+
+
+class TestAfterAgent:
+    """Verify after_agent is a no-op (per-step logging in after_model)."""
+
+    def test_returns_none(self, middleware):
+        """after_agent returns None (nothing additional to persist)."""
+        state = CostTrackingState(messages=[])
+        result = middleware.after_agent(state, MagicMock())
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _get_pricing_config
+# ---------------------------------------------------------------------------
+
+
+class TestGetPricingConfig:
+    """Verify pricing config resolution (llm_config → middleware default)."""
+
+    def test_returns_model_pricing_from_llm_config(self, middleware):
+        """If llm_config has per-model pricing, return it."""
+        mock_pricing = MagicMock()
+        mock_model_cfg = MagicMock()
+        mock_model_cfg.pricing = mock_pricing
+
+        mock_llm_config = MagicMock()
+        mock_llm_config.models = {"gpt-4o": mock_model_cfg}
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.get_llm_config",
+            return_value=mock_llm_config,
+        ):
+            result = middleware._get_pricing_config("gpt-4o")
+
+        assert result is mock_pricing
+
+    def test_falls_back_to_middleware_pricing(self, middleware):
+        """If llm_config has no model, fall back to middleware's pricing_config."""
+        fallback_pricing = MagicMock()
+        middleware.pricing_config = fallback_pricing
+
+        mock_llm_config = MagicMock()
+        mock_llm_config.models = {}
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.get_llm_config",
+            return_value=mock_llm_config,
+        ):
+            result = middleware._get_pricing_config("unknown-model")
+
+        assert result is fallback_pricing
+
+    def test_returns_none_when_nothing_available(self, middleware):
+        """If neither llm_config nor middleware has pricing, return None."""
+        middleware.pricing_config = None
+
+        mock_llm_config = MagicMock()
+        mock_llm_config.models = {}
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.get_llm_config",
+            return_value=mock_llm_config,
+        ):
+            result = middleware._get_pricing_config("unknown-model")
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# create_cost_tracking_middleware factory
+# ---------------------------------------------------------------------------
+
+
+class TestCreateCostTrackingMiddleware:
+    """Verify factory function creates middleware with sensible defaults."""
+
+    def test_creates_with_logging_config(self):
+        """Factory loads logging config from llm_config when available."""
+        mock_logging_cfg = MagicMock()
+        mock_llm_config = MagicMock()
+        mock_llm_config.usage_logging = mock_logging_cfg
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.get_llm_config",
+            return_value=mock_llm_config,
+        ):
+            mw = create_cost_tracking_middleware(
+                user_id=uuid.uuid4(),
+                session_id="s1",
+            )
+
+        assert mw.logging_config is mock_logging_cfg
+        assert mw.task_type == "agent"
+
+    def test_creates_with_defaults_on_config_error(self):
+        """Factory still works when get_llm_config throws."""
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.get_llm_config",
+            side_effect=RuntimeError("no config"),
+        ):
+            mw = create_cost_tracking_middleware()
+
+        assert mw.logging_config is not None  # UsageLoggingConfig() default
+        assert mw.user_id is None
