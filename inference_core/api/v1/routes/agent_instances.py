@@ -21,10 +21,13 @@ from inference_core.schemas.user_agent_instance import (
     AgentInstanceCreate,
     AgentInstanceListResponse,
     AgentInstanceResponse,
+    AgentInstanceRunRequest,
+    AgentInstanceRunResponse,
     AgentInstanceUpdate,
     AgentTemplateListResponse,
     AgentTemplateResponse,
 )
+from inference_core.services.agents_service import AgentService, DeepAgentService
 from inference_core.services.llm_config_service import LLMConfigService
 from inference_core.services.user_agent_instance_service import (
     get_user_agent_instance_service,
@@ -237,3 +240,91 @@ async def delete_agent_instance(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Agent instance not found",
         )
+
+
+# =========================================================
+# Run Endpoint
+# =========================================================
+
+
+@router.post(
+    "/{instance_id}/run",
+    response_model=AgentInstanceRunResponse,
+    summary="Run agent instance",
+)
+async def run_agent_instance(
+    instance_id: UUID,
+    data: AgentInstanceRunRequest,
+    current_user: dict = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+    llm_config_service: LLMConfigService = Depends(get_llm_config_service),
+):
+    """
+    Run an agent instance synchronously and return the result.
+
+    For deep agents (is_deepagent=True or has subagents), uses DeepAgentService
+    with from_user_instance() which applies all DB overrides and resolves subagents.
+    For regular agents, uses AgentService with DB config overrides applied.
+    """
+    user_id = UUID(current_user["id"])
+    service = get_user_agent_instance_service(db, llm_config_service)
+
+    instance = await service.get_instance(user_id, instance_id)
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent instance not found",
+        )
+    if not instance.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent instance is not active",
+        )
+
+    try:
+        if instance.is_deepagent or instance.subagents:
+            agent_svc = await DeepAgentService.from_user_instance(
+                instance,
+                user_id=user_id,
+            )
+        else:
+            resolved_config = DeepAgentService._build_config_for_instance(instance)
+            agent_svc = AgentService(
+                agent_name=instance.base_agent_name,
+                user_id=user_id,
+                config=resolved_config,
+            )
+
+        # Apply DB prompt overrides for regular AgentService
+        # (DeepAgentService handles this internally via _apply_prompt_overrides)
+        effective_prompt = data.system_prompt
+        if not isinstance(agent_svc, DeepAgentService):
+            if instance.system_prompt_override is not None:
+                effective_prompt = instance.system_prompt_override
+            elif instance.system_prompt_append is not None:
+                base = effective_prompt or ""
+                effective_prompt = f"{base}\n\n{instance.system_prompt_append}".strip()
+
+        with agent_svc:
+            await agent_svc.create_agent(system_prompt=effective_prompt)
+            response = await agent_svc.arun_agent_steps(data.user_input)
+
+    except Exception as e:
+        logger.exception("Error running agent instance %s: %s", instance_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Agent execution failed: {e}",
+        )
+
+    cost_metrics = None
+    if response.cost_metrics:
+        cost_metrics = response.cost_metrics.model_dump()
+
+    return AgentInstanceRunResponse(
+        result=response.result,
+        steps=response.steps,
+        model_name=response.metadata.model_name,
+        instance_id=instance.id,
+        instance_name=instance.instance_name,
+        cost_metrics=cost_metrics,
+    )
