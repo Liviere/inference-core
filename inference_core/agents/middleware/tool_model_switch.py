@@ -281,6 +281,26 @@ class ToolBasedModelSwitchMiddleware(AgentMiddleware[ToolModelSwitchState]):
 
         return handler(request)
 
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Any],
+    ) -> ModelResponse:
+        """Async version of wrap_model_call for use with astream."""
+        last_tool = self._find_last_tool_message(request.messages)
+
+        if last_tool and last_tool in self._after_tool_overrides:
+            override = self._after_tool_overrides[last_tool]
+            target_model_name = override.model
+            logger.info(
+                f"Tool '{last_tool}' triggered model switch to '{target_model_name}' "
+                f"(async, reason: {override.description or 'after_tool override'})"
+            )
+            target_model = self._get_model(target_model_name)
+            request = request.override(model=target_model)
+
+        return await handler(request)
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -307,6 +327,16 @@ class ToolBasedModelSwitchMiddleware(AgentMiddleware[ToolModelSwitchState]):
         result = handler(request)
 
         return result
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Any],
+    ) -> ToolMessage | Command:
+        """Async version of wrap_tool_call for use with astream."""
+        tool_name = request.tool_call.get("name", "unknown")
+        logger.debug(f"Tool call (async): {tool_name}")
+        return await handler(request)
 
 
 # Convenience function to create middleware from config dict.

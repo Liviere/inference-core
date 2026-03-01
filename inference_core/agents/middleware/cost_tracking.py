@@ -333,6 +333,16 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         response = handler(request)
         return response
 
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Any],
+    ) -> ModelResponse:
+        """Async version of wrap_model_call for use with astream."""
+        if self._ctx:
+            self._ctx.model_call_start_time = time.monotonic()
+        return await handler(request)
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -366,6 +376,26 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             logger.warning(f"Tool call error ({tool_name}): {e}")
             return {"error": str(e)}
         # Tool timing is not persisted; no context tracking needed here.
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Any],
+    ) -> ToolMessage | Command:
+        """Async version of wrap_tool_call for use with astream."""
+        tool_name = (
+            request.tool_call.get("name", "<unknown>")
+            if hasattr(request, "tool_call")
+            else "<unknown>"
+        )
+        logger.debug(f"Tool call start (async): {tool_name}")
+        try:
+            result = await handler(request)
+            logger.debug(f"Tool call end (async): {tool_name}")
+            return result
+        except Exception as e:
+            logger.warning(f"Tool call error (async, {tool_name}): {e}")
+            return {"error": str(e)}
 
     # -------------------------------------------------------------------------
     # Internal helpers

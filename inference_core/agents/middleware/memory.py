@@ -262,6 +262,32 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             # Fall back to original request on error
             return handler(request)
 
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Any],
+    ) -> ModelResponse:
+        """Async version of wrap_model_call for use with astream."""
+        if not self._cached_memory_context:
+            return await handler(request)
+
+        try:
+            current_blocks = list(request.system_message.content_blocks)
+            memory_block = {
+                "type": "text",
+                "text": f"\n<user_memory_context>\n{self._cached_memory_context}\n</user_memory_context>\n\n",
+            }
+            new_content = current_blocks + [memory_block]
+            new_system_message = SystemMessage(content=new_content)
+            return await handler(request.override(system_message=new_system_message))
+        except Exception as e:
+            logger.error(
+                "Failed to inject memory context into system prompt (async): %s",
+                e,
+                exc_info=True,
+            )
+            return await handler(request)
+
     # -------------------------------------------------------------------------
     # Helper methods
     # -------------------------------------------------------------------------

@@ -173,3 +173,32 @@ class AgentTemplateListResponse(BaseModel):
         default_factory=list,
         description="All models available for selection",
     )
+
+
+# ============================================================
+# Agent Run Schemas
+# ============================================================
+
+
+class AgentInstanceRunRequest(BaseModel):
+    """Schema for running an agent instance."""
+
+    user_input: str = Field(
+        ..., min_length=1, description="User message to send to the agent"
+    )
+    system_prompt: Optional[str] = Field(
+        None,
+        max_length=5000,
+        description="Optional base system prompt (DB overrides still apply on top)",
+    )
+
+
+class AgentInstanceRunResponse(BaseModel):
+    """Schema for agent instance run response."""
+
+    result: Dict[str, Any]
+    steps: List[Dict[str, Any]]
+    model_name: str
+    instance_id: UUID
+    instance_name: str
+    cost_metrics: Optional[Dict[str, Any]] = None
