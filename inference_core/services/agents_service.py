@@ -844,6 +844,82 @@ class AgentService:
             cost_metrics=cost_metrics,
         )
 
+    @staticmethod
+    def build_config_for_instance(
+        agent_instance_config: dict,
+        base_config: Optional[LLMConfig] = None,
+    ) -> LLMConfig:
+        """Build an LLMConfig with all DB overrides from a UserAgentInstance applied.
+
+        WHY: UserAgentInstance stores user customisations (model, tools, prompt params)
+        as flat ORM columns and a JSON blob.  LLMConfig.with_overrides() needs those
+        translated into typed dicts keyed by agent_name and model_name.  This method
+        owns that translation so callers deal only with ORM objects or ready configs.
+
+        Translation rules:
+          primary_model                    → agent_overrides[base_agent_name]["primary"]
+          config_overrides.fallback        → agent_overrides[...]["fallback"]
+          config_overrides.allowed_tools   → agent_overrides[...]["allowed_tools"]
+          config_overrides.mcp_profile     → agent_overrides[...]["mcp_profile"]
+          config_overrides.temperature     → model_overrides[effective_model]["temperature"]
+          config_overrides.max_tokens      → model_overrides[effective_model]["max_tokens"]
+          instance.description             → agent_overrides[...]["description"]
+        """
+        config = base_config if base_config is not None else get_llm_config()
+        # agent_name = instance.base_agent_name
+        agent_name = agent_instance_config.get("base_agent_name")
+
+        agent_overrides: dict[str, Any] = {}
+        model_overrides: dict[str, dict[str, Any]] = {}
+
+        primary_model = agent_instance_config.get("primary_model")
+        # if instance.primary_model:
+        if primary_model:
+            agent_overrides["primary"] = primary_model
+
+        description = agent_instance_config.get("description")
+        if description:
+            agent_overrides["description"] = description
+
+        # Keys from config_overrides that map directly to AgentConfig fields
+        _AGENT_LEVEL_KEYS = ("fallback", "allowed_tools", "mcp_profile")
+        # Keys from config_overrides that map to ModelConfig / ModelParams fields
+        _MODEL_LEVEL_KEYS = (
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "reasoning_effort",
+        )
+
+        config_overrides = agent_instance_config.get("config_overrides", {})
+        if config_overrides:
+            for key in _AGENT_LEVEL_KEYS:
+                if key in config_overrides:
+                    agent_overrides[key] = config_overrides[key]
+
+            model_params = {
+                k: config_overrides[k]
+                for k in _MODEL_LEVEL_KEYS
+                if k in config_overrides
+            }
+            if model_params:
+                # Target the effective model name: DB override if set, else YAML primary.
+                # Must be resolved BEFORE with_overrides() is called so the correct
+                # model entry is patched regardless of whether primary_model changes it.
+                target_model = primary_model or config.agent_models.get(agent_name)
+                if target_model:
+                    model_overrides[target_model] = model_params
+
+        if not agent_overrides and not model_overrides:
+            return config  # Nothing to override; return base config unchanged
+
+        return config.with_overrides(
+            agent_overrides={agent_name: agent_overrides} if agent_overrides else None,
+            model_overrides=model_overrides if model_overrides else None,
+        )
+
 
 class DeepAgentService(AgentService):
     """Service for creating agents with sub-agent orchestration via SubAgentMiddleware.
@@ -1070,7 +1146,7 @@ class DeepAgentService(AgentService):
         visited.add(instance_key)
 
         # 1. Build an LLMConfig that incorporates all DB overrides for this instance.
-        resolved_config = cls._build_config_for_instance(instance)
+        resolved_config = cls.build_config_for_instance(instance)
 
         # 2. Resolve the DB subagents relationship into middleware-ready specs.
         db_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -1116,7 +1192,7 @@ class DeepAgentService(AgentService):
                 )
             else:
                 # Simple (non-deep) subagent: build a declarative SubAgent dict.
-                sub_config = cls._build_config_for_instance(sub_instance)
+                sub_config = cls.build_config_for_instance(sub_instance)
                 sub_model = LLMModelFactory(sub_config).get_model_for_agent(
                     sub_instance.base_agent_name
                 )
@@ -1333,7 +1409,10 @@ class DeepAgentService(AgentService):
         """Load tools from registered providers for a config-based subagent.
 
         Mirrors the tool-loading logic of AgentService._load_providers_tools
-        but returns the tools instead of mutating self.tools.
+        but returns the tools instead of mutating self.tools.  The parent's
+        user context (user_id, session_id, request_id) is forwarded so that
+        user-scoped providers (e.g. email tools) can resolve per-user
+        resources.
         """
         configured_providers = agent_config.local_tool_providers or []
         if not configured_providers:
@@ -1378,76 +1457,3 @@ class DeepAgentService(AgentService):
             if name:
                 names.add(name)
         return names
-
-    @staticmethod
-    def _build_config_for_instance(
-        instance: UserAgentInstance,
-        base_config: Optional[LLMConfig] = None,
-    ) -> LLMConfig:
-        """Build an LLMConfig with all DB overrides from a UserAgentInstance applied.
-
-        WHY: UserAgentInstance stores user customisations (model, tools, prompt params)
-        as flat ORM columns and a JSON blob.  LLMConfig.with_overrides() needs those
-        translated into typed dicts keyed by agent_name and model_name.  This method
-        owns that translation so callers deal only with ORM objects or ready configs.
-
-        Translation rules:
-          primary_model                    → agent_overrides[base_agent_name]["primary"]
-          config_overrides.fallback        → agent_overrides[...]["fallback"]
-          config_overrides.allowed_tools   → agent_overrides[...]["allowed_tools"]
-          config_overrides.mcp_profile     → agent_overrides[...]["mcp_profile"]
-          config_overrides.temperature     → model_overrides[effective_model]["temperature"]
-          config_overrides.max_tokens      → model_overrides[effective_model]["max_tokens"]
-          instance.description             → agent_overrides[...]["description"]
-        """
-        config = base_config if base_config is not None else get_llm_config()
-        agent_name = instance.base_agent_name
-
-        agent_overrides: dict[str, Any] = {}
-        model_overrides: dict[str, dict[str, Any]] = {}
-
-        if instance.primary_model:
-            agent_overrides["primary"] = instance.primary_model
-
-        if instance.description:
-            agent_overrides["description"] = instance.description
-
-        # Keys from config_overrides that map directly to AgentConfig fields
-        _AGENT_LEVEL_KEYS = ("fallback", "allowed_tools", "mcp_profile")
-        # Keys from config_overrides that map to ModelConfig / ModelParams fields
-        _MODEL_LEVEL_KEYS = (
-            "temperature",
-            "max_tokens",
-            "top_p",
-            "frequency_penalty",
-            "presence_penalty",
-            "reasoning_effort",
-        )
-
-        if instance.config_overrides:
-            for key in _AGENT_LEVEL_KEYS:
-                if key in instance.config_overrides:
-                    agent_overrides[key] = instance.config_overrides[key]
-
-            model_params = {
-                k: instance.config_overrides[k]
-                for k in _MODEL_LEVEL_KEYS
-                if k in instance.config_overrides
-            }
-            if model_params:
-                # Target the effective model name: DB override if set, else YAML primary.
-                # Must be resolved BEFORE with_overrides() is called so the correct
-                # model entry is patched regardless of whether primary_model changes it.
-                target_model = instance.primary_model or config.agent_models.get(
-                    agent_name
-                )
-                if target_model:
-                    model_overrides[target_model] = model_params
-
-        if not agent_overrides and not model_overrides:
-            return config  # Nothing to override; return base config unchanged
-
-        return config.with_overrides(
-            agent_overrides={agent_name: agent_overrides} if agent_overrides else None,
-            model_overrides=model_overrides if model_overrides else None,
-        )

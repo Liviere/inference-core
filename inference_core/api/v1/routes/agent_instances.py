@@ -288,7 +288,9 @@ async def run_agent_instance(
                 user_id=user_id,
             )
         else:
-            resolved_config = DeepAgentService._build_config_for_instance(instance)
+            resolved_config = DeepAgentService.build_config_for_instance(
+                instance.to_dict()
+            )
             agent_svc = AgentService(
                 agent_name=instance.base_agent_name,
                 user_id=user_id,
