@@ -1216,9 +1216,32 @@ class LLMConfig:
                         if hasattr(agent_cfg, key):
                             setattr(agent_cfg, key, value)
 
-        # Apply global overrides
+        # Apply global overrides – only scalar settings, never structural dicts.
+        # Structural attributes (models, agent_models, providers, …) are managed by
+        # the type-specific override parameters above; allowing global_overrides to
+        # replace them would silently wipe model definitions and break agent init.
+        _STRUCTURAL_ATTRS = frozenset(
+            {
+                "models",
+                "providers",
+                "task_models",
+                "task_configs",
+                "agent_models",
+                "agent_configs",
+                "batch_config",
+                "usage_logging",
+                "mcp_config",
+            }
+        )
         if global_overrides:
             for key, value in global_overrides.items():
+                if key in _STRUCTURAL_ATTRS:
+                    logging.warning(
+                        "with_overrides: ignoring global override for structural "
+                        "attribute '%s' to prevent config corruption",
+                        key,
+                    )
+                    continue
                 if hasattr(new_config, key):
                     setattr(new_config, key, value)
 

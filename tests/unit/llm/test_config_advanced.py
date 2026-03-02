@@ -253,9 +253,7 @@ class TestGetAgentModelWithFallback:
         """Agent primary unavailable → YAML fallback used."""
         cfg = _make_config(
             agent_models={"default": "gpt-5-mini"},
-            yaml_config={
-                "agents": {"default": {"fallback": ["local-llama"]}}
-            },
+            yaml_config={"agents": {"default": {"fallback": ["local-llama"]}}},
         )
         result = cfg.get_agent_model_with_fallback("default")
         assert result == "local-llama"
@@ -317,6 +315,14 @@ class TestWithOverrides:
         assert new_cfg.default_timeout == 120
         assert cfg.default_timeout == 60  # original unchanged
 
+    def test_global_overrides_do_not_replace_structural_attrs(self):
+        """global_overrides must not replace structural attributes like models."""
+        cfg = _make_config()
+        original_models = set(cfg.models.keys())
+        # Even with a 'models' key in global_overrides, the models dict is preserved
+        new_cfg = cfg.with_overrides(global_overrides={"models": {"only-one": {}}})
+        assert set(new_cfg.models.keys()) == original_models
+
     def test_no_overrides_returns_copy(self):
         """Calling with no overrides still returns a new instance."""
         cfg = _make_config()
@@ -343,11 +349,7 @@ class TestListModels:
     def test_list_models_by_task(self):
         """Returns primary + fallback models for a task."""
         cfg = _make_config(
-            yaml_config={
-                "tasks": {
-                    "completion": {"fallback": ["local-llama"]}
-                }
-            },
+            yaml_config={"tasks": {"completion": {"fallback": ["local-llama"]}}},
         )
         models = cfg.list_models_by_task("completion")
         assert "gpt-5" in models

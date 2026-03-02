@@ -27,7 +27,10 @@ from inference_core.schemas.user_agent_instance import (
     AgentTemplateListResponse,
     AgentTemplateResponse,
 )
-from inference_core.services.agents_service import AgentService, DeepAgentService
+from inference_core.services.agents_service import (
+    AgentService,
+    DeepAgentService,
+)
 from inference_core.services.llm_config_service import LLMConfigService
 from inference_core.services.user_agent_instance_service import (
     get_user_agent_instance_service,
@@ -282,33 +285,27 @@ async def run_agent_instance(
         )
 
     try:
+        # Resolve config with admin overrides + user preferences applied.
+        # Instance-specific DB overrides are then layered on top via
+        # build_config_for_instance(), giving the full resolution chain:
+        # YAML → admin overrides → user preferences → instance DB overrides.
+        base_config = await llm_config_service.get_config_with_overrides(user_id)
+
         if instance.is_deepagent or instance.subagents:
             agent_svc = await DeepAgentService.from_user_instance(
                 instance,
                 user_id=user_id,
+                base_config=base_config,
             )
         else:
-            resolved_config = DeepAgentService.build_config_for_instance(
-                instance.to_dict()
-            )
-            agent_svc = AgentService(
-                agent_name=instance.base_agent_name,
+            agent_svc = AgentService.from_user_instance(
+                instance,
                 user_id=user_id,
-                config=resolved_config,
+                base_config=base_config,
             )
-
-        # Apply DB prompt overrides for regular AgentService
-        # (DeepAgentService handles this internally via _apply_prompt_overrides)
-        effective_prompt = data.system_prompt
-        if not isinstance(agent_svc, DeepAgentService):
-            if instance.system_prompt_override is not None:
-                effective_prompt = instance.system_prompt_override
-            elif instance.system_prompt_append is not None:
-                base = effective_prompt or ""
-                effective_prompt = f"{base}\n\n{instance.system_prompt_append}".strip()
 
         with agent_svc:
-            await agent_svc.create_agent(system_prompt=effective_prompt)
+            await agent_svc.create_agent(system_prompt=data.system_prompt)
             response = await agent_svc.arun_agent_steps(data.user_input)
 
     except Exception as e:

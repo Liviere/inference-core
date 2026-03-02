@@ -101,9 +101,7 @@ class TestCacheHelpers:
     async def test_set_cached_calls_setex(self, config_service):
         """_set_cached serializes to JSON and sets with TTL."""
         await config_service._set_cached("mykey", {"x": 1}, ttl=120)
-        config_service.redis.setex.assert_called_once_with(
-            "mykey", 120, '{"x": 1}'
-        )
+        config_service.redis.setex.assert_called_once_with("mykey", 120, '{"x": 1}')
 
     @pytest.mark.asyncio
     async def test_set_cached_uses_default_ttl(self, config_service):
@@ -131,6 +129,7 @@ class TestCacheHelpers:
     @pytest.mark.asyncio
     async def test_invalidate_admin_cache(self, config_service):
         """_invalidate_admin_cache deletes admin key + all resolved:* keys."""
+
         # Mock scan_iter to return some user keys
         async def mock_scan(*args, **kwargs):
             for key in [b"llm_config:resolved:user1", b"llm_config:resolved:user2"]:
@@ -155,9 +154,7 @@ class TestValidateUserPreference:
     @pytest.mark.asyncio
     async def test_rejects_key_not_in_allowlist(self, config_service):
         """Non-allowlisted keys raise ConfigValidationError."""
-        with patch.object(
-            config_service, "get_allowed_overrides", return_value=[]
-        ):
+        with patch.object(config_service, "get_allowed_overrides", return_value=[]):
             with pytest.raises(ConfigValidationError, match="not user-overridable"):
                 await config_service._validate_user_preference(
                     "secret_param", {"value": 42}
@@ -285,9 +282,7 @@ class TestCreateUserPreference:
     @pytest.mark.asyncio
     async def test_creates_new_preference(self, config_service):
         """New preference is added to DB when none exists."""
-        with patch.object(
-            config_service, "_validate_user_preference"
-        ) as mock_validate:
+        with patch.object(config_service, "_validate_user_preference") as mock_validate:
             uid = uuid4()
             pref = await config_service.create_user_preference(
                 user_id=uid,
@@ -617,9 +612,74 @@ class TestGetConfigWithOverrides:
 
         # with_overrides should receive agent overrides containing user's tools
         call_kwargs = mock_config.with_overrides.call_args
-        agent_overrides = call_kwargs[1].get("agent_overrides") or call_kwargs[0][2] if call_kwargs[0] else call_kwargs[1]["agent_overrides"]
+        agent_overrides = (
+            call_kwargs[1].get("agent_overrides") or call_kwargs[0][2]
+            if call_kwargs[0]
+            else call_kwargs[1]["agent_overrides"]
+        )
         assert "my_agent" in agent_overrides
         assert agent_overrides["my_agent"]["allowed_tools"] == ["tool_a", "tool_b"]
+
+    @pytest.mark.asyncio
+    async def test_normalises_admin_override_value_wrappers(self, config_service):
+        """Admin DB overrides stored as {'value': X} are unwrapped before with_overrides."""
+        admin = {
+            "global": {},
+            "model": {
+                "gpt-5": {"temperature": {"value": 0.3}, "max_tokens": {"value": 2048}}
+            },
+            "task": {},
+            "agent": {
+                "my_agent": {
+                    "primary": {"value": "gpt-5"},
+                    "allowed_tools": {"value": ["search"]},
+                }
+            },
+        }
+
+        mock_config = MagicMock()
+        config_service._base_config = mock_config
+
+        with patch.object(
+            config_service, "_load_admin_overrides_dict", return_value=admin
+        ):
+            await config_service.get_config_with_overrides(user_id=None)
+
+        call_kwargs = mock_config.with_overrides.call_args[1]
+
+        # Model overrides should be unwrapped
+        model_ov = call_kwargs.get("model_overrides", {})
+        assert model_ov["gpt-5"]["temperature"] == 0.3
+        assert model_ov["gpt-5"]["max_tokens"] == 2048
+
+        # Agent overrides should be unwrapped (primary is a string, not a dict)
+        agent_ov = call_kwargs.get("agent_overrides", {})
+        assert agent_ov["my_agent"]["primary"] == "gpt-5"
+        assert agent_ov["my_agent"]["allowed_tools"] == ["search"]
+
+    @pytest.mark.asyncio
+    async def test_global_overrides_not_passed_to_with_overrides(self, config_service):
+        """Admin global overrides are NOT forwarded to with_overrides to prevent models corruption."""
+        admin = {
+            "global": {
+                "models": {"value": {"gpt-5": {}}},
+                "disabled_models": {"value": ["gpt-4"]},
+            },
+            "model": {},
+            "task": {},
+            "agent": {},
+        }
+
+        mock_config = MagicMock()
+        config_service._base_config = mock_config
+
+        with patch.object(
+            config_service, "_load_admin_overrides_dict", return_value=admin
+        ):
+            await config_service.get_config_with_overrides(user_id=None)
+
+        call_kwargs = mock_config.with_overrides.call_args[1]
+        assert "global_overrides" not in call_kwargs
 
 
 # ---------------------------------------------------------------------------

@@ -128,6 +128,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         request_mode: str = "sync",
         provider: Optional[str] = None,
         model_name: Optional[str] = None,
+        instance_id: Optional[uuid.UUID] = None,
+        instance_name: Optional[str] = None,
     ):
         """Initialize the cost tracking middleware.
 
@@ -142,6 +144,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             request_mode: Request mode for logging (default: "sync").
             provider: LLM provider name (e.g., "openai"). Auto-detected if None.
             model_name: Model name. Auto-detected from runtime if None.
+            instance_id: Optional UserAgentInstance UUID for per-instance attribution.
+            instance_name: Optional UserAgentInstance name for per-instance attribution.
         """
         self.pricing_config = pricing_config
         self.user_id = user_id
@@ -152,6 +156,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         self.request_mode = request_mode
         self._provider = provider
         self._model_name = model_name
+        self.instance_id = instance_id
+        self.instance_name = instance_name
 
         # Per-invocation context (reset on each before_agent)
         self._ctx: Optional[_MiddlewareContext] = None
@@ -266,6 +272,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     session_id=self.session_id,
                     request_id=self.request_id,
                     logging_config=self.logging_config,
+                    instance_id=self.instance_id,
+                    instance_name=self.instance_name,
                 )
 
                 # Align latency window with actual model call if recorded

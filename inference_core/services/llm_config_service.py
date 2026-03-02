@@ -618,9 +618,7 @@ class LLMConfigService:
                     sources[f"agents.{agent_name}.skills"] = "admin"
 
                 if "subagents" in agent_override:
-                    subagents = agent_override["subagents"].get(
-                        "value", subagents
-                    )
+                    subagents = agent_override["subagents"].get("value", subagents)
                     sources[f"agents.{agent_name}.subagents"] = "admin"
 
             agents[agent_name] = ResolvedAgentConfig(
@@ -810,55 +808,60 @@ class LLMConfigService:
 
         WHY: To be passed to services (like AgentService) that need a full
         configuration object respecting user preferences.
+
+        Admin DB overrides are stored as {"value": X} wrappers (the API schema requires
+        config_value to be a Dict). This method normalises them to plain values before
+        passing to LLMConfig.with_overrides(), which expects direct values.
+
+        Global admin overrides (scope="global") are intentionally NOT forwarded to
+        with_overrides because they control model-availability filtering in the UI
+        (handled by get_resolved_config); naively applying them via setattr would
+        replace structural LLMConfig attributes like `models` and break agent init.
         """
         # Load admin overrides
         admin_overrides = await self._load_admin_overrides_dict()
 
-        # Load user preferences
-        user_prefs = {}
+        def _unwrap(d: Dict) -> Dict:
+            """Recursively unwrap {"value": X} admin override format to plain values.
+
+            Admin DB overrides store each config_value as a {"value": X} dict so the
+            API schema can be typed as Dict[str, Any].  with_overrides() expects the
+            plain value X, not the wrapper dict.
+            """
+            result: Dict = {}
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    if "value" in v:
+                        result[k] = v["value"]
+                    else:
+                        result[k] = _unwrap(v)
+                else:
+                    result[k] = v
+            return result
+
+        # Normalise admin overrides from {"value": X} wrappers to plain values
+        model_overrides = _unwrap(admin_overrides.get("model", {}))
+        task_overrides = _unwrap(admin_overrides.get("task", {}))
+        agent_overrides = _unwrap(admin_overrides.get("agent", {}))
+
+        # Apply user agent preferences (already stored as plain values via val_dict["value"])
         if user_id:
             user_prefs_dict = await self._load_user_preferences_dict(user_id)
-
-            # Transform user prefs structure to overrides structure if needed
-            # Currently user_prefs returns {type: {key: value_dict}}
-            # We need to extract the raw values for LLMConfig.with_overrides
-
-            # 1. Model Params (User prefs usually map to models or defaults)
-            # The current with_overrides expects: model_overrides, task_overrides, agent_overrides
-            # But user prefs are often "defaults.temperature" or "completion.temperature"
-            # Logic here needs to map user prefs to the override structure expected by with_overrides
-
-            # Implementation simplification: For now, we only map 'default_model' and basic params
-            # to global defaults, as deeper structural overrides might be complex.
-            # However, if we want to allow users to override AGENT tools, we need to map 'agent_params'
-
             if "agent_params" in user_prefs_dict:
-                # Map agent params to agent_overrides
-                # user_prefs: {"agent_params": {"my_agent.allowed_tools": {"value": [...]}}}
-                agent_overrides = {}
                 for key, val_dict in user_prefs_dict["agent_params"].items():
-                    # key = "agent_name.param"
                     if "." in key:
                         agent_name, param = key.split(".", 1)
                         if agent_name not in agent_overrides:
                             agent_overrides[agent_name] = {}
                         agent_overrides[agent_name][param] = val_dict["value"]
 
-                # We'll merge this with admin agent overrides
-                for ag_name, overrides in agent_overrides.items():
-                    if ag_name not in admin_overrides["agent"]:
-                        admin_overrides["agent"][ag_name] = {}
-                    admin_overrides["agent"][ag_name].update(overrides)
-
-        # Construct overrides dicts from admin_overrides (which now includes merged user agent prefs)
-
-        final_agent_overrides = copy.deepcopy(admin_overrides.get("agent", {}))
-
         return self._base_config.with_overrides(
-            model_overrides=admin_overrides.get("model"),
-            task_overrides=admin_overrides.get("task"),
-            agent_overrides=final_agent_overrides,
-            global_overrides=admin_overrides.get("global"),
+            model_overrides=model_overrides if model_overrides else None,
+            task_overrides=task_overrides if task_overrides else None,
+            agent_overrides=copy.deepcopy(agent_overrides) if agent_overrides else None,
+            # global_overrides intentionally omitted: admin global overrides (e.g.
+            # "disabled_models", "models") control UI availability filtering in
+            # get_resolved_config() and must NOT replace LLMConfig.models at runtime.
         )
 
 

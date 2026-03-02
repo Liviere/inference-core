@@ -231,6 +231,8 @@ class UsageSession:
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
         logging_config: Optional[UsageLoggingConfig] = None,
+        instance_id: Optional[uuid.UUID] = None,
+        instance_name: Optional[str] = None,
     ):
         self.task_type = task_type
         self.request_mode = request_mode
@@ -241,6 +243,8 @@ class UsageSession:
         self.session_id = session_id
         self.request_id = request_id
         self.logging_config = logging_config or UsageLoggingConfig()
+        self.instance_id = instance_id
+        self.instance_name = instance_name
 
         self.start_time = time.monotonic()
         self.accumulated_usage: Dict[str, Any] = {}
@@ -384,6 +388,12 @@ class UsageSession:
                 error_message = str(error)[:500]  # Truncate
 
             # Create log entry
+            details_data = dict(details) if details else {}
+            if self.instance_id:
+                details_data["instance_id"] = str(self.instance_id)
+            if self.instance_name:
+                details_data["instance_name"] = self.instance_name
+
             log_entry = LLMRequestLog(
                 user_id=self.user_id,
                 session_id=self.session_id,
@@ -415,7 +425,7 @@ class UsageSession:
                 context_multiplier=cost_result.get("context_multiplier"),
                 streamed=streamed,
                 partial=partial,
-                details=details,
+                details=details_data if details_data else None,
             )
 
             # Persist to database

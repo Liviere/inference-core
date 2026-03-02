@@ -1,6 +1,7 @@
 import logging
 import uuid
 from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
@@ -63,6 +64,20 @@ class AgentResponse(BaseModel):
     cost_metrics: Optional[AgentCostMetrics] = None
 
 
+@dataclass(frozen=True)
+class InstanceContext:
+    """Identity of a UserAgentInstance backing this agent run.
+
+    WHY: Bundles instance-level identity so that memory namespacing,
+    cost tracking, and logging can distinguish between different user
+    instances of the same base agent.
+    """
+
+    instance_id: uuid.UUID
+    instance_name: str
+    base_agent_name: str
+
+
 class AgentService:
     def __init__(
         self,
@@ -78,11 +93,14 @@ class AgentService:
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
         config: Optional[LLMConfig] = None,
+        instance_context: Optional[InstanceContext] = None,
+        system_prompt_override: Optional[str] = None,
+        system_prompt_append: Optional[str] = None,
     ):
         """Initialize the AgentService.
 
         Args:
-            agent_name: Name of the agent configuration to use.
+            agent_name: Name of the agent configuration to use (YAML config key).
             tools: List of tools to provide to the agent.
             use_checkpoints: Whether to enable checkpointing for conversation history.
             use_memory: Whether to automatically add memory tools and MemoryMiddleware.
@@ -97,9 +115,18 @@ class AgentService:
             session_id: Optional session ID for grouping related requests.
             request_id: Optional correlation ID (e.g., Celery task ID).
             config: Optional LLMConfig instance with overrides (e.g. user preferences).
+            instance_context: Optional identity of the UserAgentInstance backing this run.
+                              When set, enables per-instance memory isolation, cost tracking
+                              attribution, and enriched logging.
+            system_prompt_override: When set, fully replaces the system_prompt passed to
+                create_agent().  Used by from_user_instance() when the DB instance
+                has a complete custom prompt.
+            system_prompt_append: When set, appended to the system_prompt passed to
+                create_agent().  Used when the DB instance extends the base prompt.
         """
         # Model and tools setup
         self.agent_name = agent_name
+        self.instance_context = instance_context
         self.config = config
 
         if self.config:
@@ -153,6 +180,21 @@ class AgentService:
         self._memory_store_service = None
         self._enhanced_system_prompt = None
 
+        # DB-backed prompt customisation: stored here, applied in create_agent()
+        self._system_prompt_override = system_prompt_override
+        self._system_prompt_append = system_prompt_append
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable agent identity for logging and observability.
+
+        Returns instance_name when running as a user agent instance,
+        otherwise falls back to the YAML agent_name.
+        """
+        if self.instance_context:
+            return self.instance_context.instance_name
+        return self.agent_name
+
     async def create_agent(
         self, system_prompt: Optional[str] = None, **kwargs
     ) -> Callable:
@@ -184,8 +226,10 @@ class AgentService:
         # Load tools from memory if configured
         await self._load_memory_tools()
 
-        # Build enhanced system prompt with memory instructions if enabled
-        self._enhanced_system_prompt = self._build_system_prompt(system_prompt)
+        # Apply DB-backed prompt overrides, then build enhanced system prompt
+        # (memory tool instructions are appended by _build_system_prompt if enabled)
+        effective_prompt = self._apply_prompt_overrides(system_prompt)
+        self._enhanced_system_prompt = self._build_system_prompt(effective_prompt)
 
         # Build middleware list
         middleware = self._build_middleware()
@@ -242,11 +286,21 @@ class AgentService:
                     task_type="agent",
                     request_mode="sync",
                     provider=provider,
+                    instance_id=(
+                        self.instance_context.instance_id
+                        if self.instance_context
+                        else None
+                    ),
+                    instance_name=(
+                        self.instance_context.instance_name
+                        if self.instance_context
+                        else None
+                    ),
                 )
                 # Insert at the beginning so it wraps everything
                 middleware.insert(0, cost_middleware)
                 logging.debug(
-                    f"Added CostTrackingMiddleware for agent '{self.agent_name}'"
+                    f"Added CostTrackingMiddleware for agent '{self.display_name}'"
                 )
 
         # Add MemoryMiddleware if enabled and service available
@@ -267,11 +321,11 @@ class AgentService:
                     insert_pos = 1 if self._enable_cost_tracking else 0
                     middleware.insert(insert_pos, memory_middleware)
                     logging.debug(
-                        f"Added MemoryMiddleware for agent '{self.agent_name}'"
+                        f"Added MemoryMiddleware for agent '{self.display_name}'"
                     )
                 except Exception as e:
                     logging.error(
-                        f"Failed to add MemoryMiddleware for agent '{self.agent_name}': {e}",
+                        f"Failed to add MemoryMiddleware for agent '{self.display_name}': {e}",
                         exc_info=True,
                     )
 
@@ -279,6 +333,25 @@ class AgentService:
         self._add_tool_model_switch_middleware(middleware)
 
         return middleware
+
+    def _apply_prompt_overrides(self, base_prompt: Optional[str]) -> Optional[str]:
+        """Apply system_prompt_override or system_prompt_append from a UserAgentInstance.
+
+        WHY: DB-backed instances let users fully replace or extend the caller-supplied
+        system prompt without the caller needing to know about DB configuration.
+
+        Precedence (highest to lowest):
+          1. system_prompt_override  – replaces base_prompt entirely
+          2. system_prompt_append    – concatenated onto base_prompt (or used alone)
+          3. base_prompt             – unchanged if neither DB field is set
+        """
+        if self._system_prompt_override is not None:
+            return self._system_prompt_override
+        if self._system_prompt_append is not None:
+            if base_prompt:
+                return f"{base_prompt}\n\n{self._system_prompt_append}"
+            return self._system_prompt_append
+        return base_prompt
 
     def _build_system_prompt(self, base_prompt: Optional[str] = None) -> Optional[str]:
         """Build enhanced system prompt with memory instructions if enabled.
@@ -351,13 +424,13 @@ class AgentService:
             middleware.append(tool_model_middleware)
 
             logging.info(
-                f"Added ToolBasedModelSwitchMiddleware for agent '{self.agent_name}' "
+                f"Added ToolBasedModelSwitchMiddleware for agent '{self.display_name}' "
                 f"with {len(overrides)} override(s)"
             )
         except Exception as e:
             logging.error(
                 f"Failed to add ToolBasedModelSwitchMiddleware for agent "
-                f"'{self.agent_name}': {e}",
+                f"'{self.display_name}': {e}",
                 exc_info=True,
             )
 
@@ -408,6 +481,14 @@ class AgentService:
         if self._request_id and "request_id" not in merged_context:
             merged_context["request_id"] = self._request_id
 
+        if self.instance_context:
+            merged_context.setdefault(
+                "instance_id", str(self.instance_context.instance_id)
+            )
+            merged_context.setdefault(
+                "instance_name", self.instance_context.instance_name
+            )
+
         return merged_context
 
     async def _load_providers_tools(
@@ -426,7 +507,7 @@ class AgentService:
             if registered_provider_name in configured_providers:
                 logging.info(
                     f"Loading tools from provider '{registered_provider_name}' "
-                    f"for agent '{self.agent_name}'"
+                    f"for agent '{self.display_name}'"
                 )
                 confirmed_providers.append(registered_provider_name)
 
@@ -469,13 +550,13 @@ class AgentService:
 
             if mcp_tools:
                 logging.info(
-                    f"Adding {len(mcp_tools)} MCP tools to agent '{self.agent_name}'"
+                    f"Adding {len(mcp_tools)} MCP tools to agent '{self.display_name}'"
                 )
                 self.tools.extend(mcp_tools)
 
         except Exception as e:
             logging.error(
-                f"Error loading MCP tools for agent '{self.agent_name}': {e}",
+                f"Error loading MCP tools for agent '{self.display_name}': {e}",
                 exc_info=True,
             )
 
@@ -493,7 +574,7 @@ class AgentService:
 
         if not self._user_id:
             logging.warning(
-                f"Memory enabled for agent '{self.agent_name}' but no user_id provided. "
+                f"Memory enabled for agent '{self.display_name}' but no user_id provided. "
                 "Memory tools require user_id for namespace isolation."
             )
             return
@@ -514,7 +595,7 @@ class AgentService:
                     store=self.memory_store,
                     base_namespace=base_namespace,
                     max_results=settings.agent_memory_max_results,
-                    agent_name=self.agent_name,
+                    agent_name=self.display_name,
                 )
             except Exception as exc:
                 logging.error(
@@ -538,12 +619,12 @@ class AgentService:
             logging.info(
                 "Added %d store memory tools to agent '%s'",
                 len(memory_tools),
-                self.agent_name,
+                self.display_name,
             )
         except Exception as exc:
             logging.error(
                 "Error loading store memory tools for agent '%s': %s",
-                self.agent_name,
+                self.display_name,
                 exc,
                 exc_info=True,
             )
@@ -846,7 +927,7 @@ class AgentService:
 
     @staticmethod
     def build_config_for_instance(
-        agent_instance_config: dict,
+        agent_instance_config: "dict | UserAgentInstance",
         base_config: Optional[LLMConfig] = None,
     ) -> LLMConfig:
         """Build an LLMConfig with all DB overrides from a UserAgentInstance applied.
@@ -855,6 +936,14 @@ class AgentService:
         as flat ORM columns and a JSON blob.  LLMConfig.with_overrides() needs those
         translated into typed dicts keyed by agent_name and model_name.  This method
         owns that translation so callers deal only with ORM objects or ready configs.
+
+        Args:
+            agent_instance_config: A dict (from UserAgentInstance.to_dict()) or an ORM
+                UserAgentInstance object.  ORM objects are auto-converted via to_dict().
+            base_config: Base LLMConfig to apply overrides onto.  When None, falls back
+                to the global YAML config.  Pass the result of
+                LLMConfigService.get_config_with_overrides() to include admin/user
+                dynamic configuration in the resolution chain.
 
         Translation rules:
           primary_model                    → agent_overrides[base_agent_name]["primary"]
@@ -865,15 +954,17 @@ class AgentService:
           config_overrides.max_tokens      → model_overrides[effective_model]["max_tokens"]
           instance.description             → agent_overrides[...]["description"]
         """
+        # Normalise input: accept both ORM objects and plain dicts.
+        if not isinstance(agent_instance_config, dict):
+            agent_instance_config = agent_instance_config.to_dict()
+
         config = base_config if base_config is not None else get_llm_config()
-        # agent_name = instance.base_agent_name
         agent_name = agent_instance_config.get("base_agent_name")
 
         agent_overrides: dict[str, Any] = {}
         model_overrides: dict[str, dict[str, Any]] = {}
 
         primary_model = agent_instance_config.get("primary_model")
-        # if instance.primary_model:
         if primary_model:
             agent_overrides["primary"] = primary_model
 
@@ -920,6 +1011,68 @@ class AgentService:
             model_overrides=model_overrides if model_overrides else None,
         )
 
+    @classmethod
+    def from_user_instance(
+        cls,
+        instance: "UserAgentInstance",
+        use_checkpoints: bool = False,
+        use_memory: bool = False,
+        checkpoint_config: Optional[dict[str, Any]] = None,
+        context_schema: Optional[Any] = None,
+        middleware: Optional[list[Any]] = None,
+        enable_cost_tracking: bool = True,
+        user_id: Optional[uuid.UUID] = None,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        base_config: Optional[LLMConfig] = None,
+    ) -> "AgentService":
+        """Create an AgentService fully configured from a UserAgentInstance ORM object.
+
+        Steps:
+          1. Apply all DB overrides (model, params, tools) to LLMConfig via
+             build_config_for_instance() layered on top of base_config.
+          2. Construct InstanceContext from the ORM instance fields.
+          3. Pluck system_prompt_override / system_prompt_append from the DB row
+             and store on the service so create_agent() applies them transparently.
+
+        Args:
+            instance: A UserAgentInstance ORM object.
+            use_checkpoints / use_memory / ... : Runtime params forwarded to __init__.
+            base_config: Base LLMConfig with admin/user dynamic overrides already
+                         applied (e.g. from LLMConfigService.get_config_with_overrides()).
+                         When None, falls back to raw YAML config.
+
+        Returns:
+            AgentService ready for ``await service.create_agent(system_prompt=...)``
+            (or usable directly as a context manager).
+        """
+        resolved_config = cls.build_config_for_instance(
+            instance, base_config=base_config
+        )
+
+        instance_ctx = InstanceContext(
+            instance_id=instance.id,
+            instance_name=instance.instance_name,
+            base_agent_name=instance.base_agent_name,
+        )
+
+        return cls(
+            agent_name=instance.base_agent_name,
+            use_checkpoints=use_checkpoints,
+            use_memory=use_memory,
+            checkpoint_config=checkpoint_config,
+            context_schema=context_schema,
+            middleware=middleware,
+            enable_cost_tracking=enable_cost_tracking,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=request_id,
+            config=resolved_config,
+            instance_context=instance_ctx,
+            system_prompt_override=instance.system_prompt_override,
+            system_prompt_append=instance.system_prompt_append,
+        )
+
 
 class DeepAgentService(AgentService):
     """Service for creating agents with sub-agent orchestration via SubAgentMiddleware.
@@ -956,12 +1109,13 @@ class DeepAgentService(AgentService):
         backend: Optional[BackendProtocol | BackendFactory] = None,
         system_prompt_override: Optional[str] = None,
         system_prompt_append: Optional[str] = None,
+        instance_context: Optional[InstanceContext] = None,
         _visited_agents: Optional[set[str]] = None,
     ):
         """Initialize the DeepAgentService.
 
         Args:
-            agent_name: Name of the agent configuration to use.
+            agent_name: Name of the agent configuration to use (YAML config key).
             tools: List of tools to provide to the parent agent.
             subagents: Subagent specifications.  Accepts a mix of:
                 - AgentService instances (compiled into CompiledSubAgent)
@@ -986,6 +1140,7 @@ class DeepAgentService(AgentService):
                 has a complete custom prompt.
             system_prompt_append: Appended to the system_prompt passed to
                 create_agent().  Used when the DB instance extends the base prompt.
+            instance_context: Optional identity of the UserAgentInstance backing this run.
             _visited_agents: Internal recursion guard.
         """
         super().__init__(
@@ -1001,6 +1156,9 @@ class DeepAgentService(AgentService):
             session_id=session_id,
             request_id=request_id,
             config=config,
+            instance_context=instance_context,
+            system_prompt_override=system_prompt_override,
+            system_prompt_append=system_prompt_append,
         )
         self._explicit_subagents = subagents or []
 
@@ -1017,10 +1175,6 @@ class DeepAgentService(AgentService):
 
         self._visited_agents = _visited_agents or set()
         self._visited_agents.add(agent_name)
-
-        # DB-backed prompt customisation: stored here, applied in create_agent()
-        self._system_prompt_override = system_prompt_override
-        self._system_prompt_append = system_prompt_append
 
     # ------------------------------------------------------------------
     # Public API
@@ -1107,6 +1261,7 @@ class DeepAgentService(AgentService):
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
         backend: Optional[BackendProtocol | BackendFactory] = None,
+        base_config: Optional[LLMConfig] = None,
         _visited_agents: Optional[set[str]] = None,
     ) -> "DeepAgentService":
         """Create a DeepAgentService fully configured from a UserAgentInstance ORM object.
@@ -1126,6 +1281,10 @@ class DeepAgentService(AgentService):
                       lazy="selectin" on the relationship means subagents are loaded
                       automatically as long as the SQLAlchemy session is still open.
             use_checkpoints / use_memory / ... : Runtime params forwarded to __init__.
+            base_config: Base LLMConfig with admin/user dynamic overrides already
+                         applied.  Pass LLMConfigService.get_config_with_overrides()
+                         result to include the full dynamic config resolution chain.
+                         When None, falls back to raw YAML config.
             _visited_agents: Internal recursion guard.  Callers must not set this.
                              Holds both YAML agent names and instance UUID strings.
 
@@ -1146,7 +1305,11 @@ class DeepAgentService(AgentService):
         visited.add(instance_key)
 
         # 1. Build an LLMConfig that incorporates all DB overrides for this instance.
-        resolved_config = cls.build_config_for_instance(instance)
+        #    When base_config is provided (e.g. from LLMConfigService), admin overrides
+        #    and user preferences are already baked in; instance overrides go on top.
+        resolved_config = cls.build_config_for_instance(
+            instance, base_config=base_config
+        )
 
         # 2. Resolve the DB subagents relationship into middleware-ready specs.
         db_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -1175,6 +1338,7 @@ class DeepAgentService(AgentService):
                     session_id=session_id,
                     request_id=request_id,
                     backend=backend,
+                    base_config=base_config,
                     _visited_agents=visited | {sub_key},
                 )
                 # system_prompt=None: the nested service applies its own
@@ -1192,7 +1356,9 @@ class DeepAgentService(AgentService):
                 )
             else:
                 # Simple (non-deep) subagent: build a declarative SubAgent dict.
-                sub_config = cls.build_config_for_instance(sub_instance)
+                sub_config = cls.build_config_for_instance(
+                    sub_instance, base_config=base_config
+                )
                 sub_model = LLMModelFactory(sub_config).get_model_for_agent(
                     sub_instance.base_agent_name
                 )
@@ -1220,6 +1386,11 @@ class DeepAgentService(AgentService):
 
         # 3. Construct and return the service.  resolved_config propagates through
         #    LLMModelFactory so all model/config lookups use DB-overridden values.
+        instance_ctx = InstanceContext(
+            instance_id=instance.id,
+            instance_name=instance.instance_name,
+            base_agent_name=instance.base_agent_name,
+        )
         return cls(
             agent_name=instance.base_agent_name,
             subagents=db_subagents,
@@ -1236,27 +1407,9 @@ class DeepAgentService(AgentService):
             backend=backend,
             system_prompt_override=instance.system_prompt_override,
             system_prompt_append=instance.system_prompt_append,
+            instance_context=instance_ctx,
             _visited_agents=visited,
         )
-
-    def _apply_prompt_overrides(self, base_prompt: Optional[str]) -> Optional[str]:
-        """Apply system_prompt_override or system_prompt_append from a UserAgentInstance.
-
-        WHY: DB-backed instances let users fully replace or extend the caller-supplied
-        system prompt without the caller needing to know about DB configuration.
-
-        Precedence (highest to lowest):
-          1. system_prompt_override  – replaces base_prompt entirely
-          2. system_prompt_append    – concatenated onto base_prompt (or used alone)
-          3. base_prompt             – unchanged if neither DB field is set
-        """
-        if self._system_prompt_override is not None:
-            return self._system_prompt_override
-        if self._system_prompt_append is not None:
-            if base_prompt:
-                return f"{base_prompt}\n\n{self._system_prompt_append}"
-            return self._system_prompt_append
-        return base_prompt
 
     async def _build_subagent_specs(
         self,
@@ -1306,10 +1459,10 @@ class DeepAgentService(AgentService):
             if not hasattr(subagent, "agent") or subagent.agent is None:
                 await subagent.create_agent()
             return CompiledSubAgent(
-                name=subagent.agent_name,
+                name=subagent.display_name,
                 description=(
                     subagent.agent_config.description
-                    or f"Subagent {subagent.agent_name}"
+                    or f"Subagent {subagent.display_name}"
                 ),
                 runnable=subagent.agent,
             )

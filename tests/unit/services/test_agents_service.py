@@ -19,6 +19,7 @@ from inference_core.services.agents_service import (
     AgentResponse,
     AgentService,
     DeepAgentService,
+    InstanceContext,
 )
 
 # ---------------------------------------------------------------------------
@@ -57,6 +58,7 @@ def _make_agent_service(**overrides):
         "user_id": uuid.uuid4(),
         "session_id": "sess-1",
         "request_id": "req-1",
+        "instance_context": None,
     }
     defaults.update(overrides)
 
@@ -121,9 +123,7 @@ class TestPydanticModels:
         resp = AgentResponse(
             result={"messages": []},
             steps=[],
-            metadata=AgentMetadata(
-                model_name="gpt-4o", tools_used=[], start_time=now
-            ),
+            metadata=AgentMetadata(model_name="gpt-4o", tools_used=[], start_time=now),
             cost_metrics=None,
         )
         assert resp.cost_metrics is None
@@ -141,7 +141,10 @@ class TestSyncConnectionString:
         "async_url, expected",
         [
             ("sqlite+aiosqlite:///test.db", "sqlite:///test.db"),
-            ("postgresql+asyncpg://user:pass@host/db", "postgresql://user:pass@host/db"),
+            (
+                "postgresql+asyncpg://user:pass@host/db",
+                "postgresql://user:pass@host/db",
+            ),
             ("mysql+aiomysql://user:pass@host/db", "mysql://user:pass@host/db"),
             ("sqlite:///already_sync.db", "sqlite:///already_sync.db"),
         ],
@@ -246,9 +249,7 @@ class TestBuildMiddleware:
         """CostTrackingMiddleware is auto-added when enable_cost_tracking=True."""
         from inference_core.agents.middleware import CostTrackingMiddleware
 
-        with patch(
-            "inference_core.services.agents_service.get_llm_config"
-        ) as mock_cfg:
+        with patch("inference_core.services.agents_service.get_llm_config") as mock_cfg:
             mock_cfg.return_value.models = {}
 
             middleware = agent_service._build_middleware()
@@ -273,9 +274,7 @@ class TestBuildMiddleware:
         existing_ct = CostTrackingMiddleware()
         agent_service._middleware = [existing_ct]
 
-        with patch(
-            "inference_core.services.agents_service.get_llm_config"
-        ) as mock_cfg:
+        with patch("inference_core.services.agents_service.get_llm_config") as mock_cfg:
             mock_cfg.return_value.models = {}
             middleware = agent_service._build_middleware()
 
@@ -429,3 +428,330 @@ class TestDeepAgentServiceHelpers:
     def test_collect_spec_names_empty(self):
         """Empty list returns empty set."""
         assert DeepAgentService._collect_spec_names([]) == set()
+
+
+# ---------------------------------------------------------------------------
+# InstanceContext
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceContext:
+    """Verify InstanceContext dataclass and display_name property."""
+
+    def test_frozen_dataclass(self):
+        """InstanceContext fields are immutable."""
+        ctx = InstanceContext(
+            instance_id=uuid.uuid4(),
+            instance_name="my-writer",
+            base_agent_name="assistant_agent",
+        )
+        with pytest.raises(AttributeError):
+            ctx.instance_name = "other"
+
+    def test_display_name_with_instance(self):
+        """display_name returns instance_name when instance_context is set."""
+        ctx = InstanceContext(
+            instance_id=uuid.uuid4(),
+            instance_name="creative-writer",
+            base_agent_name="assistant_agent",
+        )
+        svc = _make_agent_service(instance_context=ctx)
+        assert svc.display_name == "creative-writer"
+        assert svc.agent_name == "test_agent"
+
+    def test_display_name_without_instance(self, agent_service):
+        """display_name falls back to agent_name when no instance_context."""
+        assert agent_service.display_name == "test_agent"
+        assert agent_service.instance_context is None
+
+    def test_instance_context_in_provider_context(self):
+        """Instance fields are included in _build_provider_user_context."""
+        ctx = InstanceContext(
+            instance_id=uuid.uuid4(),
+            instance_name="creative-writer",
+            base_agent_name="assistant_agent",
+        )
+        svc = _make_agent_service(instance_context=ctx)
+        provider_ctx = svc._build_provider_user_context(None)
+        assert provider_ctx["instance_name"] == "creative-writer"
+        assert provider_ctx["instance_id"] == str(ctx.instance_id)
+
+    def test_instance_context_not_in_provider_context_when_absent(self, agent_service):
+        """Instance fields are absent from provider context when no instance_context."""
+        ctx = agent_service._build_provider_user_context(None)
+        assert "instance_name" not in ctx
+        assert "instance_id" not in ctx
+
+
+# ---------------------------------------------------------------------------
+# build_config_for_instance
+# ---------------------------------------------------------------------------
+
+
+class TestBuildConfigForInstance:
+    """Verify DB →  LLMConfig override translation."""
+
+    def test_uses_provided_base_config(self):
+        """Custom base_config is used instead of raw YAML."""
+        mock_base = MagicMock()
+        mock_base.agent_models = {"test_agent": "gpt-4o"}
+        mock_base.with_overrides.return_value = mock_base
+
+        result = AgentService.build_config_for_instance(
+            {"base_agent_name": "test_agent", "primary_model": "gpt-5"},
+            base_config=mock_base,
+        )
+        mock_base.with_overrides.assert_called_once()
+        assert result is mock_base
+
+    def test_falls_back_to_yaml_when_no_base(self):
+        """When no base_config, raw YAML config is used."""
+        with patch("inference_core.services.agents_service.get_llm_config") as mock_get:
+            mock_cfg = MagicMock()
+            mock_cfg.agent_models = {"test_agent": "gpt-4o"}
+            mock_cfg.with_overrides.return_value = mock_cfg
+            mock_get.return_value = mock_cfg
+
+            AgentService.build_config_for_instance(
+                {"base_agent_name": "test_agent", "primary_model": "gpt-5"},
+            )
+            mock_get.assert_called_once()
+
+    def test_accepts_orm_object(self):
+        """ORM objects with to_dict() are accepted and converted."""
+        mock_orm = MagicMock()
+        mock_orm.to_dict.return_value = {
+            "base_agent_name": "test_agent",
+            "primary_model": "gpt-5",
+        }
+        mock_base = MagicMock()
+        mock_base.agent_models = {"test_agent": "gpt-4o"}
+        mock_base.with_overrides.return_value = mock_base
+
+        AgentService.build_config_for_instance(mock_orm, base_config=mock_base)
+        mock_orm.to_dict.assert_called_once()
+        mock_base.with_overrides.assert_called_once()
+
+    def test_no_overrides_when_no_changes(self):
+        """Empty instance config returns base config unchanged without calling with_overrides."""
+        mock_base = MagicMock()
+        mock_base.agent_models = {"test_agent": "gpt-4o"}
+
+        result = AgentService.build_config_for_instance(
+            {"base_agent_name": "test_agent"},
+            base_config=mock_base,
+        )
+        # No primary_model, no config_overrides → base config returned as-is
+        mock_base.with_overrides.assert_not_called()
+        assert result is mock_base
+
+
+# ---------------------------------------------------------------------------
+# CostTrackingMiddleware instance context
+# ---------------------------------------------------------------------------
+
+
+class TestCostTrackingInstanceContext:
+    """Verify CostTrackingMiddleware carries instance fields."""
+
+    def test_middleware_stores_instance_fields(self):
+        from inference_core.agents.middleware import CostTrackingMiddleware
+
+        iid = uuid.uuid4()
+        m = CostTrackingMiddleware(instance_id=iid, instance_name="my-writer")
+        assert m.instance_id == iid
+        assert m.instance_name == "my-writer"
+
+    def test_middleware_none_when_no_instance(self):
+        from inference_core.agents.middleware import CostTrackingMiddleware
+
+        m = CostTrackingMiddleware()
+        assert m.instance_id is None
+        assert m.instance_name is None
+
+    def test_cost_tracking_gets_instance_from_agent_service(self):
+        """_build_middleware passes instance context to CostTrackingMiddleware."""
+        from inference_core.agents.middleware import CostTrackingMiddleware
+
+        ctx = InstanceContext(
+            instance_id=uuid.uuid4(),
+            instance_name="creative-writer",
+            base_agent_name="assistant_agent",
+        )
+        svc = _make_agent_service(instance_context=ctx)
+
+        with patch("inference_core.services.agents_service.get_llm_config") as mock_cfg:
+            mock_cfg.return_value.models = {}
+            middleware = svc._build_middleware()
+
+        ct = [m for m in middleware if isinstance(m, CostTrackingMiddleware)]
+        assert len(ct) == 1
+        assert ct[0].instance_id == ctx.instance_id
+        assert ct[0].instance_name == "creative-writer"
+
+
+# ---------------------------------------------------------------------------
+# AgentService.from_user_instance
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_instance(**overrides):
+    """Build a minimal UserAgentInstance-like mock."""
+    instance = MagicMock()
+    instance.id = uuid.uuid4()
+    instance.base_agent_name = "test_agent"
+    instance.instance_name = "my-instance"
+    instance.primary_model = None
+    instance.system_prompt_override = None
+    instance.system_prompt_append = None
+    instance.description = None
+    instance.config_overrides = {}
+    for k, v in overrides.items():
+        setattr(instance, k, v)
+    return instance
+
+
+def _make_from_user_instance_patches():
+    """Context-manager building all patches needed for from_user_instance tests.
+
+    WHY: from_user_instance passes config=resolved_config so __init__ calls
+    LLMModelFactory(config) instead of get_model_factory() — both need mocking.
+    """
+    import contextlib
+
+    mock_factory = MagicMock()
+    mock_factory.get_agent_model_name.return_value = "gpt-4o"
+    mock_factory.get_model_for_agent.return_value = MagicMock()
+    mock_factory.config.get_specific_agent_config.return_value = MagicMock(
+        local_tool_providers=[],
+        mcp_profile=None,
+        allowed_tools=None,
+        tool_model_overrides=None,
+        description="Test",
+        skills=None,
+        subagents=None,
+        interrupt_on=None,
+    )
+
+    mock_base = MagicMock()
+    mock_base.agent_models = {"test_agent": "gpt-4o"}
+    # No overrides means build_config_for_instance returns config unchanged
+    # (no with_overrides call), so we don't need to configure it.
+
+    @contextlib.contextmanager
+    def patches():
+        with patch(
+            "inference_core.services.agents_service.get_model_factory",
+            return_value=mock_factory,
+        ), patch(
+            "inference_core.services.agents_service.LLMModelFactory",
+            return_value=mock_factory,
+        ), patch(
+            "inference_core.services.agents_service.get_llm_config",
+            return_value=mock_base,
+        ), patch(
+            "inference_core.services.agents_service.get_settings",
+            return_value=MagicMock(
+                database_url="sqlite+aiosqlite:///test.db",
+                agent_memory_enabled=False,
+            ),
+        ):
+            yield mock_base
+
+    return patches
+
+
+class TestAgentServiceFromUserInstance:
+    """Verify AgentService.from_user_instance factory."""
+
+    def test_returns_agent_service(self):
+        """from_user_instance returns an AgentService instance."""
+        patches = _make_from_user_instance_patches()
+        instance = _make_mock_instance()
+        with patches() as mock_base:
+            svc = AgentService.from_user_instance(
+                instance, user_id=uuid.uuid4(), base_config=mock_base
+            )
+        assert isinstance(svc, AgentService)
+
+    def test_sets_instance_context(self):
+        """from_user_instance wires InstanceContext from ORM fields."""
+        patches = _make_from_user_instance_patches()
+        iid = uuid.uuid4()
+        instance = _make_mock_instance()
+        instance.id = iid
+        with patches() as mock_base:
+            svc = AgentService.from_user_instance(instance, base_config=mock_base)
+        assert svc.instance_context is not None
+        assert svc.instance_context.instance_id == iid
+        assert svc.instance_context.instance_name == "my-instance"
+        assert svc.instance_context.base_agent_name == "test_agent"
+
+    def test_stores_prompt_override(self):
+        """system_prompt_override is stored for use in create_agent."""
+        patches = _make_from_user_instance_patches()
+        instance = _make_mock_instance(system_prompt_override="Custom prompt")
+        with patches() as mock_base:
+            svc = AgentService.from_user_instance(instance, base_config=mock_base)
+        assert svc._system_prompt_override == "Custom prompt"
+        assert svc._system_prompt_append is None
+
+    def test_stores_prompt_append(self):
+        """system_prompt_append is stored for use in create_agent."""
+        patches = _make_from_user_instance_patches()
+        instance = _make_mock_instance(system_prompt_append="Extra instructions")
+        with patches() as mock_base:
+            svc = AgentService.from_user_instance(instance, base_config=mock_base)
+        assert svc._system_prompt_override is None
+        assert svc._system_prompt_append == "Extra instructions"
+
+
+# ---------------------------------------------------------------------------
+# _apply_prompt_overrides
+# ---------------------------------------------------------------------------
+
+
+class TestApplyPromptOverrides:
+    """Verify prompt override precedence logic in AgentService."""
+
+    def test_override_replaces_base(self, agent_service):
+        """system_prompt_override fully replaces the base prompt."""
+        agent_service._system_prompt_override = "OVERRIDE"
+        agent_service._system_prompt_append = None
+        result = agent_service._apply_prompt_overrides("original")
+        assert result == "OVERRIDE"
+
+    def test_append_concatenates(self, agent_service):
+        """system_prompt_append is appended to the base prompt."""
+        agent_service._system_prompt_override = None
+        agent_service._system_prompt_append = "EXTRA"
+        result = agent_service._apply_prompt_overrides("base")
+        assert result == "base\n\nEXTRA"
+
+    def test_append_alone_when_no_base(self, agent_service):
+        """system_prompt_append is used alone when base prompt is None."""
+        agent_service._system_prompt_override = None
+        agent_service._system_prompt_append = "EXTRA"
+        result = agent_service._apply_prompt_overrides(None)
+        assert result == "EXTRA"
+
+    def test_passthrough_when_no_overrides(self, agent_service):
+        """Base prompt is returned unchanged when no overrides are set."""
+        agent_service._system_prompt_override = None
+        agent_service._system_prompt_append = None
+        result = agent_service._apply_prompt_overrides("base")
+        assert result == "base"
+
+    def test_none_passthrough(self, agent_service):
+        """None base prompt is returned as None when no overrides are set."""
+        agent_service._system_prompt_override = None
+        agent_service._system_prompt_append = None
+        result = agent_service._apply_prompt_overrides(None)
+        assert result is None
+
+    def test_override_takes_precedence_over_append(self, agent_service):
+        """system_prompt_override wins over system_prompt_append."""
+        agent_service._system_prompt_override = "OVERRIDE"
+        agent_service._system_prompt_append = "EXTRA"
+        result = agent_service._apply_prompt_overrides("base")
+        assert result == "OVERRIDE"
