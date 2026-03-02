@@ -722,7 +722,7 @@ class AgentService:
                     if "messages" in data:
                         last_agent_result = data
                 elif step == "__interrupt__":
-                    last_agent_result = {"__interrupt__": data[0]}
+                    last_agent_result = {"__interrupt__": data}
 
         # Use the last result that contained messages, or fallback to last step
         if last_agent_result:
@@ -804,7 +804,7 @@ class AgentService:
                     if "messages" in data:
                         last_agent_result = data
                 elif step == "__interrupt__":
-                    last_agent_result = {"__interrupt__": data[0]}
+                    last_agent_result = {"__interrupt__": data}
 
         if last_agent_result:
             result = last_agent_result
@@ -1346,11 +1346,19 @@ class DeepAgentService(AgentService):
         if not confirmed:
             return []
 
+        # Build the same user context that _load_providers_tools passes,
+        # reusing the parent agent's identity fields.
+        provider_context = self._build_provider_user_context()
+
         try:
             return await load_tools_for_agent(
                 agent_name,
                 provider_names=confirmed,
                 allowed_tools=agent_config.allowed_tools,
+                user_context=provider_context,
+                user_id=provider_context.get("user_id"),
+                session_id=provider_context.get("session_id"),
+                request_id=provider_context.get("request_id"),
             )
         except Exception as e:
             logging.warning("Failed to load tools for subagent '%s': %s", agent_name, e)
