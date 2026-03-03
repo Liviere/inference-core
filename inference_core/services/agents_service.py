@@ -1347,12 +1347,22 @@ class DeepAgentService(AgentService):
                 db_subagents.append(nested_service)
             else:
                 # Simple (non-deep) subagent: build a declarative SubAgent dict.
+                # Model is resolved via LLMModelFactory so SubAgentMiddleware
+                # receives a BaseChatModel instance and skips init_chat_model().
                 sub_config = cls.build_config_for_instance(
                     sub_instance, base_config=base_config
                 )
                 sub_model = LLMModelFactory(sub_config).get_model_for_agent(
                     sub_instance.base_agent_name
                 )
+                if sub_model is None:
+                    logging.warning(
+                        "Could not create model for DB subagent '%s' (id=%s) – skipping",
+                        sub_instance.instance_name,
+                        sub_instance.id,
+                    )
+                    continue
+
                 effective_system_prompt: Optional[str] = (
                     sub_instance.system_prompt_override
                     or sub_instance.description
@@ -1363,17 +1373,16 @@ class DeepAgentService(AgentService):
                     and not sub_instance.system_prompt_override
                 ):
                     effective_system_prompt = f"{effective_system_prompt}\n\n{sub_instance.system_prompt_append}"
-                spec: dict[str, Any] = {
-                    "name": sub_instance.instance_name,
-                    "description": (
-                        sub_instance.description
-                        or f"Subagent {sub_instance.instance_name}"
-                    ),
-                    "system_prompt": effective_system_prompt,
-                    "model": sub_model,
-                    "tools": [],
-                    "base_agent_name": sub_instance.base_agent_name,
-                }
+
+                spec = cls._build_declarative_subagent_spec(
+                    name=sub_instance.instance_name,
+                    description=sub_instance.description
+                    or f"Subagent {sub_instance.instance_name}",
+                    system_prompt=effective_system_prompt,
+                    model=sub_model,
+                    tools=[],
+                    base_agent_name=sub_instance.base_agent_name,
+                )
                 db_subagents.append(spec)
 
         # 3. Construct and return the service.  resolved_config propagates through
@@ -1470,7 +1479,47 @@ class DeepAgentService(AgentService):
                 runnable=subagent.agent,
             )
 
-        # Already a SubAgent or CompiledSubAgent TypedDict
+        elif isinstance(subagent, dict) and "model" in subagent:
+            subagent_name = subagent.get("name", "Unnamed Subagent")
+
+            model = subagent.get("model")
+            if model:
+                model = self.model_factory.create_model(model)
+            else:
+                model = self.model_factory.get_model_for_agent(subagent_name)
+
+            if model is None:
+                logging.warning(
+                    "Could not create model for subagent '%s' – skipping",
+                    subagent_name,
+                )
+                return None
+
+            tools = subagent.get("tools", [])
+
+            # Per-subagent interrupt_on: own config wins, parent's as fallback
+            sub_interrupt = subagent.get("interrupt_on") or self.interrupt_on
+            description = subagent.get("description") or f"Subagent {subagent_name}"
+            system_prompt = (
+                subagent.get("system_prompt")
+                or description
+                or f"You are {subagent_name}."
+            )
+            skills = subagent.get("skills", [])
+
+            spec = self._build_declarative_subagent_spec(
+                name=subagent_name,
+                description=description,
+                system_prompt=system_prompt,
+                model=model,
+                tools=tools,
+                interrupt_on=sub_interrupt,
+                skills=skills,
+            )
+
+            return spec
+
+        # Assume it's already a valid SubAgent or CompiledSubAgent
         return subagent
 
     async def _build_subagent_from_config(
@@ -1496,27 +1545,64 @@ class DeepAgentService(AgentService):
 
         # Otherwise build a declarative SubAgent spec
         model = self.model_factory.get_model_for_agent(subagent_name)
+        if model is None:
+            logging.warning(
+                "Could not create model for subagent '%s' – skipping",
+                subagent_name,
+            )
+            return None
+
         tools = await self._load_tools_for_subagent(subagent_name, sub_config)
 
-        spec: dict[str, Any] = {
-            "name": subagent_name,
-            "description": sub_config.description or f"Subagent {subagent_name}",
-            "system_prompt": (
+        # Per-subagent interrupt_on: own config wins, parent's as fallback
+        sub_interrupt = sub_config.interrupt_on or self.interrupt_on
+
+        spec = self._build_declarative_subagent_spec(
+            name=subagent_name,
+            description=sub_config.description or f"Subagent {subagent_name}",
+            system_prompt=(
                 sub_config.system_prompt
                 or sub_config.description
                 or f"You are {subagent_name}."
             ),
+            model=model,
+            tools=tools,
+            interrupt_on=sub_interrupt,
+            skills=sub_config.skills,
+        )
+
+        return spec
+
+    @staticmethod
+    def _build_declarative_subagent_spec(
+        name: str,
+        description: str,
+        system_prompt: str,
+        model: Any,
+        tools: list[Any],
+        base_agent_name: Optional[str] = None,
+        interrupt_on: Optional[dict[str, bool | InterruptOnConfig]] = None,
+        skills: Optional[list[Any]] = None,
+    ) -> dict[str, Any]:
+        """Creates a standardized declarative SubAgent TypedDict.
+
+        Using this ensures that SubAgentMiddleware receives a consistent dictionary
+        with properly initialized instances, explicitly skipping string-based LangChain `init_chat_model` bugs.
+        """
+        spec: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "system_prompt": system_prompt,
             "model": model,
             "tools": tools,
         }
 
-        # Per-subagent interrupt_on: own config wins, parent's as fallback
-        sub_interrupt = sub_config.interrupt_on or self.interrupt_on
-        if sub_interrupt:
-            spec["interrupt_on"] = sub_interrupt
-
-        if sub_config.skills:
-            spec["skills"] = sub_config.skills
+        if base_agent_name:
+            spec["base_agent_name"] = base_agent_name
+        if interrupt_on is not None:
+            spec["interrupt_on"] = interrupt_on
+        if skills is not None:
+            spec["skills"] = skills
 
         return spec
 
