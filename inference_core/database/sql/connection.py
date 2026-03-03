@@ -34,6 +34,7 @@ from inference_core.database.sql.models import *  # noqa: F401,E402
 
 # Global variables for engine and session maker
 _engine = None
+_engine_loop = None
 _async_session_maker = None
 
 
@@ -85,9 +86,34 @@ def get_engine(database_url: str = None) -> Engine:
     Returns:
         Async SQLAlchemy engine
     """
-    global _engine
+    global _engine, _engine_loop, _async_session_maker
+
+    import asyncio
+
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if (
+        _engine is not None
+        and current_loop is not None
+        and _engine_loop is not current_loop
+    ):
+        logger.warning(
+            "Event loop changed (likely due to reload or multi-loop environment). "
+            "Discarding old database engine to prevent 'Task got Future attached to a different loop' error."
+        )
+        # Cannot await dispose() here because it's synchronous and the old loop might be gone.
+        # We simply drop the reference. Connections will eventually drop.
+        _engine = None
+        _async_session_maker = None
+
     if _engine is None:
         _engine = create_database_engine(database_url)
+        if current_loop is not None:
+            _engine_loop = current_loop
+
     return _engine
 
 
@@ -99,8 +125,12 @@ def get_session_maker():
         Async session maker
     """
     global _async_session_maker
+
+    # We call get_engine() here so it can detect event loop changes
+    # and reset _async_session_maker if necessary.
+    engine = get_engine()
+
     if _async_session_maker is None:
-        engine = get_engine()
         _async_session_maker = async_sessionmaker(
             engine,
             class_=AsyncSession,
@@ -175,12 +205,13 @@ async def close_database():
     """
     Close database connections
     """
-    global _engine, _async_session_maker
+    global _engine, _engine_loop, _async_session_maker
 
     if _engine:
         await _engine.dispose()
         _engine = None
 
+    _engine_loop = None
     _async_session_maker = None
     logger.info("Database connections closed")
 
@@ -192,7 +223,7 @@ async def dispose_current_engine():
     connections are not reused unsafely. After disposal, a new engine will be
     lazily created on next access via get_engine().
     """
-    global _engine
+    global _engine, _engine_loop
     if _engine is not None:
         try:
             await _engine.dispose()
@@ -200,6 +231,7 @@ async def dispose_current_engine():
             logger.warning(f"Failed disposing inherited engine: {e}")
         finally:
             _engine = None
+            _engine_loop = None
 
 
 def has_engine() -> bool:
@@ -224,7 +256,7 @@ def reset_database_for_new_event_loop() -> None:
         >>> reset_database_for_new_event_loop()
         >>> # Now you can safely create a new agent
     """
-    global _engine, _async_session_maker
+    global _engine, _engine_loop, _async_session_maker
 
     if _engine is not None:
         logger.warning(
@@ -236,6 +268,7 @@ def reset_database_for_new_event_loop() -> None:
         # Just clear the references; connections will be garbage collected
         _engine = None
 
+    _engine_loop = None
     _async_session_maker = None
     logger.info("Database engine and session maker reset for new event loop")
 
