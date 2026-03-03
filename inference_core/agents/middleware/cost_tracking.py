@@ -45,6 +45,7 @@ from langchain.agents.middleware import (
 )
 from langchain.messages import ToolMessage
 from langchain.tools.tool_node import ToolCallRequest
+from langgraph.errors import GraphInterrupt
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import NotRequired
@@ -380,6 +381,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             result = handler(request)
             logger.debug(f"Tool call end: {tool_name}")
             return result
+
+        except GraphInterrupt as gi:
+            logger.debug(f"Tool call interrupted by GraphInterrupt ({tool_name}): {gi}")
+            raise
+
         except Exception as e:
             logger.warning(f"Tool call error ({tool_name}): {e}")
             return {"error": str(e)}
@@ -401,6 +407,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             result = await handler(request)
             logger.debug(f"Tool call end (async): {tool_name}")
             return result
+
+        except GraphInterrupt as gi:
+            logger.debug(f"Tool call interrupted by GraphInterrupt ({tool_name}): {gi}")
+            raise
+
         except Exception as e:
             logger.warning(f"Tool call error (async, {tool_name}): {e}")
             return {"error": str(e)}
