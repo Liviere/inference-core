@@ -1213,8 +1213,17 @@ class DeepAgentService(AgentService):
         # 3. Build base middleware (cost tracking, memory, tool-model switch)
         middleware = self._build_middleware()
 
+        # Extract CostTrackingMiddleware and MemoryMiddleware to propagate to subagents
+        propagated_middleware = [
+            m
+            for m in middleware
+            if isinstance(m, (CostTrackingMiddleware, MemoryMiddleware))
+        ]
+
         # 4. Build subagent specs and add SubAgentMiddleware
-        subagent_specs = await self._build_subagent_specs()
+        subagent_specs = await self._build_subagent_specs(
+            inherited_middleware=propagated_middleware
+        )
         if subagent_specs:
             sub_middleware = SubAgentMiddleware(
                 backend=self._backend,
@@ -1333,6 +1342,7 @@ class DeepAgentService(AgentService):
                     use_memory=use_memory,
                     checkpoint_config=checkpoint_config,
                     context_schema=context_schema,
+                    middleware=middleware,
                     enable_cost_tracking=enable_cost_tracking,
                     user_id=user_id,
                     session_id=session_id,
@@ -1414,6 +1424,7 @@ class DeepAgentService(AgentService):
 
     async def _build_subagent_specs(
         self,
+        inherited_middleware: Optional[list[Any]] = None,
     ) -> list[SubAgent | CompiledSubAgent]:
         """Merge explicit subagents with YAML-config-based ones.
 
@@ -1436,7 +1447,9 @@ class DeepAgentService(AgentService):
                 # Remove it so we don't leak non-standard keys to downstream middlewares
                 subagent = {k: v for k, v in subagent.items() if k != "base_agent_name"}
 
-            spec = await self._resolve_explicit_subagent(subagent)
+            spec = await self._resolve_explicit_subagent(
+                subagent, inherited_middleware=inherited_middleware
+            )
             specs.append(spec)
 
         # --- Config-defined subagents ---
@@ -1452,7 +1465,9 @@ class DeepAgentService(AgentService):
                     )
                     continue
 
-                spec = await self._build_subagent_from_config(subagent_name)
+                spec = await self._build_subagent_from_config(
+                    subagent_name, inherited_middleware=inherited_middleware
+                )
                 if spec is not None:
                     specs.append(spec)
 
@@ -1461,6 +1476,7 @@ class DeepAgentService(AgentService):
     async def _resolve_explicit_subagent(
         self,
         subagent: "AgentService | SubAgent | CompiledSubAgent",
+        inherited_middleware: Optional[list[Any]] = None,
     ) -> SubAgent | CompiledSubAgent:
         """Turn an explicit subagent into a middleware-ready spec.
 
@@ -1496,6 +1512,16 @@ class DeepAgentService(AgentService):
                 return None
 
             tools = subagent.get("tools", [])
+            middleware = subagent.get("middleware", [])
+
+            # Combine inherited middleware
+            if inherited_middleware:
+                for m in inherited_middleware:
+                    # Avoid duplicates by type
+                    if not any(
+                        isinstance(existing, type(m)) for existing in middleware
+                    ):
+                        middleware.append(m)
 
             # Per-subagent interrupt_on: own config wins, parent's as fallback
             sub_interrupt = subagent.get("interrupt_on") or self.interrupt_on
@@ -1515,6 +1541,7 @@ class DeepAgentService(AgentService):
                 tools=tools,
                 interrupt_on=sub_interrupt,
                 skills=skills,
+                middleware=middleware,
             )
 
             return spec
@@ -1523,7 +1550,9 @@ class DeepAgentService(AgentService):
         return subagent
 
     async def _build_subagent_from_config(
-        self, subagent_name: str
+        self,
+        subagent_name: str,
+        inherited_middleware: Optional[list[Any]] = None,
     ) -> Optional[SubAgent | CompiledSubAgent]:
         """Build a SubAgent spec from YAML agent configuration.
 
@@ -1541,7 +1570,9 @@ class DeepAgentService(AgentService):
         # If the subagent itself has nested subagents, recursively create a
         # DeepAgentService and wrap it as CompiledSubAgent.
         if sub_config.subagents:
-            return await self._compile_nested_deep_subagent(subagent_name, sub_config)
+            return await self._compile_nested_deep_subagent(
+                subagent_name, sub_config, inherited_middleware=inherited_middleware
+            )
 
         # Otherwise build a declarative SubAgent spec
         model = self.model_factory.get_model_for_agent(subagent_name)
@@ -1553,6 +1584,10 @@ class DeepAgentService(AgentService):
             return None
 
         tools = await self._load_tools_for_subagent(subagent_name, sub_config)
+
+        middleware = []
+        if inherited_middleware:
+            middleware.extend(inherited_middleware)
 
         # Per-subagent interrupt_on: own config wins, parent's as fallback
         sub_interrupt = sub_config.interrupt_on or self.interrupt_on
@@ -1569,6 +1604,7 @@ class DeepAgentService(AgentService):
             tools=tools,
             interrupt_on=sub_interrupt,
             skills=sub_config.skills,
+            middleware=middleware,
         )
 
         return spec
@@ -1583,6 +1619,7 @@ class DeepAgentService(AgentService):
         base_agent_name: Optional[str] = None,
         interrupt_on: Optional[dict[str, bool | InterruptOnConfig]] = None,
         skills: Optional[list[Any]] = None,
+        middleware: Optional[list[Any]] = None,
     ) -> dict[str, Any]:
         """Creates a standardized declarative SubAgent TypedDict.
 
@@ -1603,11 +1640,16 @@ class DeepAgentService(AgentService):
             spec["interrupt_on"] = interrupt_on
         if skills is not None:
             spec["skills"] = skills
+        if middleware is not None:
+            spec["middleware"] = middleware
 
         return spec
 
     async def _compile_nested_deep_subagent(
-        self, subagent_name: str, sub_config: Any
+        self,
+        subagent_name: str,
+        sub_config: Any,
+        inherited_middleware: Optional[list[Any]] = None,
     ) -> CompiledSubAgent:
         """Recursively compile a subagent that itself has subagents.
 
@@ -1620,6 +1662,7 @@ class DeepAgentService(AgentService):
             use_memory=self.use_memory,
             checkpoint_config=self.checkpoint_config,
             context_schema=self.context_schema,
+            middleware=inherited_middleware,
             enable_cost_tracking=self._enable_cost_tracking,
             user_id=self._user_id,
             session_id=self._session_id,
