@@ -1344,16 +1344,7 @@ class DeepAgentService(AgentService):
                 # system_prompt=None: the nested service applies its own
                 # _system_prompt_override / _system_prompt_append internally.
                 await nested_service.create_agent()
-                db_subagents.append(
-                    CompiledSubAgent(
-                        name=sub_instance.instance_name,
-                        description=(
-                            sub_instance.description
-                            or f"Subagent {sub_instance.instance_name}"
-                        ),
-                        runnable=nested_service.agent,
-                    )
-                )
+                db_subagents.append(nested_service)
             else:
                 # Simple (non-deep) subagent: build a declarative SubAgent dict.
                 sub_config = cls.build_config_for_instance(
@@ -1381,6 +1372,7 @@ class DeepAgentService(AgentService):
                     "system_prompt": effective_system_prompt,
                     "model": sub_model,
                     "tools": [],
+                    "base_agent_name": sub_instance.base_agent_name,
                 }
                 db_subagents.append(spec)
 
@@ -1421,9 +1413,20 @@ class DeepAgentService(AgentService):
         A visited-agents set prevents infinite recursion.
         """
         specs: list[SubAgent | CompiledSubAgent] = []
+        excluded_base_names: set[str] = set()
 
         # --- Explicit subagents (passed via constructor) ---
         for subagent in self._explicit_subagents:
+            if isinstance(subagent, AgentService):
+                if subagent.instance_context:
+                    excluded_base_names.add(subagent.instance_context.base_agent_name)
+                elif subagent.agent_name:
+                    excluded_base_names.add(subagent.agent_name)
+            elif isinstance(subagent, dict) and "base_agent_name" in subagent:
+                excluded_base_names.add(subagent["base_agent_name"])
+                # Remove it so we don't leak non-standard keys to downstream middlewares
+                subagent = {k: v for k, v in subagent.items() if k != "base_agent_name"}
+
             spec = await self._resolve_explicit_subagent(subagent)
             specs.append(spec)
 
@@ -1431,7 +1434,7 @@ class DeepAgentService(AgentService):
         if self.agent_config and self.agent_config.subagents:
             added_names = self._collect_spec_names(specs)
             for subagent_name in self.agent_config.subagents:
-                if subagent_name in added_names:
+                if subagent_name in added_names or subagent_name in excluded_base_names:
                     continue
                 if subagent_name in self._visited_agents:
                     logging.debug(
