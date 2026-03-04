@@ -297,8 +297,11 @@ class AgentService:
                         else None
                     ),
                 )
-                # Insert at the beginning so it wraps everything
-                middleware.insert(0, cost_middleware)
+                # Append at the end so CostTracking runs FIRST in the
+                # reversed after_model phase — before any interrupt-causing
+                # middleware (e.g. HumanInTheLoopMiddleware, SubAgentMiddleware).
+                # Source: LangChain middleware docs – execution order, 2025-08
+                middleware.append(cost_middleware)
                 logging.debug(
                     f"Added CostTrackingMiddleware for agent '{self.display_name}'"
                 )
@@ -317,9 +320,17 @@ class AgentService:
                         max_recall_results=settings.agent_memory_max_results,
                         # Uses canonical MemoryType values from service by default
                     )
-                    # Insert after cost tracking (if present) so memory context is logged
-                    insert_pos = 1 if self._enable_cost_tracking else 0
-                    middleware.insert(insert_pos, memory_middleware)
+                    # Insert before CostTracking (which sits at the end)
+                    # so memory context enrichment runs in before_model first.
+                    ct_index = next(
+                        (
+                            i
+                            for i, m in enumerate(middleware)
+                            if isinstance(m, CostTrackingMiddleware)
+                        ),
+                        len(middleware),
+                    )
+                    middleware.insert(ct_index, memory_middleware)
                     logging.debug(
                         f"Added MemoryMiddleware for agent '{self.display_name}'"
                     )
@@ -433,6 +444,26 @@ class AgentService:
                 f"'{self.display_name}': {e}",
                 exc_info=True,
             )
+
+    @staticmethod
+    def _ensure_cost_tracking_last(middleware: list[Any]) -> None:
+        """Move CostTrackingMiddleware to the absolute end of the list.
+
+        WHY: In the reversed ``after_model`` phase, the last middleware runs
+        first.  Placing CostTracking last guarantees its state-accumulation
+        hook executes before any interrupt-causing middleware
+        (HumanInTheLoopMiddleware, SubAgentMiddleware) can halt the graph.
+
+        The primary DB persistence already happens in ``wrap_model_call``
+        (which is interrupt-safe), so this is a defensive measure for the
+        best-effort state accumulation in ``after_model``.
+        """
+        ct_instances = [m for m in middleware if isinstance(m, CostTrackingMiddleware)]
+        if not ct_instances:
+            return
+        for ct in ct_instances:
+            middleware.remove(ct)
+            middleware.append(ct)
 
     def close(self) -> None:
         self._exit_stack.close()
@@ -1239,7 +1270,12 @@ class DeepAgentService(AgentService):
             )
             middleware.append(skills_middleware)
 
-        # 6. Create the agent via standard create_agent
+        # 6. Ensure CostTrackingMiddleware is absolute last so its
+        #    after_model (state accumulation) runs FIRST in reverse order,
+        #    before any interrupt-causing middleware.
+        self._ensure_cost_tracking_last(middleware)
+
+        # 7. Create the agent via standard create_agent
         self.agent = create_agent(
             self.model,
             tools=self.tools,
@@ -1523,6 +1559,9 @@ class DeepAgentService(AgentService):
                     ):
                         middleware.append(m)
 
+            # CostTracking must be last so it runs first in after_model
+            self._ensure_cost_tracking_last(middleware)
+
             # Per-subagent interrupt_on: own config wins, parent's as fallback
             sub_interrupt = subagent.get("interrupt_on") or self.interrupt_on
             description = subagent.get("description") or f"Subagent {subagent_name}"
@@ -1588,6 +1627,9 @@ class DeepAgentService(AgentService):
         middleware = []
         if inherited_middleware:
             middleware.extend(inherited_middleware)
+
+        # CostTracking must be last so it runs first in after_model
+        self._ensure_cost_tracking_last(middleware)
 
         # Per-subagent interrupt_on: own config wins, parent's as fallback
         sub_interrupt = sub_config.interrupt_on or self.interrupt_on

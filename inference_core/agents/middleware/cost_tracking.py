@@ -163,6 +163,22 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         # Per-invocation context (reset on each before_agent)
         self._ctx: Optional[_MiddlewareContext] = None
 
+    def _init_context(self):
+        """Initialize the internal middleware context."""
+        self._ctx = _MiddlewareContext()
+
+        return {
+            "usage_session_id": str(uuid.uuid4()),
+            "accumulated_input_tokens": 0,
+            "accumulated_output_tokens": 0,
+            "accumulated_total_tokens": 0,
+            "accumulated_extra_tokens": {},
+            "tool_call_count": 0,
+            "tool_call_latencies": [],
+            "model_call_count": 0,
+            "model_call_latencies": [],
+        }
+
     # -------------------------------------------------------------------------
     # Node-style hooks
     # -------------------------------------------------------------------------
@@ -183,20 +199,20 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             State updates with initialized tracking fields
         """
         # Create fresh context for this invocation
-        self._ctx = _MiddlewareContext()
+        return self._init_context()
 
-        # Return initial state updates
-        return {
-            "usage_session_id": str(uuid.uuid4()),
-            "accumulated_input_tokens": 0,
-            "accumulated_output_tokens": 0,
-            "accumulated_total_tokens": 0,
-            "accumulated_extra_tokens": {},
-            "tool_call_count": 0,
-            "tool_call_latencies": [],
-            "model_call_count": 0,
-            "model_call_latencies": [],
-        }
+    def before_agent(
+        self, state: CostTrackingState, runtime: Runtime
+    ) -> Dict[str, Any] | None:
+        """Re-Initialize context and state counters
+
+        In some cases (e.g., resuming after HumanInTheLoop interruption) before_agent may not be called,
+        so we defensively ensure context is initialized if not already present.
+        This allows after_model to function correctly even if before_agent was skipped.
+        """
+        #
+        if not self._ctx:
+            return self._init_context()
 
     def after_model(
         self, state: CostTrackingState, runtime: Runtime
@@ -216,7 +232,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             State updates with accumulated token counts
         """
         if not self._ctx:
-            return None
+            self._ctx = _MiddlewareContext()
 
         updates: Dict[str, Any] = {}
 
