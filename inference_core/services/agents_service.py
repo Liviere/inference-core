@@ -1536,7 +1536,8 @@ class DeepAgentService(AgentService):
 
             model = subagent.get("model")
             if model:
-                model = self.model_factory.create_model(model)
+                if isinstance(model, str):
+                    model = self.model_factory.create_model(model)
             else:
                 model = self.model_factory.get_model_for_agent(subagent_name)
 
