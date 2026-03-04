@@ -518,3 +518,70 @@ class UsageLogger:
             request_id=request_id,
             logging_config=self.logging_config,
         )
+
+async def sync_pricing_snapshots() -> int:
+    """Pre-populates the database with pricing snapshots from current configuration.
+    
+    This function reads all configured models in `llm_config.yaml`, checks their
+    pricing information, and creates a snapshot in the database if it doesn't already
+    exist. This ensures that the snapshot is available even if the model hasn't
+    been used for inference yet.
+    """
+    from inference_core.llm.config import get_llm_config
+    
+    config = get_llm_config()
+    added_count = 0
+    
+    try:
+        async with get_async_session() as session:
+            for model_name, model_config in config.models.items():
+                if not model_config.pricing:
+                    continue
+                    
+                extras_pricing = {
+                    k: {"cost_per_1k": v.cost_per_1k}
+                    for k, v in model_config.pricing.extras.items()
+                }
+                
+                snapshot_hash = LLMPricingSnapshot.compute_hash(
+                    provider=model_config.provider,
+                    model_name=model_name,
+                    currency=model_config.pricing.currency,
+                    input_cost_per_1k=model_config.pricing.input.cost_per_1k,
+                    output_cost_per_1k=model_config.pricing.output.cost_per_1k,
+                    extras=extras_pricing,
+                )
+                
+                # Check if it exists
+                existing = await session.execute(
+                    select(LLMPricingSnapshot.id).where(
+                        LLMPricingSnapshot.snapshot_hash == snapshot_hash
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    continue
+                    
+                # Create snapshot
+                new_snapshot = LLMPricingSnapshot(
+                    snapshot_hash=snapshot_hash,
+                    provider=model_config.provider,
+                    model_name=model_name,
+                    input_cost_per_1k=model_config.pricing.input.cost_per_1k,
+                    output_cost_per_1k=model_config.pricing.output.cost_per_1k,
+                    currency=model_config.pricing.currency,
+                    extras=extras_pricing or None,
+                )
+                
+                session.add(new_snapshot)
+                try:
+                    await session.flush()
+                    added_count += 1
+                except IntegrityError:
+                    await session.rollback()
+                    
+            await session.commit()
+            
+    except Exception as e:
+        logger.error(f"Failed to sync pricing snapshots: {str(e)}")
+        
+    return added_count

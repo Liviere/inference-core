@@ -22,6 +22,7 @@ from inference_core.database.sql.connection import (
     create_tables,
     get_engine,
 )
+from inference_core.llm.usage_logging import sync_pricing_snapshots
 from inference_core.services.vector_store_service import get_vector_store_service
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,19 @@ async def init_resources(settings: Settings) -> Dict[str, Any]:
             await create_tables()
             statuses["database"] = {"status": "ready"}
             logger.info("✅ Database ready (engine initialized & tables ensured)")
+
+            # Sync pricing snapshots for configured models
+            try:
+                snapshots_added = await sync_pricing_snapshots()
+                if snapshots_added > 0:
+                    logger.info(
+                        f"✅ Synced {snapshots_added} new pricing snapshots from config"
+                    )
+                else:
+                    logger.info("✅ Pricing snapshots up-to-date")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to sync pricing snapshots: {e}")
+
         except Exception as e:  # pragma: no cover (critical path)
             logger.error(f"❌ Database initialization failed: {e}")
             statuses["database"] = {"status": "error", "error": str(e)}
