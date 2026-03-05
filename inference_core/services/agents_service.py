@@ -373,24 +373,25 @@ class AgentService:
         ``{base_path}{name}/SKILL.md``.
 
         Returns:
-            A tuple of (store, skill_source_paths) to pass to StoreBackend/SkillsMiddleware.
+            A tuple of (store, [base_path]) to pass to StoreBackend/SkillsMiddleware.
+            The source path must be the *parent* directory of all skill subdirectories,
+            because SkillsMiddleware.ls_info scans one level down for skill dirs.
         """
         store = InMemoryStore()
-        sources: list[str] = []
 
         for skill in user_skills:
             skill_name = skill["name"]
-            skill_path = f"{base_path}{skill_name}/"
-            store_key = f"{skill_path}SKILL.md"
+            store_key = f"{base_path}{skill_name}/SKILL.md"
 
             store.put(
                 namespace=("filesystem",),
                 key=store_key,
                 value=create_file_data(skill["content"]),
             )
-            sources.append(skill_path)
 
-        return store, sources
+        # Return the parent directory as the single source so SkillsMiddleware
+        # can discover each skill subdirectory via ls_info(base_path).
+        return store, [base_path]
 
     def _apply_prompt_overrides(self, base_prompt: Optional[str]) -> Optional[str]:
         """Apply system_prompt_override or system_prompt_append from a UserAgentInstance.
