@@ -67,6 +67,13 @@ class AgentInstanceCreate(BaseModel):
         default=False,
         description="Set as default agent for new chats",
     )
+    skills: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description=(
+            "User-defined skills. Each entry: "
+            "{'name': str, 'description': str, 'content': str (SKILL.md content)}"
+        ),
+    )
     is_deepagent: bool = Field(
         default=False,
         description="Whether this instance is a deep agent",
@@ -75,6 +82,24 @@ class AgentInstanceCreate(BaseModel):
         None,
         description="List of subagent instance IDs (only valid if is_deepagent=True)",
     )
+
+    @field_validator("skills")
+    @classmethod
+    def validate_skills(
+        cls, v: Optional[List[Dict[str, str]]]
+    ) -> Optional[List[Dict[str, str]]]:
+        """Validate that each skill entry has name, description, content."""
+        if v is None:
+            return v
+        for i, skill in enumerate(v):
+            if not isinstance(skill, dict):
+                raise ValueError(f"Skill at index {i} must be a dict")
+            for key in ("name", "description", "content"):
+                if key not in skill or not skill[key]:
+                    raise ValueError(
+                        f"Skill at index {i} missing required field '{key}'"
+                    )
+        return v
 
     @field_validator("instance_name")
     @classmethod
@@ -99,6 +124,7 @@ class AgentInstanceUpdate(BaseModel):
     system_prompt_override: Optional[str] = Field(None, max_length=5000)
     system_prompt_append: Optional[str] = Field(None, max_length=2000)
     config_overrides: Optional[Dict[str, Any]] = None
+    skills: Optional[List[Dict[str, str]]] = None
     is_default: Optional[bool] = None
     is_deepagent: Optional[bool] = None
     subagent_ids: Optional[List[UUID]] = None
@@ -123,6 +149,7 @@ class AgentInstanceResponse(BaseModel):
     system_prompt_override: Optional[str] = None
     system_prompt_append: Optional[str] = None
     config_overrides: Optional[Dict[str, Any]] = None
+    skills: Optional[List[Dict[str, str]]] = None
     is_default: bool
     is_deepagent: bool
     subagents: Optional[List[AgentInstanceResponse]] = None

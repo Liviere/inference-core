@@ -6,8 +6,9 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
 from deepagents import CompiledSubAgent, SubAgent
-from deepagents.backends import StateBackend
+from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.backends.utils import create_file_data
 from deepagents.middleware import SkillsMiddleware, SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import InterruptOnConfig
@@ -96,6 +97,7 @@ class AgentService:
         instance_context: Optional[InstanceContext] = None,
         system_prompt_override: Optional[str] = None,
         system_prompt_append: Optional[str] = None,
+        user_skills: Optional[list[dict[str, str]]] = None,
     ):
         """Initialize the AgentService.
 
@@ -184,6 +186,9 @@ class AgentService:
         self._system_prompt_override = system_prompt_override
         self._system_prompt_append = system_prompt_append
 
+        # User-defined skills: list of {name, description, content} dicts
+        self._user_skills = user_skills or []
+
     @property
     def display_name(self) -> str:
         """Human-readable agent identity for logging and observability.
@@ -233,6 +238,17 @@ class AgentService:
 
         # Build middleware list
         middleware = self._build_middleware()
+
+        # Add SkillsMiddleware if user-defined skills are present
+        if self._user_skills:
+            store, skill_sources = self._build_skills_store(self._user_skills)
+            skills_middleware = SkillsMiddleware(
+                backend=(lambda rt: StoreBackend(rt)),
+                sources=skill_sources,
+            )
+            middleware.append(skills_middleware)
+            # Inject store into kwargs so create_agent passes it to the graph
+            kwargs.setdefault("store", store)
 
         # Create the agent
         self.agent = create_agent(
@@ -344,6 +360,37 @@ class AgentService:
         self._add_tool_model_switch_middleware(middleware)
 
         return middleware
+
+    @staticmethod
+    def _build_skills_store(
+        user_skills: list[dict[str, str]],
+        base_path: str = "/skills/",
+    ) -> tuple[InMemoryStore, list[str]]:
+        """Build an InMemoryStore populated with user-defined skills.
+
+        Each skill entry is a dict with 'name', 'description', 'content'.
+        The content is stored as a SKILL.md file inside the store under
+        ``{base_path}{name}/SKILL.md``.
+
+        Returns:
+            A tuple of (store, skill_source_paths) to pass to StoreBackend/SkillsMiddleware.
+        """
+        store = InMemoryStore()
+        sources: list[str] = []
+
+        for skill in user_skills:
+            skill_name = skill["name"]
+            skill_path = f"{base_path}{skill_name}/"
+            store_key = f"{skill_path}SKILL.md"
+
+            store.put(
+                namespace=("filesystem",),
+                key=store_key,
+                value=create_file_data(skill["content"]),
+            )
+            sources.append(skill_path)
+
+        return store, sources
 
     def _apply_prompt_overrides(self, base_prompt: Optional[str]) -> Optional[str]:
         """Apply system_prompt_override or system_prompt_append from a UserAgentInstance.
@@ -1102,6 +1149,7 @@ class AgentService:
             instance_context=instance_ctx,
             system_prompt_override=instance.system_prompt_override,
             system_prompt_append=instance.system_prompt_append,
+            user_skills=instance.skills,
         )
 
 
@@ -1141,6 +1189,7 @@ class DeepAgentService(AgentService):
         system_prompt_override: Optional[str] = None,
         system_prompt_append: Optional[str] = None,
         instance_context: Optional[InstanceContext] = None,
+        user_skills: Optional[list[dict[str, str]]] = None,
         _visited_agents: Optional[set[str]] = None,
     ):
         """Initialize the DeepAgentService.
@@ -1190,6 +1239,7 @@ class DeepAgentService(AgentService):
             instance_context=instance_context,
             system_prompt_override=system_prompt_override,
             system_prompt_append=system_prompt_append,
+            user_skills=user_skills,
         )
         self._explicit_subagents = subagents or []
 
@@ -1262,11 +1312,25 @@ class DeepAgentService(AgentService):
             )
             middleware.append(sub_middleware)
 
-        # 5. Add SkillsMiddleware if parent has skills configured
-        if self.agent_config and self.agent_config.skills:
+        # 5. Add SkillsMiddleware if parent has skills configured (YAML or user-defined)
+        yaml_skills = (self.agent_config.skills if self.agent_config else None) or []
+        user_skills = self._user_skills or []
+
+        if yaml_skills or user_skills:
+            if user_skills:
+                # User skills require a StoreBackend populated with skill files.
+                # Merge YAML skill sources with user-defined skill sources.
+                store, user_skill_sources = self._build_skills_store(user_skills)
+                all_sources = list(yaml_skills) + user_skill_sources
+                skills_backend = lambda rt: StoreBackend(rt)
+                kwargs.setdefault("store", store)
+            else:
+                all_sources = list(yaml_skills)
+                skills_backend = self._backend
+
             skills_middleware = SkillsMiddleware(
-                backend=self._backend,
-                sources=self.agent_config.skills,
+                backend=skills_backend,
+                sources=all_sources,
             )
             middleware.append(skills_middleware)
 
@@ -1455,6 +1519,7 @@ class DeepAgentService(AgentService):
             system_prompt_override=instance.system_prompt_override,
             system_prompt_append=instance.system_prompt_append,
             instance_context=instance_ctx,
+            user_skills=instance.skills,
             _visited_agents=visited,
         )
 

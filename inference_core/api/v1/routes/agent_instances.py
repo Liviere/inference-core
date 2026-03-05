@@ -27,10 +27,7 @@ from inference_core.schemas.user_agent_instance import (
     AgentTemplateListResponse,
     AgentTemplateResponse,
 )
-from inference_core.services.agents_service import (
-    AgentService,
-    DeepAgentService,
-)
+from inference_core.services.agents_service import AgentService, DeepAgentService
 from inference_core.services.llm_config_service import LLMConfigService
 from inference_core.services.user_agent_instance_service import (
     get_user_agent_instance_service,
@@ -140,6 +137,7 @@ async def create_agent_instance(
             system_prompt_override=data.system_prompt_override,
             system_prompt_append=data.system_prompt_append,
             config_overrides=data.config_overrides,
+            skills=data.skills,
             is_default=data.is_default,
             is_deepagent=data.is_deepagent,
             subagent_ids=data.subagent_ids,

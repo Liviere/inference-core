@@ -160,6 +160,16 @@ class UserAgentInstance(BaseModel):
         doc="Whether this is the user's default agent for new chats",
     )
 
+    # User-defined skills (list of {name, description, content} dicts)
+    skills: Mapped[Optional[list]] = mapped_column(
+        SmartJSON,
+        nullable=True,
+        doc=(
+            "User-defined skills for the agent. Each entry is a dict with "
+            "'name' (str), 'description' (str), and 'content' (str, full SKILL.md)."
+        ),
+    )
+
     # Deep agent flag
     is_deepagent: Mapped[bool] = mapped_column(
         Boolean,
