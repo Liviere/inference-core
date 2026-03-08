@@ -432,9 +432,11 @@ class UsageSession:
             async with get_async_session() as session:
                 session.add(log_entry)
                 await session.commit()
+                await session.refresh(log_entry)
                 logger.debug(
                     f"Persisted usage log for {self.task_type} request: {log_entry.id} (pricing_snapshot_id={pricing_snapshot_id})"
                 )
+                return log_entry.id
 
         except Exception as e:
             if self.logging_config.fail_open:
@@ -442,6 +444,8 @@ class UsageSession:
             else:
                 logger.error(f"Usage logging failed: {e}")
                 raise
+
+        return None
 
     def finalize_sync(
         self,
@@ -451,7 +455,7 @@ class UsageSession:
         streamed: bool = False,
         partial: bool = False,
         details: Optional[Dict[str, Any]] = None,
-    ):
+    ) -> Optional[uuid.UUID]:
         """Synchronous wrapper for finalize() - uses run_async_safely().
 
         Uses run_async_safely() to reuse the Celery worker loop when available,
@@ -467,9 +471,12 @@ class UsageSession:
             streamed: Whether response was streamed
             partial: Whether response was partial/aborted
             details: Extended execution details (agent steps, tool calls, etc.)
+
+        Returns:
+            UUID of the created LLMRequestLog entry, or None if logging failed
         """
         try:
-            run_async_safely(
+            log_id = run_async_safely(
                 self.finalize(
                     success=success,
                     error=error,
@@ -480,11 +487,14 @@ class UsageSession:
                 ),
                 timeout=30.0,
             )
+            return log_id
         except TimeoutError:
             logger.error("Usage logging finalization timed out after 30 seconds")
+            return None
         except Exception as e:
             if self.logging_config.fail_open:
                 logger.error(f"Usage logging sync finalization failed: {e}")
+                return None
             else:
                 raise
 
@@ -519,30 +529,31 @@ class UsageLogger:
             logging_config=self.logging_config,
         )
 
+
 async def sync_pricing_snapshots() -> int:
     """Pre-populates the database with pricing snapshots from current configuration.
-    
+
     This function reads all configured models in `llm_config.yaml`, checks their
     pricing information, and creates a snapshot in the database if it doesn't already
     exist. This ensures that the snapshot is available even if the model hasn't
     been used for inference yet.
     """
     from inference_core.llm.config import get_llm_config
-    
+
     config = get_llm_config()
     added_count = 0
-    
+
     try:
         async with get_async_session() as session:
             for model_name, model_config in config.models.items():
                 if not model_config.pricing:
                     continue
-                    
+
                 extras_pricing = {
                     k: {"cost_per_1k": v.cost_per_1k}
                     for k, v in model_config.pricing.extras.items()
                 }
-                
+
                 snapshot_hash = LLMPricingSnapshot.compute_hash(
                     provider=model_config.provider,
                     model_name=model_name,
@@ -551,7 +562,7 @@ async def sync_pricing_snapshots() -> int:
                     output_cost_per_1k=model_config.pricing.output.cost_per_1k,
                     extras=extras_pricing,
                 )
-                
+
                 # Check if it exists
                 existing = await session.execute(
                     select(LLMPricingSnapshot.id).where(
@@ -560,7 +571,7 @@ async def sync_pricing_snapshots() -> int:
                 )
                 if existing.scalar_one_or_none():
                     continue
-                    
+
                 # Create snapshot
                 new_snapshot = LLMPricingSnapshot(
                     snapshot_hash=snapshot_hash,
@@ -571,17 +582,17 @@ async def sync_pricing_snapshots() -> int:
                     currency=model_config.pricing.currency,
                     extras=extras_pricing or None,
                 )
-                
+
                 session.add(new_snapshot)
                 try:
                     await session.flush()
                     added_count += 1
                 except IntegrityError:
                     await session.rollback()
-                    
+
             await session.commit()
-            
+
     except Exception as e:
         logger.error(f"Failed to sync pricing snapshots: {str(e)}")
-        
+
     return added_count

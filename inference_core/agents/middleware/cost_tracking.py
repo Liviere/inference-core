@@ -51,7 +51,7 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from inference_core.llm.config import PricingConfig, UsageLoggingConfig, get_llm_config
-from inference_core.llm.usage_logging import UsageSession
+from inference_core.llm.usage_logging import PricingCalculator, UsageSession
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,9 @@ class CostTrackingState(AgentState):
         tool_call_latencies: List of tool call durations in milliseconds
         model_call_count: Number of model calls made during the run
         model_call_latencies: List of model call durations in milliseconds
+        last_request_log_id: UUID of the most recently created LLMRequestLog
+        last_request_cost_usd: Cost (USD) of the most recent model call
+        last_request_model_name: Model name for the most recent call
     """
 
     usage_session_id: NotRequired[str]
@@ -83,6 +86,9 @@ class CostTrackingState(AgentState):
     tool_call_latencies: NotRequired[List[float]]
     model_call_count: NotRequired[int]
     model_call_latencies: NotRequired[List[float]]
+    last_request_log_id: NotRequired[str]
+    last_request_cost_usd: NotRequired[float]
+    last_request_model_name: NotRequired[str]
 
 
 @dataclass
@@ -257,10 +263,25 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 "model_name", self._model_name or "unknown"
             )
 
+            # Determine usage fragment: prefer real metadata, fall back to estimation
             if usage_metadata and isinstance(usage_metadata, dict):
-                # Extract usage for this step only
                 fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
+                is_estimated = False
+            else:
+                # Fallback: estimate tokens from message content when the provider
+                # doesn't return usage in streaming responses (e.g. DeepInfra Nemotron)
+                fragment = self._estimate_token_usage(messages)
+                extra_tokens = {}
+                is_estimated = True
+                if fragment:
+                    logger.info(
+                        "usage_metadata unavailable for model=%s; "
+                        "falling back to estimated tokens: %s",
+                        model_name,
+                        fragment,
+                    )
 
+            if fragment:
                 # Keep simple accumulators in state for compatibility
                 updates["accumulated_input_tokens"] = state.get(
                     "accumulated_input_tokens", 0
@@ -297,16 +318,29 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 if self._ctx.model_call_start_time:
                     session.start_time = self._ctx.model_call_start_time
 
-                session.finalize_sync(
+                log_id = session.finalize_sync(
                     success=True,
                     error=None,
                     final_usage=fragment,
                     streamed=False,
                     partial=False,
-                    details=None,
+                    details={"estimated": True} if is_estimated else None,
                 )
+
+                # Expose last request log data to state for downstream middleware
+                if log_id and pricing_config:
+                    cost_result = PricingCalculator.compute_cost(
+                        fragment, pricing_config
+                    )
+                    updates["last_request_log_id"] = str(log_id)
+                    updates["last_request_cost_usd"] = cost_result.get(
+                        "cost_total_usd", 0.0
+                    )
+                    updates["last_request_model_name"] = model_name
         except Exception as e:
-            logger.warning(f"Error extracting usage from model response: {e}")
+            logger.warning(
+                f"Error extracting usage from model response: {e}", exc_info=True
+            )
         finally:
             if self._ctx:
                 self._ctx.model_call_start_time = None
@@ -524,6 +558,71 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     extra_tokens[key] = extra_tokens.get(key, 0) + int(value)
 
         return fragment, extra_tokens
+
+    @staticmethod
+    def _estimate_token_usage(
+        messages: List[Any],
+    ) -> Optional[Dict[str, int]]:
+        """Estimate token usage from message content when usage_metadata is unavailable.
+
+        Some providers (e.g. DeepInfra for certain models) don't return usage
+        data in streaming responses despite ``stream_options``. This method
+        provides a reasonable fallback using tiktoken (cl100k_base) or, if
+        tiktoken is unavailable, a character-based heuristic (~4 chars/token).
+
+        Args:
+            messages: Full state message list; the last entry is the AI response,
+                      everything before it is counted as input.
+
+        Returns:
+            Usage fragment dict or None if estimation yields zero tokens.
+        """
+        if not messages:
+            return None
+
+        try:
+            import tiktoken
+
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            enc = None
+
+        def _count(text: str) -> int:
+            if enc:
+                return len(enc.encode(text))
+            # Rough heuristic: ~4 characters per token
+            return max(1, len(text) // 4)
+
+        input_tokens = 0
+        for msg in messages[:-1]:
+            content = getattr(msg, "content", "") or ""
+            if isinstance(content, list):
+                # Multi-modal messages may have list content
+                content = " ".join(
+                    str(c.get("text", "")) if isinstance(c, dict) else str(c)
+                    for c in content
+                )
+            input_tokens += _count(str(content))
+            # Account for message framing overhead (~4 tokens per message)
+            input_tokens += 4
+
+        last_message = messages[-1]
+        output_content = getattr(last_message, "content", "") or ""
+        if isinstance(output_content, list):
+            output_content = " ".join(
+                str(c.get("text", "")) if isinstance(c, dict) else str(c)
+                for c in output_content
+            )
+        output_tokens = _count(str(output_content))
+
+        if input_tokens == 0 and output_tokens == 0:
+            return None
+
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
 
     @staticmethod
     def _merge_extra_tokens(
