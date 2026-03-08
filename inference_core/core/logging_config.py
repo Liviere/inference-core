@@ -1,6 +1,8 @@
 import logging
+import logging.handlers
 import os
 import sys
+from datetime import datetime
 from logging.config import dictConfig
 
 from pythonjsonlogger.json import JsonFormatter as BaseJsonFormatter
@@ -17,21 +19,78 @@ class JsonFormatter(BaseJsonFormatter):
             log_record["level"] = log_record["level"].upper()
         else:
             log_record["level"] = record.levelname
+        # Prepend a human-readable date field at the very start of the record.
+        existing = dict(log_record)
+        log_record.clear()
+        log_record["date"] = datetime.fromtimestamp(record.created).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        log_record.update(existing)
 
 
-def setup_logging():
+def _build_file_handler(
+    log_file_path: str, log_level: str
+) -> logging.handlers.TimedRotatingFileHandler:
+    """Create a pre-configured TimedRotatingFileHandler writing JSON records."""
+    handler = logging.handlers.TimedRotatingFileHandler(
+        filename=log_file_path,
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        JsonFormatter(fmt="%(timestamp)s %(level)s %(name)s %(message)s %(lineno)d")
+    )
+    handler.setLevel(log_level)
+    return handler
+
+
+def shutdown_logging() -> None:
+    """Flush and close every FileHandler attached to the root logger and all named loggers.
+
+    Should be called at process shutdown (FastAPI lifespan end, Celery worker
+    shutdown) to ensure buffered records are flushed and OS file descriptors
+    are released cleanly.
+    """
+    loggers_to_flush: list[logging.Logger] = [logging.root]
+    for name in list(logging.root.manager.loggerDict):
+        lgr = logging.getLogger(name)
+        if lgr:
+            loggers_to_flush.append(lgr)
+
+    for lgr in loggers_to_flush:
+        for handler in list(lgr.handlers):
+            if isinstance(handler, logging.FileHandler):
+                try:
+                    handler.flush()
+                    handler.close()
+                    lgr.removeHandler(handler)
+                except Exception:
+                    pass
+
+
+def setup_logging(service: str = "app") -> None:
     """Configure application logging with safe fallback.
+
+    Attaches a console handler (human-readable, uvicorn-styled) and a
+    rotating JSON file handler writing to ``logs/<service>.log``.
 
     If the file handler cannot be configured (e.g. permission denied when the
     container runs as non-root and a host directory is mounted with restrictive
     ownership), the configuration gracefully degrades to console-only logging
     instead of aborting application startup.
+
+    Args:
+        service: Logical service name used as the log file stem.
+                 Use ``"api"`` for the FastAPI process and ``"celery"`` for
+                 Celery workers so that each service writes to a dedicated file.
     """
     settings = get_settings()
     log_level = "DEBUG" if settings.debug else "INFO"
 
     log_dir = os.path.join("logs")
-    log_file_path = os.path.join(log_dir, "inference_core.log")
+    log_file_path = os.path.join(log_dir, f"{service}.log")
 
     # Try to create the logs directory if it doesn't exist.
     try:
@@ -52,10 +111,6 @@ def setup_logging():
                 "fmt": "%(levelprefix)s %(asctime)s | %(name)s:%(lineno)d | %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             },
-            "json": {
-                "()": JsonFormatter,
-                "format": "%(timestamp)s %(level)s %(name)s %(message)s %(lineno)d",
-            },
         },
         "handlers": {
             "console": {
@@ -63,54 +118,41 @@ def setup_logging():
                 "formatter": "default",
                 "stream": sys.stdout,
             },
-            "file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
-                "formatter": "json",
-                "filename": log_file_path,
-                "when": "midnight",
-                "interval": 1,
-                "backupCount": 30,
-                "encoding": "utf-8",
-            },
         },
         "loggers": {
             "uvicorn": {
-                "handlers": ["console", "file"],
+                "handlers": ["console"],
                 "level": log_level,
                 "propagate": False,
             },
             "fastapi": {
-                "handlers": ["console", "file"],
+                "handlers": ["console"],
                 "level": log_level,
                 "propagate": False,
             },
             "app": {
-                "handlers": ["console", "file"],
+                "handlers": ["console"],
                 "level": log_level,
                 "propagate": False,
             },
         },
         "root": {
-            "handlers": ["console", "file"],
+            "handlers": ["console"],
             "level": log_level,
         },
     }
 
+    dictConfig(logging_config)
+
+    # Attach the rotating file handler separately so that a failure (e.g.
+    # permission denied) degrades gracefully to console-only without touching
+    # the already-applied dictConfig.
     try:
-        dictConfig(logging_config)
+        file_handler = _build_file_handler(log_file_path, log_level)
+        for logger_name in ("uvicorn", "fastapi", "app"):
+            logging.getLogger(logger_name).addHandler(file_handler)
+        logging.root.addHandler(file_handler)
     except Exception as e:
-        # Remove file handler and retry with console-only.
-        for logger_name in list(logging_config.get("loggers", {}).keys()):
-            handlers = logging_config["loggers"][logger_name].get("handlers", [])
-            logging_config["loggers"][logger_name]["handlers"] = [
-                h for h in handlers if h != "file"
-            ]
-        # Root logger
-        logging_config["root"]["handlers"] = [
-            h for h in logging_config["root"]["handlers"] if h != "file"
-        ]
-        logging_config["handlers"].pop("file", None)
-        dictConfig(logging_config)
         logging.getLogger(__name__).warning(
             "File logging disabled; falling back to console only (%s)", e
         )

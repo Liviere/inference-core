@@ -6,6 +6,7 @@ Celery Application Instance
 import asyncio
 import logging
 import os
+import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Optional, Union
 
@@ -20,9 +21,35 @@ from celery.signals import worker_process_init, worker_process_shutdown
 from inference_core.celery.config import CeleryConfig
 from inference_core.core import redis_client
 from inference_core.core.config import Settings, get_settings
+from inference_core.core.logging_config import _build_file_handler, shutdown_logging
 from inference_core.database.sql import connection as db_connection
 
 _worker_loop = None  # Dedicated asyncio loop per worker process
+
+
+def _setup_celery_file_logging() -> None:
+    """Attach a rotating JSON file handler for ``logs/celery.log`` to the root logger.
+
+    Called inside each forked worker process so every worker independently
+    owns its file descriptor. Console output is already handled by Celery's
+    own logging subsystem — this function only adds the file side-channel.
+    """
+    log_dir = "logs"
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except Exception as e:
+        print(f"[logging] Cannot create log dir '{log_dir}': {e}", file=sys.stderr)
+        return
+
+    settings = get_settings()
+    log_level = "DEBUG" if settings.debug else "INFO"
+    log_file_path = os.path.join(log_dir, "celery.log")
+
+    try:
+        handler = _build_file_handler(log_file_path, log_level)
+        logging.root.addHandler(handler)
+    except Exception as e:
+        print(f"[logging] Celery file logging disabled: {e}", file=sys.stderr)
 
 
 @worker_process_init.connect
@@ -56,6 +83,9 @@ def _on_worker_process_init(**_):
 
         _worker_loop.run_until_complete(_dispose_inherited())
 
+    # Set up file logging for this worker process.
+    _setup_celery_file_logging()
+
 
 @worker_process_shutdown.connect
 def _on_worker_process_shutdown(**_):
@@ -82,6 +112,8 @@ def _on_worker_process_shutdown(**_):
         _worker_loop.run_until_complete(_shutdown())
         _worker_loop.close()
         _worker_loop = None
+
+    shutdown_logging()
 
 
 logger = logging.getLogger(__name__)

@@ -23,7 +23,7 @@ from .api.v1.routes import (
 from .core.config import Settings, get_settings
 from .core.dependecies import get_current_active_user, get_current_superuser
 from .core.lifecycle import init_resources, shutdown_resources
-from .core.logging_config import setup_logging
+from .core.logging_config import setup_logging, shutdown_logging
 
 ###################################
 #            Functions            #
@@ -40,7 +40,7 @@ def lifespan(settings: Settings, external_on_startup=None, external_on_shutdown=
         """
 
         # Startup
-        setup_logging()
+        setup_logging(service="api")
         logging.info("🚀 Starting up FastAPI application...")
         if settings.debug:
             logging.debug("Debug mode is enabled")
@@ -104,6 +104,8 @@ def lifespan(settings: Settings, external_on_startup=None, external_on_shutdown=
         except Exception:
             # shutdown_resources is defensive; swallow to not mask original shutdown reasons
             pass
+
+        shutdown_logging()
 
     return _lifespan
 
