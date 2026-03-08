@@ -302,6 +302,7 @@ class AgentService:
                     task_type="agent",
                     request_mode="sync",
                     provider=provider,
+                    model_name=self.model_name,
                     instance_id=(
                         self.instance_context.instance_id
                         if self.instance_context
