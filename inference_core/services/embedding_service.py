@@ -74,7 +74,10 @@ class LocalCeleryBackend(BaseEmbeddingBackend):
             kwargs={"texts": texts, "model_name": self._model_name},
             queue="embeddings",
         )
-        return result.get(timeout=self._timeout)
+        # disable_sync_subtasks=False: the default worker uses thread-pool
+        # concurrency, not prefork, so waiting on a result from a different
+        # queue (embeddings) is safe and will not deadlock.
+        return result.get(timeout=self._timeout, disable_sync_subtasks=False)
 
     async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
         loop = asyncio.get_running_loop()
