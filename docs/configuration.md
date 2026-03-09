@@ -71,15 +71,19 @@ Environment variables grouped by functional domain.
 
 ## Redis / Celery
 
-| Variable                | Default                  | Description                        |
-| ----------------------- | ------------------------ | ---------------------------------- |
-| `REDIS_URL`             | redis://localhost:6379/0 | Redis for refresh sessions / locks |
-| `REDIS_REFRESH_PREFIX`  | auth:refresh:            | Key prefix for refresh sessions    |
-| `CELERY_BROKER_URL`     | redis://localhost:6379/0 | Celery broker                      |
-| `CELERY_RESULT_BACKEND` | redis://localhost:6379/1 | Celery result backend              |
-| `DEBUG_CELERY`          | 0                        | Enable debugpy attach (1=on)       |
-| `REDIS_PORT`            | 6379                     | Exposed port (compose)             |
-| `FLOWER_PORT`           | 5555                     | Flower UI port                     |
+| Variable                        | Default                  | Description                                                                             |
+| ------------------------------- | ------------------------ | --------------------------------------------------------------------------------------- |
+| `REDIS_URL`                     | redis://localhost:6379/0 | Redis for refresh sessions / locks                                                      |
+| `REDIS_REFRESH_PREFIX`          | auth:refresh:            | Key prefix for refresh sessions                                                         |
+| `CELERY_BROKER_URL`             | redis://localhost:6379/0 | Celery broker                                                                           |
+| `CELERY_RESULT_BACKEND`         | redis://localhost:6379/1 | Celery result backend                                                                   |
+| `CELERY_THREADS_CONCURRENCY`    | 20                       | Docker threads worker concurrency for `default`, `llm_tasks`, `mail`, and `batch_tasks` |
+| `CELERY_EMBEDDINGS_CONCURRENCY` | 2                        | Docker prefork worker concurrency for the `embeddings` queue                            |
+| `DEBUG_CELERY`                  | 0                        | Enable debugpy attach (1=on)                                                            |
+| `REDIS_PORT`                    | 6379                     | Exposed port (compose)                                                                  |
+| `FLOWER_PORT`                   | 5555                     | Flower UI port                                                                          |
+
+Docker compose uses a split worker topology by default: the threads worker handles I/O-bound queues, while the prefork embeddings worker isolates local SentenceTransformer jobs.
 
 ## LLM & Access Control
 

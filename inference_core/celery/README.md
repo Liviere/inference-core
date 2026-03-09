@@ -13,9 +13,13 @@ Sample values are provided in `.env.example`.
    - Using Docker: `docker run -p 6379:6379 redis:7-alpine`
 2. Start the API server
    - `poetry run fastapi dev`
-3. Start a Celery worker in another terminal
-   - `poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info --queues=default`
-4. Optional: start Flower (Celery monitoring UI)
+3. Start the general Celery worker in another terminal
+   - `poetry run celery -A inference_core.celery.celery_main:celery_app worker -n worker@%h --pool=threads --exclude-queues=embeddings,mail --loglevel=info`
+4. If you use email polling or delivery, start a dedicated mail worker
+   - `poetry run celery -A inference_core.celery.celery_main:celery_app worker -n mail@%h --queues=mail --pool=threads --loglevel=info`
+5. If `EMBEDDING_BACKEND=local`, start the dedicated embeddings worker
+   - `poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=prefork --loglevel=info`
+6. Optional: start Flower (Celery monitoring UI)
    - `poetry run celery -A inference_core.celery.celery_main:celery_app flower --port=5555`
 
 Notes
@@ -25,12 +29,13 @@ Notes
 
 ## Using Docker
 
-The base compose file already wires up: API, Redis, Celery worker, and Flower.
+The base compose file already wires up: API, Redis, Flower, a threads-pool Celery worker for `default`, `llm_tasks`, `mail`, and `batch_tasks`, plus a dedicated prefork embeddings worker for the `embeddings` queue.
 
 - Bring everything up (example with SQLite):
   - `docker compose -f docker-compose.base.yml -f docker/docker-compose.sqlite.yml up -d --build`
 - Flower UI: http://localhost:5555
 - Redis: `localhost:6379` (mapped from the container by default)
+- Concurrency can be tuned with `CELERY_THREADS_CONCURRENCY` and `CELERY_EMBEDDINGS_CONCURRENCY` in `.env`
 
 You can swap the database layer by using the MySQL or PostgreSQL compose overlays in `docker/`.
 

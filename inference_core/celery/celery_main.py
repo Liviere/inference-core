@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Optional, Union
 
@@ -16,7 +17,12 @@ load_dotenv()
 load_dotenv("../../.env", override=True)
 
 from celery import Celery
-from celery.signals import worker_process_init, worker_process_shutdown
+from celery.signals import (
+    worker_init,
+    worker_process_init,
+    worker_process_shutdown,
+    worker_shutdown,
+)
 
 from inference_core.celery.config import CeleryConfig
 from inference_core.core import redis_client
@@ -25,6 +31,9 @@ from inference_core.core.logging_config import _build_file_handler, shutdown_log
 from inference_core.database.sql import connection as db_connection
 
 _worker_loop = None  # Dedicated asyncio loop per worker process
+_loop_thread: threading.Thread | None = (
+    None  # Background thread running the loop (threads pool)
+)
 
 
 def _setup_celery_file_logging() -> None:
@@ -112,6 +121,105 @@ def _on_worker_process_shutdown(**_):
         _worker_loop.run_until_complete(_shutdown())
         _worker_loop.close()
         _worker_loop = None
+
+    shutdown_logging()
+
+
+def _is_threads_pool(sender) -> bool:
+    """Detect whether the worker is using the threads pool."""
+    pool_cls = getattr(sender, "pool_cls", None)
+    if pool_cls is None:
+        return False
+    # pool_cls can be a class or a string alias
+    name = getattr(pool_cls, "__name__", str(pool_cls)).lower()
+    return "thread" in name
+
+
+@worker_init.connect
+def _on_worker_init(sender=None, **_):
+    """Initialize resources for threads-pool workers.
+
+    For prefork workers this is a no-op — lifecycle is handled per child
+    process by ``worker_process_init`` / ``worker_process_shutdown``.
+
+    For threads-pool workers we create a single asyncio event loop running
+    on a dedicated daemon thread so that all worker threads can dispatch
+    coroutines via ``asyncio.run_coroutine_threadsafe()``.
+    """
+    if not _is_threads_pool(sender):
+        return
+
+    global _worker_loop, _loop_thread
+
+    # Reset cached Redis clients (may have been created at import time)
+    try:
+        redis_client.get_redis.cache_clear()  # type: ignore[attr-defined]
+        redis_client.get_sync_redis.cache_clear()  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    inherited_engine_present = db_connection.has_engine()
+
+    # Create a new event loop and run it on a background thread
+    _worker_loop = asyncio.new_event_loop()
+
+    def _run_loop():
+        asyncio.set_event_loop(_worker_loop)
+        _worker_loop.run_forever()
+
+    _loop_thread = threading.Thread(
+        target=_run_loop, daemon=True, name="celery-async-loop"
+    )
+    _loop_thread.start()
+
+    # Dispose inherited DB engine inside the new loop
+    if inherited_engine_present:
+
+        async def _dispose_inherited():
+            await db_connection.dispose_current_engine()
+
+        future = asyncio.run_coroutine_threadsafe(_dispose_inherited(), _worker_loop)
+        future.result(timeout=10)
+
+    _setup_celery_file_logging()
+
+
+@worker_shutdown.connect
+def _on_worker_shutdown(sender=None, **_):
+    """Gracefully close resources for threads-pool workers."""
+    if not _is_threads_pool(sender):
+        return
+
+    global _worker_loop, _loop_thread
+
+    if _worker_loop and not _worker_loop.is_closed():
+
+        async def _shutdown():
+            try:
+                await db_connection.close_database()
+            except Exception:  # pragma: no cover
+                pass
+            try:
+                r = redis_client.get_redis()
+                await r.close()  # type: ignore[attr-defined]
+                pool = getattr(r, "connection_pool", None)
+                if pool and hasattr(pool, "disconnect"):
+                    await pool.disconnect()  # type: ignore
+            except Exception:  # pragma: no cover
+                pass
+
+        future = asyncio.run_coroutine_threadsafe(_shutdown(), _worker_loop)
+        try:
+            future.result(timeout=10)
+        except Exception:  # pragma: no cover
+            pass
+
+        _worker_loop.call_soon_threadsafe(_worker_loop.stop)
+        if _loop_thread is not None:
+            _loop_thread.join(timeout=5)
+        _worker_loop.close()
+        _worker_loop = None
+        _loop_thread = None
 
     shutdown_logging()
 

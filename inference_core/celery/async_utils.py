@@ -117,6 +117,10 @@ def run_in_worker_loop(coro: Coroutine[Any, Any, T]) -> T:
     # Set context variable for nested calls
     token = _current_loop_ctx.set(loop)
     try:
+        if loop.is_running():
+            # Threads pool — loop runs on a background thread, use threadsafe dispatch
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result()
         return loop.run_until_complete(coro)
     finally:
         _current_loop_ctx.reset(token)
@@ -173,6 +177,16 @@ def run_async_safely(
             )
         except RuntimeError as e:
             logger.debug(f"Worker loop reuse failed, falling back to thread: {e}")
+
+    # Threads pool — worker loop is running on a background thread
+    if worker_loop is not None and worker_loop.is_running():
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                _with_timeout(coro, timeout) if timeout else coro, worker_loop
+            )
+            return future.result()
+        except RuntimeError as e:
+            logger.debug(f"Worker loop threadsafe dispatch failed, falling back: {e}")
 
     # For ALL other cases use thread fallback.
     # This avoids deadlocks when the current thread's loop is running and we'd

@@ -35,7 +35,7 @@ services:
       - core_logs:/inference_core/logs
       - prom_metrics:/tmp/prom_metrics
 
-  # Celery Worker
+  # Celery Worker (threads pool — I/O-bound tasks)
   celery-worker:
     build:
       context: .
@@ -43,12 +43,46 @@ services:
     container_name: ${APP_NAME:-inference-core}-celery-worker
     restart: unless-stopped
     command: >
-      sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker 
-             --loglevel=info 
-             --queues=default,llm_tasks
-             --hostname=worker@%h 
-             --max-tasks-per-child=100 
-             --time-limit=300 
+      sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker
+             --pool=threads
+             --loglevel=info
+             --queues=default,llm_tasks,mail,batch_tasks
+             --hostname=threads-worker@%h
+             --concurrency=${CELERY_THREADS_CONCURRENCY:-20}
+             --time-limit=300
+             --soft-time-limit=240"
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      CELERY_BROKER_URL: redis://redis:${REDIS_PORT:-6379}/0
+      CELERY_RESULT_BACKEND: redis://redis:${REDIS_PORT:-6379}/1
+      REDIS_URL: redis://redis:${REDIS_PORT:-6379}/0
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prom_metrics
+
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - inference-core-network
+    volumes:
+      - core_logs:/inference_core/logs
+      - prom_metrics:/tmp/prom_metrics
+
+  # Celery Embeddings Worker (prefork pool — CPU-bound SentenceTransformer)
+  celery-embeddings-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: ${APP_NAME:-inference-core}-celery-embeddings-worker
+    restart: unless-stopped
+    command: >
+      sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker
+             --pool=prefork
+             --loglevel=info
+             --queues=embeddings
+             --hostname=embeddings-worker@%h
+             --concurrency=${CELERY_EMBEDDINGS_CONCURRENCY:-2}
+             --max-tasks-per-child=100
+             --time-limit=300
              --soft-time-limit=240"
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-production}
