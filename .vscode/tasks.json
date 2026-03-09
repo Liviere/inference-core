@@ -36,7 +36,7 @@
 		{
 			"label": "Celery: Start Worker (Embeddings)",
 			"type": "shell",
-			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=prefork --loglevel=info",
+			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=solo --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []

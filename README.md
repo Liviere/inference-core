@@ -85,7 +85,9 @@ poetry run celery -A inference_core.celery.celery_main:celery_app worker -n work
 poetry run celery -A inference_core.celery.celery_main:celery_app worker -n mail@%h --pool=threads --queues=mail --loglevel=info
 
 # If EMBEDDING_BACKEND=local, start the dedicated embeddings worker too
-poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=prefork --loglevel=info
+# Use --pool=solo when the local embedding model should run on GPU.
+# CUDA drivers are not fork-safe, so prefork can break GPU-backed workers.
+poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=solo --loglevel=info
 ```
 
 Visit: http://localhost:8000/docs (dev only)  
@@ -149,7 +151,7 @@ curl -X POST http://localhost:8000/api/v1/embeddings/generate \
 
 Embedding backend modes:
 
-- `EMBEDDING_BACKEND=local`: the API delegates embedding work to a dedicated Celery prefork worker on the `embeddings` queue, so `SentenceTransformer` stays out of the API process.
+- `EMBEDDING_BACKEND=local`: the API delegates embedding work to a dedicated Celery worker on the `embeddings` queue, so `SentenceTransformer` stays out of the API process. Use `--pool=solo` for GPU-backed local models because CUDA drivers do not support Celery's `prefork` pool.
 - `EMBEDDING_BACKEND=remote`: the API uses LangChain embedding providers configured in `llm_config.yaml` under `embeddings:`.
 
 ---

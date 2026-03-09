@@ -59,6 +59,8 @@ The base compose file starts two Celery workers with different execution models:
 
 This split keeps long-running or CPU-heavy embedding jobs away from the threads worker that handles normal background tasks.
 
+If you switch the local embeddings worker to GPU-backed inference, use Celery's `solo` pool instead of `prefork`. CUDA drivers do not support fork-based worker pools reliably, so `prefork` can fail or hang after the worker process forks.
+
 Optional concurrency knobs in `.env`:
 
 - `CELERY_THREADS_CONCURRENCY` - thread count for the general worker, default `20`
