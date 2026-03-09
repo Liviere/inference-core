@@ -105,6 +105,8 @@ class LLMModelFactory:
             "api_key",
             "base_url",
             "pricing",
+            "display_name",
+            "description",
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
         config_params = config.model_dump(exclude=exclude_fields)
