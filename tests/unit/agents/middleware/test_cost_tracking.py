@@ -131,9 +131,7 @@ class TestMergeExtraTokens:
 
     def test_disjoint_keys(self):
         """Non-overlapping keys are simply combined."""
-        merged = CostTrackingMiddleware._merge_extra_tokens(
-            {"a": 10}, {"b": 20}
-        )
+        merged = CostTrackingMiddleware._merge_extra_tokens({"a": 10}, {"b": 20})
         assert merged == {"a": 10, "b": 20}
 
     def test_overlapping_keys_are_summed(self):
@@ -293,12 +291,13 @@ class TestWrapToolCall:
 class TestAfterModel:
     """Verify that after_model extracts usage and persists via UsageSession."""
 
-    def test_returns_none_when_no_context(self, middleware):
-        """If _ctx is None, returns None immediately."""
+    def test_initializes_ctx_when_none(self, middleware):
+        """If _ctx is None, after_model initializes it and returns updates."""
         middleware._ctx = None
         state = CostTrackingState(messages=[])
         result = middleware.after_model(state, MagicMock())
-        assert result is None
+        assert result == {"model_call_count": 1}
+        assert middleware._ctx is not None
 
     def test_increments_model_call_count(self, middleware):
         """model_call_count is bumped by 1 on each after_model call."""
@@ -441,9 +440,7 @@ class TestAfterModel:
             accumulated_extra_tokens={},
         )
 
-        with patch(
-            "inference_core.agents.middleware.cost_tracking.UsageSession"
-        ):
+        with patch("inference_core.agents.middleware.cost_tracking.UsageSession"):
             middleware.after_model(state, MagicMock())
 
         assert middleware._ctx.model_call_start_time is None

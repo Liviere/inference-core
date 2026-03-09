@@ -132,7 +132,11 @@ class TestSetupLogging:
 
     @patch("inference_core.core.logging_config.dictConfig")
     def test_setup_logging_config_structure(self, mock_dict_config):
-        """Test setup_logging creates expected configuration structure"""
+        """Test setup_logging creates expected configuration structure.
+
+        The dictConfig only contains the console handler and 'default' formatter.
+        The file handler is added separately via _build_file_handler after dictConfig.
+        """
         with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.debug = True
@@ -146,52 +150,57 @@ class TestSetupLogging:
             assert config["version"] == 1
             assert config["disable_existing_loggers"] is False
 
-            # Check formatters
+            # Check formatters — only 'default' is in dictConfig
             assert "default" in config["formatters"]
-            assert "json" in config["formatters"]
-            assert config["formatters"]["json"]["()"] == JsonFormatter
 
-            # Check handlers
+            # Check handlers — only 'console' is in dictConfig
             assert "console" in config["handlers"]
-            assert "file" in config["handlers"]
             assert config["handlers"]["console"]["class"] == "logging.StreamHandler"
-            assert (
-                config["handlers"]["file"]["class"]
-                == "logging.handlers.TimedRotatingFileHandler"
-            )
-            assert config["handlers"]["file"]["filename"] == "logs/inference_core.log"
 
             # Check loggers
             required_loggers = ["uvicorn", "fastapi", "app"]
             for logger_name in required_loggers:
                 assert logger_name in config["loggers"]
                 assert "console" in config["loggers"][logger_name]["handlers"]
-                assert "file" in config["loggers"][logger_name]["handlers"]
                 assert config["loggers"][logger_name]["propagate"] is False
 
             # Check root logger
             assert "console" in config["root"]["handlers"]
-            assert "file" in config["root"]["handlers"]
 
+    @patch("inference_core.core.logging_config._build_file_handler")
     @patch("inference_core.core.logging_config.dictConfig")
-    def test_setup_logging_file_handler_config(self, mock_dict_config):
-        """Test file handler configuration in setup_logging"""
+    def test_setup_logging_file_handler_config(self, mock_dict_config, mock_build):
+        """Test file handler is built with correct parameters.
+
+        The file handler is created via _build_file_handler and added to
+        loggers after dictConfig is applied.
+        """
         with patch("inference_core.core.config.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.debug = False
             mock_get_settings.return_value = mock_settings
 
+            mock_handler = MagicMock()
+            mock_handler.level = logging.INFO
+            mock_build.return_value = mock_handler
+
             setup_logging()
 
-            config = mock_dict_config.call_args[0][0]
-            file_handler = config["handlers"]["file"]
+            # Clean up mock handler from global loggers to prevent leaking
+            for name in ("uvicorn", "fastapi", "app"):
+                lgr = logging.getLogger(name)
+                if mock_handler in lgr.handlers:
+                    lgr.removeHandler(mock_handler)
+            if mock_handler in logging.root.handlers:
+                logging.root.removeHandler(mock_handler)
 
-            assert file_handler["formatter"] == "json"
-            assert file_handler["filename"] == "logs/inference_core.log"
-            assert file_handler["when"] == "midnight"
-            assert file_handler["interval"] == 1
-            assert file_handler["backupCount"] == 30
-            assert file_handler["encoding"] == "utf-8"
+            mock_build.assert_called_once()
+            call_args = mock_build.call_args
+            log_file_path = call_args[0][0]
+            log_level = call_args[0][1]
+
+            assert log_file_path == os.path.join("logs", "app.log")
+            assert log_level == "INFO"
 
     @patch("inference_core.core.logging_config.dictConfig")
     def test_setup_logging_console_handler_config(self, mock_dict_config):
