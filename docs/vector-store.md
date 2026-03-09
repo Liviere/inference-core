@@ -5,9 +5,11 @@ This guide explains how to configure and use the vector store functionality in I
 ## Overview
 
 The vector store system provides:
+
 - **Pluggable backends**: Support for different vector databases (Qdrant, in-memory)
 - **RESTful API**: Endpoints for document ingestion and similarity search
 - **Async processing**: Celery tasks for batch document ingestion
+- **Configurable embedding backend**: Local Celery + SentenceTransformer or remote provider APIs
 - **Metrics**: Prometheus monitoring of operations
 - **Authentication**: Integrated with existing auth system
 
@@ -31,7 +33,14 @@ VECTOR_COLLECTION_DEFAULT=documents
 VECTOR_DISTANCE=cosine
 VECTOR_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 VECTOR_DIM=384
+
+# Embedding backend
+EMBEDDING_BACKEND=local
+# EMBEDDING_LOCAL_MODEL=sentence-transformers/all-MiniLM-L6-v2
+# EMBEDDING_LOCAL_TIMEOUT=60
 ```
+
+If you switch to `EMBEDDING_BACKEND=remote`, define the provider under `embeddings:` in `llm_config.yaml` instead of relying on a local SentenceTransformer worker.
 
 ### 2. Start Qdrant (for production)
 
@@ -40,7 +49,18 @@ VECTOR_DIM=384
 docker run -p 6333:6333 qdrant/qdrant:latest
 ```
 
-### 3. Test the API
+### 3. Start the embedding backend
+
+For the default local mode, embeddings are generated on a dedicated Celery prefork worker:
+
+```bash
+poetry run celery -A inference_core.celery.celery_main:celery_app worker \
+  -n embeddings@%h --queues=embeddings --pool=prefork --loglevel=info
+```
+
+The main Celery worker should exclude the `embeddings` queue so CPU-bound `SentenceTransformer` inference does not run inside the threads-based worker.
+
+### 4. Test the API
 
 ```bash
 # Check health
@@ -71,20 +91,24 @@ curl -X POST -H "Authorization: Bearer YOUR_TOKEN" \
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VECTOR_BACKEND` | `None` | Backend type: `qdrant`, `memory`, or leave blank to disable |
-| `VECTOR_COLLECTION_DEFAULT` | `default_documents` | Default collection name |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
-| `QDRANT_API_KEY` | `None` | Qdrant API key (optional) |
-| `VECTOR_DISTANCE` | `cosine` | Distance metric: `cosine`, `euclidean`, `dot` |
-| `VECTOR_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
-| `VECTOR_DIM` | `384` | Vector dimension (must match model) |
-| `VECTOR_INGEST_MAX_BATCH_SIZE` | `1000` | Maximum batch size for ingestion |
+| Variable                       | Default                                  | Description                                                                   |
+| ------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| `VECTOR_BACKEND`               | `None`                                   | Backend type: `qdrant`, `memory`, or leave blank to disable                   |
+| `VECTOR_COLLECTION_DEFAULT`    | `default_documents`                      | Default collection name                                                       |
+| `QDRANT_URL`                   | `http://localhost:6333`                  | Qdrant server URL                                                             |
+| `QDRANT_API_KEY`               | `None`                                   | Qdrant API key (optional)                                                     |
+| `VECTOR_DISTANCE`              | `cosine`                                 | Distance metric: `cosine`, `euclidean`, `dot`                                 |
+| `VECTOR_EMBEDDING_MODEL`       | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model                                                               |
+| `VECTOR_DIM`                   | `384`                                    | Vector dimension (must match model)                                           |
+| `VECTOR_INGEST_MAX_BATCH_SIZE` | `1000`                                   | Maximum batch size for ingestion                                              |
+| `EMBEDDING_BACKEND`            | `local`                                  | Embedding backend used by vector operations and `/api/v1/embeddings/generate` |
+| `EMBEDDING_LOCAL_MODEL`        | `sentence-transformers/all-MiniLM-L6-v2` | Local SentenceTransformer model used on the dedicated embedding worker        |
+| `EMBEDDING_LOCAL_TIMEOUT`      | `60`                                     | Timeout while waiting for the embedding Celery task                           |
 
 ### Access Control
 
 Vector store endpoints use the same access control as LLM endpoints:
+
 - `LLM_API_ACCESS_MODE=public`: No authentication required
 - `LLM_API_ACCESS_MODE=user`: Requires authenticated user (default for vector store)
 - `LLM_API_ACCESS_MODE=superuser`: Requires superuser privileges
@@ -100,15 +124,16 @@ GET /api/v1/vector/health
 Returns vector store status and configuration.
 
 **Response:**
+
 ```json
 {
-  "status": "healthy",
-  "backend": "qdrant",
-  "collections": ["documents", "knowledge_base"],
-  "details": {
-    "url": "http://localhost:6333",
-    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
-  }
+	"status": "healthy",
+	"backend": "qdrant",
+	"collections": ["documents", "knowledge_base"],
+	"details": {
+		"url": "http://localhost:6333",
+		"embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
+	}
 }
 ```
 
@@ -119,23 +144,25 @@ POST /api/v1/vector/ingest
 ```
 
 **Request:**
+
 ```json
 {
-  "texts": ["Document 1", "Document 2"],
-  "metadatas": [{"source": "web"}, {"source": "pdf"}],
-  "ids": ["doc1", "doc2"],
-  "collection": "my_collection",
-  "async_mode": true
+	"texts": ["Document 1", "Document 2"],
+	"metadatas": [{ "source": "web" }, { "source": "pdf" }],
+	"ids": ["doc1", "doc2"],
+	"collection": "my_collection",
+	"async_mode": true
 }
 ```
 
 **Response (async):**
+
 ```json
 {
-  "task_id": "abc123",
-  "message": "Document ingestion task submitted successfully",
-  "collection": "my_collection",
-  "estimated_count": 2
+	"task_id": "abc123",
+	"message": "Document ingestion task submitted successfully",
+	"collection": "my_collection",
+	"estimated_count": 2
 }
 ```
 
@@ -146,30 +173,32 @@ POST /api/v1/vector/query
 ```
 
 **Request:**
+
 ```json
 {
-  "query": "machine learning algorithms",
-  "k": 5,
-  "collection": "documents",
-  "filters": {"source": "web"}
+	"query": "machine learning algorithms",
+	"k": 5,
+	"collection": "documents",
+	"filters": { "source": "web" }
 }
 ```
 
 **Response:**
+
 ```json
 {
-  "documents": [
-    {
-      "id": "doc1",
-      "content": "Machine learning is...",
-      "metadata": {"source": "web"},
-      "score": 0.95
-    }
-  ],
-  "query": "machine learning algorithms",
-  "collection": "documents",
-  "count": 1,
-  "total_in_collection": 100
+	"documents": [
+		{
+			"id": "doc1",
+			"content": "Machine learning is...",
+			"metadata": { "source": "web" },
+			"score": 0.95
+		}
+	],
+	"query": "machine learning algorithms",
+	"collection": "documents",
+	"count": 1,
+	"total_in_collection": 100
 }
 ```
 
@@ -180,12 +209,13 @@ GET /api/v1/vector/collections/{collection}/stats
 ```
 
 **Response:**
+
 ```json
 {
-  "name": "documents",
-  "count": 1000,
-  "dimension": 384,
-  "distance_metric": "cosine"
+	"name": "documents",
+	"count": 1000,
+	"dimension": 384,
+	"distance_metric": "cosine"
 }
 ```
 
@@ -200,12 +230,14 @@ VECTOR_BACKEND=memory
 ```
 
 **Features:**
+
 - No external dependencies
 - Fast for small datasets
 - Data lost on restart
 - Simple text-based similarity
 
 **Use cases:**
+
 - Development and testing
 - Demos and prototypes
 - Unit tests
@@ -220,6 +252,7 @@ QDRANT_URL=http://localhost:6333
 ```
 
 **Features:**
+
 - Production-ready vector database
 - Persistent storage
 - High performance at scale
@@ -227,6 +260,7 @@ QDRANT_URL=http://localhost:6333
 - Supports clustering and sharding
 
 **Setup:**
+
 ```bash
 # Local development
 docker run -p 6333:6333 qdrant/qdrant:latest
@@ -237,18 +271,66 @@ docker run -p 6333:6333 -v ./qdrant_storage:/qdrant/storage qdrant/qdrant:latest
 
 ## Embedding Models
 
-The system uses Sentence Transformers for text embeddings. Supported models:
+The system now uses `EmbeddingService`, which supports two modes:
 
-| Model | Dimension | Performance | Use Case |
-|-------|-----------|-------------|----------|
-| `all-MiniLM-L6-v2` | 384 | Fast | General purpose |
-| `all-mpnet-base-v2` | 768 | Balanced | High quality |
-| `all-distilroberta-v1` | 768 | Medium | Roberta-based |
+- `local`: delegates to the `embeddings.generate` Celery task on the dedicated prefork worker.
+- `remote`: uses a LangChain embedding provider configured in `llm_config.yaml`.
+
+For local mode, common SentenceTransformer models include:
+
+| Model                  | Dimension | Performance | Use Case        |
+| ---------------------- | --------- | ----------- | --------------- |
+| `all-MiniLM-L6-v2`     | 384       | Fast        | General purpose |
+| `all-mpnet-base-v2`    | 768       | Balanced    | High quality    |
+| `all-distilroberta-v1` | 768       | Medium      | Roberta-based   |
 
 **Custom models:**
+
 ```bash
 VECTOR_EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
 VECTOR_DIM=768
+```
+
+For remote mode, use `embeddings.default` in `llm_config.yaml`, for example:
+
+```yaml
+embeddings:
+  default:
+    provider: openai
+    model: text-embedding-3-small
+    dimensions: 1536
+```
+
+Qdrant collection creation now auto-detects the dimension from `EmbeddingService` when possible, which helps keep collection size aligned with the active backend.
+
+## Embeddings API
+
+You can generate embeddings directly without going through vector ingestion:
+
+```http
+POST /api/v1/embeddings/generate
+```
+
+**Request:**
+
+```json
+{
+	"texts": ["hello world", "semantic search"]
+}
+```
+
+**Response:**
+
+```json
+{
+	"embeddings": [
+		[0.1, 0.2],
+		[0.3, 0.4]
+	],
+	"dimension": 2,
+	"count": 2,
+	"backend": "local"
+}
 ```
 
 ## Celery Integration
@@ -339,17 +421,17 @@ from inference_core.services.vector_store_service import get_vector_store_servic
 
 async def process_documents(documents):
     service = get_vector_store_service()
-    
+
     # Preprocess documents
     texts = [preprocess(doc) for doc in documents]
     metadatas = [extract_metadata(doc) for doc in documents]
-    
+
     # Ingest in batches
     batch_size = 100
     for i in range(0, len(texts), batch_size):
         batch_texts = texts[i:i+batch_size]
         batch_metas = metadatas[i:i+batch_size]
-        
+
         await service.add_texts(
             texts=batch_texts,
             metadatas=batch_metas,
@@ -362,6 +444,7 @@ async def process_documents(documents):
 ### Common Issues
 
 **Vector store not available:**
+
 ```bash
 # Check configuration
 curl http://localhost:8000/api/v1/vector/health
@@ -371,6 +454,7 @@ echo $VECTOR_BACKEND
 ```
 
 **Qdrant connection failed:**
+
 ```bash
 # Check Qdrant is running
 curl http://localhost:6333/collections
@@ -380,6 +464,7 @@ echo $QDRANT_URL
 ```
 
 **Dimension mismatch:**
+
 ```bash
 # Check embedding model dimension
 python -c "
@@ -405,7 +490,7 @@ Run vector store tests:
 # Unit tests
 poetry run pytest tests/unit/vectorstores/ -v
 
-# Service tests  
+# Service tests
 poetry run pytest tests/unit/services/test_vector_store_service.py -v
 
 # Integration tests (requires Qdrant)

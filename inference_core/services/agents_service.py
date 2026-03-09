@@ -20,7 +20,6 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.store.postgres import PostgresStore
 from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
 
 from inference_core.agents.middleware import (
     CostTrackingMiddleware,
@@ -767,35 +766,19 @@ class AgentService:
         return store
 
     def _init_embeddings(self):
-        """Prepare embedding function and dimension for store semantic search."""
+        """Prepare embedding function and dimension for store semantic search.
 
-        settings = get_settings()
-        model_name = settings.vector_embedding_model
+        Delegates to the global EmbeddingService instead of loading
+        SentenceTransformer directly. The actual compute happens either
+        on a Celery prefork worker (local) or via an API provider (remote).
+        """
+        from inference_core.services.embedding_service import get_embedding_service
 
-        try:
-            model = SentenceTransformer(model_name)
-        except Exception as exc:  # pragma: no cover - runtime safeguard
-            logging.error("Failed to load embedding model %s: %s", model_name, exc)
-            # fallback tiny embedder
-            model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        service = get_embedding_service()
+        embed_fn = service.get_embed_fn()
+        dims = service.get_dimension()
 
-        sample = model.encode(["test"], convert_to_tensor=False)
-        dims = settings.vector_dim
-        try:
-            # sample may be ndarray or list of lists
-            if hasattr(sample, "shape") and len(getattr(sample, "shape")) >= 2:
-                dims = int(sample.shape[1])
-            elif isinstance(sample, (list, tuple)) and sample and sample[0] is not None:
-                dims = len(sample[0])
-        except Exception as exc:  # pragma: no cover - fallback
-            logging.warning(
-                "Falling back to configured vector_dim; dim detection failed: %s", exc
-            )
-
-        def embed_fn(texts: list[str]) -> list[list[float]]:
-            return model.encode(texts, convert_to_tensor=False).tolist()
-
-        return embed_fn, dims, model
+        return embed_fn, dims, service
 
     @staticmethod
     def _sync_connection_string() -> str:

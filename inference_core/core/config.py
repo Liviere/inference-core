@@ -315,6 +315,26 @@ class Settings(BaseSettings):
     )
 
     ###################################
+    #      EMBEDDING SETTINGS         #
+    ###################################
+    embedding_backend: Literal["local", "remote"] = Field(
+        default="local",
+        description="Embedding backend: 'local' (Celery prefork worker) "
+        "or 'remote' (API provider via LangChain).",
+    )
+    embedding_local_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        description="SentenceTransformer model for local embedding backend. "
+        "Runs on Celery prefork workers, never in the API process.",
+    )
+    embedding_local_timeout: int = Field(
+        default=60,
+        description="Timeout in seconds for local Celery embedding task.",
+        ge=5,
+        le=300,
+    )
+
+    ###################################
     #        AGENT MEMORY             #
     ###################################
     agent_memory_enabled: bool = Field(

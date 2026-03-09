@@ -52,9 +52,9 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **Authentication & Users** – Registration, login, refresh rotation, email verification hooks (pluggable email delivery).
 
-**Celery Orchestration** – Background tasks for batch polling, ingestion, email, vector operations with resilience & retry hooks.
+**Celery Orchestration** – Background tasks for batch polling, ingestion, email, vector operations, and dedicated embedding workers with resilience & retry hooks.
 
-**Vector Store Integration** – Qdrant (production) or in‑memory (dev); ingestion + similarity search + async batch flows.
+**Vector Store Integration** – Qdrant (production) or in‑memory (dev); ingestion + similarity search + async batch flows powered by a configurable embedding backend.
 
 **Model Context Protocol (MCP)** – Tool-augmented LLM reasoning with external capabilities (web browsing, file access, APIs) via standardized MCP integration. Security-first with RBAC, timeouts, and isolation. [Learn more →](docs/mcp-integration.md)
 
@@ -79,7 +79,13 @@ poetry run uvicorn inference_core.main_factory:create_application --factory --re
 
 # (Optional) Start Redis & Celery for background + batch
 docker run -d --name redis -p 6379:6379 redis:7-alpine
-poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info
+poetry run celery -A inference_core.celery.celery_main:celery_app worker -n worker@%h --pool=threads --exclude-queues=embeddings,mail --loglevel=info
+
+# Email worker (if using email features)
+poetry run celery -A inference_core.celery.celery_main:celery_app worker -n mail@%h --pool=threads --queues=mail --loglevel=info
+
+# If EMBEDDING_BACKEND=local, start the dedicated embeddings worker too
+poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=prefork --loglevel=info
 ```
 
 Visit: http://localhost:8000/docs (dev only)  
@@ -131,6 +137,20 @@ curl -X POST http://localhost:8000/api/v1/vector/ingest \
   -H 'Content-Type: application/json' \
   -d '{"texts":["Python is great","Embeddings map text to vectors"],"async_mode":false}'
 ```
+
+Embedding generation example:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/embeddings/generate \
+  -H 'Authorization: Bearer <ACCESS_TOKEN>' \
+  -H 'Content-Type: application/json' \
+  -d '{"texts": ["hello world", "semantic search"]}'
+```
+
+Embedding backend modes:
+
+- `EMBEDDING_BACKEND=local`: the API delegates embedding work to a dedicated Celery prefork worker on the `embeddings` queue, so `SentenceTransformer` stays out of the API process.
+- `EMBEDDING_BACKEND=remote`: the API uses LangChain embedding providers configured in `llm_config.yaml` under `embeddings:`.
 
 ---
 

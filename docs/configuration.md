@@ -112,6 +112,31 @@ Environment variables grouped by functional domain.
 | `VECTOR_DIM`                   | 384                                    | Embedding dimension                     |
 | `VECTOR_INGEST_MAX_BATCH_SIZE` | 1000                                   | Max ingestion batch size                |
 
+## Embedding Backend
+
+Controls how embeddings are generated for vector operations, agent memory, and the embeddings API endpoint.
+
+| Variable                  | Default                                  | Description                                                      |
+| ------------------------- | ---------------------------------------- | ---------------------------------------------------------------- |
+| `EMBEDDING_BACKEND`       | `local`                                  | Embedding backend: `local` or `remote`                           |
+| `EMBEDDING_LOCAL_MODEL`   | `sentence-transformers/all-MiniLM-L6-v2` | SentenceTransformer model used by the dedicated embedding worker |
+| `EMBEDDING_LOCAL_TIMEOUT` | `60`                                     | Timeout in seconds while waiting for the Celery embedding task   |
+
+Backend behavior:
+
+- `local`: `EmbeddingService` sends `embeddings.generate` tasks to the dedicated `embeddings` queue. Run a separate Celery worker with `--queues=embeddings --pool=prefork`.
+- `remote`: `EmbeddingService` instantiates a LangChain embedding provider from the `embeddings:` section in `llm_config.yaml`.
+
+Example YAML for `EMBEDDING_BACKEND=remote`:
+
+```yaml
+embeddings:
+  default:
+    provider: openai
+    model: text-embedding-3-small
+    # dimensions: 1536
+```
+
 ## Agent Memory
 
 Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be configured.

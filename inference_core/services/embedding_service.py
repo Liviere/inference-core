@@ -1,0 +1,259 @@
+"""Embedding Service Abstraction.
+
+Unified interface for generating text embeddings with two backends:
+
+- **local**: Delegates to a dedicated Celery prefork worker running
+  SentenceTransformer. The API process never loads the model.
+- **remote**: Uses LangChain embedding classes (OpenAI, Gemini, Ollama)
+  configured in the ``embeddings:`` section of ``llm_config.yaml``.
+
+The backend is selected by the ``EMBEDDING_BACKEND`` environment variable
+(``local`` or ``remote``).
+
+Consumers: ``AgentService._init_embeddings()``, ``QdrantProvider``,
+``/api/v1/embeddings/generate`` endpoint.
+"""
+
+import asyncio
+import logging
+import os
+from abc import ABC, abstractmethod
+from typing import Any, Optional
+
+from inference_core.core.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Backend interface
+# ---------------------------------------------------------------------------
+
+
+class BaseEmbeddingBackend(ABC):
+    """Protocol for embedding backends."""
+
+    @abstractmethod
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings synchronously. Safe to call from sync context."""
+        ...
+
+    @abstractmethod
+    async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings asynchronously."""
+        ...
+
+    @abstractmethod
+    def get_dimension(self) -> int:
+        """Return the embedding vector dimensionality for this backend."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Local backend — Celery prefork worker
+# ---------------------------------------------------------------------------
+
+
+class LocalCeleryBackend(BaseEmbeddingBackend):
+    """Sends embedding work to a Celery prefork worker via the ``embeddings`` queue.
+
+    The API process never imports or loads SentenceTransformer.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._model_name = settings.embedding_local_model
+        self._timeout = settings.embedding_local_timeout
+        self._fallback_dim = settings.vector_dim
+        self._cached_dim: Optional[int] = None
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        from inference_core.celery.celery_main import celery_app
+
+        result = celery_app.send_task(
+            "embeddings.generate",
+            kwargs={"texts": texts, "model_name": self._model_name},
+            queue="embeddings",
+        )
+        return result.get(timeout=self._timeout)
+
+    async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.embed_texts, texts)
+
+    def get_dimension(self) -> int:
+        if self._cached_dim is not None:
+            return self._cached_dim
+        try:
+            probe = self.embed_texts(["dimension probe"])
+            self._cached_dim = len(probe[0])
+        except Exception:
+            logger.warning(
+                "Dimension probe failed, using configured vector_dim=%d",
+                self._fallback_dim,
+            )
+            self._cached_dim = self._fallback_dim
+        return self._cached_dim
+
+
+# ---------------------------------------------------------------------------
+# Remote backend — LangChain embedding providers
+# ---------------------------------------------------------------------------
+
+
+class RemoteLangChainBackend(BaseEmbeddingBackend):
+    """Uses LangChain embedding classes to call external API providers."""
+
+    def __init__(self, settings: Settings) -> None:
+        from inference_core.llm.config import get_llm_config
+
+        llm_config = get_llm_config()
+        embed_config = llm_config.get_embedding_config("default")
+        if embed_config is None:
+            raise ValueError(
+                "EMBEDDING_BACKEND=remote but no 'embeddings.default' section "
+                "found in llm_config.yaml"
+            )
+
+        self._embeddings = self._create_langchain_embeddings(
+            embed_config, llm_config.providers
+        )
+        self._dim: Optional[int] = embed_config.dimensions
+
+    @staticmethod
+    def _create_langchain_embeddings(
+        embed_config: Any, providers: dict[str, Any]
+    ) -> Any:
+        """Factory for LangChain Embeddings instances based on provider."""
+        provider = embed_config.provider.value
+        model = embed_config.model
+
+        if provider == "openai":
+            from langchain_openai import OpenAIEmbeddings
+
+            provider_cfg = providers.get("openai", {})
+            api_key_env = embed_config.api_key_env or provider_cfg.get(
+                "api_key_env", "OPENAI_API_KEY"
+            )
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "api_key": os.getenv(api_key_env),
+            }
+            if embed_config.dimensions:
+                kwargs["dimensions"] = embed_config.dimensions
+            if embed_config.base_url:
+                kwargs["base_url"] = embed_config.base_url
+            return OpenAIEmbeddings(**kwargs)
+
+        if provider == "gemini":
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+            provider_cfg = providers.get("gemini", {})
+            api_key_env = embed_config.api_key_env or provider_cfg.get(
+                "api_key_env", "GOOGLE_API_KEY"
+            )
+            return GoogleGenerativeAIEmbeddings(
+                model=model,
+                google_api_key=os.getenv(api_key_env),
+            )
+
+        if provider == "ollama":
+            from langchain_ollama import OllamaEmbeddings
+
+            provider_cfg = providers.get("ollama", {})
+            base_url = embed_config.base_url or provider_cfg.get(
+                "base_url", "http://localhost:11434"
+            )
+            return OllamaEmbeddings(model=model, base_url=base_url)
+
+        raise ValueError(f"Unsupported embedding provider: {provider}")
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return self._embeddings.embed_documents(texts)
+
+    async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
+        return await self._embeddings.aembed_documents(texts)
+
+    def get_dimension(self) -> int:
+        if self._dim is not None:
+            return self._dim
+        probe = self.embed_texts(["dimension probe"])
+        self._dim = len(probe[0])
+        return self._dim
+
+
+# ---------------------------------------------------------------------------
+# Unified service
+# ---------------------------------------------------------------------------
+
+
+class EmbeddingService:
+    """Unified embedding service consumed by AgentService, QdrantProvider,
+    and the embeddings API endpoint.
+
+    Provides both sync and async interfaces, plus a sync ``embed_fn`` callable
+    compatible with LangGraph store ``index={"embed": ..., "dims": ...}``.
+    """
+
+    def __init__(self, backend: Optional[BaseEmbeddingBackend] = None) -> None:
+        if backend is not None:
+            self._backend = backend
+        else:
+            settings = get_settings()
+            if settings.embedding_backend == "local":
+                self._backend = LocalCeleryBackend(settings)
+            elif settings.embedding_backend == "remote":
+                self._backend = RemoteLangChainBackend(settings)
+            else:
+                raise ValueError(
+                    f"Unknown EMBEDDING_BACKEND: {settings.embedding_backend}"
+                )
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Synchronous batch embedding."""
+        return self._backend.embed_texts(texts)
+
+    async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Async batch embedding."""
+        return await self._backend.aembed_texts(texts)
+
+    def get_embed_fn(self) -> callable:
+        """Return a sync callable ``(list[str]) -> list[list[float]]``.
+
+        This is the function signature LangGraph stores expect in their
+        ``index={"embed": ..., "dims": ...}`` parameter.
+        """
+        return self._backend.embed_texts
+
+    def get_dimension(self) -> int:
+        """Return the embedding vector dimensionality."""
+        return self._backend.get_dimension()
+
+    def embed_query(self, text: str) -> list[float]:
+        """Single-text embedding (convenience for search queries)."""
+        return self._backend.embed_texts([text])[0]
+
+    async def aembed_query(self, text: str) -> list[float]:
+        """Async single-text embedding."""
+        result = await self._backend.aembed_texts([text])
+        return result[0]
+
+
+# ---------------------------------------------------------------------------
+# Global singleton
+# ---------------------------------------------------------------------------
+
+_embedding_service: Optional[EmbeddingService] = None
+
+
+def get_embedding_service() -> EmbeddingService:
+    """Get or create the global EmbeddingService singleton."""
+    global _embedding_service
+    if _embedding_service is None:
+        _embedding_service = EmbeddingService()
+    return _embedding_service
+
+
+def clear_embedding_service_cache() -> None:
+    """Reset the singleton (for testing)."""
+    global _embedding_service
+    _embedding_service = None

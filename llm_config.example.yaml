@@ -466,6 +466,35 @@ agents:
         trigger: 'after_tool'
         description: 'Use nano model for simple follow-ups after lookups'
 
+# =============================================================================
+# EMBEDDING PROVIDERS (only used when EMBEDDING_BACKEND=remote)
+# =============================================================================
+# When EMBEDDING_BACKEND=remote, the system uses LangChain embedding classes
+# to call external API providers instead of a local SentenceTransformer model.
+# Each named entry defines a remote embedding configuration. The 'default' entry
+# is used unless overridden.
+embeddings:
+  default:
+    provider: openai                 # openai | gemini | ollama
+    model: text-embedding-3-small    # Provider-specific model name
+    # dimensions: 1536              # Optional dimension override (OpenAI v3 supports this)
+    # api_key_env: OPENAI_API_KEY   # Defaults to provider's api_key_env
+    # base_url:                     # Override for custom endpoints
+
+  # large:
+  #   provider: openai
+  #   model: text-embedding-3-large
+  #   dimensions: 3072
+
+  # gemini:
+  #   provider: gemini
+  #   model: models/text-embedding-004
+
+  # local_ollama:
+  #   provider: ollama
+  #   model: nomic-embed-text
+  #   base_url: http://localhost:11434
+
 mcp:
   enabled: true # ENABLE MCP (disabled by default)
   require_superuser: false

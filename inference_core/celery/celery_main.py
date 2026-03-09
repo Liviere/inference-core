@@ -123,6 +123,7 @@ DEFAULT_TASK_MODULES: list[str] = [
     "inference_core.celery.tasks.batch_tasks",
     "inference_core.celery.tasks.email_tasks",
     "inference_core.celery.tasks.vector_tasks",
+    "inference_core.celery.tasks.embedding_tasks",
 ]
 DEFAULT_AUTODISCOVER: list[Union[str, Sequence[str], Callable[[], Sequence[str]]]] = [
     "inference_core.celery.tasks",

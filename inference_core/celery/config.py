@@ -45,6 +45,7 @@ class CeleryConfig:
         "inference_core.celery.tasks.llm_tasks.*": {"queue": "llm_tasks"},
         "inference_core.celery.tasks.batch_tasks.*": {"queue": "batch_tasks"},
         "inference_core.celery.tasks.email_tasks.*": {"queue": "mail"},
+        "inference_core.celery.tasks.embedding_tasks.*": {"queue": "embeddings"},
     }
 
     task_default_queue = "default"
@@ -53,6 +54,7 @@ class CeleryConfig:
         Queue("llm_tasks", Exchange("llm_tasks"), routing_key="llm_tasks"),
         Queue("batch_tasks", Exchange("batch_tasks"), routing_key="batch_tasks"),
         Queue("mail", Exchange("mail"), routing_key="mail"),
+        Queue("embeddings", Exchange("embeddings"), routing_key="embeddings"),
     ]
 
     # Monitoring

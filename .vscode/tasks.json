@@ -20,7 +20,23 @@
 		{
 			"label": "Celery: Start Worker",
 			"type": "shell",
-			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info",
+			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker -n worker@%h --pool=threads --exclude-queues=embeddings,mail --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Worker (Mail)",
+			"type": "shell",
+			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker -n mail@%h --queues=mail --pool=threads --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Worker (Embeddings)",
+			"type": "shell",
+			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=prefork --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
@@ -36,7 +52,7 @@
 		{
 			"label": "Celery: Start Worker (DEBUG)",
 			"type": "shell",
-			"command": "export DEBUG_CELERY=1 && poetry run celery -A inference_core.celery.celery_main:celery_app worker --loglevel=info",
+			"command": "export DEBUG_CELERY=1 && poetry run celery -A inference_core.celery.celery_main:celery_app worker -n debug@%h --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []

@@ -14,6 +14,7 @@ from .api.v1.routes import (
     auth,
     batch,
     config,
+    embeddings,
     health,
     llm,
     metrics,
@@ -241,6 +242,7 @@ def setup_routers(
     api_v1.include_router(batch.router, dependencies=_llm_deps_for_settings())
 
     api_v1.include_router(vector.router, dependencies=_llm_deps_for_settings())
+    api_v1.include_router(embeddings.router, dependencies=_llm_deps_for_settings())
 
     # Include main API router
     app.include_router(api_v1)

@@ -14,7 +14,6 @@ from langchain_core.retrievers import BaseRetriever
 from qdrant_client import AsyncQdrantClient, QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
-from sentence_transformers import SentenceTransformer
 
 from .base import BaseVectorStoreProvider, CollectionStats, VectorStoreDocument
 
@@ -26,7 +25,7 @@ class QdrantProvider(BaseVectorStoreProvider):
     Qdrant implementation of vector store provider.
 
     Supports both local and cloud Qdrant instances with async operations.
-    Uses sentence-transformers for text embedding generation.
+    Uses EmbeddingService for text embedding generation (local Celery or remote API).
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -70,19 +69,19 @@ class QdrantProvider(BaseVectorStoreProvider):
 
         return self._sync_client
 
-    def _get_embedding_model(self) -> SentenceTransformer:
-        """Get or create embedding model"""
+    def _get_embedding_service(self):
+        """Get or create the EmbeddingService."""
         if self._embedding_model is None:
-            self._embedding_model = SentenceTransformer(self.embedding_model_name)
-            self.logger.info(f"Loaded embedding model: {self.embedding_model_name}")
+            from inference_core.services.embedding_service import get_embedding_service
 
+            self._embedding_model = get_embedding_service()
+            self.logger.info("Initialized embedding service for Qdrant provider")
         return self._embedding_model
 
     def _embed_texts(self, texts: Sequence[str]) -> List[List[float]]:
-        """Generate embeddings for texts"""
-        model = self._get_embedding_model()
-        embeddings = model.encode(texts, convert_to_tensor=False)
-        return embeddings.tolist()
+        """Generate embeddings for texts via EmbeddingService."""
+        service = self._get_embedding_service()
+        return service.embed_texts(list(texts))
 
     def _get_distance_metric(self) -> models.Distance:
         """Convert distance string to Qdrant Distance enum"""
@@ -111,12 +110,10 @@ class QdrantProvider(BaseVectorStoreProvider):
             # Collection doesn't exist, create it
             dimension = dimension or self.get_dimension()
 
-            # Get actual dimension from embedding model
+            # Get actual dimension from embedding service
             if dimension == self.get_dimension():
-                model = self._get_embedding_model()
-                # Get dimension by encoding a test text
-                test_embedding = model.encode(["test"], convert_to_tensor=False)
-                dimension = len(test_embedding[0])
+                service = self._get_embedding_service()
+                dimension = service.get_dimension()
                 self.logger.info(f"Auto-detected embedding dimension: {dimension}")
 
             vectors_config = models.VectorParams(
@@ -257,20 +254,20 @@ class QdrantProvider(BaseVectorStoreProvider):
 
         # Create QdrantVectorStore instance
         sync_client = self._get_sync_client()
-        embedding_model = self._get_embedding_model()
+        service = self._get_embedding_service()
 
-        # Create a simple embeddings wrapper for langchain
-        class SentenceTransformerEmbeddings:
-            def __init__(self, model: SentenceTransformer):
-                self.model = model
+        # Adapter satisfying LangChain Embeddings interface
+        class _EmbeddingServiceWrapper:
+            def __init__(self, svc):
+                self._svc = svc
 
             def embed_documents(self, texts: List[str]) -> List[List[float]]:
-                return self.model.encode(texts, convert_to_tensor=False).tolist()
+                return self._svc.embed_texts(texts)
 
             def embed_query(self, text: str) -> List[float]:
-                return self.model.encode([text], convert_to_tensor=False)[0].tolist()
+                return self._svc.embed_query(text)
 
-        embeddings = SentenceTransformerEmbeddings(embedding_model)
+        embeddings = _EmbeddingServiceWrapper(service)
 
         # Create QdrantVectorStore
         vector_store = QdrantVectorStore(
@@ -348,12 +345,16 @@ class QdrantProvider(BaseVectorStoreProvider):
             collections = await client.get_collections()
             collection_names = [col.name for col in collections.collections]
 
+            from inference_core.core.config import get_settings as _gs
+
+            _settings = _gs()
             return {
                 "status": "healthy",
                 "backend": "qdrant",
                 "url": self.url,
                 "ready": ready_state,
                 "collections": collection_names,
+                "embedding_backend": _settings.embedding_backend,
                 "embedding_model": self.embedding_model_name,
                 "dimension": self.get_dimension(),
                 "distance_metric": self.get_distance_metric(),
@@ -366,6 +367,7 @@ class QdrantProvider(BaseVectorStoreProvider):
                 "backend": "qdrant",
                 "url": self.url,
                 "error": str(e),
+                "embedding_backend": "unknown",
                 "embedding_model": self.embedding_model_name,
             }
 

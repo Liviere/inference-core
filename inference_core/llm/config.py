@@ -502,6 +502,38 @@ class TaskConfig(BaseModel):
     )
 
 
+class EmbeddingProviderType(str, Enum):
+    """Supported embedding providers for remote mode."""
+
+    OPENAI = "openai"
+    GEMINI = "gemini"
+    OLLAMA = "ollama"
+
+
+class EmbeddingConfig(BaseModel):
+    """Configuration for a named remote embedding backend.
+
+    Parsed from the 'embeddings:' section of llm_config.yaml.
+    Only used when EMBEDDING_BACKEND=remote.
+    """
+
+    provider: EmbeddingProviderType
+    model: str
+    dimensions: Optional[int] = Field(
+        default=None,
+        description="Optional dimension override (e.g. OpenAI text-embedding-3-* supports this)",
+    )
+    api_key_env: Optional[str] = Field(
+        default=None,
+        description="Environment variable name for the API key. "
+        "Falls back to the provider's default api_key_env if not set.",
+    )
+    base_url: Optional[str] = Field(
+        default=None,
+        description="Override base URL for custom endpoints (e.g. Ollama, Azure).",
+    )
+
+
 class LLMConfig:
     """Main LLM configuration class"""
 
@@ -524,6 +556,7 @@ class LLMConfig:
             UsageLoggingConfig()
         )  # Initialize with defaults
         self.mcp_config: MCPConfig = MCPConfig()  # Initialize MCP config
+        self.embedding_configs: Dict[str, EmbeddingConfig] = {}
         self._load_config()
 
     def _load_config(self):
@@ -708,6 +741,9 @@ class LLMConfig:
         # Parse MCP configuration
         self._load_mcp_config(yaml_config)
 
+        # Parse embedding configurations
+        self._load_embedding_config(yaml_config)
+
     def _load_batch_config(self, yaml_config: Dict[str, Any]):
         """Load and validate batch configuration from YAML"""
         batch_data = yaml_config.get("batch", {})
@@ -883,6 +919,25 @@ class LLMConfig:
                 f"Error loading MCP configuration: {e}. Using default configuration."
             )
             self.mcp_config = MCPConfig()
+
+    def _load_embedding_config(self, yaml_config: Dict[str, Any]):
+        """Load remote embedding provider configurations from YAML.
+
+        Parses the 'embeddings:' section into named EmbeddingConfig instances.
+        Only relevant when EMBEDDING_BACKEND=remote; harmless to parse otherwise.
+        """
+        embeddings_data = yaml_config.get("embeddings", {})
+        self.embedding_configs = {}
+
+        for name, config_data in embeddings_data.items():
+            try:
+                self.embedding_configs[name] = EmbeddingConfig(**config_data)
+            except Exception as e:
+                logging.warning(f"Error parsing embedding config '{name}': {e}")
+
+    def get_embedding_config(self, name: str = "default") -> Optional[EmbeddingConfig]:
+        """Get a named embedding configuration."""
+        return self.embedding_configs.get(name)
 
     def _load_fallback_config(self):
         """Load fallback configuration when YAML file is not available"""
