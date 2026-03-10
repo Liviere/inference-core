@@ -96,6 +96,18 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
         dropped=set(),
         passthrough_prefixes=set(),
     ),
+    ModelProvider.DEEPINFRA: ProviderParamPolicy(
+        allowed={
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "top_k",
+            "timeout",
+        },
+        renamed={"request_timeout": "timeout"},
+        dropped={"frequency_penalty", "presence_penalty"},
+        passthrough_prefixes=set(),
+    ),
     ModelProvider.GEMINI: ProviderParamPolicy(
         allowed={"temperature", "max_output_tokens", "top_p"},
         renamed={"max_tokens": "max_output_tokens"},

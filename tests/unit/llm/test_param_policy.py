@@ -43,6 +43,7 @@ class TestPoliciesDefinition:
         expected_providers = {
             ModelProvider.OPENAI,
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
+            ModelProvider.DEEPINFRA,
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
             ModelProvider.OLLAMA,
@@ -83,6 +84,24 @@ class TestPoliciesDefinition:
         assert policy.allowed == expected_allowed
         assert policy.renamed == {}
         assert policy.dropped == set()
+
+    def test_deepinfra_policy(self):
+        """Test DeepInfra provider policy"""
+        policy = POLICIES[ModelProvider.DEEPINFRA]
+
+        expected_allowed = {
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "top_k",
+            "timeout",
+        }
+        expected_renamed = {"request_timeout": "timeout"}
+        expected_dropped = {"frequency_penalty", "presence_penalty"}
+
+        assert policy.allowed == expected_allowed
+        assert policy.renamed == expected_renamed
+        assert policy.dropped == expected_dropped
 
     def test_gemini_policy(self):
         """Test Gemini provider policy"""
@@ -284,6 +303,7 @@ class TestGetSupportedProviders:
         expected = {
             ModelProvider.OPENAI,
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
+            ModelProvider.DEEPINFRA,
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
             ModelProvider.OLLAMA,

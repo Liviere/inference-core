@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
 from langchain_anthropic import ChatAnthropic
+from langchain_community.chat_models.deepinfra import ChatDeepInfra
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
@@ -147,6 +148,9 @@ class LLMModelFactory:
         elif config.provider == ModelProvider.CLAUDE:
             return self._create_claude_model(config, model_params)
 
+        elif config.provider == ModelProvider.DEEPINFRA:
+            return self._create_deepinfra_model(config, model_params)
+
         elif config.provider == ModelProvider.OLLAMA:
             return self._create_ollama_model(config, model_params)
 
@@ -220,6 +224,28 @@ class LLMModelFactory:
             return ChatAnthropic(model=config.name, api_key=config.api_key, **params)
         except Exception as e:
             logger.error(f"Failed to create Claude model: {str(e)}")
+            return None
+
+    def _create_deepinfra_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatDeepInfra]:
+        """Create DeepInfra model instance via the dedicated LangChain integration.
+
+        Uses ChatDeepInfra from langchain_community instead of the generic
+        OpenAI-compatible wrapper, giving access to DeepInfra-specific features
+        like native tool calling and proper token tracking.
+        """
+        if not config.api_key:
+            logger.error("DeepInfra API token (DEEPINFRA_API_TOKEN) not provided")
+            return None
+        try:
+            return ChatDeepInfra(
+                model=config.name,
+                deepinfra_api_token=config.api_key,
+                **params,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create DeepInfra model: {str(e)}")
             return None
 
     def _create_ollama_model(

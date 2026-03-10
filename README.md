@@ -152,7 +152,7 @@ curl -X POST http://localhost:8000/api/v1/embeddings/generate \
 Embedding backend modes:
 
 - `EMBEDDING_BACKEND=local`: the API delegates embedding work to a dedicated Celery worker on the `embeddings` queue, so `SentenceTransformer` stays out of the API process. Use `--pool=solo` for GPU-backed local models because CUDA drivers do not support Celery's `prefork` pool.
-- `EMBEDDING_BACKEND=remote`: the API uses LangChain embedding providers configured in `llm_config.yaml` under `embeddings:`.
+- `EMBEDDING_BACKEND=remote`: the API uses LangChain embedding providers configured in `llm_config.yaml` under `embeddings:` (OpenAI, Gemini, DeepInfra, Ollama).
 
 ---
 

@@ -672,7 +672,7 @@ class TestBatchAPIEndpoints:
         resp = await async_test_client.post(
             "/api/v1/llm/batch/",
             json={
-                "provider": "custom_openai_compatible",
+                "provider": "deepinfra",
                 "model": "deepseek-ai/DeepSeek-V3-0324",
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
             },

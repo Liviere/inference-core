@@ -83,6 +83,54 @@ class TestLLMModelFactoryParameterNormalization:
         assert result == mock_model
 
     @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatDeepInfra")
+    def test_deepinfra_model_uses_normalized_params(
+        self, mock_chat_deepinfra, mock_normalize
+    ):
+        """Test DeepInfra model creation uses normalized parameters."""
+        config = ModelConfig(
+            name="meta-llama/Meta-Llama-3-70B-Instruct",
+            provider=ModelProvider.DEEPINFRA,
+            api_key="test-key",
+            temperature=0.6,
+            max_tokens=256,
+        )
+
+        normalized_params = {
+            "temperature": 0.6,
+            "max_tokens": 256,
+            "top_p": 1.0,
+            "timeout": 60,
+        }
+        mock_normalize.return_value = normalized_params
+
+        mock_model = MagicMock()
+        mock_chat_deepinfra.return_value = mock_model
+
+        result = self.factory._create_model_instance(config)
+
+        expected_raw_params = {
+            "temperature": 0.6,
+            "max_tokens": 256,
+            "top_p": 1.0,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+            "request_timeout": 60,
+            "verbosity": None,
+            "reasoning_effort": None,
+        }
+        mock_normalize.assert_called_once_with(
+            ModelProvider.DEEPINFRA, expected_raw_params, model_name=config.name
+        )
+
+        mock_chat_deepinfra.assert_called_once_with(
+            model="meta-llama/Meta-Llama-3-70B-Instruct",
+            deepinfra_api_token="test-key",
+            **normalized_params,
+        )
+        assert result == mock_model
+
+    @patch("inference_core.llm.models.normalize_params")
     @patch("inference_core.llm.models.ChatGoogleGenerativeAI")
     def test_gemini_model_uses_normalized_params(
         self, mock_chat_gemini, mock_normalize
@@ -367,3 +415,40 @@ class TestProviderSpecificParameterHandling:
         assert "frequency_penalty" not in call_kwargs
         assert "presence_penalty" not in call_kwargs
         assert "request_timeout" not in call_kwargs
+
+    @patch("inference_core.llm.models.ChatDeepInfra")
+    @patch("inference_core.llm.models.normalize_params")
+    def test_deepinfra_no_manual_parameter_filtering(
+        self, mock_normalize, mock_chat_deepinfra
+    ):
+        """Test that DeepInfra model creation forwards already-normalized params."""
+        config = ModelConfig(
+            name="meta-llama/Meta-Llama-3-70B-Instruct",
+            provider=ModelProvider.DEEPINFRA,
+            api_key="test-key",
+        )
+
+        normalized_params = {
+            "temperature": 0.7,
+            "max_tokens": 100,
+            "timeout": 30,
+            "top_k": 40,
+        }
+        mock_normalize.return_value = normalized_params
+
+        mock_model = MagicMock()
+        mock_chat_deepinfra.return_value = mock_model
+
+        result = self.factory._create_deepinfra_model(config, normalized_params)
+
+        mock_chat_deepinfra.assert_called_once_with(
+            model="meta-llama/Meta-Llama-3-70B-Instruct",
+            deepinfra_api_token="test-key",
+            **normalized_params,
+        )
+        assert result == mock_model
+
+        call_kwargs = mock_chat_deepinfra.call_args.kwargs
+        assert "request_timeout" not in call_kwargs
+        assert "frequency_penalty" not in call_kwargs
+        assert "presence_penalty" not in call_kwargs

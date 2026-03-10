@@ -51,6 +51,11 @@ def _make_config(
             "name": "custom_openai_compatible",
             "requires_api_key": False,
         },
+        "deepinfra": {
+            "name": "deepinfra",
+            "requires_api_key": True,
+            "api_key_env": "DEEPINFRA_API_TOKEN",
+        },
         "gemini": {
             "name": "gemini",
             "requires_api_key": True,

@@ -35,6 +35,12 @@ providers:
     requires_api_key: true
     openai_compatible: true
 
+  deepinfra:
+    name: 'DeepInfra'
+    api_key_env: 'DEEPINFRA_API_TOKEN'
+    requires_api_key: true
+    openai_compatible: false
+
 # Available Models Configuration
 models:
   # OpenAI Models
@@ -349,18 +355,19 @@ models:
     max_tokens: 8192
     temperature: 0.7
 
+  # DeepInfra Models (dedicated provider)
   deepseek-ai/DeepSeek-R1-0528:
-    provider: 'custom_openai_compatible'
+    provider: 'deepinfra'
     display_name: 'DeepSeek R1 0528'
-    description: 'DeepSeek R1 0528, hosted on Custom OpenAI Compatible'
+    description: 'DeepSeek R1 0528, hosted on DeepInfra'
     max_tokens: 8192
     temperature: 0.7
     default_timeout: 300
 
   deepseek-ai/DeepSeek-V3-0324:
-    provider: 'custom_openai_compatible'
+    provider: 'deepinfra'
     display_name: 'DeepSeek V3 0324'
-    description: 'DeepSeek V3 0324, hosted on Custom OpenAI Compatible'
+    description: 'DeepSeek V3 0324, hosted on DeepInfra'
     max_tokens: 8192
     temperature: 0.7
 
