@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.messages import ToolMessage
 
 from inference_core.agents.middleware.cost_tracking import (
     CostTrackingMiddleware,
@@ -272,15 +273,17 @@ class TestWrapToolCall:
         handler.assert_called_once_with(request)
         assert result is response
 
-    def test_returns_error_dict_on_handler_exception(self, middleware):
-        """When handler raises, an error dict is returned instead of re-raising."""
+    def test_returns_error_tool_message_on_handler_exception(self, middleware):
+        """When handler raises, ToolMessage preserves the error and tool call ID."""
         request = MagicMock()
-        request.tool_call = {"name": "broken_tool"}
+        request.tool_call = {"name": "broken_tool", "id": "tool-call-1"}
         handler = MagicMock(side_effect=RuntimeError("boom"))
 
         result = middleware.wrap_tool_call(request, handler)
 
-        assert result == {"error": "boom"}
+        assert isinstance(result, ToolMessage)
+        assert result.content == "Error: boom"
+        assert result.tool_call_id == "tool-call-1"
 
 
 # ---------------------------------------------------------------------------

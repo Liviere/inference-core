@@ -438,7 +438,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         except Exception as e:
             logger.warning(f"Tool call error ({tool_name}): {e}")
-            return {"error": str(e)}
+            tool_call_id = (
+                request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
+            )
+            return ToolMessage(content=f"Error: {str(e)}", tool_call_id=tool_call_id)
         # Tool timing is not persisted; no context tracking needed here.
 
     async def awrap_tool_call(
@@ -464,7 +467,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         except Exception as e:
             logger.warning(f"Tool call error (async, {tool_name}): {e}")
-            return {"error": str(e)}
+            tool_call_id = (
+                request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
+            )
+            return ToolMessage(content=f"Error: {str(e)}", tool_call_id=tool_call_id)
 
     # -------------------------------------------------------------------------
     # Internal helpers
