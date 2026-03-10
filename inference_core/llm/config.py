@@ -503,12 +503,8 @@ class TaskConfig(BaseModel):
     )
 
 
-class EmbeddingProviderType(str, Enum):
-    """Supported embedding providers for remote mode."""
-
-    OPENAI = "openai"
-    GEMINI = "gemini"
-    OLLAMA = "ollama"
+# Backward compatible alias kept for older imports.
+EmbeddingProviderType = ModelProvider
 
 
 class EmbeddingConfig(BaseModel):
@@ -518,7 +514,7 @@ class EmbeddingConfig(BaseModel):
     Only used when EMBEDDING_BACKEND=remote.
     """
 
-    provider: EmbeddingProviderType
+    provider: ModelProvider
     model: str
     dimensions: Optional[int] = Field(
         default=None,
@@ -533,6 +529,25 @@ class EmbeddingConfig(BaseModel):
         default=None,
         description="Override base URL for custom endpoints (e.g. Ollama, Azure).",
     )
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: ModelProvider) -> ModelProvider:
+        """Reject providers that do not have a remote embeddings integration.
+
+        This keeps the YAML schema aligned with the shared provider enum while
+        still failing fast for providers that only support chat/completions.
+        """
+        supported_providers = {
+            ModelProvider.OPENAI,
+            ModelProvider.GEMINI,
+            ModelProvider.OLLAMA,
+            ModelProvider.DEEPINFRA,
+        }
+        if value not in supported_providers:
+            supported = ", ".join(provider.value for provider in supported_providers)
+            raise ValueError(f"embedding provider must be one of: {supported}")
+        return value
 
 
 class LLMConfig:

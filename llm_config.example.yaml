@@ -482,7 +482,7 @@ agents:
 # is used unless overridden.
 embeddings:
   default:
-    provider: openai                 # openai | gemini | ollama
+    provider: openai                 # openai | gemini | deepinfra | ollama
     model: text-embedding-3-small    # Provider-specific model name
     # dimensions: 1536              # Optional dimension override (OpenAI v3 supports this)
     # api_key_env: OPENAI_API_KEY   # Defaults to provider's api_key_env
@@ -496,6 +496,11 @@ embeddings:
   # gemini:
   #   provider: gemini
   #   model: models/text-embedding-004
+
+  # deepinfra:
+  #   provider: deepinfra
+  #   model: sentence-transformers/all-MiniLM-L6-v2
+  #   api_key_env: DEEPINFRA_API_TOKEN
 
   # local_ollama:
   #   provider: ollama

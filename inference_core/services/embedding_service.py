@@ -4,7 +4,7 @@ Unified interface for generating text embeddings with two backends:
 
 - **local**: Delegates to a dedicated Celery prefork worker running
   SentenceTransformer. The API process never loads the model.
-- **remote**: Uses LangChain embedding classes (OpenAI, Gemini, Ollama)
+- **remote**: Uses LangChain embedding classes (OpenAI, Gemini, DeepInfra, Ollama)
   configured in the ``embeddings:`` section of ``llm_config.yaml``.
 
 The backend is selected by the ``EMBEDDING_BACKEND`` environment variable
@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from inference_core.core.config import Settings, get_settings
+from inference_core.llm.config import ModelProvider
 
 logger = logging.getLogger(__name__)
 
@@ -126,16 +127,24 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
     def _create_langchain_embeddings(
         embed_config: Any, providers: dict[str, Any]
     ) -> Any:
-        """Factory for LangChain Embeddings instances based on provider."""
-        provider = embed_config.provider.value
+        """Build the provider-specific embeddings client from shared config.
+
+        The remote embeddings path mirrors chat model provider resolution so the
+        same provider enum and top-level YAML defaults apply in both places.
+        """
+        provider = RemoteLangChainBackend._coerce_provider(embed_config.provider)
         model = embed_config.model
 
-        if provider == "openai":
+        if provider == ModelProvider.OPENAI:
             from langchain_openai import OpenAIEmbeddings
 
-            provider_cfg = providers.get("openai", {})
-            api_key_env = embed_config.api_key_env or provider_cfg.get(
-                "api_key_env", "OPENAI_API_KEY"
+            provider_cfg = RemoteLangChainBackend._get_provider_config(
+                providers, provider
+            )
+            api_key_env = RemoteLangChainBackend._resolve_api_key_env(
+                embed_config,
+                provider_cfg,
+                default_env="OPENAI_API_KEY",
             )
             kwargs: dict[str, Any] = {
                 "model": model,
@@ -147,28 +156,91 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
                 kwargs["base_url"] = embed_config.base_url
             return OpenAIEmbeddings(**kwargs)
 
-        if provider == "gemini":
+        if provider == ModelProvider.GEMINI:
             from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-            provider_cfg = providers.get("gemini", {})
-            api_key_env = embed_config.api_key_env or provider_cfg.get(
-                "api_key_env", "GOOGLE_API_KEY"
+            provider_cfg = RemoteLangChainBackend._get_provider_config(
+                providers, provider
+            )
+            api_key_env = RemoteLangChainBackend._resolve_api_key_env(
+                embed_config,
+                provider_cfg,
+                default_env="GOOGLE_API_KEY",
             )
             return GoogleGenerativeAIEmbeddings(
                 model=model,
                 google_api_key=os.getenv(api_key_env),
             )
 
-        if provider == "ollama":
+        if provider == ModelProvider.OLLAMA:
             from langchain_ollama import OllamaEmbeddings
 
-            provider_cfg = providers.get("ollama", {})
+            provider_cfg = RemoteLangChainBackend._get_provider_config(
+                providers, provider
+            )
             base_url = embed_config.base_url or provider_cfg.get(
                 "base_url", "http://localhost:11434"
             )
             return OllamaEmbeddings(model=model, base_url=base_url)
 
+        if provider == ModelProvider.DEEPINFRA:
+            from langchain_community.embeddings.deepinfra import DeepInfraEmbeddings
+
+            provider_cfg = RemoteLangChainBackend._get_provider_config(
+                providers, provider
+            )
+            api_key_env = RemoteLangChainBackend._resolve_api_key_env(
+                embed_config,
+                provider_cfg,
+                default_env="DEEPINFRA_API_TOKEN",
+            )
+            return DeepInfraEmbeddings(
+                model_id=model,
+                deepinfra_api_token=os.getenv(api_key_env),
+            )
+
         raise ValueError(f"Unsupported embedding provider: {provider}")
+
+    @staticmethod
+    def _coerce_provider(provider: Any) -> ModelProvider:
+        """Normalize provider values so tests and config use one code path.
+
+        Runtime config should already deliver ``ModelProvider`` values, but
+        coercion here keeps mocks and legacy string-based callers compatible.
+        """
+        if isinstance(provider, ModelProvider):
+            return provider
+        try:
+            return ModelProvider(str(provider))
+        except ValueError as exc:
+            raise ValueError(f"Unsupported embedding provider: {provider}") from exc
+
+    @staticmethod
+    def _get_provider_config(
+        providers: dict[str, Any], provider: ModelProvider
+    ) -> dict[str, Any]:
+        """Read provider defaults without coupling to the raw storage type.
+
+        The YAML loader stores providers as plain dicts today, but centralizing
+        access here makes the embedding factory resilient to future refactors.
+        """
+        provider_cfg = providers.get(provider.value, {})
+        if hasattr(provider_cfg, "model_dump"):
+            return provider_cfg.model_dump()
+        return dict(provider_cfg)
+
+    @staticmethod
+    def _resolve_api_key_env(
+        embed_config: Any,
+        provider_cfg: dict[str, Any],
+        default_env: str,
+    ) -> str:
+        """Resolve credentials the same way chat model configs do.
+
+        Embedding configs can override the env var explicitly, otherwise they
+        inherit the provider-level default from ``providers:`` in YAML.
+        """
+        return embed_config.api_key_env or provider_cfg.get("api_key_env", default_env)
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return self._embeddings.embed_documents(texts)

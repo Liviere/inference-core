@@ -62,7 +62,7 @@ class TestLocalCeleryBackend:
             },
             queue="embeddings",
         )
-        mock_result.get.assert_called_once_with(timeout=60)
+        mock_result.get.assert_called_once_with(timeout=60, disable_sync_subtasks=False)
         assert result == [[0.1, 0.2], [0.3, 0.4]]
 
     def test_get_dimension_probes_and_caches(self):
@@ -122,6 +122,7 @@ class TestRemoteLangChainBackend:
         mock_config.providers = {
             "openai": {"api_key_env": "OPENAI_API_KEY"},
             "gemini": {"api_key_env": "GOOGLE_API_KEY"},
+            "deepinfra": {"api_key_env": "DEEPINFRA_API_TOKEN"},
             "ollama": {"base_url": "http://localhost:11434"},
         }
         return mock_config
@@ -165,7 +166,7 @@ class TestRemoteLangChainBackend:
     @patch("inference_core.llm.config.get_llm_config")
     def test_unsupported_provider_raises(self, mock_get_config):
         embed_config = MagicMock()
-        embed_config.provider.value = "unknown_provider"
+        embed_config.provider = "unknown_provider"
         embed_config.model = "some-model"
         embed_config.api_key_env = None
         embed_config.base_url = None
@@ -179,6 +180,34 @@ class TestRemoteLangChainBackend:
         settings = _mock_settings(embedding_backend="remote")
         with pytest.raises(ValueError, match="Unsupported embedding provider"):
             RemoteLangChainBackend(settings)
+
+    @patch("inference_core.llm.config.get_llm_config")
+    @patch("langchain_community.embeddings.deepinfra.DeepInfraEmbeddings")
+    def test_deepinfra_provider(self, mock_di_cls, mock_get_config):
+        from inference_core.llm.config import EmbeddingConfig, ModelProvider
+
+        embed_config = EmbeddingConfig(
+            provider=ModelProvider.DEEPINFRA,
+            model="sentence-transformers/all-MiniLM-L6-v2",
+        )
+        mock_get_config.return_value = self._make_mock_llm_config(embed_config)
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_documents.return_value = [[0.1] * 384]
+        mock_di_cls.return_value = mock_embeddings
+
+        settings = _mock_settings(embedding_backend="remote")
+
+        with patch.dict("os.environ", {"DEEPINFRA_API_TOKEN": "deepinfra-token"}):
+            backend = RemoteLangChainBackend(settings)
+            result = backend.embed_texts(["hello"])
+
+        assert len(result) == 1
+        assert len(result[0]) == 384
+        mock_di_cls.assert_called_once_with(
+            model_id="sentence-transformers/all-MiniLM-L6-v2",
+            deepinfra_api_token="deepinfra-token",
+        )
 
 
 # ---------------------------------------------------------------------------
