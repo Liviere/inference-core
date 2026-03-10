@@ -811,7 +811,12 @@ class AgentService:
         """
         return self.agent
 
-    def run_agent_steps(self, user_input: str, context=None) -> AgentResponse:
+    def run_agent_steps(
+        self,
+        user_input: str,
+        context=None,
+        on_step: Callable[[str, Any], None] | None = None,
+    ) -> AgentResponse:
         """Execute the agent with the given input and return the response.
 
         This method streams agent execution, collecting steps and results.
@@ -821,6 +826,9 @@ class AgentService:
         Args:
             user_input: The user's input message.
             context: Optional context to pass to the agent.
+            on_step: Optional callback invoked for every streaming chunk.
+                     Receives ``(step_name, data)`` — best-effort, never
+                     breaks agent execution on callback errors.
 
         Returns:
             AgentResponse with result, steps, metadata, and optional cost metrics.
@@ -846,6 +854,12 @@ class AgentService:
         ):
             for step, data in chunk.items():
                 steps.append({"name": step, "data": data})
+
+                if on_step:
+                    try:
+                        on_step(step, data)
+                    except Exception:
+                        pass  # best-effort, never break agent execution
 
                 # Accumulate state updates
                 if isinstance(data, dict):
@@ -909,7 +923,12 @@ class AgentService:
             cost_metrics=cost_metrics,
         )
 
-    async def arun_agent_steps(self, user_input: str, context=None) -> AgentResponse:
+    async def arun_agent_steps(
+        self,
+        user_input: str,
+        context=None,
+        on_step: Callable[[str, Any], None] | None = None,
+    ) -> AgentResponse:
         """Async version of run_agent_steps using astream.
 
         Use this in async contexts (e.g. FastAPI endpoints) to avoid
@@ -933,6 +952,13 @@ class AgentService:
         ):
             for step, data in chunk.items():
                 steps.append({"name": step, "data": data})
+
+                if on_step:
+                    try:
+                        on_step(step, data)
+                    except Exception:
+                        pass  # best-effort, never break agent execution
+
                 if isinstance(data, dict):
                     for key in [
                         "accumulated_input_tokens",
