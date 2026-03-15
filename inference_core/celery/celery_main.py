@@ -130,8 +130,10 @@ def _is_threads_pool(sender) -> bool:
     pool_cls = getattr(sender, "pool_cls", None)
     if pool_cls is None:
         return False
-    # pool_cls can be a class or a string alias
-    name = getattr(pool_cls, "__name__", str(pool_cls)).lower()
+    # pool_cls can be a class (e.g. celery.concurrency.thread.TaskPool)
+    # or a string alias (e.g. "threads").
+    # Use str() to get the full representation which includes the module path.
+    name = str(pool_cls).lower()
     return "thread" in name
 
 

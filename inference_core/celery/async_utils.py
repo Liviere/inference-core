@@ -105,6 +105,10 @@ def run_in_worker_loop(coro: Coroutine[Any, Any, T]) -> T:
 
     loop = get_worker_loop()
     if loop is None or loop.is_closed():  # Fallback
+        logger.debug(
+            "run_in_worker_loop: worker loop unavailable (loop=%s), creating temporary loop",
+            loop,
+        )
         tmp_loop = asyncio.new_event_loop()
         try:
             asyncio.set_event_loop(tmp_loop)

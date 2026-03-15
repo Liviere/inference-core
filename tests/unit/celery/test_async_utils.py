@@ -187,43 +187,50 @@ class TestRunInWorkerLoop:
 
     def test_runs_on_worker_loop(self):
         """Coroutine executes on the worker loop and returns result."""
-        mock_loop = MagicMock()
-        mock_loop.is_closed.return_value = False
-        mock_loop.run_until_complete.return_value = 42
+        worker_loop = asyncio.new_event_loop()
+        try:
+            with patch.object(
+                worker_loop,
+                "run_until_complete",
+                wraps=worker_loop.run_until_complete,
+            ) as run_until_complete:
+                with patch(
+                    "inference_core.celery.celery_main.get_worker_loop",
+                    return_value=worker_loop,
+                    create=True,
+                ):
 
-        with patch(
-            "inference_core.celery.celery_main.get_worker_loop",
-            return_value=mock_loop,
-            create=True,
-        ):
-            async def sample_coro():
-                return 42
+                    async def sample_coro():
+                        return 42
 
-            result = run_in_worker_loop(sample_coro())
+                    result = run_in_worker_loop(sample_coro())
 
-        assert result == 42
-        mock_loop.run_until_complete.assert_called_once()
+            assert result == 42
+            run_until_complete.assert_called_once()
+        finally:
+            worker_loop.close()
 
     def test_sets_and_resets_context_variable(self):
         """Context variable is set during execution and reset after."""
-        mock_loop = MagicMock()
-        mock_loop.is_closed.return_value = False
-        mock_loop.run_until_complete.return_value = "ok"
-
+        worker_loop = asyncio.new_event_loop()
         original_ctx = _current_loop_ctx.get()
 
-        with patch(
-            "inference_core.celery.celery_main.get_worker_loop",
-            return_value=mock_loop,
-            create=True,
-        ):
-            async def check_coro():
-                return "ok"
+        try:
+            with patch(
+                "inference_core.celery.celery_main.get_worker_loop",
+                return_value=worker_loop,
+                create=True,
+            ):
 
-            run_in_worker_loop(check_coro())
+                async def check_coro():
+                    assert _current_loop_ctx.get() is worker_loop
+                    return "ok"
 
-        # After execution, context should be reset
-        assert _current_loop_ctx.get() == original_ctx
+                assert run_in_worker_loop(check_coro()) == "ok"
+
+            assert _current_loop_ctx.get() == original_ctx
+        finally:
+            worker_loop.close()
 
     def test_fallback_to_temporary_loop(self):
         """When worker loop is None, creates temporary loop."""
@@ -232,6 +239,7 @@ class TestRunInWorkerLoop:
             return_value=None,
             create=True,
         ):
+
             async def add():
                 return 1 + 1
 
@@ -249,26 +257,29 @@ class TestRunAsyncSafely:
 
     def test_reuses_context_loop_when_not_running(self):
         """When context loop is set and not running, uses it directly."""
-        mock_loop = MagicMock()
-        mock_loop.is_closed.return_value = False
-        mock_loop.is_running.return_value = False
-        mock_loop.run_until_complete.return_value = "result"
-
-        token = _current_loop_ctx.set(mock_loop)
+        context_loop = asyncio.new_event_loop()
+        token = _current_loop_ctx.set(context_loop)
         try:
-            with patch(
-                "inference_core.celery.async_utils.get_worker_loop_safe",
-                return_value=None,
-            ):
-                async def my_coro():
-                    return "result"
+            with patch.object(
+                context_loop,
+                "run_until_complete",
+                wraps=context_loop.run_until_complete,
+            ) as run_until_complete:
+                with patch(
+                    "inference_core.celery.async_utils.get_worker_loop_safe",
+                    return_value=None,
+                ):
 
-                result = run_async_safely(my_coro())
+                    async def my_coro():
+                        return "result"
+
+                    result = run_async_safely(my_coro())
         finally:
             _current_loop_ctx.reset(token)
+            context_loop.close()
 
         assert result == "result"
-        mock_loop.run_until_complete.assert_called_once()
+        run_until_complete.assert_called_once()
 
     def test_falls_back_to_thread_when_loop_running(self):
         """When loop is running, falls back to thread pool executor."""
@@ -282,6 +293,7 @@ class TestRunAsyncSafely:
                 "inference_core.celery.async_utils.get_worker_loop_safe",
                 return_value=None,
             ):
+
                 async def compute():
                     return 99
 
@@ -299,6 +311,7 @@ class TestRunAsyncSafely:
                 "inference_core.celery.async_utils.get_worker_loop_safe",
                 return_value=None,
             ):
+
                 async def greet():
                     return "hello"
 
@@ -316,6 +329,7 @@ class TestRunAsyncSafely:
                 "inference_core.celery.async_utils.get_worker_loop_safe",
                 return_value=None,
             ):
+
                 async def blow_up():
                     raise ValueError("kaboom")
 
@@ -332,6 +346,7 @@ class TestRunAsyncSafely:
                 "inference_core.celery.async_utils.get_worker_loop_safe",
                 return_value=None,
             ):
+
                 async def quick():
                     return "no timeout"
 

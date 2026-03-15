@@ -101,11 +101,17 @@ def get_engine(database_url: str = None) -> Engine:
         and _engine_loop is not current_loop
     ):
         logger.warning(
-            "Event loop changed (likely due to reload or multi-loop environment). "
-            "Discarding old database engine to prevent 'Task got Future attached to a different loop' error."
+            "Event loop changed (old=%s, new=%s). "
+            "Disposing old database engine to prevent 'Task got Future attached to a different loop' error.",
+            id(_engine_loop),
+            id(current_loop),
         )
-        # Cannot await dispose() here because it's synchronous and the old loop might be gone.
-        # We simply drop the reference. Connections will eventually drop.
+        # Synchronously dispose the underlying engine to release pooled DB connections.
+        # AsyncEngine.sync_engine.dispose() is always safe to call from any thread.
+        try:
+            _engine.sync_engine.dispose()
+        except Exception as exc:
+            logger.warning("Failed to dispose old database engine: %s", exc)
         _engine = None
         _async_session_maker = None
 
