@@ -52,6 +52,7 @@ from typing_extensions import NotRequired
 
 from inference_core.llm.config import PricingConfig, UsageLoggingConfig, get_llm_config
 from inference_core.llm.usage_logging import PricingCalculator, UsageSession
+from inference_core.services._cancel import AgentCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +94,25 @@ class CostTrackingState(AgentState):
 
 @dataclass
 class _MiddlewareContext:
-    """Internal context for tracking data between middleware hooks."""
+    """Internal context for tracking data between middleware hooks.
+
+    The ``persisted_*`` fields are populated by ``_persist_from_response()``
+    (called inside ``wrap_model_call``) so that ``after_model`` can update
+    the graph state without re-persisting to the database.  This is critical
+    because ``after_model`` runs as a **separate LangGraph node** and may be
+    skipped when the agent is cancelled between the model node and the
+    after_model node.
+    """
 
     model_call_start_time: Optional[float] = None
+
+    # Populated by _persist_from_response() inside wrap_model_call
+    persisted_log_id: Optional[str] = None
+    persisted_cost_usd: Optional[float] = None
+    persisted_model_name: Optional[str] = None
+    persisted_fragment: Optional[Dict[str, Any]] = None
+    persisted_extra_tokens: Optional[Dict[str, int]] = None
+    persisted_is_estimated: bool = False
 
 
 class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
@@ -165,6 +182,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         self._model_name = model_name
         self.instance_id = instance_id
         self.instance_name = instance_name
+        self.cancel_check: Callable[[], bool] | None = None
 
         # Per-invocation context (reset on each before_agent)
         self._ctx: Optional[_MiddlewareContext] = None
@@ -223,12 +241,21 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     def after_model(
         self, state: CostTrackingState, runtime: Runtime
     ) -> Dict[str, Any] | None:
-        """Capture usage metadata from the model response.
+        """Propagate usage data from the model response into graph state.
 
-        This hook extracts token usage from the last message in state
-        (which should be the AIMessage from the model) and immediately
-        persists a per-step UsageSession so each model call is logged
-        separately (important when models differ per step).
+        The actual DB persistence (``LLMRequestLog``) now happens inside
+        ``wrap_model_call`` via ``_persist_from_response()``, which runs in
+        the **same LangGraph node** as the model call itself.  This
+        guarantees that the log entry is written even when the agent is
+        cancelled between the model node and this ``after_model`` node.
+
+        This hook reads the pre-persisted data from ``_ctx`` and only
+        accumulates token counters + exposes ``last_request_log_id`` etc.
+        to the shared state (consumed by downstream middleware such as
+        ``CreditBillingMiddleware``).
+
+        If ``_ctx`` has no persisted data (edge-case safety net), the hook
+        falls back to the legacy path and persists from ``state.messages``.
 
         Args:
             state: Current agent state with messages
@@ -247,7 +274,34 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         updates["model_call_count"] = current_count + 1
 
         try:
-            # Get the last message (should be AIMessage from model)
+            # ----- Fast path: data already persisted by wrap_model_call -----
+            if self._ctx.persisted_log_id is not None:
+                fragment = self._ctx.persisted_fragment or {}
+                extra_tokens = self._ctx.persisted_extra_tokens or {}
+
+                if fragment:
+                    updates["accumulated_input_tokens"] = state.get(
+                        "accumulated_input_tokens", 0
+                    ) + fragment.get("input_tokens", 0)
+                    updates["accumulated_output_tokens"] = state.get(
+                        "accumulated_output_tokens", 0
+                    ) + fragment.get("output_tokens", 0)
+                    updates["accumulated_total_tokens"] = state.get(
+                        "accumulated_total_tokens", 0
+                    ) + fragment.get("total_tokens", 0)
+                    updates["accumulated_extra_tokens"] = self._merge_extra_tokens(
+                        state.get("accumulated_extra_tokens", {}), extra_tokens
+                    )
+
+                updates["last_request_log_id"] = self._ctx.persisted_log_id
+                if self._ctx.persisted_cost_usd is not None:
+                    updates["last_request_cost_usd"] = self._ctx.persisted_cost_usd
+                if self._ctx.persisted_model_name:
+                    updates["last_request_model_name"] = self._ctx.persisted_model_name
+
+                return updates if updates else None
+
+            # ----- Fallback: persist from state (legacy / safety net) -----
             messages = state.get("messages", [])
             if not messages:
                 return updates
@@ -296,7 +350,6 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     state.get("accumulated_extra_tokens", {}), extra_tokens
                 )
 
-                # Persist this single step immediately (per-model granularity)
                 provider = self._provider or self._detect_provider(model_name)
                 pricing_config = self._get_pricing_config(model_name)
 
@@ -327,7 +380,6 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     details={"estimated": True} if is_estimated else None,
                 )
 
-                # Expose last request log data to state for downstream middleware
                 if log_id and pricing_config:
                     cost_result = PricingCalculator.compute_cost(
                         fragment, pricing_config
@@ -344,6 +396,13 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         finally:
             if self._ctx:
                 self._ctx.model_call_start_time = None
+                # Reset persisted data so next model call starts clean
+                self._ctx.persisted_log_id = None
+                self._ctx.persisted_cost_usd = None
+                self._ctx.persisted_model_name = None
+                self._ctx.persisted_fragment = None
+                self._ctx.persisted_extra_tokens = None
+                self._ctx.persisted_is_estimated = False
 
         return updates if updates else None
 
@@ -377,7 +436,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         """Wrap model calls to measure latency.
 
         This hook captures the call start time so after_model can compute
-        per-step latency when persisting usage.
+        per-step latency when persisting usage.  Also checks the optional
+        ``cancel_check`` before delegating to the LLM.
 
         Args:
             request: The model request
@@ -385,11 +445,29 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         Returns:
             The model response
+
+        Raises:
+            AgentCancelled: If the cancel_check callback returns ``True``.
         """
+        if self.cancel_check:
+            try:
+                if self.cancel_check():
+                    raise AgentCancelled("Agent execution cancelled by user")
+            except AgentCancelled:
+                raise
+            except Exception:
+                pass
+
         if self._ctx:
             self._ctx.model_call_start_time = time.monotonic()
 
         response = handler(request)
+
+        # Persist LLMRequestLog immediately — inside the same LangGraph node
+        # as the model call.  This guarantees the log entry exists even when
+        # after_model is skipped due to AgentCancelled between graph nodes.
+        self._persist_from_response(response, request)
+
         return response
 
     async def awrap_model_call(
@@ -398,9 +476,24 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         handler: Callable[[ModelRequest], Any],
     ) -> ModelResponse:
         """Async version of wrap_model_call for use with astream."""
+        if self.cancel_check:
+            try:
+                if self.cancel_check():
+                    raise AgentCancelled("Agent execution cancelled by user")
+            except AgentCancelled:
+                raise
+            except Exception:
+                pass
+
         if self._ctx:
             self._ctx.model_call_start_time = time.monotonic()
-        return await handler(request)
+
+        response = await handler(request)
+
+        # Persist LLMRequestLog immediately (see wrap_model_call docstring).
+        self._persist_from_response(response, request)
+
+        return response
 
     def wrap_tool_call(
         self,
@@ -410,7 +503,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         """Wrap tool calls for lightweight logging.
 
         Tool invocations are not persisted to usage logs here, but we keep
-        debug visibility around tool execution boundaries.
+        debug visibility around tool execution boundaries.  Also checks
+        the optional ``cancel_check`` before executing the tool.
 
         Args:
             request: The tool call request
@@ -418,7 +512,19 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         Returns:
             The tool response (ToolMessage or Command)
+
+        Raises:
+            AgentCancelled: If the cancel_check callback returns ``True``.
         """
+        if self.cancel_check:
+            try:
+                if self.cancel_check():
+                    raise AgentCancelled("Agent execution cancelled by user")
+            except AgentCancelled:
+                raise
+            except Exception:
+                pass
+
         tool_name = (
             request.tool_call.get("name", "<unknown>")
             if hasattr(request, "tool_call")
@@ -475,6 +581,107 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+
+    def _persist_from_response(
+        self, response: ModelResponse, request: ModelRequest
+    ) -> None:
+        """Extract usage from a ModelResponse and persist an LLMRequestLog.
+
+        Called from ``wrap_model_call`` / ``awrap_model_call`` so the DB
+        write happens inside the same LangGraph node as the model call.
+        Results are stored in ``self._ctx.persisted_*`` for ``after_model``
+        to propagate into graph state without a second DB write.
+
+        This method is intentionally non-fatal: any exception is logged
+        and swallowed so the agent flow is never interrupted by billing.
+        """
+        if not self._ctx:
+            return
+
+        try:
+            if not response.result:
+                return
+
+            ai_message = response.result[-1]
+            usage_metadata = getattr(ai_message, "usage_metadata", None)
+            response_metadata = getattr(ai_message, "response_metadata", None) or {}
+            model_name = response_metadata.get(
+                "model_name", self._model_name or "unknown"
+            )
+
+            if usage_metadata and isinstance(usage_metadata, dict):
+                fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
+                is_estimated = False
+            else:
+                # Build full message list for estimation (request input + response output)
+                all_messages: list = []
+                if request.system_message:
+                    all_messages.append(request.system_message)
+                all_messages.extend(request.messages)
+                all_messages.extend(response.result)
+                fragment = self._estimate_token_usage(all_messages)
+                extra_tokens = {}
+                is_estimated = True
+                if fragment:
+                    logger.info(
+                        "usage_metadata unavailable for model=%s; "
+                        "falling back to estimated tokens (wrap_model_call): %s",
+                        model_name,
+                        fragment,
+                    )
+
+            if not fragment:
+                return
+
+            provider = self._provider or self._detect_provider(model_name)
+            pricing_config = self._get_pricing_config(model_name)
+
+            session = UsageSession(
+                task_type=self.task_type,
+                request_mode=self.request_mode,
+                model_name=model_name,
+                provider=provider,
+                pricing_config=pricing_config,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                request_id=self.request_id,
+                logging_config=self.logging_config,
+                instance_id=self.instance_id,
+                instance_name=self.instance_name,
+            )
+
+            if self._ctx.model_call_start_time:
+                session.start_time = self._ctx.model_call_start_time
+
+            log_id = session.finalize_sync(
+                success=True,
+                error=None,
+                final_usage=fragment,
+                streamed=False,
+                partial=False,
+                details={"estimated": True} if is_estimated else None,
+            )
+
+            if log_id:
+                self._ctx.persisted_log_id = str(log_id)
+                self._ctx.persisted_fragment = fragment
+                self._ctx.persisted_extra_tokens = extra_tokens
+                self._ctx.persisted_is_estimated = is_estimated
+                self._ctx.persisted_model_name = model_name
+
+                if pricing_config:
+                    cost_result = PricingCalculator.compute_cost(
+                        fragment, pricing_config
+                    )
+                    self._ctx.persisted_cost_usd = cost_result.get(
+                        "cost_total_usd", 0.0
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to persist usage from wrap_model_call: %s",
+                e,
+                exc_info=True,
+            )
 
     @staticmethod
     def _detect_provider(model_name: str) -> str:

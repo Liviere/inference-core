@@ -36,6 +36,7 @@ from inference_core.database.sql.models.user_agent_instance import UserAgentInst
 from inference_core.llm.config import LLMConfig, get_llm_config
 from inference_core.llm.models import LLMModelFactory, get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
+from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agent_memory_service import AgentMemoryStoreService
 
 
@@ -198,6 +199,16 @@ class AgentService:
         if self.instance_context:
             return self.instance_context.instance_name
         return self.agent_name
+
+    def set_cancel_check(self, cancel_check: Callable[[], bool] | None) -> None:
+        """Propagate a cancellation callback to CostTrackingMiddleware.
+
+        When set, the middleware will check this callback before each model
+        and tool call, raising ``AgentCancelled`` if it returns ``True``.
+        """
+        for mw in self._middleware:
+            if isinstance(mw, CostTrackingMiddleware):
+                mw.cancel_check = cancel_check
 
     async def create_agent(
         self, system_prompt: Optional[str] = None, **kwargs
@@ -816,6 +827,7 @@ class AgentService:
         user_input: str,
         context=None,
         on_step: Callable[[str, Any], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AgentResponse:
         """Execute the agent with the given input and return the response.
 
@@ -829,9 +841,15 @@ class AgentService:
             on_step: Optional callback invoked for every streaming chunk.
                      Receives ``(step_name, data)`` — best-effort, never
                      breaks agent execution on callback errors.
+            cancel_check: Optional callable that returns ``True`` when the
+                          execution should be cancelled.  Checked after every
+                          streaming chunk.
 
         Returns:
             AgentResponse with result, steps, metadata, and optional cost metrics.
+
+        Raises:
+            AgentCancelled: If *cancel_check* returns ``True``.
         """
         steps = []
         start_time = datetime.now(UTC)
@@ -882,6 +900,16 @@ class AgentService:
                 elif step == "__interrupt__":
                     last_agent_result = {"__interrupt__": data}
 
+            # Check cancellation flag after processing each chunk
+            if cancel_check:
+                try:
+                    if cancel_check():
+                        raise AgentCancelled("Agent execution cancelled by user")
+                except AgentCancelled:
+                    raise
+                except Exception:
+                    pass  # best-effort, never break on check errors
+
         # Use the last result that contained messages, or fallback to last step
         if last_agent_result:
             result = last_agent_result
@@ -928,6 +956,7 @@ class AgentService:
         user_input: str,
         context=None,
         on_step: Callable[[str, Any], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AgentResponse:
         """Async version of run_agent_steps using astream.
 
@@ -975,6 +1004,16 @@ class AgentService:
                         last_agent_result = data
                 elif step == "__interrupt__":
                     last_agent_result = {"__interrupt__": data}
+
+            # Check cancellation flag after processing each chunk
+            if cancel_check:
+                try:
+                    if cancel_check():
+                        raise AgentCancelled("Agent execution cancelled by user")
+                except AgentCancelled:
+                    raise
+                except Exception:
+                    pass  # best-effort, never break on check errors
 
         if last_agent_result:
             result = last_agent_result

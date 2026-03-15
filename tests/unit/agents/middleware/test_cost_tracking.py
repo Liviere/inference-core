@@ -18,6 +18,7 @@ from inference_core.agents.middleware.cost_tracking import (
     _MiddlewareContext,
     create_cost_tracking_middleware,
 )
+from inference_core.services._cancel import AgentCancelled
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -557,3 +558,270 @@ class TestCreateCostTrackingMiddleware:
 
         assert mw.logging_config is not None  # UsageLoggingConfig() default
         assert mw.user_id is None
+
+
+# ---------------------------------------------------------------------------
+# _persist_from_response  (cancel-safe DB persistence in wrap_model_call)
+# ---------------------------------------------------------------------------
+
+
+def _make_ai_message(
+    input_tokens=10, output_tokens=5, total_tokens=15, model_name="gpt-4o"
+):
+    """Helper: create a MagicMock that looks like an AIMessage with usage."""
+    msg = MagicMock()
+    msg.usage_metadata = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+    msg.response_metadata = {"model_name": model_name}
+    msg.content = "Hello"
+    return msg
+
+
+def _make_model_response(ai_message):
+    """Helper: create a MagicMock ModelResponse wrapping an AIMessage."""
+    resp = MagicMock()
+    resp.result = [ai_message]
+    return resp
+
+
+def _make_model_request():
+    """Helper: create a MagicMock ModelRequest."""
+    req = MagicMock()
+    req.messages = []
+    req.system_message = None
+    return req
+
+
+class TestPersistFromResponse:
+    """Verify _persist_from_response extracts usage and writes LLMRequestLog."""
+
+    def test_persists_log_and_populates_ctx(self, middleware):
+        """Successful persistence stores log_id, cost, model_name in _ctx."""
+        middleware._ctx = _MiddlewareContext()
+        middleware._ctx.model_call_start_time = time.monotonic()
+        ai_msg = _make_ai_message()
+        response = _make_model_response(ai_msg)
+        request = _make_model_request()
+
+        mock_pricing = MagicMock()
+        mock_cost = {"cost_total_usd": 0.0042}
+        fake_log_id = uuid.uuid4()
+
+        with (
+            patch(
+                "inference_core.agents.middleware.cost_tracking.UsageSession"
+            ) as MockSession,
+            patch(
+                "inference_core.agents.middleware.cost_tracking.PricingCalculator"
+            ) as MockCalc,
+        ):
+            MockSession.return_value.finalize_sync.return_value = fake_log_id
+            MockCalc.compute_cost.return_value = mock_cost
+            middleware._get_pricing_config = MagicMock(return_value=mock_pricing)
+
+            middleware._persist_from_response(response, request)
+
+        assert middleware._ctx.persisted_log_id == str(fake_log_id)
+        assert middleware._ctx.persisted_cost_usd == 0.0042
+        assert middleware._ctx.persisted_model_name == "gpt-4o"
+        assert middleware._ctx.persisted_fragment["input_tokens"] == 10
+        assert middleware._ctx.persisted_fragment["output_tokens"] == 5
+
+    def test_no_ctx_returns_silently(self, middleware):
+        """If _ctx is None, method returns without error."""
+        middleware._ctx = None
+        middleware._persist_from_response(MagicMock(), MagicMock())
+        # No exception = pass
+
+    def test_empty_result_returns_silently(self, middleware):
+        """If response.result is empty, method returns without persisting."""
+        middleware._ctx = _MiddlewareContext()
+        response = MagicMock()
+        response.result = []
+
+        middleware._persist_from_response(response, MagicMock())
+
+        assert middleware._ctx.persisted_log_id is None
+
+    def test_finalize_failure_is_non_fatal(self, middleware):
+        """If finalize_sync raises, the exception is swallowed."""
+        middleware._ctx = _MiddlewareContext()
+        ai_msg = _make_ai_message()
+        response = _make_model_response(ai_msg)
+        request = _make_model_request()
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            MockSession.return_value.finalize_sync.side_effect = RuntimeError("DB down")
+
+            middleware._persist_from_response(response, request)
+
+        # No exception, persisted_log_id stays None
+        assert middleware._ctx.persisted_log_id is None
+
+    def test_no_usage_metadata_falls_back_to_estimation(self, middleware):
+        """When usage_metadata is None, estimation is used."""
+        middleware._ctx = _MiddlewareContext()
+        ai_msg = MagicMock()
+        ai_msg.usage_metadata = None
+        ai_msg.response_metadata = {"model_name": "custom-model"}
+        ai_msg.content = "short"
+
+        response = MagicMock()
+        response.result = [ai_msg]
+        request = _make_model_request()
+
+        fake_log_id = uuid.uuid4()
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            MockSession.return_value.finalize_sync.return_value = fake_log_id
+            middleware._get_pricing_config = MagicMock(return_value=None)
+
+            middleware._persist_from_response(response, request)
+
+        assert middleware._ctx.persisted_log_id == str(fake_log_id)
+        assert middleware._ctx.persisted_is_estimated is True
+
+
+# ---------------------------------------------------------------------------
+# wrap_model_call + _persist_from_response integration
+# ---------------------------------------------------------------------------
+
+
+class TestWrapModelCallPersistence:
+    """Verify wrap_model_call calls _persist_from_response after handler."""
+
+    def test_persist_called_after_handler(self, middleware):
+        """_persist_from_response is invoked after handler returns."""
+        middleware._ctx = _MiddlewareContext()
+        request = _make_model_request()
+        ai_msg = _make_ai_message()
+        response = _make_model_response(ai_msg)
+        handler = MagicMock(return_value=response)
+
+        with patch.object(middleware, "_persist_from_response") as mock_persist:
+            result = middleware.wrap_model_call(request, handler)
+
+        handler.assert_called_once_with(request)
+        mock_persist.assert_called_once_with(response, request)
+        assert result is response
+
+    def test_persist_not_called_when_cancelled_before_model(self, middleware):
+        """If cancel_check fires before handler, _persist is never called."""
+        middleware._ctx = _MiddlewareContext()
+        middleware.cancel_check = MagicMock(return_value=True)
+        handler = MagicMock()
+
+        with patch.object(middleware, "_persist_from_response") as mock_persist:
+            with pytest.raises(AgentCancelled):
+                middleware.wrap_model_call(MagicMock(), handler)
+
+        handler.assert_not_called()
+        mock_persist.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# after_model fast-path (pre-persisted data from _ctx)
+# ---------------------------------------------------------------------------
+
+
+class TestAfterModelFastPath:
+    """Verify after_model reads pre-persisted data and skips DB write."""
+
+    def test_uses_ctx_persisted_data(self, middleware):
+        """When _ctx has persisted_log_id, after_model uses it directly."""
+        middleware._ctx = _MiddlewareContext()
+        middleware._ctx.persisted_log_id = "log-abc-123"
+        middleware._ctx.persisted_cost_usd = 0.005
+        middleware._ctx.persisted_model_name = "gpt-4o"
+        middleware._ctx.persisted_fragment = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        }
+        middleware._ctx.persisted_extra_tokens = {}
+
+        state = CostTrackingState(
+            messages=[MagicMock()],
+            model_call_count=1,
+            accumulated_input_tokens=200,
+            accumulated_output_tokens=100,
+            accumulated_total_tokens=300,
+            accumulated_extra_tokens={},
+        )
+
+        # UsageSession should NOT be called (no DB write)
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            updates = middleware.after_model(state, MagicMock())
+
+        MockSession.assert_not_called()
+        assert updates["last_request_log_id"] == "log-abc-123"
+        assert updates["last_request_cost_usd"] == 0.005
+        assert updates["last_request_model_name"] == "gpt-4o"
+        assert updates["accumulated_input_tokens"] == 300
+        assert updates["accumulated_output_tokens"] == 150
+        assert updates["accumulated_total_tokens"] == 450
+        assert updates["model_call_count"] == 2
+
+    def test_resets_persisted_data_after_use(self, middleware):
+        """After fast-path, persisted_* fields are reset for next model call."""
+        middleware._ctx = _MiddlewareContext()
+        middleware._ctx.persisted_log_id = "log-xyz"
+        middleware._ctx.persisted_cost_usd = 0.001
+        middleware._ctx.persisted_model_name = "gpt-4o"
+        middleware._ctx.persisted_fragment = {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "total_tokens": 2,
+        }
+        middleware._ctx.persisted_extra_tokens = {}
+
+        state = CostTrackingState(
+            messages=[MagicMock()],
+            model_call_count=0,
+            accumulated_input_tokens=0,
+            accumulated_output_tokens=0,
+            accumulated_total_tokens=0,
+            accumulated_extra_tokens={},
+        )
+
+        middleware.after_model(state, MagicMock())
+
+        assert middleware._ctx.persisted_log_id is None
+        assert middleware._ctx.persisted_cost_usd is None
+        assert middleware._ctx.persisted_model_name is None
+        assert middleware._ctx.persisted_fragment is None
+
+    def test_fallback_to_legacy_when_no_persisted(self, middleware):
+        """When _ctx has no persisted data, after_model falls back to DB write."""
+        middleware._ctx = _MiddlewareContext()
+        # No persisted_* set → fallback path
+
+        ai_msg = _make_ai_message()
+        state = CostTrackingState(
+            messages=[ai_msg],
+            model_call_count=0,
+            accumulated_input_tokens=0,
+            accumulated_output_tokens=0,
+            accumulated_total_tokens=0,
+            accumulated_extra_tokens={},
+        )
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            MockSession.return_value = mock_instance
+
+            middleware.after_model(state, MagicMock())
+
+        MockSession.assert_called_once()
+        mock_instance.finalize_sync.assert_called_once()
