@@ -71,6 +71,19 @@ optional `cancel_check` callback. The callback is evaluated after streaming
 chunks and before model or tool calls. When it returns `True`, the service
 raises `AgentCancelled` and stops the run.
 
+Both methods also accept `graceful_cancel=True` by default. In this mode the
+service injects a callback that raises `GraphInterrupt` from inside the active
+LLM stream on the next token. This changes cancellation semantics in two useful
+ways:
+
+- the provider HTTP stream is closed immediately, so no extra output tokens are billed after cancellation
+- the LangGraph parent run completes as a clean interrupt, so LangSmith shows the graph-level trace as success instead of failure
+
+After the interrupt, the service drains the small number of remaining internal
+LangGraph bookkeeping events before returning control. Set
+`graceful_cancel=False` only if you prefer an immediate hard close and accept a
+failed LangSmith trace for that run.
+
 ```python
 from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agents_service import AgentService
@@ -82,6 +95,7 @@ try:
   response = await service.arun_agent_steps(
     "Summarize the latest release notes",
     cancel_check=lambda: should_stop,
+    graceful_cancel=True,
   )
 except AgentCancelled:
   # Partial usage logs for completed model calls are already persisted.
@@ -104,6 +118,8 @@ is the streamed fragment and `meta` contains:
 
 This makes it possible to stream normal answer tokens, reasoning blocks, and
 partial tool-call arguments without losing the existing step/update stream.
+Tokens emitted by middleware nodes are filtered out, so UI integrations only
+receive the main agent/model output.
 
 ```python
 from inference_core.services.agents_service import AgentService

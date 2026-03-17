@@ -201,13 +201,15 @@ class AgentService:
         return self.agent_name
 
     def set_cancel_check(self, cancel_check: Callable[[], bool] | None) -> None:
-        """Propagate a cancellation callback to CostTrackingMiddleware.
+        """Propagate a cancellation callback to middleware.
 
         When set, the middleware will check this callback before each model
         and tool call, raising ``AgentCancelled`` if it returns ``True``.
         """
         for mw in self._middleware:
             if isinstance(mw, CostTrackingMiddleware):
+                mw.cancel_check = cancel_check
+            elif hasattr(mw, "cancel_check"):
                 mw.cancel_check = cancel_check
 
     async def create_agent(
@@ -846,6 +848,12 @@ class AgentService:
             return
 
         node = metadata.get("langgraph_node", "")
+
+        # Skip tokens emitted by middleware nodes (e.g.
+        # PromptInjectionGuardMiddleware, CostTrackingMiddleware) — only
+        # the main agent / model tokens should reach the UI.
+        if "Middleware" in node:
+            return
         agent_name = metadata.get("lc_agent_name")
 
         base_meta: dict[str, Any] = {"node": node}
@@ -878,6 +886,7 @@ class AgentService:
         on_step: Callable[[str, Any], None] | None = None,
         on_token: Callable[[str, dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        graceful_cancel: bool = True,
     ) -> AgentResponse:
         """Execute the agent with the given input and return the response.
 
@@ -903,6 +912,15 @@ class AgentService:
             cancel_check: Optional callable that returns ``True`` when the
                           execution should be cancelled.  Checked after every
                           streaming chunk.
+            graceful_cancel: When True and *cancel_check* fires, a
+                ``GraphInterrupt`` is raised inside the LLM via a callback.
+                This stops token generation *immediately* (HTTP connection
+                closed, no further billing) and LangGraph treats the
+                interrupt as a clean pause — LangSmith graph-level trace
+                shows Success.  A brief blocking drain consumes the few
+                remaining internal events.
+                Set to False for instant cancellation via ``.close()`` at
+                the cost of a failed LangSmith trace.
 
         Returns:
             AgentResponse with result, steps, metadata, and optional cost metrics.
@@ -923,85 +941,124 @@ class AgentService:
         accumulated_state: dict[str, Any] = {}
         last_agent_result: dict[str, Any] = {}
 
+        from inference_core.services.stream_utils import (
+            StreamCancelCallback,
+            SyncInterruptibleStream,
+        )
+
         # When on_token is provided, stream both updates and messages so
         # that LLM tokens are emitted alongside the normal state updates.
         use_token_streaming = on_token is not None
         stream_mode: Any = ["updates", "messages"] if use_token_streaming else "updates"
 
-        for chunk in self.agent.stream(
+        # Build config; inject StreamCancelCallback so we can raise
+        # GraphInterrupt inside the LLM to stop token generation.
+        cancel_cb: StreamCancelCallback | None = None
+        stream_config: dict[str, Any] = {"configurable": configurable}
+        if graceful_cancel:
+            cancel_cb = StreamCancelCallback()
+            stream_config["callbacks"] = [cancel_cb]
+
+        raw_stream = self.agent.stream(
             {"messages": messages},
-            {"configurable": configurable},
+            stream_config,
             stream_mode=stream_mode,
             context=context,
-        ):
-            # ------ Multi-mode (tuples) vs single-mode (dicts) ------
-            if use_token_streaming:
-                # chunk is a tuple: (mode_name, payload)
-                mode, payload = chunk
+        )
 
-                if mode == "messages":
-                    # payload = (AIMessageChunk, metadata_dict)
-                    token, meta = payload
-                    try:
-                        self._process_message_chunk(token, meta, on_token)
-                    except Exception:
-                        pass  # best-effort
+        # Wrap in SyncInterruptibleStream for clean shutdown.
+        # When the cancel callback fires GraphInterrupt, the LLM stops;
+        # remaining cheap internal LangGraph events are drained blocking.
+        if graceful_cancel:
+            stream: Any = SyncInterruptibleStream(raw_stream, cancel_callback=cancel_cb)
+        else:
+            stream = raw_stream
 
-                    # Check cancellation after each token for fast interrupts
-                    if cancel_check:
+        try:
+            for chunk in stream:
+                # ------ Multi-mode (tuples) vs single-mode (dicts) ------
+                if use_token_streaming:
+                    # chunk is a tuple: (mode_name, payload)
+                    mode, payload = chunk
+
+                    if mode == "messages":
+                        # payload = (AIMessageChunk, metadata_dict)
+                        token, meta = payload
                         try:
-                            if cancel_check():
-                                raise AgentCancelled(
-                                    "Agent execution cancelled by user"
-                                )
-                        except AgentCancelled:
-                            raise
+                            self._process_message_chunk(token, meta, on_token)
                         except Exception:
-                            pass
-                    continue
+                            pass  # best-effort
 
-                # mode == "updates" — fall through to existing logic
-                chunk = payload
+                        # Check cancellation after each token for fast interrupts
+                        if cancel_check:
+                            try:
+                                if cancel_check():
+                                    raise AgentCancelled(
+                                        "Agent execution cancelled by user"
+                                    )
+                            except AgentCancelled:
+                                raise
+                            except Exception:
+                                pass
+                        continue
 
-            for step, data in chunk.items():
-                steps.append({"name": step, "data": data})
+                    # mode == "updates" — fall through to existing logic
+                    chunk = payload
 
-                if on_step:
+                for step, data in chunk.items():
+                    steps.append({"name": step, "data": data})
+
+                    if on_step:
+                        try:
+                            on_step(step, data)
+                        except Exception:
+                            pass  # best-effort, never break agent execution
+
+                    # Accumulate state updates
+                    if isinstance(data, dict):
+                        # Track cost-related fields from middleware
+                        for key in [
+                            "accumulated_input_tokens",
+                            "accumulated_output_tokens",
+                            "accumulated_total_tokens",
+                            "accumulated_extra_tokens",
+                            "model_call_count",
+                            "tool_call_count",
+                            "usage_session_id",
+                        ]:
+                            if key in data:
+                                accumulated_state[key] = data[key]
+
+                        # Track agent result (messages, etc.) - skip middleware-only updates
+                        if "messages" in data:
+                            last_agent_result = data
+                    elif step == "__interrupt__":
+                        last_agent_result = {"__interrupt__": data}
+
+                # Check cancellation flag after processing each chunk
+                if cancel_check:
                     try:
-                        on_step(step, data)
+                        if cancel_check():
+                            raise AgentCancelled("Agent execution cancelled by user")
+                    except AgentCancelled:
+                        raise
                     except Exception:
-                        pass  # best-effort, never break agent execution
-
-                # Accumulate state updates
-                if isinstance(data, dict):
-                    # Track cost-related fields from middleware
-                    for key in [
-                        "accumulated_input_tokens",
-                        "accumulated_output_tokens",
-                        "accumulated_total_tokens",
-                        "accumulated_extra_tokens",
-                        "model_call_count",
-                        "tool_call_count",
-                        "usage_session_id",
-                    ]:
-                        if key in data:
-                            accumulated_state[key] = data[key]
-
-                    # Track agent result (messages, etc.) - skip middleware-only updates
-                    if "messages" in data:
-                        last_agent_result = data
-                elif step == "__interrupt__":
-                    last_agent_result = {"__interrupt__": data}
-
-            # Check cancellation flag after processing each chunk
-            if cancel_check:
+                        pass  # best-effort, never break on check errors
+        except AgentCancelled:
+            # Trigger GraphInterrupt in the LLM (stops token generation)
+            # and drain remaining internal events for a clean LangSmith trace.
+            if graceful_cancel and isinstance(stream, SyncInterruptibleStream):
+                stream.close()
+            raise
+        finally:
+            # For non-cancel exits (normal completion or unexpected errors)
+            # close the raw generator to free resources.  If already drained
+            # by the except block, .close() on an exhausted generator is a no-op.
+            if hasattr(raw_stream, "close"):
                 try:
-                    if cancel_check():
-                        raise AgentCancelled("Agent execution cancelled by user")
-                except AgentCancelled:
-                    raise
+                    raw_stream.close()
                 except Exception:
-                    pass  # best-effort, never break on check errors
+                    pass
 
         # Use the last result that contained messages, or fallback to last step
         if last_agent_result:
@@ -1051,14 +1108,31 @@ class AgentService:
         on_step: Callable[[str, Any], None] | None = None,
         on_token: Callable[[str, dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        graceful_cancel: bool = True,
     ) -> AgentResponse:
         """Async version of run_agent_steps using astream.
 
         Use this in async contexts (e.g. FastAPI endpoints) to avoid
         asyncio event-loop conflicts.
 
+        Args:
+            graceful_cancel: When True and *cancel_check* fires, a
+                ``GraphInterrupt`` is raised inside the LLM via a callback.
+                This stops token generation *immediately* (HTTP connection
+                closed, no further billing) and LangGraph treats the
+                interrupt as a clean pause — LangSmith graph-level trace
+                shows Success.  A brief background drain consumes the few
+                remaining internal events.
+                Set to False for instant cancellation via ``aclose()`` at
+                the cost of a failed LangSmith trace.
+
         See :meth:`run_agent_steps` for a full description of *on_token*.
         """
+        from inference_core.services.stream_utils import (
+            InterruptibleStream,
+            StreamCancelCallback,
+        )
+
         steps = []
         start_time = datetime.now(UTC)
         messages = [HumanMessage(content=user_input)]
@@ -1072,72 +1146,98 @@ class AgentService:
         use_token_streaming = on_token is not None
         stream_mode: Any = ["updates", "messages"] if use_token_streaming else "updates"
 
-        async for chunk in self.agent.astream(
+        # Build config; inject StreamCancelCallback so we can raise
+        # GraphInterrupt inside the LLM to stop token generation.
+        cancel_cb: StreamCancelCallback | None = None
+        stream_config: dict[str, Any] = {"configurable": configurable}
+        if graceful_cancel:
+            cancel_cb = StreamCancelCallback()
+            stream_config["callbacks"] = [cancel_cb]
+
+        raw_stream = self.agent.astream(
             {"messages": messages},
-            {"configurable": configurable},
+            stream_config,
             stream_mode=stream_mode,
             context=context,
-        ):
-            # ------ Multi-mode (tuples) vs single-mode (dicts) ------
-            if use_token_streaming:
-                mode, payload = chunk
+        )
 
-                if mode == "messages":
-                    token, meta = payload
-                    try:
-                        self._process_message_chunk(token, meta, on_token)
-                    except Exception:
-                        pass
+        # Wrap in InterruptibleStream for clean shutdown.  When the cancel
+        # callback fires GraphInterrupt, the LLM stops; remaining cheap
+        # internal LangGraph events are drained in the background.
+        if graceful_cancel:
+            stream = InterruptibleStream(raw_stream, cancel_callback=cancel_cb)
+        else:
+            stream = raw_stream
 
-                    if cancel_check:
+        try:
+            async for chunk in stream:
+                # ------ Multi-mode (tuples) vs single-mode (dicts) ------
+                if use_token_streaming:
+                    mode, payload = chunk
+
+                    if mode == "messages":
+                        token, meta = payload
                         try:
-                            if cancel_check():
-                                raise AgentCancelled(
-                                    "Agent execution cancelled by user"
-                                )
-                        except AgentCancelled:
-                            raise
+                            self._process_message_chunk(token, meta, on_token)
                         except Exception:
                             pass
-                    continue
 
-                chunk = payload
+                        if cancel_check:
+                            try:
+                                if cancel_check():
+                                    raise AgentCancelled(
+                                        "Agent execution cancelled by user"
+                                    )
+                            except AgentCancelled:
+                                raise
+                            except Exception:
+                                pass
+                        continue
 
-            for step, data in chunk.items():
-                steps.append({"name": step, "data": data})
+                    chunk = payload
 
-                if on_step:
+                for step, data in chunk.items():
+                    steps.append({"name": step, "data": data})
+
+                    if on_step:
+                        try:
+                            on_step(step, data)
+                        except Exception:
+                            pass  # best-effort, never break agent execution
+
+                    if isinstance(data, dict):
+                        for key in [
+                            "accumulated_input_tokens",
+                            "accumulated_output_tokens",
+                            "accumulated_total_tokens",
+                            "accumulated_extra_tokens",
+                            "model_call_count",
+                            "tool_call_count",
+                            "usage_session_id",
+                        ]:
+                            if key in data:
+                                accumulated_state[key] = data[key]
+                        if "messages" in data:
+                            last_agent_result = data
+                    elif step == "__interrupt__":
+                        last_agent_result = {"__interrupt__": data}
+
+                # Check cancellation flag after processing each chunk
+                if cancel_check:
                     try:
-                        on_step(step, data)
+                        if cancel_check():
+                            raise AgentCancelled("Agent execution cancelled by user")
+                    except AgentCancelled:
+                        raise
                     except Exception:
-                        pass  # best-effort, never break agent execution
-
-                if isinstance(data, dict):
-                    for key in [
-                        "accumulated_input_tokens",
-                        "accumulated_output_tokens",
-                        "accumulated_total_tokens",
-                        "accumulated_extra_tokens",
-                        "model_call_count",
-                        "tool_call_count",
-                        "usage_session_id",
-                    ]:
-                        if key in data:
-                            accumulated_state[key] = data[key]
-                    if "messages" in data:
-                        last_agent_result = data
-                elif step == "__interrupt__":
-                    last_agent_result = {"__interrupt__": data}
-
-            # Check cancellation flag after processing each chunk
-            if cancel_check:
-                try:
-                    if cancel_check():
-                        raise AgentCancelled("Agent execution cancelled by user")
-                except AgentCancelled:
-                    raise
-                except Exception:
-                    pass  # best-effort, never break on check errors
+                        pass  # best-effort, never break on check errors
+        except AgentCancelled:
+            # Trigger GraphInterrupt in the LLM (stops token generation)
+            # and drain remaining internal events for a clean LangSmith trace.
+            if graceful_cancel and isinstance(stream, InterruptibleStream):
+                await stream.stop()
+                await stream.close()
+            raise
 
         if last_agent_result:
             result = last_agent_result

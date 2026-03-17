@@ -311,6 +311,13 @@ When present, the service emits normal state updates together with message
 chunks (`text`, `reasoning`, `tool_call`) so UI layers can render live output
 without giving up step-level progress.
 
+Both methods also support `cancel_check` together with `graceful_cancel=True`
+(default). When cancellation fires, the service raises `GraphInterrupt` inside
+the active LLM stream, closes the provider connection immediately, drains the
+remaining internal LangGraph events, and keeps the LangSmith graph trace in a
+successful state. Set `graceful_cancel=False` only if you prefer a hard close
+and can tolerate a failed trace for that run.
+
 ### Celery task factory (extend background workers)
 
 When you embed the core as a submodule you can reuse the Celery factory to add your own task modules without modifying `inference_core` directly. The helper mirrors the FastAPI application factory.
