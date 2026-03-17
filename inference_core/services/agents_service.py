@@ -12,7 +12,7 @@ from deepagents.backends.utils import create_file_data
 from deepagents.middleware import SkillsMiddleware, SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import InterruptOnConfig
-from langchain.messages import HumanMessage
+from langchain.messages import AIMessageChunk, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -822,11 +822,61 @@ class AgentService:
         """
         return self.agent
 
+    @staticmethod
+    def _process_message_chunk(
+        token: Any,
+        metadata: dict[str, Any],
+        on_token: Callable[[str, dict[str, Any]], None],
+    ) -> None:
+        """Extract text/reasoning from a ``messages`` stream chunk and forward to *on_token*.
+
+        Called for every ``(token, metadata)`` pair emitted when ``stream_mode``
+        includes ``"messages"``.  The *token* is typically an ``AIMessageChunk``.
+
+        Content blocks are inspected to distinguish between regular text,
+        reasoning/thinking tokens and partial tool-call arguments.  Each
+        non-empty piece is forwarded to the caller-provided *on_token*
+        callback with a ``meta`` dict containing:
+
+        * ``type`` – ``"text"`` | ``"reasoning"`` | ``"tool_call"``
+        * ``node`` – the LangGraph node name that produced the token
+        * ``agent_name`` – agent name if available (for sub-agent disambiguation)
+        """
+        if not isinstance(token, AIMessageChunk):
+            return
+
+        node = metadata.get("langgraph_node", "")
+        agent_name = metadata.get("lc_agent_name")
+
+        base_meta: dict[str, Any] = {"node": node}
+        if agent_name:
+            base_meta["agent_name"] = agent_name
+
+        # Prefer content_blocks (normalised across providers) when available.
+        content_blocks = getattr(token, "content_blocks", None)
+        if content_blocks:
+            for block in content_blocks:
+                btype = block.get("type", "")
+                if btype == "text" and block.get("text"):
+                    on_token(block["text"], {**base_meta, "type": "text"})
+                elif btype == "reasoning" and block.get("reasoning"):
+                    on_token(block["reasoning"], {**base_meta, "type": "reasoning"})
+                elif btype == "tool_call_chunk":
+                    args = block.get("args")
+                    if args:
+                        on_token(args, {**base_meta, "type": "tool_call"})
+            return
+
+        # Fallback: plain string content (older providers / simple models).
+        if token.content and isinstance(token.content, str):
+            on_token(token.content, {**base_meta, "type": "text"})
+
     def run_agent_steps(
         self,
         user_input: str,
         context=None,
         on_step: Callable[[str, Any], None] | None = None,
+        on_token: Callable[[str, dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AgentResponse:
         """Execute the agent with the given input and return the response.
@@ -838,9 +888,18 @@ class AgentService:
         Args:
             user_input: The user's input message.
             context: Optional context to pass to the agent.
-            on_step: Optional callback invoked for every streaming chunk.
+            on_step: Optional callback invoked for every ``updates`` chunk.
                      Receives ``(step_name, data)`` — best-effort, never
                      breaks agent execution on callback errors.
+            on_token: Optional callback invoked for every ``messages`` chunk.
+                     Receives ``(text, meta)`` where *text* is the token
+                     string and *meta* carries ``type`` (``"text"`` /
+                     ``"reasoning"`` / ``"tool_call"``), ``node``, and
+                     optionally ``agent_name``.  When provided the stream
+                     switches to ``stream_mode=["updates", "messages"]``
+                     so that LLM tokens are emitted alongside state
+                     updates.  Best-effort — callback errors never break
+                     agent execution.
             cancel_check: Optional callable that returns ``True`` when the
                           execution should be cancelled.  Checked after every
                           streaming chunk.
@@ -864,12 +923,46 @@ class AgentService:
         accumulated_state: dict[str, Any] = {}
         last_agent_result: dict[str, Any] = {}
 
+        # When on_token is provided, stream both updates and messages so
+        # that LLM tokens are emitted alongside the normal state updates.
+        use_token_streaming = on_token is not None
+        stream_mode: Any = ["updates", "messages"] if use_token_streaming else "updates"
+
         for chunk in self.agent.stream(
             {"messages": messages},
             {"configurable": configurable},
-            stream_mode="updates",
+            stream_mode=stream_mode,
             context=context,
         ):
+            # ------ Multi-mode (tuples) vs single-mode (dicts) ------
+            if use_token_streaming:
+                # chunk is a tuple: (mode_name, payload)
+                mode, payload = chunk
+
+                if mode == "messages":
+                    # payload = (AIMessageChunk, metadata_dict)
+                    token, meta = payload
+                    try:
+                        self._process_message_chunk(token, meta, on_token)
+                    except Exception:
+                        pass  # best-effort
+
+                    # Check cancellation after each token for fast interrupts
+                    if cancel_check:
+                        try:
+                            if cancel_check():
+                                raise AgentCancelled(
+                                    "Agent execution cancelled by user"
+                                )
+                        except AgentCancelled:
+                            raise
+                        except Exception:
+                            pass
+                    continue
+
+                # mode == "updates" — fall through to existing logic
+                chunk = payload
+
             for step, data in chunk.items():
                 steps.append({"name": step, "data": data})
 
@@ -956,12 +1049,15 @@ class AgentService:
         user_input: str,
         context=None,
         on_step: Callable[[str, Any], None] | None = None,
+        on_token: Callable[[str, dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AgentResponse:
         """Async version of run_agent_steps using astream.
 
         Use this in async contexts (e.g. FastAPI endpoints) to avoid
         asyncio event-loop conflicts.
+
+        See :meth:`run_agent_steps` for a full description of *on_token*.
         """
         steps = []
         start_time = datetime.now(UTC)
@@ -973,12 +1069,40 @@ class AgentService:
         accumulated_state: dict[str, Any] = {}
         last_agent_result: dict[str, Any] = {}
 
+        use_token_streaming = on_token is not None
+        stream_mode: Any = ["updates", "messages"] if use_token_streaming else "updates"
+
         async for chunk in self.agent.astream(
             {"messages": messages},
             {"configurable": configurable},
-            stream_mode="updates",
+            stream_mode=stream_mode,
             context=context,
         ):
+            # ------ Multi-mode (tuples) vs single-mode (dicts) ------
+            if use_token_streaming:
+                mode, payload = chunk
+
+                if mode == "messages":
+                    token, meta = payload
+                    try:
+                        self._process_message_chunk(token, meta, on_token)
+                    except Exception:
+                        pass
+
+                    if cancel_check:
+                        try:
+                            if cancel_check():
+                                raise AgentCancelled(
+                                    "Agent execution cancelled by user"
+                                )
+                        except AgentCancelled:
+                            raise
+                        except Exception:
+                            pass
+                    continue
+
+                chunk = payload
+
             for step, data in chunk.items():
                 steps.append({"name": step, "data": data})
 

@@ -305,6 +305,12 @@ def run_default_agent_sync(*, user_input: str, user_id: str) -> dict:
     return asyncio.run(run_default_agent(user_input=user_input, user_id=user_id))
 ````
 
+`AgentService.run_agent_steps()` and `AgentService.arun_agent_steps()` also
+support an optional `on_token(text, meta)` callback for token-level streaming.
+When present, the service emits normal state updates together with message
+chunks (`text`, `reasoning`, `tool_call`) so UI layers can render live output
+without giving up step-level progress.
+
 ### Celery task factory (extend background workers)
 
 When you embed the core as a submodule you can reuse the Celery factory to add your own task modules without modifying `inference_core` directly. The helper mirrors the FastAPI application factory.

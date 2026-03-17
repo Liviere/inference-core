@@ -88,6 +88,40 @@ except AgentCancelled:
   response = None
 ```
 
+## Token Streaming
+
+`AgentService.run_agent_steps()` and `AgentService.arun_agent_steps()` also
+accept an optional `on_token` callback for integrations that need token-level
+updates while the agent is running.
+
+Passing `on_token` switches the internal stream mode from `"updates"` to
+`["updates", "messages"]`. The callback receives `(text, meta)` where `text`
+is the streamed fragment and `meta` contains:
+
+- `type` – `text`, `reasoning`, or `tool_call`
+- `node` – LangGraph node that emitted the fragment
+- `agent_name` – optional sub-agent name when available
+
+This makes it possible to stream normal answer tokens, reasoning blocks, and
+partial tool-call arguments without losing the existing step/update stream.
+
+```python
+from inference_core.services.agents_service import AgentService
+
+service = AgentService(agent_name="my_agent")
+await service.create_agent()
+
+
+def handle_token(text: str, meta: dict[str, str]) -> None:
+    print(meta.get("type"), meta.get("node"), text)
+
+
+response = await service.arun_agent_steps(
+    "Research the latest LangChain agent changes",
+    on_token=handle_token,
+)
+```
+
 ## Agent Memory
 
 Agents can store and recall long-term memories about users using the integrated
