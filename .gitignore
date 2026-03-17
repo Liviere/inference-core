@@ -189,3 +189,12 @@ inference_core/custom_prompts/**/*.jinja2
 !inference_core/custom_prompts/**/*preset*.jinja2
 # Playwright MCP local config (keep example in repo, ignore local overrides)
 docker/playwright-mcp.config.json
+
+# LangGraph Agent Server runtime artifacts (created by langgraph dev)
+.langgraph_*
+langgraph_api/
+store.pckl
+store.vectors.pckl
+
+# LangGraph config (keep langgraph.example.json in repo)
+langgraph.json

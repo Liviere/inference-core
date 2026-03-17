@@ -471,6 +471,21 @@ class AgentConfig(BaseModel):
     interrupt_on: Optional[Dict[str, Any]] = Field(
         default=None, description="Configuration for human-in-the-loop interruptions"
     )
+    execution_mode: str = Field(
+        default="local",
+        description=(
+            "Where this agent runs: 'local' (in-process) or 'remote' "
+            "(delegated to LangGraph Agent Server). Requires "
+            "AGENT_SERVER_ENABLED=True and AGENT_SERVER_URL in .env."
+        ),
+    )
+    remote_graph_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Graph ID on the LangGraph Agent Server. Defaults to agent_name "
+            "if not set. Only used when execution_mode='remote'."
+        ),
+    )
 
 
 class TaskConfig(BaseModel):

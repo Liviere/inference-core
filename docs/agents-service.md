@@ -210,3 +210,53 @@ exists, the save is skipped to avoid duplicates.
   `AGENTS_CONFIG_PATH`).
 - When enabling checkpointing per agent, ensure the configured database is
   reachable from the API/Celery containers.
+
+## Remote Execution (LangGraph Agent Server)
+
+Agents can be executed remotely via the [LangGraph Platform](https://docs.langchain.com/langsmith/agent-server) instead of running in-process. This is controlled per-agent in `llm_config.yaml`:
+
+```yaml
+agents:
+  default_agent:
+    primary: 'gemini-3-flash-preview'
+    execution_mode: 'remote'   # delegates to Agent Server
+    # remote_graph_id: 'custom_id'  # optional, defaults to agent name
+```
+
+### How It Works
+
+1. `AgentService._is_remote` checks both `AGENT_SERVER_ENABLED=true` and the agent's `execution_mode: 'remote'`.
+2. `arun_agent_steps()` delegates to `_arun_agent_steps_remote()` which calls `agent_server_client.run_remote()` or `stream_remote()`.
+3. The Agent Server runs the same graph (built by `graph_builder.py` from the same YAML config).
+4. Results are wrapped in the standard `AgentResponse` — callers don't need to know whether execution was local or remote.
+
+The sync `run_agent_steps()` raises `RuntimeError` for remote agents — use `arun_agent_steps()` instead.
+
+### Development Setup
+
+```bash
+# Start Agent Server (lightweight, no Docker, hot reload)
+poetry run langgraph dev --no-browser
+
+# In .env
+AGENT_SERVER_ENABLED=true
+AGENT_SERVER_URL=http://localhost:2024
+```
+
+Graphs are defined in `langgraph.json` → `agent_graphs.py` → `graph_builder.py`. The builder reads the same `llm_config.yaml` to create identical model + tool configurations.
+
+### Architecture
+
+```
+FastAPI / Celery Task
+    → AgentService.arun_agent_steps()
+        → _is_remote? ─── Yes ──→ agent_server_client.run_remote()
+        │                              → langgraph-sdk HTTP → Agent Server (port 2024/8123)
+        └── No ──→ local LangGraph execution (create_agent + stream)
+```
+
+### Testing
+
+- Unit tests mock `agent_server_client` — no server needed (`tests/unit/services/test_agent_server_client.py`)
+- Integration tests require a running server and use `@pytest.mark.agent_server` (`tests/integration/test_agent_server.py`)
+- Integration tests auto-skip when the server is not reachable

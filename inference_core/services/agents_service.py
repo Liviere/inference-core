@@ -200,6 +200,20 @@ class AgentService:
             return self.instance_context.instance_name
         return self.agent_name
 
+    @property
+    def _is_remote(self) -> bool:
+        """Whether this agent should delegate to the remote Agent Server.
+
+        WHY: Central check used by run/arun/stream to decide execution
+        path.  Returns True only when both the global feature flag AND
+        the per-agent YAML setting are active.
+        """
+        settings = get_settings()
+        return (
+            settings.agent_server_enabled
+            and self.agent_config.execution_mode == "remote"
+        )
+
     def set_cancel_check(self, cancel_check: Callable[[], bool] | None) -> None:
         """Propagate a cancellation callback to middleware.
 
@@ -927,7 +941,15 @@ class AgentService:
 
         Raises:
             AgentCancelled: If *cancel_check* returns ``True``.
+            RuntimeError: If agent is configured for remote execution (use arun_agent_steps instead).
         """
+        if self._is_remote:
+            raise RuntimeError(
+                f"Agent '{self.display_name}' is configured for remote execution "
+                f"(execution_mode='remote'). Use arun_agent_steps() instead — "
+                f"the sync run_agent_steps() does not support remote delegation."
+            )
+
         steps = []
         start_time = datetime.now(UTC)
 
@@ -1128,6 +1150,16 @@ class AgentService:
 
         See :meth:`run_agent_steps` for a full description of *on_token*.
         """
+        # --- Remote execution path ---
+        if self._is_remote:
+            return await self._arun_agent_steps_remote(
+                user_input=user_input,
+                on_step=on_step,
+                on_token=on_token,
+                cancel_check=cancel_check,
+            )
+
+        # --- Local execution path ---
         from inference_core.services.stream_utils import (
             InterruptibleStream,
             StreamCancelCallback,
@@ -1275,6 +1307,112 @@ class AgentService:
             steps=steps,
             metadata=metadata,
             cost_metrics=cost_metrics,
+        )
+
+    async def _arun_agent_steps_remote(
+        self,
+        user_input: str,
+        on_step: Callable[[str, Any], None] | None = None,
+        on_token: Callable[[str, dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AgentResponse:
+        """Execute agent via the remote LangGraph Agent Server.
+
+        Phase 1 migration path — delegates the full agent run to
+        Agent Server while preserving the AgentResponse interface.
+        Callers (Celery tasks, FastAPI endpoints) don't need to know
+        whether execution is local or remote.
+        """
+        from inference_core.services.agent_server_client import (
+            run_remote,
+            stream_remote,
+        )
+
+        start_time = datetime.now(UTC)
+        steps: list[dict[str, Any]] = []
+
+        remote_graph_id = self.agent_config.remote_graph_id
+
+        metadata: dict[str, Any] = {
+            "agent_name": self.agent_name,
+            "model_name": self.model_name,
+        }
+        if self._user_id:
+            metadata["user_id"] = str(self._user_id)
+        if self._session_id:
+            metadata["session_id"] = self._session_id
+        if self._request_id:
+            metadata["request_id"] = self._request_id
+        if self.instance_context:
+            metadata["instance_id"] = str(self.instance_context.instance_id)
+            metadata["instance_name"] = self.instance_context.instance_name
+
+        # Determine interrupt config from YAML
+        interrupt_before = None
+        interrupt_after = None
+        if self.agent_config.interrupt_on:
+            interrupt_before = self.agent_config.interrupt_on.get("before")
+            interrupt_after = self.agent_config.interrupt_on.get("after")
+
+        use_streaming = on_token is not None or on_step is not None
+
+        def _capture_step(name: str, data: Any) -> None:
+            steps.append({"name": name, "data": data})
+            if on_step:
+                try:
+                    on_step(name, data)
+                except Exception:
+                    pass
+
+        if use_streaming:
+            result = await stream_remote(
+                agent_name=self.agent_name,
+                remote_graph_id=remote_graph_id,
+                user_input=user_input,
+                thread_id=(
+                    self.checkpoint_config.get("thread_id")
+                    if self.checkpoint_config
+                    else None
+                ),
+                checkpoint_config=self.checkpoint_config,
+                metadata=metadata,
+                on_token=on_token,
+                on_step=_capture_step,
+                cancel_check=cancel_check,
+                interrupt_before=interrupt_before,
+                interrupt_after=interrupt_after,
+            )
+        else:
+            result = await run_remote(
+                agent_name=self.agent_name,
+                remote_graph_id=remote_graph_id,
+                user_input=user_input,
+                thread_id=(
+                    self.checkpoint_config.get("thread_id")
+                    if self.checkpoint_config
+                    else None
+                ),
+                checkpoint_config=self.checkpoint_config,
+                metadata=metadata,
+                interrupt_before=interrupt_before,
+                interrupt_after=interrupt_after,
+            )
+
+        agent_metadata = AgentMetadata(
+            model_name=self.model_name,
+            tools_used=[s["name"] for s in steps],
+            start_time=start_time,
+            end_time=datetime.now(UTC),
+        )
+
+        # Remote runs don't provide local cost metrics — the Agent Server
+        # tracks usage on its side.  Return zeroed metrics so consumers
+        # don't need to handle None differently.
+        return AgentResponse(
+            result=result if isinstance(result, dict) else {"raw": result},
+            steps=steps,
+            metadata=agent_metadata,
+            cost_metrics=None,
         )
 
     @staticmethod

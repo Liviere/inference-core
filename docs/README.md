@@ -12,7 +12,8 @@ Central index of project documentation
 | Dynamic & DB Configuration         | DB overrides & user-specific preferences    | `dynamic-configuration.md`           |
 | Repository Structure Snapshot      | Auto/Manual snapshot of directories         | `structure.md`                       |
 | Custom Prompts (Jinja2)            | How to add your own prompt templates        | `custom-prompts.md`                  |
-| LangChain Agents                   | YAML-configured agents, tools, middleware   | `agents.md`                          |
+| LangChain Agents                   | YAML-configured agents, tools, middleware   | `agents-service.md`                  |
+| LangGraph Agent Server             | Remote execution, dev/prod workflow         | `agents-service.md#remote-execution` |
 | User Agent Instances               | User-customizable agent configurations      | `user-agent-instances.md`            |
 | Agent Memory                       | Long-term memory for agents                 | `agents.md#agent-memory`             |
 | Vector Store Guide                 | Semantic search & ingestion                 | `vector-store.md`                    |

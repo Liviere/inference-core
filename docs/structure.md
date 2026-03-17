@@ -5,6 +5,8 @@ Snapshot date: 2025-10-02 (Phase 1 documentation refactor)
 ```text
 inference_core/
 ├── docker-compose.base.yml
+├── langgraph.json                 # LangGraph Agent Server config (graphs → agent_graphs.py)
+├── agent_graphs.py                # Entry point for langgraph dev / langgraph up
 ├── llm_config.example.yaml
 ├── llm_config.yaml
 ├── poetry.lock
@@ -17,6 +19,13 @@ inference_core/
 ├── inference_core/
 │   ├── __init__.py
 │   ├── main_factory.py
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── graph_builder.py   # Builds compiled graphs for Agent Server from YAML config
+│   │   ├── predefinied_agents.py
+│   │   ├── agent_mcp_tools.py
+│   │   ├── middleware/
+│   │   └── tools/
 │   ├── api/
 │   │   └── v1/
 │   ├── celery/
@@ -60,6 +69,8 @@ inference_core/
 │   │   ├── common.py
 │   │   └── tasks_responses.py
 │   └── services/
+│       ├── agent_server_client.py  # LangGraph Agent Server SDK wrapper (remote execution)
+│       ├── agents_service.py       # AgentService — primary agent interface (local + remote routing)
 │       ├── auth_service.py
 │       ├── batch_service.py
 │       ├── llm_service.py
