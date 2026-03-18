@@ -9,7 +9,6 @@ Covers:
 """
 
 import uuid
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -165,6 +164,16 @@ class TestForwardEvents:
         assert len(tokens) == 1
         assert tokens[0][0] == "Hello world"
         assert tokens[0][1]["type"] == "text"
+        assert "ns" not in tokens[0][1]
+
+    def test_forward_message_with_ns(self):
+        tokens = []
+        callback = lambda text, meta: tokens.append((text, meta))
+        data = [{"type": "ai", "content": "Sub hello", "name": "weather"}]
+        _forward_message_event(data, callback, ns=["weather_agent:abc"])
+        assert len(tokens) == 1
+        assert tokens[0][1]["ns"] == ["weather_agent:abc"]
+        assert tokens[0][1]["node"] == "weather"
 
     def test_forward_message_structured_blocks(self):
         tokens = []
@@ -200,6 +209,18 @@ class TestForwardEvents:
         )
         assert len(steps) == 1
         assert steps[0][0] == "agent"
+        assert "ns" not in steps[0][1]
+
+    def test_forward_step_event_with_ns(self):
+        steps = []
+        callback = lambda name, data: steps.append((name, data))
+        _forward_step_event(
+            {"agent": {"messages": [{"role": "ai", "content": "done"}]}},
+            callback,
+            ns=["sub:123"],
+        )
+        assert len(steps) == 1
+        assert steps[0][1]["ns"] == ["sub:123"]
 
 
 # ---------------------------------------------------------------------------
@@ -258,16 +279,18 @@ class TestStreamRemote:
         tokens = []
         steps = []
 
-        # Simulate SSE events from Agent Server
+        # Simulate v2 SSE events (TypedDicts) from Agent Server
         async def _fake_stream(*args, **kwargs):
-            yield SimpleNamespace(
-                event="messages/partial",
-                data=[{"type": "ai", "content": "Hello", "name": "agent"}],
-            )
-            yield SimpleNamespace(
-                event="updates",
-                data={"agent": {"messages": [{"role": "ai", "content": "done"}]}},
-            )
+            yield {
+                "type": "messages/partial",
+                "ns": [],
+                "data": [{"type": "ai", "content": "Hello", "name": "agent"}],
+            }
+            yield {
+                "type": "updates",
+                "ns": [],
+                "data": {"agent": {"messages": [{"role": "ai", "content": "done"}]}},
+            }
 
         mock_client = MagicMock()
         mock_client.runs.stream = _fake_stream
@@ -288,14 +311,43 @@ class TestStreamRemote:
         assert len(steps) == 1
         assert steps[0] == "agent"
 
+    async def test_forwards_subgraph_ns(self):
+        """Subgraph events carry non-empty ns — verify it reaches on_token meta."""
+        tokens = []
+
+        async def _fake_stream(*args, **kwargs):
+            yield {
+                "type": "messages/partial",
+                "ns": ["weather_agent:task_abc"],
+                "data": [{"type": "ai", "content": "Sunny", "name": "weather"}],
+            }
+
+        mock_client = MagicMock()
+        mock_client.runs.stream = _fake_stream
+
+        with patch(
+            "inference_core.services.agent_server_client.get_agent_server_client",
+            return_value=mock_client,
+        ):
+            await stream_remote(
+                agent_name="test_agent",
+                user_input="Weather?",
+                on_token=lambda text, meta: tokens.append((text, meta)),
+            )
+
+        assert len(tokens) == 1
+        assert tokens[0][0] == "Sunny"
+        assert tokens[0][1]["ns"] == ["weather_agent:task_abc"]
+        assert tokens[0][1]["node"] == "weather"
+
     async def test_cancel_check_raises(self):
         from inference_core.services._cancel import AgentCancelled
 
         call_count = 0
 
         async def _fake_stream(*args, **kwargs):
-            yield SimpleNamespace(event="updates", data={})
-            yield SimpleNamespace(event="updates", data={})
+            yield {"type": "updates", "ns": [], "data": {}}
+            yield {"type": "updates", "ns": [], "data": {}}
 
         mock_client = MagicMock()
         mock_client.runs.stream = _fake_stream

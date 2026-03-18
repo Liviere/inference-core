@@ -225,14 +225,20 @@ async def stream_remote(
         metadata=run_metadata,
         config=config or None,
         stream_mode=stream_mode,
+        stream_subgraphs=True,
         interrupt_before=interrupt_before,
         interrupt_after=interrupt_after,
+        version="v2",
     ):
+        # v2 events are TypedDicts with ["type"], ["data"], ["ns"]
+        event_type: str = event["type"]
+        data = event["data"]
+        ns: list[str] = event.get("ns", [])
+
         # Check cancellation
         if cancel_check:
             try:
                 if cancel_check():
-                    # Best-effort cancel on server side
                     if run_id:
                         try:
                             await client.runs.cancel(effective_thread_id, run_id)
@@ -244,17 +250,14 @@ async def stream_remote(
             except Exception:
                 pass
 
-        # Extract run_id from metadata for potential cancellation
-        if hasattr(event, "metadata") and event.metadata:
-            run_id = event.metadata.get("run_id", run_id)
-
-        event_type = event.event
-        data = event.data
+        # Extract run_id from metadata event for potential cancellation
+        if event_type == "metadata" and isinstance(data, dict):
+            run_id = data.get("run_id", run_id)
 
         if event_type == "messages/partial" and on_token:
-            _forward_message_event(data, on_token)
+            _forward_message_event(data, on_token, ns=ns)
         elif event_type == "updates" and on_step:
-            _forward_step_event(data, on_step)
+            _forward_step_event(data, on_step, ns=ns)
 
         # Track the latest result
         if event_type in ("values", "updates") and isinstance(data, dict):
@@ -271,12 +274,17 @@ async def stream_remote(
 def _forward_message_event(
     data: Any,
     on_token: Callable[[str, dict[str, Any]], None],
+    *,
+    ns: list[str] | None = None,
 ) -> None:
     """Translate Agent Server message events to on_token callbacks.
 
     WHY: The Agent Server emits messages/partial events with a list of
     message dicts.  We extract text content and forward it in the same
     format that local AgentService uses.
+
+    ``ns`` carries the subgraph namespace path from v2 streaming so
+    consumers can distinguish parent vs subagent tokens.
     """
     if not isinstance(data, list):
         return
@@ -290,7 +298,9 @@ def _forward_message_event(
 
         content = msg.get("content", "")
         node = msg.get("name", "agent")
-        meta = {"node": node, "type": "text"}
+        meta: dict[str, Any] = {"node": node, "type": "text"}
+        if ns:
+            meta["ns"] = ns
 
         # Handle string content
         if isinstance(content, str) and content:
@@ -309,11 +319,22 @@ def _forward_message_event(
 def _forward_step_event(
     data: Any,
     on_step: Callable[[str, Any], None],
+    *,
+    ns: list[str] | None = None,
 ) -> None:
-    """Translate Agent Server update events to on_step callbacks."""
+    """Translate Agent Server update events to on_step callbacks.
+
+    ``ns`` carries the subgraph namespace path from v2 streaming.
+    """
     if isinstance(data, dict):
         for step_name, step_data in data.items():
             try:
+                if ns:
+                    step_data = (
+                        {**step_data, "ns": ns}
+                        if isinstance(step_data, dict)
+                        else step_data
+                    )
                 on_step(step_name, step_data)
             except Exception:
                 pass

@@ -319,6 +319,10 @@ When present, the service emits normal state updates together with message
 chunks (`text`, `reasoning`, `tool_call`) so UI layers can render live output
 without giving up step-level progress.
 
+For remote LangGraph Agent Server runs, streamed callbacks can also include
+`meta["ns"]`, which identifies the subgraph namespace path for tokens or step
+updates emitted by subagents.
+
 Both methods also support `cancel_check` together with `graceful_cancel=True`
 (default). When cancellation fires, the service raises `GraphInterrupt` inside
 the active LLM stream, closes the provider connection immediately, drains the

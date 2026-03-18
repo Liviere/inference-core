@@ -115,11 +115,17 @@ is the streamed fragment and `meta` contains:
 - `type` – `text`, `reasoning`, or `tool_call`
 - `node` – LangGraph node that emitted the fragment
 - `agent_name` – optional sub-agent name when available
+- `ns` – optional LangGraph subgraph namespace path for remote Agent Server v2 streams
 
 This makes it possible to stream normal answer tokens, reasoning blocks, and
 partial tool-call arguments without losing the existing step/update stream.
 Tokens emitted by middleware nodes are filtered out, so UI integrations only
 receive the main agent/model output.
+
+For remote Agent Server execution, `stream_remote()` now consumes LangGraph
+Platform v2 stream events (`version="v2"`) with `stream_subgraphs=True`.
+When a token or step originates from a subgraph, the callback metadata carries
+`ns` so UI layers can distinguish parent-agent output from subagent output.
 
 ```python
 from inference_core.services.agents_service import AgentService
@@ -231,6 +237,10 @@ agents:
 4. Results are wrapped in the standard `AgentResponse` — callers don't need to know whether execution was local or remote.
 
 The sync `run_agent_steps()` raises `RuntimeError` for remote agents — use `arun_agent_steps()` instead.
+
+Remote streaming uses LangGraph Platform v2 events and enables
+`stream_subgraphs=True`, so `on_token` / `on_step` callbacks may receive an
+`ns` field in metadata for subgraph-originated output.
 
 ### Development Setup
 
