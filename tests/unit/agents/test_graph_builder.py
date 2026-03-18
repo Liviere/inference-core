@@ -62,6 +62,23 @@ def _mock_llm_config(model_name="gpt-5-mini", pricing=None, provider="openai"):
 
 
 class TestBuildServerMiddleware:
+    def test_always_includes_instance_config_first(self):
+        from inference_core.agents.middleware.instance_config import (
+            InstanceConfigMiddleware,
+        )
+
+        factory = _mock_factory()
+        agent_config = _mock_agent_config()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ):
+            mw = _build_server_middleware("test_agent", agent_config, factory)
+
+        assert len(mw) >= 2
+        assert isinstance(mw[0], InstanceConfigMiddleware)
+
     def test_always_includes_cost_tracking(self):
         from inference_core.agents.middleware.cost_tracking import (
             CostTrackingMiddleware,
@@ -76,8 +93,8 @@ class TestBuildServerMiddleware:
         ):
             mw = _build_server_middleware("test_agent", agent_config, factory)
 
-        assert len(mw) >= 1
-        assert isinstance(mw[0], CostTrackingMiddleware)
+        assert len(mw) >= 2
+        assert isinstance(mw[1], CostTrackingMiddleware)
 
     def test_cost_tracking_has_no_user_id(self):
         """Agent Server middleware is built without per-request user context."""
@@ -94,7 +111,7 @@ class TestBuildServerMiddleware:
         ):
             mw = _build_server_middleware("test_agent", agent_config, factory)
 
-        ct = mw[0]
+        ct = mw[1]
         assert isinstance(ct, CostTrackingMiddleware)
         assert ct.user_id is None
         assert ct.session_id is None
@@ -119,8 +136,8 @@ class TestBuildServerMiddleware:
         ):
             mw = _build_server_middleware("test_agent", agent_config, factory)
 
-        assert len(mw) == 2
-        assert isinstance(mw[1], ToolBasedModelSwitchMiddleware)
+        assert len(mw) == 3
+        assert isinstance(mw[2], ToolBasedModelSwitchMiddleware)
 
     def test_no_tool_model_switch_without_overrides(self):
         factory = _mock_factory()
@@ -132,7 +149,7 @@ class TestBuildServerMiddleware:
         ):
             mw = _build_server_middleware("test_agent", agent_config, factory)
 
-        assert len(mw) == 1  # Only CostTracking
+        assert len(mw) == 2  # InstanceConfig + CostTracking
 
     def test_pricing_config_passed_to_cost_tracking(self):
         pricing = MagicMock()
@@ -145,7 +162,7 @@ class TestBuildServerMiddleware:
         ):
             mw = _build_server_middleware("test_agent", agent_config, factory)
 
-        ct = mw[0]
+        ct = mw[1]
         assert ct.pricing_config is pricing
         assert ct._provider == "deepinfra"
 
@@ -159,8 +176,9 @@ class TestBuildServerMiddleware:
         ):
             mw = _build_server_middleware("test_agent", agent_config, factory)
 
-        assert len(mw) >= 1
-        assert mw[0].pricing_config is None
+        assert len(mw) >= 2
+        # mw[0] = InstanceConfigMiddleware, mw[1] = CostTrackingMiddleware
+        assert mw[1].pricing_config is None
 
 
 # ---------------------------------------------------------------------------

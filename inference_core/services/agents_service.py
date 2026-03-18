@@ -1347,6 +1347,21 @@ class AgentService:
             metadata["instance_id"] = str(self.instance_context.instance_id)
             metadata["instance_name"] = self.instance_context.instance_name
 
+        # Forward instance-level overrides so InstanceConfigMiddleware on
+        # the Agent Server can swap model / prompt at runtime.
+        if self._system_prompt_override is not None:
+            metadata["system_prompt_override"] = self._system_prompt_override
+        if self._system_prompt_append is not None:
+            metadata["system_prompt_append"] = self._system_prompt_append
+        # primary_model: if the resolved config changed the model vs. the
+        # base YAML config, forward the override name so the server graph
+        # uses the correct model.
+        if self.config:
+            base_config = get_llm_config()
+            base_model = base_config.agent_models.get(self.agent_name)
+            if self.model_name and self.model_name != base_model:
+                metadata["primary_model"] = self.model_name
+
         # Determine interrupt config from YAML
         interrupt_before = None
         interrupt_after = None

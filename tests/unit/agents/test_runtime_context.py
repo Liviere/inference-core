@@ -16,8 +16,11 @@ from inference_core.agents.middleware._runtime_context import (
     clear,
     get_instance_id,
     get_instance_name,
+    get_primary_model,
     get_request_id,
     get_session_id,
+    get_system_prompt_append,
+    get_system_prompt_override,
     get_user_id,
     populate_from_configurable,
 )
@@ -42,6 +45,9 @@ class TestPopulateFromConfigurable:
                 "request_id": "req-1",
                 "instance_id": str(iid),
                 "instance_name": "my-instance",
+                "primary_model": "claude-haiku-4-5-20251001",
+                "system_prompt_override": "You are a coder.",
+                "system_prompt_append": "Be concise.",
             }
         )
         assert get_user_id() == uid
@@ -49,6 +55,9 @@ class TestPopulateFromConfigurable:
         assert get_request_id() == "req-1"
         assert get_instance_id() == iid
         assert get_instance_name() == "my-instance"
+        assert get_primary_model() == "claude-haiku-4-5-20251001"
+        assert get_system_prompt_override() == "You are a coder."
+        assert get_system_prompt_append() == "Be concise."
 
     def test_accepts_uuid_objects_directly(self):
         uid = uuid.uuid4()
@@ -72,6 +81,9 @@ class TestDefaults:
         assert get_request_id() is None
         assert get_instance_id() is None
         assert get_instance_name() is None
+        assert get_primary_model() is None
+        assert get_system_prompt_override() is None
+        assert get_system_prompt_append() is None
 
 
 class TestClear:

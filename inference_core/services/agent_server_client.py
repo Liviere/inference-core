@@ -83,7 +83,17 @@ def _build_config(
         )
 
     # Forward middleware-relevant keys from metadata → configurable
-    _MW_KEYS = ("user_id", "session_id", "request_id", "instance_id", "instance_name")
+    _MW_KEYS = (
+        "user_id",
+        "session_id",
+        "request_id",
+        "instance_id",
+        "instance_name",
+        # Instance-level overrides (model, prompt)
+        "primary_model",
+        "system_prompt_override",
+        "system_prompt_append",
+    )
     if metadata:
         for key in _MW_KEYS:
             if key in metadata:

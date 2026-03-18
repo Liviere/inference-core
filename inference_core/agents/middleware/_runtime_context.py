@@ -35,6 +35,17 @@ _instance_name: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "mw_instance_name", default=None
 )
 
+# Per-request instance overrides (model, prompt) forwarded from agent_server_client
+_primary_model: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "mw_primary_model", default=None
+)
+_system_prompt_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "mw_system_prompt_override", default=None
+)
+_system_prompt_append: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "mw_system_prompt_append", default=None
+)
+
 
 def populate_from_configurable(configurable: dict[str, Any]) -> None:
     """Extract middleware-relevant fields from ``runtime.configurable`` and
@@ -64,6 +75,16 @@ def populate_from_configurable(configurable: dict[str, Any]) -> None:
     if (iname := configurable.get("instance_name")) is not None:
         _instance_name.set(str(iname))
 
+    # Instance-level overrides (model, prompt)
+    if (pm := configurable.get("primary_model")) is not None:
+        _primary_model.set(str(pm))
+
+    if (spo := configurable.get("system_prompt_override")) is not None:
+        _system_prompt_override.set(str(spo))
+
+    if (spa := configurable.get("system_prompt_append")) is not None:
+        _system_prompt_append.set(str(spa))
+
 
 def get_user_id() -> Optional[uuid.UUID]:
     return _user_id.get()
@@ -85,7 +106,28 @@ def get_instance_name() -> Optional[str]:
     return _instance_name.get()
 
 
+def get_primary_model() -> Optional[str]:
+    return _primary_model.get()
+
+
+def get_system_prompt_override() -> Optional[str]:
+    return _system_prompt_override.get()
+
+
+def get_system_prompt_append() -> Optional[str]:
+    return _system_prompt_append.get()
+
+
 def clear() -> None:
     """Reset all context vars (useful for testing)."""
-    for var in (_user_id, _session_id, _request_id, _instance_id, _instance_name):
+    for var in (
+        _user_id,
+        _session_id,
+        _request_id,
+        _instance_id,
+        _instance_name,
+        _primary_model,
+        _system_prompt_override,
+        _system_prompt_append,
+    ):
         var.set(None)

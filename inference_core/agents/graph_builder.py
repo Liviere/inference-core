@@ -113,6 +113,7 @@ def _build_server_middleware(
     populated from ``runtime.configurable``.
 
     Includes:
+        - InstanceConfigMiddleware (always, first): per-user model / prompt overrides
         - CostTrackingMiddleware (always): token/cost tracking per model step
         - ToolBasedModelSwitchMiddleware (if configured): model switching per tool
 
@@ -121,12 +122,19 @@ def _build_server_middleware(
     follow-up phase when the Agent Server supports store injection.
     """
     from inference_core.agents.middleware.cost_tracking import CostTrackingMiddleware
+    from inference_core.agents.middleware.instance_config import (
+        InstanceConfigMiddleware,
+    )
     from inference_core.agents.middleware.tool_model_switch import (
         create_tool_model_switch_middleware,
     )
 
     middleware: list[Any] = []
     model_name = factory.get_agent_model_name(agent_name)
+
+    # --- InstanceConfigMiddleware (model/prompt override from DB instance) ---
+    instance_middleware = InstanceConfigMiddleware(model_factory=factory)
+    middleware.append(instance_middleware)
 
     # --- CostTrackingMiddleware (user_id=None → resolved from runtime) ---
     pricing_config = None

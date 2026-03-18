@@ -238,12 +238,19 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     ) -> Dict[str, Any] | None:
         """Re-Initialize context and state counters.
 
-        Also populates per-request context vars from ``runtime.configurable``
+        Also populates per-request context vars from RunnableConfig.configurable
         so that wrap-style hooks (which don't receive ``runtime``) can
         resolve user_id / session_id in a concurrency-safe way.
         """
         # Populate task-local context vars from Agent Server configurable
-        configurable = getattr(runtime, "configurable", None)
+        try:
+            from langgraph.config import get_config
+
+            config = get_config()
+            configurable = config.get("configurable")
+        except RuntimeError:
+            configurable = None
+
         if isinstance(configurable, dict) and configurable:
             populate_from_configurable(configurable)
 

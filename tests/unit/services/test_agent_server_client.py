@@ -447,3 +447,18 @@ class TestBuildConfig:
         cfg = _build_config(None, {"source": "test", "agent_name": "bot"})
         # No middleware keys → empty dict
         assert cfg == {}
+
+    def test_forwards_instance_override_keys(self):
+        cfg = _build_config(
+            None,
+            {
+                "user_id": str(uuid.uuid4()),
+                "primary_model": "claude-haiku-4-5-20251001",
+                "system_prompt_override": "Custom prompt",
+                "system_prompt_append": "Extra",
+            },
+        )
+        c = cfg["configurable"]
+        assert c["primary_model"] == "claude-haiku-4-5-20251001"
+        assert c["system_prompt_override"] == "Custom prompt"
+        assert c["system_prompt_append"] == "Extra"
