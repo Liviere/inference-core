@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 # The variable names MUST match the keys in langgraph.json → "graphs".
 # ---------------------------------------------------------------------------
 
-default_agent = build_agent_graph("default_agent")
+default_agent = build_agent_graph("default_agent", use_memory=True)
 weather_agent = build_agent_graph("weather_agent")
-deep_planner = build_agent_graph("deep_planner")
+deep_planner = build_agent_graph("deep_planner", use_memory=True)
 
 logger.info("Agent Server graphs loaded: default_agent, weather_agent, deep_planner")

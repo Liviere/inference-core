@@ -650,3 +650,169 @@ class TestBuildAgentGraphDeep:
 
         call_kwargs = mock_create.call_args[1]
         assert "store" not in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Memory support (use_memory=True)
+# ---------------------------------------------------------------------------
+
+
+class TestMemorySupport:
+    """Verify memory store init, middleware, and tools wiring."""
+
+    def test_memory_middleware_added_when_use_memory_true(self):
+        """use_memory=True adds MemoryMiddleware to the middleware stack."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+
+        mock_store = MagicMock()
+        mock_service = MagicMock()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_model_factory",
+            return_value=factory,
+        ), patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ), patch(
+            "inference_core.agents.graph_builder.get_registered_providers",
+            return_value={},
+        ), patch(
+            "inference_core.agents.graph_builder._init_memory_store",
+            return_value=mock_store,
+        ), patch(
+            "inference_core.agents.graph_builder._init_memory_service",
+            return_value=mock_service,
+        ), patch(
+            "inference_core.agents.graph_builder._add_memory_tools",
+        ) as mock_add_tools, patch(
+            "inference_core.agents.graph_builder.create_agent",
+        ) as mock_create:
+            mock_create.return_value = MagicMock()
+            build_agent_graph("test_agent", use_memory=True)
+
+        call_kwargs = mock_create.call_args[1]
+        mw_list = call_kwargs["middleware"]
+        mem_mws = [m for m in mw_list if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 1
+        assert mem_mws[0].user_id is None
+        mock_add_tools.assert_called_once()
+
+    def test_no_memory_middleware_when_use_memory_false(self):
+        """use_memory=False (default) does not add MemoryMiddleware."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_model_factory",
+            return_value=factory,
+        ), patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ), patch(
+            "inference_core.agents.graph_builder.get_registered_providers",
+            return_value={},
+        ), patch(
+            "inference_core.agents.graph_builder.create_agent",
+        ) as mock_create:
+            mock_create.return_value = MagicMock()
+            build_agent_graph("test_agent")
+
+        call_kwargs = mock_create.call_args[1]
+        mw_list = call_kwargs["middleware"]
+        mem_mws = [m for m in mw_list if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 0
+
+    def test_memory_init_failure_is_graceful(self):
+        """When memory store init fails, the graph is built without memory."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_model_factory",
+            return_value=factory,
+        ), patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ), patch(
+            "inference_core.agents.graph_builder.get_registered_providers",
+            return_value={},
+        ), patch(
+            "inference_core.agents.graph_builder._init_memory_store",
+            side_effect=RuntimeError("embedding service unavailable"),
+        ), patch(
+            "inference_core.agents.graph_builder.create_agent",
+        ) as mock_create:
+            mock_create.return_value = MagicMock()
+            build_agent_graph("test_agent", use_memory=True)
+
+        call_kwargs = mock_create.call_args[1]
+        mw_list = call_kwargs["middleware"]
+        mem_mws = [m for m in mw_list if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 0
+
+    def test_memory_middleware_inserted_before_cost_tracking(self):
+        """MemoryMiddleware sits before CostTrackingMiddleware in the stack."""
+        from inference_core.agents.middleware.cost_tracking import (
+            CostTrackingMiddleware,
+        )
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+        agent_config = _mock_agent_config()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ):
+            mw = _build_server_middleware(
+                "test_agent",
+                agent_config,
+                factory,
+                memory_service=MagicMock(),
+            )
+
+        type_names = [type(m).__name__ for m in mw]
+        mem_idx = type_names.index("MemoryMiddleware")
+        cost_idx = type_names.index("CostTrackingMiddleware")
+        assert mem_idx < cost_idx
+
+    def test_memory_tools_added_to_tools_list(self):
+        """use_memory=True adds 4 memory tools to the compiled graph's tools."""
+        factory = _mock_factory()
+
+        mock_store = MagicMock()
+        mock_service = MagicMock()
+
+        def capture_add_tools(service, tools):
+            tools.extend(["save", "recall", "update", "delete"])
+
+        with patch(
+            "inference_core.agents.graph_builder.get_model_factory",
+            return_value=factory,
+        ), patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ), patch(
+            "inference_core.agents.graph_builder.get_registered_providers",
+            return_value={},
+        ), patch(
+            "inference_core.agents.graph_builder._init_memory_store",
+            return_value=mock_store,
+        ), patch(
+            "inference_core.agents.graph_builder._init_memory_service",
+            return_value=mock_service,
+        ), patch(
+            "inference_core.agents.graph_builder._add_memory_tools",
+            side_effect=capture_add_tools,
+        ), patch(
+            "inference_core.agents.graph_builder.create_agent",
+        ) as mock_create:
+            mock_create.return_value = MagicMock()
+            build_agent_graph("test_agent", use_memory=True)
+
+        call_kwargs = mock_create.call_args[1]
+        assert len(call_kwargs["tools"]) == 4

@@ -29,6 +29,33 @@ from inference_core.services.agent_memory_service import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_tool_user_id(user_id: Optional[str]) -> str:
+    """Return user_id or resolve from runtime context var.
+
+    WHY: On the Agent Server, tools are instantiated at graph-build time
+    (module load) without a concrete user_id.  The actual value is injected
+    per-request via ``populate_from_configurable()`` which writes to the
+    ``_runtime_context._user_id`` context var.
+
+    Raises:
+        RuntimeError: When no user_id is available from either source.
+    """
+    if user_id:
+        return user_id
+    from inference_core.agents.middleware._runtime_context import (
+        get_user_id as _ctx_get_user_id,
+    )
+
+    ctx_uid = _ctx_get_user_id()
+    if ctx_uid is not None:
+        return str(ctx_uid)
+    raise RuntimeError(
+        "Memory tool requires user_id but none was provided and "
+        "runtime context var is empty.  Ensure user_id is forwarded "
+        "in configurable metadata."
+    )
+
+
 class SaveMemoryStoreTool(BaseTool):
     """Tool for persisting user information into store-backed memory (CoALA-aware)."""
 
@@ -47,7 +74,7 @@ Arguments:
 """
 
     memory_service: Any = Field(exclude=True)
-    user_id: str = Field(exclude=True)
+    user_id: Optional[str] = Field(default=None, exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
 
     def _run(
@@ -58,10 +85,11 @@ Arguments:
         category: Optional[str] = None,
     ) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             validated_type = validate_memory_type(memory_type)
             memory_id = run_async_safely(
                 self.memory_service.save_memory(
-                    user_id=self.user_id,
+                    user_id=uid,
                     content=content,
                     memory_type=validated_type,
                     session_id=self.session_id,
@@ -86,9 +114,10 @@ Arguments:
         category: Optional[str] = None,
     ) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             validated_type = validate_memory_type(memory_type)
             memory_id = await self.memory_service.save_memory(
-                user_id=self.user_id,
+                user_id=uid,
                 content=content,
                 memory_type=validated_type,
                 session_id=self.session_id,
@@ -123,7 +152,7 @@ Arguments:
 """
 
     memory_service: Any = Field(exclude=True)
-    user_id: str = Field(exclude=True)
+    user_id: Optional[str] = Field(default=None, exclude=True)
     default_max_results: int = Field(default=5, exclude=True)
 
     def _run(
@@ -134,11 +163,12 @@ Arguments:
         category: Optional[str] = None,
     ) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             if memory_type:
                 memory_type = validate_memory_type(memory_type)
             memories = run_async_safely(
                 self.memory_service.recall_memories(
-                    user_id=self.user_id,
+                    user_id=uid,
                     query=query,
                     k=max_results or self.default_max_results,
                     memory_type=memory_type,
@@ -161,10 +191,11 @@ Arguments:
         category: Optional[str] = None,
     ) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             if memory_type:
                 memory_type = validate_memory_type(memory_type)
             memories = await self.memory_service.recall_memories(
-                user_id=self.user_id,
+                user_id=uid,
                 query=query,
                 k=max_results or self.default_max_results,
                 memory_type=memory_type,
@@ -231,7 +262,7 @@ Arguments:
 """
 
     memory_service: Any = Field(exclude=True)
-    user_id: str = Field(exclude=True)
+    user_id: Optional[str] = Field(default=None, exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
 
     def _run(
@@ -243,10 +274,11 @@ Arguments:
         category: Optional[str] = None,
     ) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             validated_type = validate_memory_type(memory_type)
             updated_id = run_async_safely(
                 self.memory_service.save_memory(
-                    user_id=self.user_id,
+                    user_id=uid,
                     content=content,
                     memory_type=validated_type,
                     session_id=self.session_id,
@@ -272,9 +304,10 @@ Arguments:
         category: Optional[str] = None,
     ) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             validated_type = validate_memory_type(memory_type)
             updated_id = await self.memory_service.save_memory(
-                user_id=self.user_id,
+                user_id=uid,
                 content=content,
                 memory_type=validated_type,
                 session_id=self.session_id,
@@ -303,13 +336,14 @@ Arguments:
 """
 
     memory_service: Any = Field(exclude=True)
-    user_id: str = Field(exclude=True)
+    user_id: Optional[str] = Field(default=None, exclude=True)
 
     def _run(self, memory_id: str) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             success = run_async_safely(
                 self.memory_service.delete_memory(
-                    user_id=self.user_id,
+                    user_id=uid,
                     memory_id=memory_id,
                 )
             )
@@ -322,8 +356,9 @@ Arguments:
 
     async def _arun(self, memory_id: str) -> str:
         try:
+            uid = _resolve_tool_user_id(self.user_id)
             success = await self.memory_service.delete_memory(
-                user_id=self.user_id,
+                user_id=uid,
                 memory_id=memory_id,
             )
             if success:
@@ -336,11 +371,15 @@ Arguments:
 
 def get_memory_tools(
     memory_service: "AgentMemoryStoreService",
-    user_id: str,
+    user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     max_recall_results: int = 5,
 ) -> List[BaseTool]:
-    """Factory for store-backed memory tools to ease agent wiring."""
+    """Factory for store-backed memory tools to ease agent wiring.
+
+    When ``user_id`` is ``None`` (Agent Server), each tool resolves it at
+    call time from the ``_runtime_context`` context var.
+    """
 
     save_tool = SaveMemoryStoreTool(
         memory_service=memory_service,
