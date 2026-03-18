@@ -93,11 +93,26 @@ def _build_config(
         "primary_model",
         "system_prompt_override",
         "system_prompt_append",
+        # Per-subagent overrides (SubagentConfigMiddleware reads these)
+        "subagent_configs",
     )
     if metadata:
         for key in _MW_KEYS:
             if key in metadata:
                 configurable[key] = metadata[key]
+
+    if configurable:
+        logger.debug(
+            "_build_config: configurable keys=%s, primary_model=%r, "
+            "subagent_configs=%s",
+            list(configurable.keys()),
+            configurable.get("primary_model"),
+            (
+                list(configurable["subagent_configs"].keys())
+                if "subagent_configs" in configurable
+                else "NONE"
+            ),
+        )
 
     return {"configurable": configurable} if configurable else {}
 

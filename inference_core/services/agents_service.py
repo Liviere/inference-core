@@ -1,7 +1,7 @@
 import logging
 import uuid
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
@@ -72,11 +72,18 @@ class InstanceContext:
     WHY: Bundles instance-level identity so that memory namespacing,
     cost tracking, and logging can distinguish between different user
     instances of the same base agent.
+
+    subagent_configs is a dict mapping base_agent_name → override dict
+    (primary_model, system_prompt_override, system_prompt_append, etc.)
+    for subagents that have user instance overrides in the DB.
+    Forwarded to Agent Server configurable so SubagentConfigMiddleware
+    can apply per-subagent overrides at runtime.
     """
 
     instance_id: uuid.UUID
     instance_name: str
     base_agent_name: str
+    subagent_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class AgentService:
@@ -1353,6 +1360,14 @@ class AgentService:
             metadata["system_prompt_override"] = self._system_prompt_override
         if self._system_prompt_append is not None:
             metadata["system_prompt_append"] = self._system_prompt_append
+        # Forward subagent-specific overrides so SubagentConfigMiddleware
+        # on each subagent graph can apply per-user overrides at runtime.
+        if self.instance_context and self.instance_context.subagent_configs:
+            metadata["subagent_configs"] = self.instance_context.subagent_configs
+            logging.debug(
+                "Remote metadata includes subagent_configs for: %s",
+                list(self.instance_context.subagent_configs.keys()),
+            )
         # primary_model: if the resolved config changed the model vs. the
         # base YAML config, forward the override name so the server graph
         # uses the correct model.
@@ -1370,6 +1385,19 @@ class AgentService:
             interrupt_after = self.agent_config.interrupt_on.get("after")
 
         use_streaming = on_token is not None or on_step is not None
+
+        logging.debug(
+            "Remote agent '%s': metadata keys=%s, primary_model=%r, "
+            "subagent_configs=%s",
+            self.agent_name,
+            list(metadata.keys()),
+            metadata.get("primary_model"),
+            (
+                list(metadata["subagent_configs"].keys())
+                if "subagent_configs" in metadata
+                else "NONE"
+            ),
+        )
 
         def _capture_step(name: str, data: Any) -> None:
             steps.append({"name": name, "data": data})
@@ -1555,10 +1583,30 @@ class AgentService:
             instance, base_config=base_config
         )
 
+        # Build subagent_configs dict for Agent Server remote execution.
+        # Maps base_agent_name → override dict so SubagentConfigMiddleware
+        # on each subagent graph can apply per-user overrides at runtime.
+        subagent_configs: dict[str, dict[str, Any]] = {}
+        for sub in getattr(instance, "subagents", None) or []:
+            subagent_configs[sub.base_agent_name] = {
+                "instance_id": str(sub.id),
+                "instance_name": sub.instance_name,
+                "primary_model": sub.primary_model,
+                "system_prompt_override": sub.system_prompt_override,
+                "system_prompt_append": sub.system_prompt_append,
+            }
+        if subagent_configs:
+            logging.debug(
+                "Built subagent_configs for '%s': %s",
+                instance.instance_name,
+                list(subagent_configs.keys()),
+            )
+
         instance_ctx = InstanceContext(
             instance_id=instance.id,
             instance_name=instance.instance_name,
             base_agent_name=instance.base_agent_name,
+            subagent_configs=subagent_configs,
         )
 
         return cls(
@@ -1924,10 +1972,24 @@ class DeepAgentService(AgentService):
 
         # 3. Construct and return the service.  resolved_config propagates through
         #    LLMModelFactory so all model/config lookups use DB-overridden values.
+        # Build subagent_configs for Agent Server remote execution (same as
+        # base AgentService.from_user_instance — needed when DeepAgentService
+        # is used with execution_mode='remote').
+        subagent_configs: dict[str, dict[str, Any]] = {}
+        for sub in instance.subagents or []:
+            subagent_configs[sub.base_agent_name] = {
+                "instance_id": str(sub.id),
+                "instance_name": sub.instance_name,
+                "primary_model": sub.primary_model,
+                "system_prompt_override": sub.system_prompt_override,
+                "system_prompt_append": sub.system_prompt_append,
+            }
+
         instance_ctx = InstanceContext(
             instance_id=instance.id,
             instance_name=instance.instance_name,
             base_agent_name=instance.base_agent_name,
+            subagent_configs=subagent_configs,
         )
         return cls(
             agent_name=instance.base_agent_name,

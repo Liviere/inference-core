@@ -12,6 +12,7 @@ Covers:
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.messages import SystemMessage
 
 from inference_core.agents.middleware._runtime_context import clear
 from inference_core.agents.middleware.instance_config import InstanceConfigMiddleware
@@ -101,27 +102,29 @@ class TestWrapModelCallSystemPrompt:
     def test_override_replaces_system_message(self):
         mw = InstanceConfigMiddleware()
 
-        request = _make_request(system_message="Old prompt")
+        request = _make_request(system_message=SystemMessage(content="Old prompt"))
         handler = MagicMock(return_value="response")
 
         with _patch_configurable({"system_prompt_override": "New prompt"}):
             mw.wrap_model_call(request, handler)
 
         called_request = handler.call_args[0][0]
-        assert called_request.system_message == "New prompt"
+        assert isinstance(called_request.system_message, SystemMessage)
+        assert called_request.system_message.content == "New prompt"
 
     def test_append_concatenates_to_system_message(self):
         mw = InstanceConfigMiddleware()
 
-        request = _make_request(system_message="Base prompt")
+        request = _make_request(system_message=SystemMessage(content="Base prompt"))
         handler = MagicMock(return_value="response")
 
         with _patch_configurable({"system_prompt_append": "Extra instructions"}):
             mw.wrap_model_call(request, handler)
 
         called_request = handler.call_args[0][0]
-        assert "Base prompt" in called_request.system_message
-        assert "Extra instructions" in called_request.system_message
+        assert isinstance(called_request.system_message, SystemMessage)
+        assert "Base prompt" in called_request.system_message.content
+        assert "Extra instructions" in called_request.system_message.content
 
     def test_append_alone_when_no_base(self):
         mw = InstanceConfigMiddleware()
@@ -133,12 +136,13 @@ class TestWrapModelCallSystemPrompt:
             mw.wrap_model_call(request, handler)
 
         called_request = handler.call_args[0][0]
-        assert called_request.system_message == "Extra"
+        assert isinstance(called_request.system_message, SystemMessage)
+        assert called_request.system_message.content == "Extra"
 
     def test_override_takes_precedence_over_append(self):
         mw = InstanceConfigMiddleware()
 
-        request = _make_request(system_message="Base")
+        request = _make_request(system_message=SystemMessage(content="Base"))
         handler = MagicMock(return_value="response")
 
         with _patch_configurable(
@@ -150,7 +154,35 @@ class TestWrapModelCallSystemPrompt:
             mw.wrap_model_call(request, handler)
 
         called_request = handler.call_args[0][0]
-        assert called_request.system_message == "Override wins"
+        assert isinstance(called_request.system_message, SystemMessage)
+        assert called_request.system_message.content == "Override wins"
+
+    def test_empty_string_override_is_ignored(self):
+        """Empty string should NOT trigger override — prevents type corruption."""
+        mw = InstanceConfigMiddleware()
+
+        original_sm = SystemMessage(content="Keep me")
+        request = _make_request(system_message=original_sm)
+        handler = MagicMock(return_value="response")
+
+        with _patch_configurable({"system_prompt_override": ""}):
+            mw.wrap_model_call(request, handler)
+
+        # No override applied — original request passed through
+        handler.assert_called_once_with(request)
+
+    def test_empty_string_append_is_ignored(self):
+        """Empty string should NOT trigger append."""
+        mw = InstanceConfigMiddleware()
+
+        original_sm = SystemMessage(content="Keep me")
+        request = _make_request(system_message=original_sm)
+        handler = MagicMock(return_value="response")
+
+        with _patch_configurable({"system_prompt_append": ""}):
+            mw.wrap_model_call(request, handler)
+
+        handler.assert_called_once_with(request)
 
 
 class TestWrapModelCallCombined:
@@ -161,7 +193,7 @@ class TestWrapModelCallCombined:
 
         mw = InstanceConfigMiddleware(model_factory=mock_factory)
 
-        request = _make_request(system_message="Default prompt")
+        request = _make_request(system_message=SystemMessage(content="Default prompt"))
         handler = MagicMock(return_value="response")
 
         with _patch_configurable(
@@ -174,7 +206,8 @@ class TestWrapModelCallCombined:
 
         called_request = handler.call_args[0][0]
         assert called_request.model is mock_target
-        assert called_request.system_message == "Custom prompt"
+        assert isinstance(called_request.system_message, SystemMessage)
+        assert called_request.system_message.content == "Custom prompt"
 
 
 class TestBeforeAgent:

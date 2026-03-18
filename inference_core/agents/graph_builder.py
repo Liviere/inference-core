@@ -10,23 +10,28 @@ the server to serve.
 The Agent Server handles its own checkpointing (PostgreSQL / in-memory),
 so we intentionally omit checkpointer setup here.
 
-Middleware (CostTracking, ToolModelSwitch) is compiled into the graph so
-that Agent Server executions have the same observability and model-switching
-behaviour as local runs.  Per-request context (user_id, session_id) is
-resolved at runtime via ``runtime.configurable`` and ``contextvars``.
+Middleware (CostTracking, ToolModelSwitch, SubAgentMiddleware, SkillsMiddleware)
+is compiled into the graph so that Agent Server executions have the same
+observability, model-switching, sub-agent orchestration, and skills behaviour
+as local runs.  Per-request context (user_id, session_id) is resolved at
+runtime via ``runtime.configurable`` and ``contextvars``.
 """
 
 import asyncio
 import logging
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 from langchain.agents import create_agent
 
 from inference_core.llm.config import get_llm_config
-from inference_core.llm.models import get_model_factory
+from inference_core.llm.models import LLMModelFactory, get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 
 logger = logging.getLogger(__name__)
+
+# Base directory for resolving relative skill file paths in YAML config.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def build_agent_graph(
@@ -42,6 +47,10 @@ def build_agent_graph(
     without per-request runtime state (user_id, session, etc.).  Per-request
     context is resolved later via ``runtime.configurable`` + contextvars.
 
+    Automatically detects deep agents (those with ``subagents`` or ``skills``
+    in YAML config) and compiles SubAgentMiddleware / SkillsMiddleware into
+    the graph, mirroring the local DeepAgentService behaviour.
+
     Args:
         agent_name: Agent key in llm_config.yaml ``agents:`` section.
         extra_tools: Additional tools beyond what providers supply.
@@ -56,32 +65,16 @@ def build_agent_graph(
 
     # Load tools from registered providers (async → run in a fresh loop)
     tools = list(extra_tools or [])
-    configured_providers = agent_config.local_tool_providers or []
-
-    if configured_providers:
-        registered = get_registered_providers()
-        matched = [p for p in configured_providers if p in registered]
-        if matched:
-            try:
-                loop = asyncio.new_event_loop()
-                provider_tools = loop.run_until_complete(
-                    load_tools_for_agent(
-                        agent_name,
-                        matched,
-                        allowed_tools=agent_config.allowed_tools,
-                    )
-                )
-                tools.extend(provider_tools)
-                loop.close()
-            except Exception:
-                logger.exception(
-                    "Failed to load provider tools for agent '%s'", agent_name
-                )
+    _load_provider_tools(agent_name, agent_config, tools)
 
     effective_prompt = system_prompt or agent_config.description
 
     # Build middleware for Agent Server context
     middleware = _build_server_middleware(agent_name, agent_config, factory)
+
+    # Deep-agent support: compile SubAgentMiddleware and/or SkillsMiddleware
+    # into the graph when the YAML config declares subagents or skills.
+    _build_deep_agent_middleware(agent_config, factory, middleware)
 
     graph = create_agent(
         model,
@@ -91,11 +84,12 @@ def build_agent_graph(
     )
 
     logger.info(
-        "Built Agent Server graph for '%s' (model=%s, tools=%d, middleware=%d)",
+        "Built Agent Server graph for '%s' (model=%s, tools=%d, middleware=%d: [%s])",
         agent_name,
         factory.get_agent_model_name(agent_name),
         len(tools),
         len(middleware),
+        ", ".join(type(m).__name__ for m in middleware),
     )
     return graph
 
@@ -104,6 +98,8 @@ def _build_server_middleware(
     agent_name: str,
     agent_config: Any,
     factory: Any,
+    *,
+    include_instance_config: bool = True,
 ) -> list[Any]:
     """Build middleware list for an Agent Server graph.
 
@@ -113,13 +109,22 @@ def _build_server_middleware(
     populated from ``runtime.configurable``.
 
     Includes:
-        - InstanceConfigMiddleware (always, first): per-user model / prompt overrides
+        - InstanceConfigMiddleware (top-level graphs only): per-user model / prompt
+          overrides.  Excluded from subagent graphs because LangGraph propagates
+          the parent's ``configurable`` into subgraphs — if the subagent also ran
+          InstanceConfigMiddleware, it would read the *parent's* overrides
+          (e.g. primary_model) and erroneously swap its own model.
         - CostTrackingMiddleware (always): token/cost tracking per model step
         - ToolBasedModelSwitchMiddleware (if configured): model switching per tool
 
     MemoryMiddleware is NOT included here — it requires a Store instance
     with embedding setup and per-request user_id.  Will be added in a
     follow-up phase when the Agent Server supports store injection.
+
+    Args:
+        include_instance_config: Whether to include InstanceConfigMiddleware.
+            Must be ``False`` for subagent graphs to prevent configurable
+            leak from the parent graph.
     """
     from inference_core.agents.middleware.cost_tracking import CostTrackingMiddleware
     from inference_core.agents.middleware.instance_config import (
@@ -133,8 +138,19 @@ def _build_server_middleware(
     model_name = factory.get_agent_model_name(agent_name)
 
     # --- InstanceConfigMiddleware (model/prompt override from DB instance) ---
-    instance_middleware = InstanceConfigMiddleware(model_factory=factory)
-    middleware.append(instance_middleware)
+    # Excluded from subagent graphs: LangGraph propagates the parent's
+    # RunnableConfig.configurable into subgraph invocations, so the subagent
+    # would read the parent's primary_model / system_prompt_* and override
+    # its own config — making it look like "the agent calls itself".
+    if include_instance_config:
+        instance_middleware = InstanceConfigMiddleware(model_factory=factory)
+        middleware.append(instance_middleware)
+    else:
+        logger.debug(
+            "Skipping InstanceConfigMiddleware for subagent '%s' "
+            "(would inherit parent's configurable)",
+            agent_name,
+        )
 
     # --- CostTrackingMiddleware (user_id=None → resolved from runtime) ---
     pricing_config = None
@@ -189,3 +205,242 @@ def _build_server_middleware(
             )
 
     return middleware
+
+
+# ------------------------------------------------------------------
+# Tool loading
+# ------------------------------------------------------------------
+
+
+def _load_provider_tools(
+    agent_name: str,
+    agent_config: Any,
+    tools: list[Any],
+) -> None:
+    """Load tools from registered providers into *tools* (mutated in place).
+
+    WHY: Extracted from build_agent_graph so subagent compilation can
+    reuse the same async-loop-based loading logic.
+    """
+    configured_providers = agent_config.local_tool_providers or []
+    if not configured_providers:
+        return
+
+    registered = get_registered_providers()
+    matched = [p for p in configured_providers if p in registered]
+    if not matched:
+        return
+
+    try:
+        loop = asyncio.new_event_loop()
+        provider_tools = loop.run_until_complete(
+            load_tools_for_agent(
+                agent_name,
+                matched,
+                allowed_tools=agent_config.allowed_tools,
+            )
+        )
+        tools.extend(provider_tools)
+        loop.close()
+    except Exception:
+        logger.exception("Failed to load provider tools for agent '%s'", agent_name)
+
+
+# ------------------------------------------------------------------
+# Deep-agent support (SubAgentMiddleware + SkillsMiddleware)
+# ------------------------------------------------------------------
+
+
+def _build_deep_agent_middleware(
+    agent_config: Any,
+    factory: LLMModelFactory,
+    middleware: list[Any],
+    visited: Optional[set[str]] = None,
+) -> None:
+    """Add SubAgentMiddleware and/or SkillsMiddleware to *middleware*.
+
+    WHY: Deep agents (agents with ``subagents`` or ``skills`` in YAML config)
+    require additional middleware to support sub-agent orchestration and
+    skill-based prompt injection.  This mirrors the local DeepAgentService
+    logic but runs at graph-build time (module load).
+
+    SkillsMiddleware uses a FilesystemBackend that reads skills directly
+    from disk.  This avoids passing a custom InMemoryStore to create_agent(),
+    which LangGraph Platform rejects — the platform manages its own store.
+    """
+    from deepagents.backends import StateBackend
+    from deepagents.middleware import SkillsMiddleware, SubAgentMiddleware
+
+    has_subagents = bool(agent_config.subagents)
+    has_skills = bool(agent_config.skills)
+
+    if not has_subagents and not has_skills:
+        return
+
+    # --- SubAgentMiddleware ---
+    if has_subagents:
+        subagent_specs = _build_server_subagents(
+            agent_config.subagents, factory, visited=visited
+        )
+        if subagent_specs:
+            sub_middleware = SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=subagent_specs,
+            )
+            middleware.append(sub_middleware)
+
+    # --- SkillsMiddleware ---
+    if has_skills:
+        backend, skill_sources = _build_skills_backend(agent_config.skills)
+        skills_middleware = SkillsMiddleware(
+            backend=backend,
+            sources=skill_sources,
+        )
+        middleware.append(skills_middleware)
+
+
+def _build_server_subagents(
+    subagent_names: list[str],
+    factory: LLMModelFactory,
+    visited: Optional[set[str]] = None,
+) -> list[Any]:
+    """Compile YAML-defined subagents into CompiledSubAgent specs.
+
+    WHY: SubAgentMiddleware requires pre-compiled runnables.  For each
+    subagent name declared in the parent agent's ``subagents:`` list, we
+    build its model + tools + middleware and compile a full graph, then
+    wrap it as a CompiledSubAgent.  If the subagent itself has nested
+    subagents, the process recurses.
+
+    The compiled subagent graphs include CostTrackingMiddleware for
+    independent usage tracking, and SubagentConfigMiddleware for applying
+    per-user subagent overrides at runtime.
+
+    InstanceConfigMiddleware is intentionally EXCLUDED — LangGraph propagates
+    the parent's ``RunnableConfig.configurable`` into subgraph invocations,
+    so it would read the parent's ``primary_model`` / prompt overrides and
+    erroneously swap the subagent's own model.  SubagentConfigMiddleware
+    reads the nested ``subagent_configs[agent_name]`` dict instead, applying
+    only the overrides meant for this specific subagent.
+    """
+    from deepagents import CompiledSubAgent
+
+    from inference_core.agents.middleware.subagent_config import (
+        SubagentConfigMiddleware,
+    )
+
+    visited = visited or set()
+    specs: list[Any] = []
+
+    for name in subagent_names:
+        if name in visited:
+            logger.debug(
+                "Skipping subagent '%s' — already visited (recursion guard)", name
+            )
+            continue
+        visited.add(name)
+
+        sub_config = factory.config.get_specific_agent_config(name)
+        if not sub_config:
+            logger.warning("No config found for subagent '%s' — skipping", name)
+            continue
+
+        sub_model = factory.get_model_for_agent(name)
+        if sub_model is None:
+            logger.warning("Could not create model for subagent '%s' — skipping", name)
+            continue
+
+        # Load subagent's own tools
+        sub_tools: list[Any] = []
+        _load_provider_tools(name, sub_config, sub_tools)
+
+        # Build subagent's own server middleware (cost tracking, etc.)
+        # Exclude InstanceConfigMiddleware — subgraphs inherit the parent's
+        # configurable, so it would apply the parent's overrides to the child.
+        sub_middleware = _build_server_middleware(
+            name,
+            sub_config,
+            factory,
+            include_instance_config=False,
+        )
+
+        # Insert SubagentConfigMiddleware at position 0 so it runs first.
+        # It reads subagent-specific overrides from configurable["subagent_configs"]
+        # keyed by this subagent's base agent name — unlike InstanceConfigMiddleware,
+        # which would incorrectly read the parent's top-level primary_model.
+        subagent_config_mw = SubagentConfigMiddleware(
+            agent_name=name,
+            model_factory=factory,
+        )
+        sub_middleware.insert(0, subagent_config_mw)
+
+        # Recurse into nested deep-agent subagents + skills
+        _build_deep_agent_middleware(
+            sub_config, factory, sub_middleware, visited=set(visited)
+        )
+
+        sub_graph = create_agent(
+            sub_model,
+            tools=sub_tools,
+            middleware=sub_middleware or None,
+            system_prompt=(
+                sub_config.system_prompt or sub_config.description or f"You are {name}."
+            ),
+            name=name,
+        )
+
+        specs.append(
+            CompiledSubAgent(
+                name=name,
+                description=sub_config.description or f"Subagent {name}",
+                runnable=sub_graph,
+            )
+        )
+        logger.info(
+            "Compiled server subagent '%s' (model=%s, tools=%d, middleware=[%s])",
+            name,
+            factory.get_agent_model_name(name),
+            len(sub_tools),
+            ", ".join(type(m).__name__ for m in sub_middleware),
+        )
+
+    return specs
+
+
+def _build_skills_backend(
+    skill_paths: list[str],
+) -> tuple[Any, list[str]]:
+    """Create a FilesystemBackend and derive source directories for SkillsMiddleware.
+
+    WHY: SkillsMiddleware needs a backend to discover and read skill files.
+    On the Agent Server we use FilesystemBackend rooted at the project
+    directory so skills declared in YAML (e.g. 'skills/check_weather/SKILL.md')
+    are read directly from disk at runtime.  This avoids creating a custom
+    InMemoryStore, which LangGraph Platform rejects when passed to
+    ``create_agent(store=...)``.
+
+    Args:
+        skill_paths: Filesystem paths from YAML config (relative to project root).
+
+    Returns:
+        ``(backend, sources)`` — a FilesystemBackend instance and the list of
+        source directories to pass to ``SkillsMiddleware(sources=...)``.
+    """
+    from deepagents.backends.filesystem import FilesystemBackend
+
+    backend = FilesystemBackend(root_dir=_PROJECT_ROOT, virtual_mode=True)
+
+    # Derive unique source directories from skill file paths.
+    # e.g.  'skills/check_weather/SKILL.md'  →  source = 'skills/'
+    sources: list[str] = []
+    seen: set[str] = set()
+    for raw_path in skill_paths:
+        source_dir = str(PurePosixPath(raw_path).parent.parent)
+        if source_dir == ".":
+            source_dir = ""
+        normalized = source_dir.rstrip("/") + "/" if source_dir else "/"
+        if normalized not in seen:
+            seen.add(normalized)
+            sources.append(normalized)
+
+    return backend, sources

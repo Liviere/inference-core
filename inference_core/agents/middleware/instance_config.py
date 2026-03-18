@@ -32,12 +32,27 @@ from langchain.agents.middleware import (
     ModelRequest,
     ModelResponse,
 )
+from langchain_core.messages import SystemMessage
 from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
 from inference_core.agents.middleware._runtime_context import populate_from_configurable
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_system_text(system_message: SystemMessage | str | None) -> str:
+    """Extract plain text from a system message regardless of its type.
+
+    WHY: ``request.system_message`` may be a ``SystemMessage`` object (from
+    ``create_agent``) or a raw ``str`` (if another middleware already
+    corrupted it).  We need plain text to merge with ``prompt_append``.
+    """
+    if system_message is None:
+        return ""
+    if isinstance(system_message, SystemMessage):
+        return str(system_message.content)
+    return str(system_message)
 
 
 class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
@@ -150,6 +165,22 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
         prompt_override = configurable.get("system_prompt_override")
         prompt_append = configurable.get("system_prompt_append")
 
+        logger.debug(
+            "InstanceConfigMiddleware._apply_overrides: configurable keys=%s, "
+            "primary_model=%r, instance_name=%r, prompt_override=%r, prompt_append=%r, "
+            "subagent_configs=%s",
+            list(configurable.keys()),
+            override_model_name,
+            configurable.get("instance_name"),
+            prompt_override[:80] if prompt_override else None,
+            prompt_append[:80] if prompt_append else None,
+            (
+                list(configurable["subagent_configs"].keys())
+                if configurable.get("subagent_configs")
+                else "NONE"
+            ),
+        )
+
         # --- Model override ---
         if override_model_name:
             try:
@@ -166,13 +197,21 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
                 )
 
         # --- System prompt override ---
-        if prompt_override is not None:
-            request = request.override(system_message=prompt_override)
+        if prompt_override:
+            request = request.override(
+                system_message=SystemMessage(content=prompt_override),
+            )
             logger.debug("InstanceConfigMiddleware: applied system_prompt_override")
-        elif prompt_append is not None:
-            existing = request.system_message or ""
-            merged = f"{existing}\n\n{prompt_append}" if existing else prompt_append
-            request = request.override(system_message=merged)
+        elif prompt_append:
+            existing_text = _extract_system_text(request.system_message)
+            merged = (
+                f"{existing_text}\n\n{prompt_append}"
+                if existing_text
+                else prompt_append
+            )
+            request = request.override(
+                system_message=SystemMessage(content=merged),
+            )
             logger.debug("InstanceConfigMiddleware: appended to system_prompt")
 
         return request
