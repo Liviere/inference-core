@@ -509,8 +509,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         response = await handler(request)
 
-        # Persist LLMRequestLog immediately (see wrap_model_call docstring).
-        self._persist_from_response(response, request)
+        # Use the async persist path to avoid spawning a new event loop via
+        # finalize_sync / run_async_safely (which causes MissingGreenlet when
+        # the Agent Server runs this inside a ThreadPoolExecutor).
+        await self._apersist_from_response(response, request)
 
         return response
 
@@ -601,15 +603,117 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     # Internal helpers
     # -------------------------------------------------------------------------
 
+    def _build_usage_session(
+        self, response: ModelResponse, request: ModelRequest
+    ) -> tuple | None:
+        """Prepare a UsageSession and extract usage data from a model response.
+
+        Shared preparation logic for both sync (_persist_from_response) and
+        async (_apersist_from_response) persist paths, keeping both callers DRY.
+
+        Returns:
+            (session, fragment, extra_tokens, is_estimated, model_name,
+             pricing_config) or None if there is nothing to persist.
+        """
+        if not response.result:
+            return None
+
+        ai_message = response.result[-1]
+        usage_metadata = getattr(ai_message, "usage_metadata", None)
+        response_metadata = getattr(ai_message, "response_metadata", None) or {}
+        model_name = response_metadata.get("model_name", self._model_name or "unknown")
+
+        if usage_metadata and isinstance(usage_metadata, dict):
+            fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
+            is_estimated = False
+        else:
+            # Build full message list for estimation (request input + response output)
+            all_messages: list = []
+            if request.system_message:
+                all_messages.append(request.system_message)
+            all_messages.extend(request.messages)
+            all_messages.extend(response.result)
+            fragment = self._estimate_token_usage(all_messages)
+            extra_tokens = {}
+            is_estimated = True
+            if fragment:
+                logger.info(
+                    "usage_metadata unavailable for model=%s; "
+                    "falling back to estimated tokens (wrap_model_call): %s",
+                    model_name,
+                    fragment,
+                )
+
+        if not fragment:
+            return None
+
+        provider = self._provider or self._detect_provider(model_name)
+        pricing_config = self._get_pricing_config(model_name)
+
+        # Resolve per-request IDs: prefer instance attrs (local),
+        # fall back to task-local context vars (Agent Server).
+        effective_user_id = self.user_id or get_user_id()
+        effective_session_id = self.session_id or get_session_id()
+        effective_request_id = self.request_id or get_request_id()
+        effective_instance_id = self.instance_id or get_instance_id()
+        effective_instance_name = self.instance_name or get_instance_name()
+
+        session = UsageSession(
+            task_type=self.task_type,
+            request_mode=self.request_mode,
+            model_name=model_name,
+            provider=provider,
+            pricing_config=pricing_config,
+            user_id=effective_user_id,
+            session_id=effective_session_id,
+            request_id=effective_request_id,
+            logging_config=self.logging_config,
+            instance_id=effective_instance_id,
+            instance_name=effective_instance_name,
+        )
+
+        if self._ctx and self._ctx.model_call_start_time:
+            session.start_time = self._ctx.model_call_start_time
+
+        return session, fragment, extra_tokens, is_estimated, model_name, pricing_config
+
+    def _apply_persist_result(
+        self,
+        log_id,
+        fragment: Dict[str, Any],
+        extra_tokens: Dict[str, int],
+        is_estimated: bool,
+        model_name: str,
+        pricing_config,
+    ) -> None:
+        """Store persist results in middleware context after finalize.
+
+        Shared epilogue for both sync and async persist paths.
+        """
+        if log_id and self._ctx:
+            self._ctx.persisted_log_id = str(log_id)
+            self._ctx.persisted_fragment = fragment
+            self._ctx.persisted_extra_tokens = extra_tokens
+            self._ctx.persisted_is_estimated = is_estimated
+            self._ctx.persisted_model_name = model_name
+
+            if pricing_config:
+                cost_result = PricingCalculator.compute_cost(fragment, pricing_config)
+                self._ctx.persisted_cost_usd = cost_result.get("cost_total_usd", 0.0)
+
     def _persist_from_response(
         self, response: ModelResponse, request: ModelRequest
     ) -> None:
         """Extract usage from a ModelResponse and persist an LLMRequestLog.
 
-        Called from ``wrap_model_call`` / ``awrap_model_call`` so the DB
-        write happens inside the same LangGraph node as the model call.
-        Results are stored in ``self._ctx.persisted_*`` for ``after_model``
-        to propagate into graph state without a second DB write.
+        Called from ``wrap_model_call`` (sync path) so the DB write happens
+        inside the same LangGraph node as the model call. Results are stored
+        in ``self._ctx.persisted_*`` for ``after_model`` to propagate into
+        graph state without a second DB write.
+
+        For the async path (``awrap_model_call``) use
+        ``_apersist_from_response`` instead to avoid spawning a new event
+        loop via ``finalize_sync`` / ``run_async_safely``.
 
         This method is intentionally non-fatal: any exception is logged
         and swallowed so the agent flow is never interrupted by billing.
@@ -618,67 +722,18 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             return
 
         try:
-            if not response.result:
+            result = self._build_usage_session(response, request)
+            if result is None:
                 return
 
-            ai_message = response.result[-1]
-            usage_metadata = getattr(ai_message, "usage_metadata", None)
-            response_metadata = getattr(ai_message, "response_metadata", None) or {}
-            model_name = response_metadata.get(
-                "model_name", self._model_name or "unknown"
-            )
-
-            if usage_metadata and isinstance(usage_metadata, dict):
-                fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
-                is_estimated = False
-            else:
-                # Build full message list for estimation (request input + response output)
-                all_messages: list = []
-                if request.system_message:
-                    all_messages.append(request.system_message)
-                all_messages.extend(request.messages)
-                all_messages.extend(response.result)
-                fragment = self._estimate_token_usage(all_messages)
-                extra_tokens = {}
-                is_estimated = True
-                if fragment:
-                    logger.info(
-                        "usage_metadata unavailable for model=%s; "
-                        "falling back to estimated tokens (wrap_model_call): %s",
-                        model_name,
-                        fragment,
-                    )
-
-            if not fragment:
-                return
-
-            provider = self._provider or self._detect_provider(model_name)
-            pricing_config = self._get_pricing_config(model_name)
-
-            # Resolve per-request IDs: prefer instance attrs (local),
-            # fall back to task-local context vars (Agent Server).
-            effective_user_id = self.user_id or get_user_id()
-            effective_session_id = self.session_id or get_session_id()
-            effective_request_id = self.request_id or get_request_id()
-            effective_instance_id = self.instance_id or get_instance_id()
-            effective_instance_name = self.instance_name or get_instance_name()
-
-            session = UsageSession(
-                task_type=self.task_type,
-                request_mode=self.request_mode,
-                model_name=model_name,
-                provider=provider,
-                pricing_config=pricing_config,
-                user_id=effective_user_id,
-                session_id=effective_session_id,
-                request_id=effective_request_id,
-                logging_config=self.logging_config,
-                instance_id=effective_instance_id,
-                instance_name=effective_instance_name,
-            )
-
-            if self._ctx.model_call_start_time:
-                session.start_time = self._ctx.model_call_start_time
+            (
+                session,
+                fragment,
+                extra_tokens,
+                is_estimated,
+                model_name,
+                pricing_config,
+            ) = result
 
             log_id = session.finalize_sync(
                 success=True,
@@ -689,23 +744,63 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 details={"estimated": True} if is_estimated else None,
             )
 
-            if log_id:
-                self._ctx.persisted_log_id = str(log_id)
-                self._ctx.persisted_fragment = fragment
-                self._ctx.persisted_extra_tokens = extra_tokens
-                self._ctx.persisted_is_estimated = is_estimated
-                self._ctx.persisted_model_name = model_name
-
-                if pricing_config:
-                    cost_result = PricingCalculator.compute_cost(
-                        fragment, pricing_config
-                    )
-                    self._ctx.persisted_cost_usd = cost_result.get(
-                        "cost_total_usd", 0.0
-                    )
+            self._apply_persist_result(
+                log_id, fragment, extra_tokens, is_estimated, model_name, pricing_config
+            )
         except Exception as e:
             logger.warning(
                 "Failed to persist usage from wrap_model_call: %s",
+                e,
+                exc_info=True,
+            )
+
+    async def _apersist_from_response(
+        self, response: ModelResponse, request: ModelRequest
+    ) -> None:
+        """Async variant of _persist_from_response for use in awrap_model_call.
+
+        Directly awaits ``session.finalize()`` on the current event loop
+        instead of calling ``finalize_sync()`` (which spawns a new thread +
+        event loop via ``run_async_safely``).  This prevents MissingGreenlet
+        errors that occur when the Agent Server runs middleware code in a
+        ThreadPoolExecutor where the event loop differs from the one the DB
+        engine was originally created on.
+
+        This method is intentionally non-fatal: any exception is logged
+        and swallowed so the agent flow is never interrupted by billing.
+        """
+        if not self._ctx:
+            return
+
+        try:
+            result = self._build_usage_session(response, request)
+            if result is None:
+                return
+
+            (
+                session,
+                fragment,
+                extra_tokens,
+                is_estimated,
+                model_name,
+                pricing_config,
+            ) = result
+
+            log_id = await session.finalize(
+                success=True,
+                error=None,
+                final_usage=fragment,
+                streamed=False,
+                partial=False,
+                details={"estimated": True} if is_estimated else None,
+            )
+
+            self._apply_persist_result(
+                log_id, fragment, extra_tokens, is_estimated, model_name, pricing_config
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to persist usage from awrap_model_call: %s",
                 e,
                 exc_info=True,
             )
