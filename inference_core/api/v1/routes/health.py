@@ -212,3 +212,62 @@ async def ping() -> Dict[str, Any]:
         "timestamp": str(datetime.now(UTC).isoformat()),
         "status": "ok",
     }
+
+
+@router.get("/agent-server", response_model=StatusResponse)
+async def agent_server_health(
+    settings=Depends(get_settings),
+) -> StatusResponse:
+    """
+    LangGraph Agent Server connectivity check.
+
+    Verifies that the FastAPI backend can reach the Agent Server
+    and lists available graphs (assistants).
+    """
+    timestamp = str(datetime.now(UTC).isoformat())
+
+    if not settings.agent_server_enabled:
+        return StatusResponse(
+            status="disabled",
+            details={"message": "AGENT_SERVER_ENABLED is False"},
+            last_updated=timestamp,
+        )
+
+    if not settings.agent_server_url:
+        return StatusResponse(
+            status="misconfigured",
+            details={"message": "AGENT_SERVER_URL is not set"},
+            last_updated=timestamp,
+        )
+
+    try:
+        from inference_core.services.agent_server_client import get_agent_server_client
+
+        client = get_agent_server_client(settings)
+
+        # List available assistants/graphs — this is a lightweight GET
+        # that proves HTTP connectivity + server is operational.
+        assistants = await client.assistants.search(limit=50)
+        graph_ids = sorted(
+            {a.get("graph_id") or a.get("name", "unknown") for a in assistants}
+        )
+
+        return StatusResponse(
+            status="healthy",
+            details={
+                "url": settings.agent_server_url,
+                "assistants_count": len(assistants),
+                "graphs": graph_ids,
+            },
+            last_updated=timestamp,
+        )
+    except Exception as e:
+        return StatusResponse(
+            status="unreachable",
+            details={
+                "url": settings.agent_server_url,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+            last_updated=timestamp,
+        )
