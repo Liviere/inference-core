@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from inference_core.services.agent_server_client import (
+    _build_config,
     _forward_message_event,
     _forward_step_event,
     _resolve_graph_id,
@@ -408,3 +409,41 @@ class TestArunAgentStepsRemote:
         ):
             # _is_remote returns False, so it should try local path
             assert svc._is_remote is False
+
+
+# ---------------------------------------------------------------------------
+# _build_config — merges checkpoint + user context into configurable
+# ---------------------------------------------------------------------------
+
+
+class TestBuildConfig:
+    def test_empty_when_no_inputs(self):
+        assert _build_config(None, None) == {}
+
+    def test_checkpoint_keys_forwarded(self):
+        cfg = _build_config({"thread_id": "t1", "version": "v2"}, None)
+        assert cfg["configurable"]["version"] == "v2"
+        assert "thread_id" not in cfg["configurable"]
+
+    def test_user_context_from_metadata(self):
+        uid = str(uuid.uuid4())
+        cfg = _build_config(None, {"user_id": uid, "session_id": "s1"})
+        assert cfg["configurable"]["user_id"] == uid
+        assert cfg["configurable"]["session_id"] == "s1"
+
+    def test_merges_checkpoint_and_metadata(self):
+        uid = str(uuid.uuid4())
+        cfg = _build_config(
+            {"thread_id": "t1", "ns": "test"},
+            {"user_id": uid, "request_id": "r1", "unrelated_key": "ignored"},
+        )
+        assert cfg["configurable"]["ns"] == "test"
+        assert cfg["configurable"]["user_id"] == uid
+        assert cfg["configurable"]["request_id"] == "r1"
+        # Non-middleware keys from metadata should NOT be forwarded
+        assert "unrelated_key" not in cfg["configurable"]
+
+    def test_ignores_non_middleware_metadata_keys(self):
+        cfg = _build_config(None, {"source": "test", "agent_name": "bot"})
+        # No middleware keys → empty dict
+        assert cfg == {}

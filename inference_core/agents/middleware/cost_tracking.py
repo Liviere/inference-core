@@ -50,6 +50,14 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
+from inference_core.agents.middleware._runtime_context import (
+    get_instance_id,
+    get_instance_name,
+    get_request_id,
+    get_session_id,
+    get_user_id,
+    populate_from_configurable,
+)
 from inference_core.llm.config import PricingConfig, UsageLoggingConfig, get_llm_config
 from inference_core.llm.usage_logging import PricingCalculator, UsageSession
 from inference_core.services._cancel import AgentCancelled
@@ -228,13 +236,17 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     def before_agent(
         self, state: CostTrackingState, runtime: Runtime
     ) -> Dict[str, Any] | None:
-        """Re-Initialize context and state counters
+        """Re-Initialize context and state counters.
 
-        In some cases (e.g., resuming after HumanInTheLoop interruption) before_agent may not be called,
-        so we defensively ensure context is initialized if not already present.
-        This allows after_model to function correctly even if before_agent was skipped.
+        Also populates per-request context vars from ``runtime.configurable``
+        so that wrap-style hooks (which don't receive ``runtime``) can
+        resolve user_id / session_id in a concurrency-safe way.
         """
-        #
+        # Populate task-local context vars from Agent Server configurable
+        configurable = getattr(runtime, "configurable", None)
+        if isinstance(configurable, dict) and configurable:
+            populate_from_configurable(configurable)
+
         if not self._ctx:
             return self._init_context()
 
@@ -359,12 +371,12 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     model_name=model_name,
                     provider=provider,
                     pricing_config=pricing_config,
-                    user_id=self.user_id,
-                    session_id=self.session_id,
-                    request_id=self.request_id,
+                    user_id=self.user_id or get_user_id(),
+                    session_id=self.session_id or get_session_id(),
+                    request_id=self.request_id or get_request_id(),
                     logging_config=self.logging_config,
-                    instance_id=self.instance_id,
-                    instance_name=self.instance_name,
+                    instance_id=self.instance_id or get_instance_id(),
+                    instance_name=self.instance_name or get_instance_name(),
                 )
 
                 # Align latency window with actual model call if recorded
@@ -636,18 +648,26 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             provider = self._provider or self._detect_provider(model_name)
             pricing_config = self._get_pricing_config(model_name)
 
+            # Resolve per-request IDs: prefer instance attrs (local),
+            # fall back to task-local context vars (Agent Server).
+            effective_user_id = self.user_id or get_user_id()
+            effective_session_id = self.session_id or get_session_id()
+            effective_request_id = self.request_id or get_request_id()
+            effective_instance_id = self.instance_id or get_instance_id()
+            effective_instance_name = self.instance_name or get_instance_name()
+
             session = UsageSession(
                 task_type=self.task_type,
                 request_mode=self.request_mode,
                 model_name=model_name,
                 provider=provider,
                 pricing_config=pricing_config,
-                user_id=self.user_id,
-                session_id=self.session_id,
-                request_id=self.request_id,
+                user_id=effective_user_id,
+                session_id=effective_session_id,
+                request_id=effective_request_id,
                 logging_config=self.logging_config,
-                instance_id=self.instance_id,
-                instance_name=self.instance_name,
+                instance_id=effective_instance_id,
+                instance_name=effective_instance_name,
             )
 
             if self._ctx.model_call_start_time:

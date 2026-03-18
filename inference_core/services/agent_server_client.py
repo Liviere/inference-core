@@ -64,6 +64,34 @@ def _resolve_graph_id(agent_name: str, remote_graph_id: Optional[str]) -> str:
     return remote_graph_id or agent_name
 
 
+def _build_config(
+    checkpoint_config: Optional[dict[str, Any]],
+    metadata: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the ``config`` dict for an Agent Server run.
+
+    WHY: Middleware on the Agent Server resolves per-request context
+    (user_id, session_id, …) from ``runtime.configurable``.  We merge
+    checkpoint keys *and* user-level keys from metadata into a single
+    configurable block so both checkpointing and middleware work.
+    """
+    configurable: dict[str, Any] = {}
+
+    if checkpoint_config:
+        configurable.update(
+            {k: v for k, v in checkpoint_config.items() if k != "thread_id"}
+        )
+
+    # Forward middleware-relevant keys from metadata → configurable
+    _MW_KEYS = ("user_id", "session_id", "request_id", "instance_id", "instance_name")
+    if metadata:
+        for key in _MW_KEYS:
+            if key in metadata:
+                configurable[key] = metadata[key]
+
+    return {"configurable": configurable} if configurable else {}
+
+
 async def run_remote(
     *,
     agent_name: str,
@@ -94,11 +122,7 @@ async def run_remote(
     run_metadata["source"] = "inference_core"
     run_metadata["agent_name"] = agent_name
 
-    config: dict[str, Any] = {}
-    if checkpoint_config:
-        config["configurable"] = {
-            k: v for k, v in checkpoint_config.items() if k != "thread_id"
-        }
+    config = _build_config(checkpoint_config, metadata)
 
     logger.info(
         "Remote run → graph=%s thread=%s",
@@ -154,11 +178,7 @@ async def stream_remote(
     run_metadata["source"] = "inference_core"
     run_metadata["agent_name"] = agent_name
 
-    config: dict[str, Any] = {}
-    if checkpoint_config:
-        config["configurable"] = {
-            k: v for k, v in checkpoint_config.items() if k != "thread_id"
-        }
+    config = _build_config(checkpoint_config, metadata)
 
     # Use messages+updates streaming for token-level + step-level events
     stream_mode = ["messages", "updates"] if on_token else "updates"
