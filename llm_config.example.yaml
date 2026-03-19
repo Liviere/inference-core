@@ -473,6 +473,15 @@ agents:
         trigger: 'after_tool'
         description: 'Use nano model for simple follow-ups after lookups'
 
+  # Example: Agent running on remote LangGraph Agent Server
+  # Requires AGENT_SERVER_ENABLED=True and AGENT_SERVER_URL in .env
+  # remote_agent:
+  #   primary: 'gpt-5-mini'
+  #   description: 'Agent delegated to LangGraph Agent Server'
+  #   execution_mode: 'remote'             # 'local' (default) or 'remote'
+  #   remote_graph_id: 'my_graph'          # Graph ID on Agent Server (defaults to agent name)
+  #   local_tool_providers: []             # Tools are loaded on the server side
+
 # =============================================================================
 # EMBEDDING PROVIDERS (only used when EMBEDDING_BACKEND=remote)
 # =============================================================================

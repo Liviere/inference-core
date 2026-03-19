@@ -37,6 +37,9 @@ if TYPE_CHECKING:
         AgentMemoryStoreService,
     )
 
+from inference_core.agents.middleware._runtime_context import (
+    get_user_id as _ctx_get_user_id,
+)
 from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
 
 logger = logging.getLogger(__name__)
@@ -90,7 +93,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     def __init__(
         self,
         memory_service: "AgentMemoryStoreService",
-        user_id: str,
+        user_id: Optional[str] = None,
         auto_recall: bool = True,
         max_recall_results: int = 5,
         include_memory_types: Optional[List[str]] = None,
@@ -100,7 +103,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         Args:
             memory_service: AgentMemoryStoreService instance for memory operations.
-            user_id: User ID for memory namespace isolation.
+            user_id: User ID for memory namespace isolation.  When ``None``
+                (Agent Server), resolved at runtime from
+                ``runtime.configurable["user_id"]`` via context vars.
             auto_recall: Whether to automatically recall memories in before_agent.
             max_recall_results: Maximum number of memories to recall per category.
             include_memory_types: Memory types to include in context.
@@ -129,6 +134,23 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self._ctx: Optional[_MemoryMiddlewareContext] = None
         # Cached memory context for injection into system prompt
         self._cached_memory_context: Optional[str] = None
+
+    # -------------------------------------------------------------------------
+    # Deferred user_id resolution
+    # -------------------------------------------------------------------------
+
+    def _resolve_user_id(self) -> Optional[str]:
+        """Return user_id — instance attribute or context-var fallback.
+
+        WHY: On the Agent Server the middleware singleton is shared across
+        concurrent requests so ``self.user_id`` is ``None``.  The actual
+        value is set per-request via ``populate_from_configurable()`` which
+        writes to ``_runtime_context._user_id``.
+        """
+        if self.user_id is not None:
+            return self.user_id
+        ctx_uid = _ctx_get_user_id()
+        return str(ctx_uid) if ctx_uid is not None else None
 
     # -------------------------------------------------------------------------
     # Node-style hooks
@@ -163,6 +185,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         # Reset cached context for new invocation
         self._cached_memory_context = None
 
+        resolved_uid = self._resolve_user_id()
+        if not resolved_uid:
+            logger.warning(
+                "Memory recall skipped — no user_id available (instance=%s, ctx=%s)",
+                self.user_id,
+                _ctx_get_user_id(),
+            )
+            return None
+
         # Extract user input from messages
         user_input = self._extract_user_input(state)
         if not user_input:
@@ -171,10 +202,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         try:
             # Recall memories using asyncio.run() since hooks are synchronous
-            memory_context, metrics = self._recall_and_format(user_input)
+            memory_context, metrics = self._recall_and_format(user_input, resolved_uid)
 
             if not memory_context:
-                logger.debug("No relevant memories found for user=%s", self.user_id)
+                logger.debug("No relevant memories found for user=%s", resolved_uid)
                 return {
                     "memories_recalled": 0,
                     "memory_recall_latency_ms": metrics.get("latency_ms", 0),
@@ -187,7 +218,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             logger.info(
                 "Recalled memory context: %d memories for user=%s (%.1fms)",
                 metrics.get("count", 0),
-                self.user_id,
+                resolved_uid,
                 metrics.get("latency_ms", 0),
             )
 
@@ -248,7 +279,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
             logger.debug(
                 "Injected memory context into system prompt for user=%s",
-                self.user_id,
+                self._resolve_user_id(),
             )
 
             return handler(request.override(system_message=new_system_message))
@@ -325,30 +356,36 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         return None
 
-    def _recall_and_format(self, user_input: str) -> tuple[str, Dict[str, Any]]:
+    def _recall_and_format(
+        self,
+        user_input: str,
+        user_id: Optional[str] = None,
+    ) -> tuple[str, Dict[str, Any]]:
         """Recall memories across CoALA categories and format as structured context.
 
         Uses run_async_safely() to reuse the Celery worker loop when available.
 
         Args:
             user_input: User's query for relevance-based recall
+            user_id: Resolved user_id (falls back to self.user_id).
 
         Returns:
             Tuple of (formatted_context, metrics_dict)
         """
+        uid = user_id or self.user_id
         start_time = time.monotonic()
 
         async def _async_recall():
             """Async function to perform CoALA multi-category recall."""
             context = await self.memory_service.format_context_for_prompt(
-                user_id=self.user_id,
+                user_id=uid,
                 query=user_input,
                 include_types=self.include_memory_types,
                 include_categories=self.include_categories,
             )
 
             memories_by_type = await self.memory_service.get_user_context(
-                user_id=self.user_id,
+                user_id=uid,
                 memory_types=self.include_memory_types,
             )
 
@@ -363,6 +400,52 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             logger.error("Memory recall failed: %s", e)
             return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
 
+        return self._build_recall_metrics(context, memories_by_type, start_time)
+
+    async def _arecall_and_format(
+        self,
+        user_input: str,
+        user_id: Optional[str] = None,
+    ) -> tuple[str, Dict[str, Any]]:
+        """Async recall path — used by Agent Server (avoids run_async_safely).
+
+        WHY: On the Agent Server the before_agent hook runs inside an already-
+        running event loop.  Using ``run_async_safely`` would spin up a new
+        thread+loop, which can trigger MissingGreenlet errors with SQLAlchemy
+        async connections.  This method directly awaits the async memory
+        service instead.
+        """
+        uid = user_id or self.user_id
+        start_time = time.monotonic()
+
+        try:
+            context = await self.memory_service.format_context_for_prompt(
+                user_id=uid,
+                query=user_input,
+                include_types=self.include_memory_types,
+                include_categories=self.include_categories,
+            )
+
+            memories_by_type = await self.memory_service.get_user_context(
+                user_id=uid,
+                memory_types=self.include_memory_types,
+            )
+        except TimeoutError:
+            logger.error("Memory recall timed out (async)")
+            return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
+        except Exception as e:
+            logger.error("Memory recall failed (async): %s", e)
+            return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
+
+        return self._build_recall_metrics(context, memories_by_type, start_time)
+
+    def _build_recall_metrics(
+        self,
+        context: str,
+        memories_by_type: Dict[str, Any],
+        start_time: float,
+    ) -> tuple[str, Dict[str, Any]]:
+        """Shared metrics builder for sync and async recall paths."""
         latency_ms = (time.monotonic() - start_time) * 1000
 
         total_count = sum(len(mems) for mems in memories_by_type.values())
@@ -392,7 +475,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
 def create_memory_middleware(
     memory_service: AgentMemoryStoreService,
-    user_id: str,
+    user_id: Optional[str] = None,
     auto_recall: bool = True,
     max_recall_results: int = 5,
     include_memory_types: Optional[List[str]] = None,
@@ -403,7 +486,8 @@ def create_memory_middleware(
 
     Args:
         memory_service: AgentMemoryStoreService instance
-        user_id: User ID for memory namespace
+        user_id: User ID for memory namespace.  ``None`` for Agent Server
+            (resolved at runtime from configurable).
         auto_recall: Enable automatic memory recall in before_agent
         max_recall_results: Max memories to recall per category
         include_memory_types: Memory types to include (uses canonical MemoryType values)

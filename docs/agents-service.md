@@ -71,6 +71,19 @@ optional `cancel_check` callback. The callback is evaluated after streaming
 chunks and before model or tool calls. When it returns `True`, the service
 raises `AgentCancelled` and stops the run.
 
+Both methods also accept `graceful_cancel=True` by default. In this mode the
+service injects a callback that raises `GraphInterrupt` from inside the active
+LLM stream on the next token. This changes cancellation semantics in two useful
+ways:
+
+- the provider HTTP stream is closed immediately, so no extra output tokens are billed after cancellation
+- the LangGraph parent run completes as a clean interrupt, so LangSmith shows the graph-level trace as success instead of failure
+
+After the interrupt, the service drains the small number of remaining internal
+LangGraph bookkeeping events before returning control. Set
+`graceful_cancel=False` only if you prefer an immediate hard close and accept a
+failed LangSmith trace for that run.
+
 ```python
 from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agents_service import AgentService
@@ -82,6 +95,7 @@ try:
   response = await service.arun_agent_steps(
     "Summarize the latest release notes",
     cancel_check=lambda: should_stop,
+    graceful_cancel=True,
   )
 except AgentCancelled:
   # Partial usage logs for completed model calls are already persisted.
@@ -101,9 +115,17 @@ is the streamed fragment and `meta` contains:
 - `type` – `text`, `reasoning`, or `tool_call`
 - `node` – LangGraph node that emitted the fragment
 - `agent_name` – optional sub-agent name when available
+- `ns` – optional LangGraph subgraph namespace path for remote Agent Server v2 streams
 
 This makes it possible to stream normal answer tokens, reasoning blocks, and
 partial tool-call arguments without losing the existing step/update stream.
+Tokens emitted by middleware nodes are filtered out, so UI integrations only
+receive the main agent/model output.
+
+For remote Agent Server execution, `stream_remote()` now consumes LangGraph
+Platform v2 stream events (`version="v2"`) with `stream_subgraphs=True`.
+When a token or step originates from a subgraph, the callback metadata carries
+`ns` so UI layers can distinguish parent-agent output from subagent output.
 
 ```python
 from inference_core.services.agents_service import AgentService
@@ -194,3 +216,57 @@ exists, the save is skipped to avoid duplicates.
   `AGENTS_CONFIG_PATH`).
 - When enabling checkpointing per agent, ensure the configured database is
   reachable from the API/Celery containers.
+
+## Remote Execution (LangGraph Agent Server)
+
+Agents can be executed remotely via the [LangGraph Platform](https://docs.langchain.com/langsmith/agent-server) instead of running in-process. This is controlled per-agent in `llm_config.yaml`:
+
+```yaml
+agents:
+  default_agent:
+    primary: 'gemini-3-flash-preview'
+    execution_mode: 'remote'   # delegates to Agent Server
+    # remote_graph_id: 'custom_id'  # optional, defaults to agent name
+```
+
+### How It Works
+
+1. `AgentService._is_remote` checks both `AGENT_SERVER_ENABLED=true` and the agent's `execution_mode: 'remote'`.
+2. `arun_agent_steps()` delegates to `_arun_agent_steps_remote()` which calls `agent_server_client.run_remote()` or `stream_remote()`.
+3. The Agent Server runs the same graph (built by `graph_builder.py` from the same YAML config).
+4. Results are wrapped in the standard `AgentResponse` — callers don't need to know whether execution was local or remote.
+
+The sync `run_agent_steps()` raises `RuntimeError` for remote agents — use `arun_agent_steps()` instead.
+
+Remote streaming uses LangGraph Platform v2 events and enables
+`stream_subgraphs=True`, so `on_token` / `on_step` callbacks may receive an
+`ns` field in metadata for subgraph-originated output.
+
+### Development Setup
+
+```bash
+# Start Agent Server (lightweight, no Docker, hot reload)
+poetry run langgraph dev --no-browser
+
+# In .env
+AGENT_SERVER_ENABLED=true
+AGENT_SERVER_URL=http://localhost:2024
+```
+
+Graphs are defined in `langgraph.json` → `agent_graphs.py` → `graph_builder.py`. The builder reads the same `llm_config.yaml` to create identical model + tool configurations.
+
+### Architecture
+
+```
+FastAPI / Celery Task
+    → AgentService.arun_agent_steps()
+        → _is_remote? ─── Yes ──→ agent_server_client.run_remote()
+        │                              → langgraph-sdk HTTP → Agent Server (port 2024/8123)
+        └── No ──→ local LangGraph execution (create_agent + stream)
+```
+
+### Testing
+
+- Unit tests mock `agent_server_client` — no server needed (`tests/unit/services/test_agent_server_client.py`)
+- Integration tests require a running server and use `@pytest.mark.agent_server` (`tests/integration/test_agent_server.py`)
+- Integration tests auto-skip when the server is not reachable

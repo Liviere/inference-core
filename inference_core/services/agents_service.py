@@ -1,7 +1,7 @@
 import logging
 import uuid
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
@@ -72,11 +72,18 @@ class InstanceContext:
     WHY: Bundles instance-level identity so that memory namespacing,
     cost tracking, and logging can distinguish between different user
     instances of the same base agent.
+
+    subagent_configs is a dict mapping base_agent_name → override dict
+    (primary_model, system_prompt_override, system_prompt_append, etc.)
+    for subagents that have user instance overrides in the DB.
+    Forwarded to Agent Server configurable so SubagentConfigMiddleware
+    can apply per-subagent overrides at runtime.
     """
 
     instance_id: uuid.UUID
     instance_name: str
     base_agent_name: str
+    subagent_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class AgentService:
@@ -200,14 +207,30 @@ class AgentService:
             return self.instance_context.instance_name
         return self.agent_name
 
+    @property
+    def _is_remote(self) -> bool:
+        """Whether this agent should delegate to the remote Agent Server.
+
+        WHY: Central check used by run/arun/stream to decide execution
+        path.  Returns True only when both the global feature flag AND
+        the per-agent YAML setting are active.
+        """
+        settings = get_settings()
+        return (
+            settings.agent_server_enabled
+            and self.agent_config.execution_mode == "remote"
+        )
+
     def set_cancel_check(self, cancel_check: Callable[[], bool] | None) -> None:
-        """Propagate a cancellation callback to CostTrackingMiddleware.
+        """Propagate a cancellation callback to middleware.
 
         When set, the middleware will check this callback before each model
         and tool call, raising ``AgentCancelled`` if it returns ``True``.
         """
         for mw in self._middleware:
             if isinstance(mw, CostTrackingMiddleware):
+                mw.cancel_check = cancel_check
+            elif hasattr(mw, "cancel_check"):
                 mw.cancel_check = cancel_check
 
     async def create_agent(
@@ -846,6 +869,12 @@ class AgentService:
             return
 
         node = metadata.get("langgraph_node", "")
+
+        # Skip tokens emitted by middleware nodes (e.g.
+        # PromptInjectionGuardMiddleware, CostTrackingMiddleware) — only
+        # the main agent / model tokens should reach the UI.
+        if "Middleware" in node:
+            return
         agent_name = metadata.get("lc_agent_name")
 
         base_meta: dict[str, Any] = {"node": node}
@@ -878,6 +907,7 @@ class AgentService:
         on_step: Callable[[str, Any], None] | None = None,
         on_token: Callable[[str, dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        graceful_cancel: bool = True,
     ) -> AgentResponse:
         """Execute the agent with the given input and return the response.
 
@@ -903,13 +933,30 @@ class AgentService:
             cancel_check: Optional callable that returns ``True`` when the
                           execution should be cancelled.  Checked after every
                           streaming chunk.
+            graceful_cancel: When True and *cancel_check* fires, a
+                ``GraphInterrupt`` is raised inside the LLM via a callback.
+                This stops token generation *immediately* (HTTP connection
+                closed, no further billing) and LangGraph treats the
+                interrupt as a clean pause — LangSmith graph-level trace
+                shows Success.  A brief blocking drain consumes the few
+                remaining internal events.
+                Set to False for instant cancellation via ``.close()`` at
+                the cost of a failed LangSmith trace.
 
         Returns:
             AgentResponse with result, steps, metadata, and optional cost metrics.
 
         Raises:
             AgentCancelled: If *cancel_check* returns ``True``.
+            RuntimeError: If agent is configured for remote execution (use arun_agent_steps instead).
         """
+        if self._is_remote:
+            raise RuntimeError(
+                f"Agent '{self.display_name}' is configured for remote execution "
+                f"(execution_mode='remote'). Use arun_agent_steps() instead — "
+                f"the sync run_agent_steps() does not support remote delegation."
+            )
+
         steps = []
         start_time = datetime.now(UTC)
 
@@ -923,85 +970,124 @@ class AgentService:
         accumulated_state: dict[str, Any] = {}
         last_agent_result: dict[str, Any] = {}
 
+        from inference_core.services.stream_utils import (
+            StreamCancelCallback,
+            SyncInterruptibleStream,
+        )
+
         # When on_token is provided, stream both updates and messages so
         # that LLM tokens are emitted alongside the normal state updates.
         use_token_streaming = on_token is not None
         stream_mode: Any = ["updates", "messages"] if use_token_streaming else "updates"
 
-        for chunk in self.agent.stream(
+        # Build config; inject StreamCancelCallback so we can raise
+        # GraphInterrupt inside the LLM to stop token generation.
+        cancel_cb: StreamCancelCallback | None = None
+        stream_config: dict[str, Any] = {"configurable": configurable}
+        if graceful_cancel:
+            cancel_cb = StreamCancelCallback()
+            stream_config["callbacks"] = [cancel_cb]
+
+        raw_stream = self.agent.stream(
             {"messages": messages},
-            {"configurable": configurable},
+            stream_config,
             stream_mode=stream_mode,
             context=context,
-        ):
-            # ------ Multi-mode (tuples) vs single-mode (dicts) ------
-            if use_token_streaming:
-                # chunk is a tuple: (mode_name, payload)
-                mode, payload = chunk
+        )
 
-                if mode == "messages":
-                    # payload = (AIMessageChunk, metadata_dict)
-                    token, meta = payload
-                    try:
-                        self._process_message_chunk(token, meta, on_token)
-                    except Exception:
-                        pass  # best-effort
+        # Wrap in SyncInterruptibleStream for clean shutdown.
+        # When the cancel callback fires GraphInterrupt, the LLM stops;
+        # remaining cheap internal LangGraph events are drained blocking.
+        if graceful_cancel:
+            stream: Any = SyncInterruptibleStream(raw_stream, cancel_callback=cancel_cb)
+        else:
+            stream = raw_stream
 
-                    # Check cancellation after each token for fast interrupts
-                    if cancel_check:
+        try:
+            for chunk in stream:
+                # ------ Multi-mode (tuples) vs single-mode (dicts) ------
+                if use_token_streaming:
+                    # chunk is a tuple: (mode_name, payload)
+                    mode, payload = chunk
+
+                    if mode == "messages":
+                        # payload = (AIMessageChunk, metadata_dict)
+                        token, meta = payload
                         try:
-                            if cancel_check():
-                                raise AgentCancelled(
-                                    "Agent execution cancelled by user"
-                                )
-                        except AgentCancelled:
-                            raise
+                            self._process_message_chunk(token, meta, on_token)
                         except Exception:
-                            pass
-                    continue
+                            pass  # best-effort
 
-                # mode == "updates" — fall through to existing logic
-                chunk = payload
+                        # Check cancellation after each token for fast interrupts
+                        if cancel_check:
+                            try:
+                                if cancel_check():
+                                    raise AgentCancelled(
+                                        "Agent execution cancelled by user"
+                                    )
+                            except AgentCancelled:
+                                raise
+                            except Exception:
+                                pass
+                        continue
 
-            for step, data in chunk.items():
-                steps.append({"name": step, "data": data})
+                    # mode == "updates" — fall through to existing logic
+                    chunk = payload
 
-                if on_step:
+                for step, data in chunk.items():
+                    steps.append({"name": step, "data": data})
+
+                    if on_step:
+                        try:
+                            on_step(step, data)
+                        except Exception:
+                            pass  # best-effort, never break agent execution
+
+                    # Accumulate state updates
+                    if isinstance(data, dict):
+                        # Track cost-related fields from middleware
+                        for key in [
+                            "accumulated_input_tokens",
+                            "accumulated_output_tokens",
+                            "accumulated_total_tokens",
+                            "accumulated_extra_tokens",
+                            "model_call_count",
+                            "tool_call_count",
+                            "usage_session_id",
+                        ]:
+                            if key in data:
+                                accumulated_state[key] = data[key]
+
+                        # Track agent result (messages, etc.) - skip middleware-only updates
+                        if "messages" in data:
+                            last_agent_result = data
+                    elif step == "__interrupt__":
+                        last_agent_result = {"__interrupt__": data}
+
+                # Check cancellation flag after processing each chunk
+                if cancel_check:
                     try:
-                        on_step(step, data)
+                        if cancel_check():
+                            raise AgentCancelled("Agent execution cancelled by user")
+                    except AgentCancelled:
+                        raise
                     except Exception:
-                        pass  # best-effort, never break agent execution
-
-                # Accumulate state updates
-                if isinstance(data, dict):
-                    # Track cost-related fields from middleware
-                    for key in [
-                        "accumulated_input_tokens",
-                        "accumulated_output_tokens",
-                        "accumulated_total_tokens",
-                        "accumulated_extra_tokens",
-                        "model_call_count",
-                        "tool_call_count",
-                        "usage_session_id",
-                    ]:
-                        if key in data:
-                            accumulated_state[key] = data[key]
-
-                    # Track agent result (messages, etc.) - skip middleware-only updates
-                    if "messages" in data:
-                        last_agent_result = data
-                elif step == "__interrupt__":
-                    last_agent_result = {"__interrupt__": data}
-
-            # Check cancellation flag after processing each chunk
-            if cancel_check:
+                        pass  # best-effort, never break on check errors
+        except AgentCancelled:
+            # Trigger GraphInterrupt in the LLM (stops token generation)
+            # and drain remaining internal events for a clean LangSmith trace.
+            if graceful_cancel and isinstance(stream, SyncInterruptibleStream):
+                stream.close()
+            raise
+        finally:
+            # For non-cancel exits (normal completion or unexpected errors)
+            # close the raw generator to free resources.  If already drained
+            # by the except block, .close() on an exhausted generator is a no-op.
+            if hasattr(raw_stream, "close"):
                 try:
-                    if cancel_check():
-                        raise AgentCancelled("Agent execution cancelled by user")
-                except AgentCancelled:
-                    raise
+                    raw_stream.close()
                 except Exception:
-                    pass  # best-effort, never break on check errors
+                    pass
 
         # Use the last result that contained messages, or fallback to last step
         if last_agent_result:
@@ -1051,14 +1137,41 @@ class AgentService:
         on_step: Callable[[str, Any], None] | None = None,
         on_token: Callable[[str, dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        graceful_cancel: bool = True,
     ) -> AgentResponse:
         """Async version of run_agent_steps using astream.
 
         Use this in async contexts (e.g. FastAPI endpoints) to avoid
         asyncio event-loop conflicts.
 
+        Args:
+            graceful_cancel: When True and *cancel_check* fires, a
+                ``GraphInterrupt`` is raised inside the LLM via a callback.
+                This stops token generation *immediately* (HTTP connection
+                closed, no further billing) and LangGraph treats the
+                interrupt as a clean pause — LangSmith graph-level trace
+                shows Success.  A brief background drain consumes the few
+                remaining internal events.
+                Set to False for instant cancellation via ``aclose()`` at
+                the cost of a failed LangSmith trace.
+
         See :meth:`run_agent_steps` for a full description of *on_token*.
         """
+        # --- Remote execution path ---
+        if self._is_remote:
+            return await self._arun_agent_steps_remote(
+                user_input=user_input,
+                on_step=on_step,
+                on_token=on_token,
+                cancel_check=cancel_check,
+            )
+
+        # --- Local execution path ---
+        from inference_core.services.stream_utils import (
+            InterruptibleStream,
+            StreamCancelCallback,
+        )
+
         steps = []
         start_time = datetime.now(UTC)
         messages = [HumanMessage(content=user_input)]
@@ -1072,72 +1185,98 @@ class AgentService:
         use_token_streaming = on_token is not None
         stream_mode: Any = ["updates", "messages"] if use_token_streaming else "updates"
 
-        async for chunk in self.agent.astream(
+        # Build config; inject StreamCancelCallback so we can raise
+        # GraphInterrupt inside the LLM to stop token generation.
+        cancel_cb: StreamCancelCallback | None = None
+        stream_config: dict[str, Any] = {"configurable": configurable}
+        if graceful_cancel:
+            cancel_cb = StreamCancelCallback()
+            stream_config["callbacks"] = [cancel_cb]
+
+        raw_stream = self.agent.astream(
             {"messages": messages},
-            {"configurable": configurable},
+            stream_config,
             stream_mode=stream_mode,
             context=context,
-        ):
-            # ------ Multi-mode (tuples) vs single-mode (dicts) ------
-            if use_token_streaming:
-                mode, payload = chunk
+        )
 
-                if mode == "messages":
-                    token, meta = payload
-                    try:
-                        self._process_message_chunk(token, meta, on_token)
-                    except Exception:
-                        pass
+        # Wrap in InterruptibleStream for clean shutdown.  When the cancel
+        # callback fires GraphInterrupt, the LLM stops; remaining cheap
+        # internal LangGraph events are drained in the background.
+        if graceful_cancel:
+            stream = InterruptibleStream(raw_stream, cancel_callback=cancel_cb)
+        else:
+            stream = raw_stream
 
-                    if cancel_check:
+        try:
+            async for chunk in stream:
+                # ------ Multi-mode (tuples) vs single-mode (dicts) ------
+                if use_token_streaming:
+                    mode, payload = chunk
+
+                    if mode == "messages":
+                        token, meta = payload
                         try:
-                            if cancel_check():
-                                raise AgentCancelled(
-                                    "Agent execution cancelled by user"
-                                )
-                        except AgentCancelled:
-                            raise
+                            self._process_message_chunk(token, meta, on_token)
                         except Exception:
                             pass
-                    continue
 
-                chunk = payload
+                        if cancel_check:
+                            try:
+                                if cancel_check():
+                                    raise AgentCancelled(
+                                        "Agent execution cancelled by user"
+                                    )
+                            except AgentCancelled:
+                                raise
+                            except Exception:
+                                pass
+                        continue
 
-            for step, data in chunk.items():
-                steps.append({"name": step, "data": data})
+                    chunk = payload
 
-                if on_step:
+                for step, data in chunk.items():
+                    steps.append({"name": step, "data": data})
+
+                    if on_step:
+                        try:
+                            on_step(step, data)
+                        except Exception:
+                            pass  # best-effort, never break agent execution
+
+                    if isinstance(data, dict):
+                        for key in [
+                            "accumulated_input_tokens",
+                            "accumulated_output_tokens",
+                            "accumulated_total_tokens",
+                            "accumulated_extra_tokens",
+                            "model_call_count",
+                            "tool_call_count",
+                            "usage_session_id",
+                        ]:
+                            if key in data:
+                                accumulated_state[key] = data[key]
+                        if "messages" in data:
+                            last_agent_result = data
+                    elif step == "__interrupt__":
+                        last_agent_result = {"__interrupt__": data}
+
+                # Check cancellation flag after processing each chunk
+                if cancel_check:
                     try:
-                        on_step(step, data)
+                        if cancel_check():
+                            raise AgentCancelled("Agent execution cancelled by user")
+                    except AgentCancelled:
+                        raise
                     except Exception:
-                        pass  # best-effort, never break agent execution
-
-                if isinstance(data, dict):
-                    for key in [
-                        "accumulated_input_tokens",
-                        "accumulated_output_tokens",
-                        "accumulated_total_tokens",
-                        "accumulated_extra_tokens",
-                        "model_call_count",
-                        "tool_call_count",
-                        "usage_session_id",
-                    ]:
-                        if key in data:
-                            accumulated_state[key] = data[key]
-                    if "messages" in data:
-                        last_agent_result = data
-                elif step == "__interrupt__":
-                    last_agent_result = {"__interrupt__": data}
-
-            # Check cancellation flag after processing each chunk
-            if cancel_check:
-                try:
-                    if cancel_check():
-                        raise AgentCancelled("Agent execution cancelled by user")
-                except AgentCancelled:
-                    raise
-                except Exception:
-                    pass  # best-effort, never break on check errors
+                        pass  # best-effort, never break on check errors
+        except AgentCancelled:
+            # Trigger GraphInterrupt in the LLM (stops token generation)
+            # and drain remaining internal events for a clean LangSmith trace.
+            if graceful_cancel and isinstance(stream, InterruptibleStream):
+                await stream.stop()
+                await stream.close()
+            raise
 
         if last_agent_result:
             result = last_agent_result
@@ -1175,6 +1314,148 @@ class AgentService:
             steps=steps,
             metadata=metadata,
             cost_metrics=cost_metrics,
+        )
+
+    async def _arun_agent_steps_remote(
+        self,
+        user_input: str,
+        on_step: Callable[[str, Any], None] | None = None,
+        on_token: Callable[[str, dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AgentResponse:
+        """Execute agent via the remote LangGraph Agent Server.
+
+        Phase 1 migration path — delegates the full agent run to
+        Agent Server while preserving the AgentResponse interface.
+        Callers (Celery tasks, FastAPI endpoints) don't need to know
+        whether execution is local or remote.
+        """
+        from inference_core.services.agent_server_client import (
+            run_remote,
+            stream_remote,
+        )
+
+        start_time = datetime.now(UTC)
+        steps: list[dict[str, Any]] = []
+
+        remote_graph_id = self.agent_config.remote_graph_id
+
+        metadata: dict[str, Any] = {
+            "agent_name": self.agent_name,
+            "model_name": self.model_name,
+        }
+        if self._user_id:
+            metadata["user_id"] = str(self._user_id)
+        if self._session_id:
+            metadata["session_id"] = self._session_id
+        if self._request_id:
+            metadata["request_id"] = self._request_id
+        if self.instance_context:
+            metadata["instance_id"] = str(self.instance_context.instance_id)
+            metadata["instance_name"] = self.instance_context.instance_name
+
+        # Forward instance-level overrides so InstanceConfigMiddleware on
+        # the Agent Server can swap model / prompt at runtime.
+        if self._system_prompt_override is not None:
+            metadata["system_prompt_override"] = self._system_prompt_override
+        if self._system_prompt_append is not None:
+            metadata["system_prompt_append"] = self._system_prompt_append
+        # Forward subagent-specific overrides so SubagentConfigMiddleware
+        # on each subagent graph can apply per-user overrides at runtime.
+        if self.instance_context and self.instance_context.subagent_configs:
+            metadata["subagent_configs"] = self.instance_context.subagent_configs
+            logging.debug(
+                "Remote metadata includes subagent_configs for: %s",
+                list(self.instance_context.subagent_configs.keys()),
+            )
+        # primary_model: if the resolved config changed the model vs. the
+        # base YAML config, forward the override name so the server graph
+        # uses the correct model.
+        if self.config:
+            base_config = get_llm_config()
+            base_model = base_config.agent_models.get(self.agent_name)
+            if self.model_name and self.model_name != base_model:
+                metadata["primary_model"] = self.model_name
+
+        # Determine interrupt config from YAML
+        interrupt_before = None
+        interrupt_after = None
+        if self.agent_config.interrupt_on:
+            interrupt_before = self.agent_config.interrupt_on.get("before")
+            interrupt_after = self.agent_config.interrupt_on.get("after")
+
+        use_streaming = on_token is not None or on_step is not None
+
+        logging.debug(
+            "Remote agent '%s': metadata keys=%s, primary_model=%r, "
+            "subagent_configs=%s",
+            self.agent_name,
+            list(metadata.keys()),
+            metadata.get("primary_model"),
+            (
+                list(metadata["subagent_configs"].keys())
+                if "subagent_configs" in metadata
+                else "NONE"
+            ),
+        )
+
+        def _capture_step(name: str, data: Any) -> None:
+            steps.append({"name": name, "data": data})
+            if on_step:
+                try:
+                    on_step(name, data)
+                except Exception:
+                    pass
+
+        if use_streaming:
+            result = await stream_remote(
+                agent_name=self.agent_name,
+                remote_graph_id=remote_graph_id,
+                user_input=user_input,
+                thread_id=(
+                    self.checkpoint_config.get("thread_id")
+                    if self.checkpoint_config
+                    else None
+                ),
+                checkpoint_config=self.checkpoint_config,
+                metadata=metadata,
+                on_token=on_token,
+                on_step=_capture_step,
+                cancel_check=cancel_check,
+                interrupt_before=interrupt_before,
+                interrupt_after=interrupt_after,
+            )
+        else:
+            result = await run_remote(
+                agent_name=self.agent_name,
+                remote_graph_id=remote_graph_id,
+                user_input=user_input,
+                thread_id=(
+                    self.checkpoint_config.get("thread_id")
+                    if self.checkpoint_config
+                    else None
+                ),
+                checkpoint_config=self.checkpoint_config,
+                metadata=metadata,
+                interrupt_before=interrupt_before,
+                interrupt_after=interrupt_after,
+            )
+
+        agent_metadata = AgentMetadata(
+            model_name=self.model_name,
+            tools_used=[s["name"] for s in steps],
+            start_time=start_time,
+            end_time=datetime.now(UTC),
+        )
+
+        # Remote runs don't provide local cost metrics — the Agent Server
+        # tracks usage on its side.  Return zeroed metrics so consumers
+        # don't need to handle None differently.
+        return AgentResponse(
+            result=result if isinstance(result, dict) else {"raw": result},
+            steps=steps,
+            metadata=agent_metadata,
+            cost_metrics=None,
         )
 
     @staticmethod
@@ -1302,10 +1583,30 @@ class AgentService:
             instance, base_config=base_config
         )
 
+        # Build subagent_configs dict for Agent Server remote execution.
+        # Maps base_agent_name → override dict so SubagentConfigMiddleware
+        # on each subagent graph can apply per-user overrides at runtime.
+        subagent_configs: dict[str, dict[str, Any]] = {}
+        for sub in getattr(instance, "subagents", None) or []:
+            subagent_configs[sub.base_agent_name] = {
+                "instance_id": str(sub.id),
+                "instance_name": sub.instance_name,
+                "primary_model": sub.primary_model,
+                "system_prompt_override": sub.system_prompt_override,
+                "system_prompt_append": sub.system_prompt_append,
+            }
+        if subagent_configs:
+            logging.debug(
+                "Built subagent_configs for '%s': %s",
+                instance.instance_name,
+                list(subagent_configs.keys()),
+            )
+
         instance_ctx = InstanceContext(
             instance_id=instance.id,
             instance_name=instance.instance_name,
             base_agent_name=instance.base_agent_name,
+            subagent_configs=subagent_configs,
         )
 
         return cls(
@@ -1671,10 +1972,24 @@ class DeepAgentService(AgentService):
 
         # 3. Construct and return the service.  resolved_config propagates through
         #    LLMModelFactory so all model/config lookups use DB-overridden values.
+        # Build subagent_configs for Agent Server remote execution (same as
+        # base AgentService.from_user_instance — needed when DeepAgentService
+        # is used with execution_mode='remote').
+        subagent_configs: dict[str, dict[str, Any]] = {}
+        for sub in instance.subagents or []:
+            subagent_configs[sub.base_agent_name] = {
+                "instance_id": str(sub.id),
+                "instance_name": sub.instance_name,
+                "primary_model": sub.primary_model,
+                "system_prompt_override": sub.system_prompt_override,
+                "system_prompt_append": sub.system_prompt_append,
+            }
+
         instance_ctx = InstanceContext(
             instance_id=instance.id,
             instance_name=instance.instance_name,
             base_agent_name=instance.base_agent_name,
+            subagent_configs=subagent_configs,
         )
         return cls(
             agent_name=instance.base_agent_name,

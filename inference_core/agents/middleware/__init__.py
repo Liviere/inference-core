@@ -46,6 +46,7 @@ from .cost_tracking import (
     CostTrackingState,
     create_cost_tracking_middleware,
 )
+from .instance_config import InstanceConfigMiddleware
 from .memory import MemoryMiddleware, MemoryState, create_memory_middleware
 from .tool_model_switch import (
     ToolBasedModelSwitchMiddleware,
@@ -60,6 +61,8 @@ __all__ = [
     "CostTrackingMiddleware",
     "CostTrackingState",
     "create_cost_tracking_middleware",
+    # Instance config (Agent Server runtime overrides)
+    "InstanceConfigMiddleware",
     # Memory
     "MemoryMiddleware",
     "MemoryState",

@@ -49,7 +49,9 @@ class TestSaveMemoryStoreTool:
             user_id="user-1",
             session_id="sess-1",
         )
-        result = tool._run(content="User likes Python", memory_type=MemoryType.PREFERENCES)
+        result = tool._run(
+            content="User likes Python", memory_type=MemoryType.PREFERENCES
+        )
         assert "✓ Memory saved" in result
         assert "mem-1234" in result
         mock_run_async.assert_called_once()
@@ -326,3 +328,101 @@ class TestGetMemoryTools:
         )
         recall_tool = [t for t in tools if t.name == "recall_memories_store"][0]
         assert recall_tool.default_max_results == 10
+
+    def test_factory_accepts_none_user_id(self, mock_memory_service):
+        """Factory creates tools with user_id=None for Agent Server."""
+        tools = get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        assert len(tools) == 4
+        for t in tools:
+            assert t.user_id is None
+
+
+# ===========================================================================
+# Deferred user_id resolution (Agent Server)
+# ===========================================================================
+
+
+class TestDeferredUserId:
+    """Verify tools resolve user_id from context var when user_id=None."""
+
+    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
+    def test_save_tool_resolves_from_ctx(self, mock_run_async, mock_memory_service):
+        """SaveMemoryStoreTool._run resolves user_id from context var."""
+        import uuid
+
+        uid = uuid.uuid4()
+        mock_run_async.return_value = "mem-abcd1234"
+        tool = SaveMemoryStoreTool(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        with patch(
+            "inference_core.agents.tools.memory_tools._resolve_tool_user_id",
+            return_value=str(uid),
+        ) as mock_resolve:
+            result = tool._run(content="test data")
+        mock_resolve.assert_called_once_with(None)
+        assert "✓ Memory saved" in result
+
+    async def test_save_tool_arun_resolves_from_ctx(self, mock_memory_service):
+        """SaveMemoryStoreTool._arun resolves user_id from context var."""
+        tool = SaveMemoryStoreTool(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        with patch(
+            "inference_core.agents.tools.memory_tools._resolve_tool_user_id",
+            return_value="ctx-user",
+        ):
+            result = await tool._arun(content="async test")
+        assert "✓ Memory saved" in result
+        call_kwargs = mock_memory_service.save_memory.call_args[1]
+        assert call_kwargs["user_id"] == "ctx-user"
+
+    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
+    def test_recall_tool_resolves_from_ctx(self, mock_run_async, mock_memory_service):
+        """RecallMemoryStoreTool._run resolves user_id from context var."""
+        mock_run_async.return_value = []
+        tool = RecallMemoryStoreTool(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        with patch(
+            "inference_core.agents.tools.memory_tools._resolve_tool_user_id",
+            return_value="ctx-user",
+        ):
+            result = tool._run(query="what do I like?")
+        assert "No relevant memories" in result
+
+    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
+    def test_delete_tool_resolves_from_ctx(self, mock_run_async, mock_memory_service):
+        """DeleteMemoryStoreTool._run resolves user_id from context var."""
+        mock_run_async.return_value = True
+        tool = DeleteMemoryStoreTool(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        with patch(
+            "inference_core.agents.tools.memory_tools._resolve_tool_user_id",
+            return_value="ctx-user",
+        ):
+            result = tool._run(memory_id="mem-123")
+        assert "✓ Memory deleted" in result
+
+    def test_resolve_raises_when_no_user_id(self, mock_memory_service):
+        """_resolve_tool_user_id raises RuntimeError when both sources empty."""
+        from inference_core.agents.tools.memory_tools import _resolve_tool_user_id
+
+        with patch(
+            "inference_core.agents.tools.memory_tools._resolve_tool_user_id",
+            wraps=_resolve_tool_user_id,
+        ):
+            with patch(
+                "inference_core.agents.middleware._runtime_context.get_user_id",
+                return_value=None,
+            ):
+                with pytest.raises(RuntimeError, match="requires user_id"):
+                    _resolve_tool_user_id(None)

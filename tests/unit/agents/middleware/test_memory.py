@@ -5,7 +5,7 @@ Covers lifecycle hooks (before_agent, wrap_model_call) and helper methods
 """
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -68,16 +68,12 @@ class TestExtractUserInput:
 
     def test_dict_message_with_type(self, middleware):
         """Finds dict message with type='human'."""
-        state = MemoryState(
-            messages=[{"type": "human", "content": "Dict message"}]
-        )
+        state = MemoryState(messages=[{"type": "human", "content": "Dict message"}])
         assert middleware._extract_user_input(state) == "Dict message"
 
     def test_dict_message_with_role(self, middleware):
         """Finds dict message with role='user'."""
-        state = MemoryState(
-            messages=[{"role": "user", "content": "User role dict"}]
-        )
+        state = MemoryState(messages=[{"role": "user", "content": "User role dict"}])
         assert middleware._extract_user_input(state) == "User role dict"
 
     def test_picks_last_human_message(self, middleware):
@@ -373,3 +369,170 @@ class TestCreateMemoryMiddleware:
         assert mw.include_categories == ["semantic"]
         assert mw.include_memory_types == ["facts"]
         assert mw.max_recall_results == 10
+
+    def test_creates_with_none_user_id(self, mock_memory_service):
+        """Factory accepts user_id=None for Agent Server deferred resolution."""
+        mw = create_memory_middleware(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        assert mw.user_id is None
+        assert mw.auto_recall is True
+
+
+# ---------------------------------------------------------------------------
+# Deferred user_id resolution (Agent Server)
+# ---------------------------------------------------------------------------
+
+
+class TestDeferredUserId:
+    """Verify _resolve_user_id falls back to runtime context var."""
+
+    def test_returns_instance_user_id_when_set(self, mock_memory_service):
+        """Uses self.user_id when it is not None."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="explicit-uid",
+        )
+        assert mw._resolve_user_id() == "explicit-uid"
+
+    def test_falls_back_to_context_var(self, mock_memory_service):
+        """Resolves from _runtime_context when self.user_id is None."""
+        import uuid
+
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        uid = uuid.uuid4()
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_user_id",
+            return_value=uid,
+        ):
+            assert mw._resolve_user_id() == str(uid)
+
+    def test_returns_none_when_both_empty(self, mock_memory_service):
+        """Returns None when neither instance attr nor context var is set."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_user_id",
+            return_value=None,
+        ):
+            assert mw._resolve_user_id() is None
+
+    def test_before_agent_skips_when_no_user_id(self, mock_memory_service):
+        """before_agent returns None when user_id cannot be resolved."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        msg = MagicMock()
+        msg.type = "human"
+        msg.content = "hi"
+        state = MemoryState(messages=[msg])
+
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_user_id",
+            return_value=None,
+        ):
+            result = mw.before_agent(state, MagicMock())
+
+        assert result is None
+
+    def test_before_agent_resolves_from_ctx(self, mock_memory_service):
+        """before_agent uses context var user_id and passes it to _recall_and_format."""
+        import uuid
+
+        uid = uuid.uuid4()
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        msg = MagicMock()
+        msg.type = "human"
+        msg.content = "test query"
+        state = MemoryState(messages=[msg])
+
+        with (
+            patch(
+                "inference_core.agents.middleware.memory._ctx_get_user_id",
+                return_value=uid,
+            ),
+            patch.object(
+                mw,
+                "_recall_and_format",
+                return_value=(
+                    "ctx",
+                    {"count": 1, "latency_ms": 1, "types": [], "categories": []},
+                ),
+            ) as mock_recall,
+        ):
+            result = mw.before_agent(state, MagicMock())
+
+        mock_recall.assert_called_once_with("test query", str(uid))
+        assert result["memories_recalled"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _arecall_and_format (async recall path)
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncRecallAndFormat:
+    """Verify async recall path for Agent Server context."""
+
+    async def test_returns_context_and_metrics(self, mock_memory_service):
+        """_arecall_and_format directly awaits memory service."""
+        mock_memory_service.format_context_for_prompt = AsyncMock(
+            return_value="<semantic>data</semantic>"
+        )
+        mock_memory_service.get_user_context = AsyncMock(
+            return_value={"facts": [MagicMock(), MagicMock()]}
+        )
+
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u-async",
+        )
+
+        with patch(
+            "inference_core.services.agent_memory_service.get_category_for_type",
+            return_value=MemoryCategory.SEMANTIC,
+        ):
+            context, metrics = await mw._arecall_and_format("some query")
+
+        assert context == "<semantic>data</semantic>"
+        assert metrics["count"] == 2
+        assert "latency_ms" in metrics
+
+    async def test_returns_empty_on_error(self, mock_memory_service):
+        """_arecall_and_format returns empty on exception."""
+        mock_memory_service.format_context_for_prompt = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u-err",
+        )
+
+        context, metrics = await mw._arecall_and_format("query")
+        assert context == ""
+        assert metrics["count"] == 0
+
+    async def test_uses_provided_user_id_over_self(self, mock_memory_service):
+        """Explicit user_id param takes precedence over self.user_id."""
+        mock_memory_service.format_context_for_prompt = AsyncMock(return_value="")
+        mock_memory_service.get_user_context = AsyncMock(return_value={})
+
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="self-uid",
+        )
+        await mw._arecall_and_format("q", user_id="override-uid")
+
+        call_kwargs = mock_memory_service.format_context_for_prompt.call_args[1]
+        assert call_kwargs["user_id"] == "override-uid"

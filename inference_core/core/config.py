@@ -370,6 +370,35 @@ class Settings(BaseSettings):
         ),
     )
 
+    ###################################
+    #     LANGGRAPH AGENT SERVER      #
+    ###################################
+    agent_server_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Base URL of the LangGraph Agent Server (e.g. http://localhost:8123). "
+            "When set together with agent_server_enabled=True, agents with "
+            "execution_mode='remote' in YAML config will delegate to this server."
+        ),
+    )
+    agent_server_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for authenticating with the LangGraph Agent Server.",
+    )
+    agent_server_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for remote agent execution. When False, all agents "
+            "run locally regardless of their execution_mode setting."
+        ),
+    )
+    agent_server_timeout: int = Field(
+        default=300,
+        ge=10,
+        le=3600,
+        description="HTTP timeout in seconds for Agent Server requests.",
+    )
+
     # Cookie settings for refresh tokens
     refresh_cookie_name: str = Field(
         default="refresh_token", description="Name of the refresh token cookie"

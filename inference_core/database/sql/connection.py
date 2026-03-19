@@ -106,12 +106,16 @@ def get_engine(database_url: str = None) -> Engine:
             id(_engine_loop),
             id(current_loop),
         )
-        # Synchronously dispose the underlying engine to release pooled DB connections.
-        # AsyncEngine.sync_engine.dispose() is always safe to call from any thread.
+        # Detach the pool from the old engine WITHOUT closing existing asyncpg
+        # connections.  Calling dispose() with close=True (the default) would
+        # try to close asyncpg connections synchronously, which requires a
+        # greenlet context that is absent here → MissingGreenlet.
+        # close=False simply replaces the pool reference; the old connections
+        # are garbage-collected or expire naturally on the old event loop.
         try:
-            _engine.sync_engine.dispose()
+            _engine.sync_engine.dispose(close=False)
         except Exception as exc:
-            logger.warning("Failed to dispose old database engine: %s", exc)
+            logger.warning("Failed to detach old database engine pool: %s", exc)
         _engine = None
         _async_session_maker = None
 

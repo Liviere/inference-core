@@ -56,6 +56,22 @@
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
+		},
+		{
+			"label": "LangGraph: Dev Server",
+			"type": "shell",
+			"command": "poetry run langgraph dev --no-browser",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "LangGraph: Dev Server (with debugger)",
+			"type": "shell",
+			"command": "poetry run langgraph dev --no-browser --debug-port 5679",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
 		}
 	]
 }

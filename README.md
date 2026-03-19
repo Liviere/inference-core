@@ -42,6 +42,8 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **LangChain v1 Agents** – Configurable agents defined in `agents_config.yaml` with per-agent tool bundles, middleware, prompts, and checkpointing.
 
+**LangGraph Agent Server** – Optional remote agent execution via [LangGraph Platform](https://docs.langchain.com/langsmith/agent-server). Per-agent `execution_mode` (local/remote) in YAML, `langgraph dev` for local development with hot reload and Studio UI, `langgraph up` for production-like Docker validation.
+
 **Request Modes** – Same logical interface for:
 
 - Sync (immediate response)
@@ -88,10 +90,16 @@ poetry run celery -A inference_core.celery.celery_main:celery_app worker -n mail
 # Use --pool=solo when the local embedding model should run on GPU.
 # CUDA drivers are not fork-safe, so prefork can break GPU-backed workers.
 poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=solo --loglevel=info
+
+# (Optional) LangGraph Agent Server — for remote agent execution + Studio UI
+# Runs directly in your venv (no Docker), with hot reload.
+# Requires: AGENT_SERVER_ENABLED=true and AGENT_SERVER_URL=http://localhost:2024 in .env
+poetry run langgraph dev --no-browser
 ```
 
 Visit: http://localhost:8000/docs (dev only)  
-Health: `GET /api/v1/health/`
+Health: `GET /api/v1/health/`  
+Agent Server Studio: http://localhost:2024 (when `langgraph dev` is running)
 
 Docker Deployment: For containerized deployment (SQLite/MySQL/Postgres) and compose examples, see [`docker/README.md`](docker/README.md).
 
@@ -311,6 +319,17 @@ When present, the service emits normal state updates together with message
 chunks (`text`, `reasoning`, `tool_call`) so UI layers can render live output
 without giving up step-level progress.
 
+For remote LangGraph Agent Server runs, streamed callbacks can also include
+`meta["ns"]`, which identifies the subgraph namespace path for tokens or step
+updates emitted by subagents.
+
+Both methods also support `cancel_check` together with `graceful_cancel=True`
+(default). When cancellation fires, the service raises `GraphInterrupt` inside
+the active LLM stream, closes the provider connection immediately, drains the
+remaining internal LangGraph events, and keeps the LangSmith graph trace in a
+successful state. Set `graceful_cancel=False` only if you prefer a hard close
+and can tolerate a failed trace for that run.
+
 ### Celery task factory (extend background workers)
 
 When you embed the core as a submodule you can reuse the Celery factory to add your own task modules without modifying `inference_core` directly. The helper mirrors the FastAPI application factory.
@@ -386,6 +405,15 @@ Optional real provider tests (require API keys):
 ```bash
 RUN_LLM_REAL_TESTS=1 poetry run pytest -m integration -k llm
 ```
+
+Agent Server integration tests (require `langgraph dev` running):
+
+```bash
+poetry run langgraph dev --no-browser   # in a separate terminal
+poetry run pytest -m agent_server
+```
+
+Tests auto-skip when the Agent Server is not reachable.
 
 ---
 

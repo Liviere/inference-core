@@ -233,6 +233,31 @@ You can override MCP CLI timeouts via environment variables. The compose files i
 
 These are injected into the MCP CLI command by the Docker compose files (see `docker/docker-compose.playwright-mcp*.yml`). If you don't set them, compose will fall back to the defaults shown above.
 
+## LangGraph Agent Server
+
+Controls remote agent execution via the LangGraph Platform. When enabled, agents with `execution_mode: 'remote'` in `llm_config.yaml` delegate runs to the Agent Server instead of executing locally.
+
+| Variable               | Default | Description                                                                     |
+| ---------------------- | ------- | ------------------------------------------------------------------------------- |
+| `AGENT_SERVER_ENABLED` | false   | Master switch — when True, remote-mode agents delegate to Agent Server          |
+| `AGENT_SERVER_URL`     | (none)  | Base URL (`http://localhost:2024` for `langgraph dev`, `:8123` for `langgraph up`) |
+| `AGENT_SERVER_API_KEY` | (none)  | API key for authenticating with the Agent Server                                |
+| `AGENT_SERVER_TIMEOUT` | 300     | HTTP timeout in seconds for Agent Server requests (10–3600)                     |
+
+Development workflow:
+
+- **`langgraph dev`** — lightweight server (port 2024), no Docker, hot reload, in-memory state. Primary tool for daily development.
+- **`langgraph up`** — Docker-based stack (port 8123), PostgreSQL + Redis, production-like. Use for pre-deployment validation.
+
+Per-agent routing is controlled by `execution_mode` in `llm_config.yaml`:
+
+```yaml
+agents:
+  my_agent:
+    primary: 'gpt-5-mini'
+    execution_mode: 'remote'   # 'local' | 'remote'
+```
+
 Examples:
 
 - Temporary in shell:
