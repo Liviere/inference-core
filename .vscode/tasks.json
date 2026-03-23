@@ -4,7 +4,7 @@
 		{
 			"label": "Run FastAPI Server",
 			"type": "shell",
-			"command": "uvicorn inference_core.main_factory:create_application --factory --host 0.0.0.0 --port 8000 --workers 4",
+			"command": "poetry run python run.py",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
