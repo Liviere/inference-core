@@ -145,12 +145,14 @@ embeddings:
 
 Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be configured.
 
-| Variable                   | Default      | Description                                              |
-| -------------------------- | ------------ | -------------------------------------------------------- |
-| `AGENT_MEMORY_ENABLED`     | false        | Enable long-term memory for agents                       |
-| `AGENT_MEMORY_COLLECTION`  | agent_memory | Collection name for memory storage (separate from RAG)   |
-| `AGENT_MEMORY_MAX_RESULTS` | 5            | Max memories to retrieve during recall                   |
-| `AGENT_MEMORY_AUTO_RECALL` | true         | Auto-recall relevant memories in middleware before_agent |
+| Variable                                | Default      | Description                                                  |
+| --------------------------------------- | ------------ | ------------------------------------------------------------ |
+| `AGENT_MEMORY_ENABLED`                  | false        | Enable long-term memory for agents                           |
+| `AGENT_MEMORY_COLLECTION`               | agent_memory | Collection name for memory storage (separate from RAG)       |
+| `AGENT_MEMORY_MAX_RESULTS`              | 5            | Max memories to retrieve during recall                       |
+| `AGENT_MEMORY_AUTO_RECALL`              | true         | Auto-recall relevant memories in middleware before_agent     |
+| `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED` | true         | Run best-effort post-run extraction after each agent session |
+| `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`   | (none)       | Optional override model for post-run memory extraction       |
 
 ## Agent Skills & Subagents (DeepAgent)
 
@@ -237,12 +239,12 @@ These are injected into the MCP CLI command by the Docker compose files (see `do
 
 Controls remote agent execution via the LangGraph Platform. When enabled, agents with `execution_mode: 'remote'` in `llm_config.yaml` delegate runs to the Agent Server instead of executing locally.
 
-| Variable               | Default | Description                                                                     |
-| ---------------------- | ------- | ------------------------------------------------------------------------------- |
-| `AGENT_SERVER_ENABLED` | false   | Master switch — when True, remote-mode agents delegate to Agent Server          |
+| Variable               | Default | Description                                                                        |
+| ---------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `AGENT_SERVER_ENABLED` | false   | Master switch — when True, remote-mode agents delegate to Agent Server             |
 | `AGENT_SERVER_URL`     | (none)  | Base URL (`http://localhost:2024` for `langgraph dev`, `:8123` for `langgraph up`) |
-| `AGENT_SERVER_API_KEY` | (none)  | API key for authenticating with the Agent Server                                |
-| `AGENT_SERVER_TIMEOUT` | 300     | HTTP timeout in seconds for Agent Server requests (10–3600)                     |
+| `AGENT_SERVER_API_KEY` | (none)  | API key for authenticating with the Agent Server                                   |
+| `AGENT_SERVER_TIMEOUT` | 300     | HTTP timeout in seconds for Agent Server requests (10–3600)                        |
 
 Development workflow:
 
@@ -255,7 +257,7 @@ Per-agent routing is controlled by `execution_mode` in `llm_config.yaml`:
 agents:
   my_agent:
     primary: 'gpt-5-mini'
-    execution_mode: 'remote'   # 'local' | 'remote'
+    execution_mode: 'remote' # 'local' | 'remote'
 ```
 
 Examples:

@@ -416,89 +416,98 @@ def generate_memory_tools_system_instructions() -> str:
     """Generate system prompt instructions explaining CoALA memory architecture.
 
     Returns formatted instructions explaining the three memory categories
-    and how/when to use each memory tool.
+    and binding trigger rules for when the model MUST call save_memory_store.
     """
     return f"""## Memory Tools Usage (CoALA Architecture)
 
-NOTE: Memory tools are internal cognitive processes. 
-Never verbally confirm, announce, or reference the act of saving or retrieving 
-information unless the user explicitly asks "did you remember/save that?". 
-Just use the information naturally, the way a human would.
+### Guiding principle
+Memory is part of how you work — not something you announce. Save information silently
+and use it naturally, the way a person with good memory would. Never say "I've saved
+ that" or "I'm noting this down" unless the user explicitly asks "did you remember/save
+that?". The act of saving is invisible to the user.
 
-Your long-term memory is organized following the Cognitive Architectures for Language Agents (CoALA) framework
-into three categories:
-
-### Memory Categories
+### Memory categories
 
 **SEMANTIC MEMORY** — Stable facts about the world and the user.
-  Types: preferences, facts, goals, general.
-  Shared across all agents for this user.
+  Types: preferences, facts, goals, general.  Shared across all agents.
 
 **EPISODIC MEMORY** — Sequences of past experiences and interactions.
-  Types: context, session_summary, interaction.
-  Scoped per-agent (each agent has its own history).
+  Types: context, session_summary, interaction.  Scoped per agent.
 
-**PROCEDURAL MEMORY** — Operational rules, workflows, and learned skills.
-  Types: instructions, workflow, skill.
-  Scoped per-agent (agent-specific capabilities).
+**PROCEDURAL MEMORY** — Operational rules, workflows, and skills.
+  Types: instructions, workflow, skill.  Scoped per agent.
+
+### Mandatory save triggers
+You MUST call save_memory_store (BEFORE finalizing your answer) when any of these occur:
+
+**Semantic — save immediately:**
+- User states a preference: "I prefer X", "I like/hate X", "please use X format"
+- User shares a fact about themselves: name, role, location, employer,
+  project, language, stack, team, timezone
+- User sets a goal: "I'm building X", "my goal is Y", "I need to achieve Z"
+- User names a constraint: "I can't use X", "I only have access to Y"
+
+**Procedural — save immediately:**
+- User gives a future instruction: "from now on", "always do X", "never do Y",
+  "in the future", "next time", "every time"
+- User corrects a mistake you made → save what went wrong and the correct way
+- You identify a pattern in how the user works or communicates
+
+**Episodic — save before closing a topic:**
+- The conversation reaches a concrete decision, agreed plan, or confirmed outcome
+- User explicitly asks you to remember something specific from this session
+- You complete a multi-step task and the result is worth preserving
+
+### Proactive saves (even without explicit request)
+These MUST be saved even if the user never said "remember this":
+- User corrects your factual assumption or output style → procedural/instructions
+- User adapts your behavior mid-conversation via feedback → semantic/preferences
+- A decision made in this session will clearly affect the next interaction → episodic/interaction
+- You successfully apply a non-obvious technique → procedural/skill
+
+### What NOT to save
+Do NOT call save_memory_store for:
+- Temporary context that is only relevant for the current question
+- General knowledge the user is asking about (not about themselves or their preferences)
+- Step-by-step task progress that belongs in the response, not memory
+- Greeting phrases or social pleasantries with no informational value
+
+### Decision rule (apply before every response)
+Before finalizing your answer, ask yourself:
+  "Did I learn anything about this user's preferences, facts, goals, instructions,
+   or decisions that will matter in a future session?"
+  If YES → call save_memory_store first, then respond.
+  If NO  → respond directly.
+This check must happen EVERY turn, not only when the user asks explicitly.
 
 ### Tools
 
-#### save_memory_store
-Save important information to long-term memory.
-**When to use:**
-- User explicitly asks you to remember something (→ semantic/preferences or facts)
-- User shares personal preferences, facts, goals (→ semantic)
-- User gives instructions for future interactions (→ procedural/instructions)
-- You learn a useful technique or pattern (→ procedural/skill)
-- A conversation yields important decisions or outcomes (→ episodic/session_summary)
+#### save_memory_store — persist information to long-term memory
+Arguments: content (required), memory_type (auto-categorized when omitted), topic, category.
 
-**Also save proactively (without being asked):**
-- User corrects your output or expresses dissatisfaction → procedural/instructions
-  (save what went wrong and what they prefer instead)
-- You notice a recurring pattern in how user communicates or works → semantic/preferences
-- User makes a decision that will likely affect future sessions → episodic/interaction
-- You adapt your response style mid-conversation based on feedback → procedural/skill
+#### recall_memories_store — retrieve memories by semantic search
+When to use:
+- Start of a new topic to load relevant user context (→ category: semantic)
+- Before giving personalized recommendations (→ semantic + procedural)
+- When user says "last time", "before", "we discussed" (→ category: episodic)
+- Always before calling update_memory_store (to get memory_id)
 
-#### recall_memories_store
-Retrieve relevant memories. Use `category` to scope search.
-**When to use:**
-- At the start of conversations to understand user context (→ category: semantic)
-- When providing recommendations (→ semantic + procedural)
-- When user references past interactions (→ category: episodic)
-- Before updating/deleting memories (to get memory_id)
+#### update_memory_store — correct or enrich an existing memory
+Requires memory_id from recall_memories_store first.
+Use when: user corrects saved info, preferences change, additional details emerge.
 
-### update_memory_store
-Use this tool to correct or update existing memories.
-**When to use:**
-- User corrects previously saved information
-- Additional details need to be added to an existing memory
-- Preferences change over time
-- **Requires memory_id obtained from recall_memories_store**
+#### delete_memory_store — remove a specific memory
+Requires memory_id from recall_memories_store first.
+Use when: user asks to forget something, info is outdated or wrong.
 
-### delete_memory_store
-Use this tool to remove specific memories.
-**When to use:**
-- User asks to forget specific information
-- Information is no longer valid or relevant and shouldn't be kept
-- **Requires memory_id obtained from recall_memories_store**
-
-**Best practices:**
-- Use `category` parameter to scope searches for precision
-- Save stable user facts as semantic, interaction history as episodic
-- Save learned agent skills and rules as procedural
-- Query memories proactively to personalize responses
-- Before finalizing every response, silently ask: "Did I learn anything 
-  worth saving?" If yes — save it before responding.
-  
 {format_memory_types_for_description()}
 
-**Example workflow:**
-1. User asks a question → recall semantic memories for context
-2. Use recalled context to personalize response
-3. If user shares new info → save with appropriate type (auto-categorized)
-4. If user corrects info → recall to find ID, then update
-5. At session end → optionally save session_summary as episodic memory
+### Example workflow
+1. User asks a question → recall semantic memories for context (if relevant)
+2. User shares preference or fact → save_memory_store BEFORE responding
+3. Use recalled + saved context to personalize the response
+4. User corrects info → recall to get memory_id, then update_memory_store
+5. Session ends with a clear outcome → save session_summary as episodic memory
 """
 
 

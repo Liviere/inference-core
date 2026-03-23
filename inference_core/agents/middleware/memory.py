@@ -37,6 +37,8 @@ if TYPE_CHECKING:
         AgentMemoryStoreService,
     )
 
+from pydantic import BaseModel, Field
+
 from inference_core.agents.middleware._runtime_context import (
     get_user_id as _ctx_get_user_id,
 )
@@ -54,6 +56,8 @@ class MemoryState(AgentState):
         memory_recall_latency_ms: Time taken for memory recall in milliseconds
         memory_types_recalled: List of memory types that were retrieved
         memory_categories_recalled: List of CoALA categories that had results
+        session_analysis_saved: Whether the post-run hook persisted a memory entry
+        session_analysis_latency_ms: Time taken for post-run analysis in milliseconds
     """
 
     memory_context: NotRequired[str]
@@ -61,6 +65,36 @@ class MemoryState(AgentState):
     memory_recall_latency_ms: NotRequired[float]
     memory_types_recalled: NotRequired[List[str]]
     memory_categories_recalled: NotRequired[List[str]]
+    session_analysis_saved: NotRequired[bool]
+    session_analysis_latency_ms: NotRequired[float]
+
+
+class _MemoryExtractionResult(BaseModel):
+    """Structured output schema for the post-run memory extraction LLM call.
+
+    WHY this schema: Forces a structured, type-safe response from the model so the
+    middleware can act on it programmatically without text parsing.
+    """
+
+    worth_saving: bool = Field(
+        description=(
+            "True when the session contains information worth persisting in "
+            "long-term memory for future conversations."
+        )
+    )
+    content: str = Field(
+        description=(
+            "Compact memory summary (≤300 words) written in the same language as "
+            "the user. Empty string when worth_saving is False."
+        )
+    )
+    memory_type: str = Field(
+        description=(
+            "'session_summary' for preferences, facts, and contextual information; "
+            "'interaction' for explicit corrections or user feedback on agent behaviour; "
+            "empty string when worth_saving is False."
+        )
+    )
 
 
 @dataclass
@@ -98,6 +132,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         max_recall_results: int = 5,
         include_memory_types: Optional[List[str]] = None,
         include_categories: Optional[List[str]] = None,
+        postrun_analysis: bool = True,
+        postrun_analysis_model: Optional[str] = None,
     ):
         """Initialize the memory middleware.
 
@@ -112,11 +148,24 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                                  Defaults to preferences, facts, instructions, goals, context.
             include_categories: CoALA categories to recall.
                                Defaults to all three (semantic, episodic, procedural).
+            postrun_analysis: Whether to run best-effort post-session analysis in
+                after_agent, silently persisting session-level memories the main
+                agent may have missed.  Controlled by
+                ``agent_memory_postrun_analysis_enabled`` in settings.
+            postrun_analysis_model: Optional model name for the post-run extraction
+                LLM call.  When ``None`` (default), the middleware reuses whichever
+                model the agent last used (captured from ``wrap_model_call``).  Set
+                to a cheaper/faster model (e.g. ``"gpt-5-nano"``) when you want
+                to keep extraction costs low without changing the agent's own model.
         """
         self.memory_service = memory_service
         self.user_id = user_id
         self.auto_recall = auto_recall
         self.max_recall_results = max_recall_results
+        self.postrun_analysis = postrun_analysis
+        self.postrun_analysis_model = postrun_analysis_model
+        # Set in wrap_model_call / awrap_model_call; used by after_agent.
+        self._captured_model: Optional[Any] = None
         self.include_memory_types = include_memory_types or [
             MemoryType.PREFERENCES.value,
             MemoryType.FACTS.value,
@@ -259,6 +308,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         Returns:
             ModelResponse from the handler
         """
+        # Capture the current model for post-run analysis (before possible injection override).
+        self._captured_model = getattr(request, "model", None)
+
         # If no memory context was recalled, pass through unchanged
         if not self._cached_memory_context:
             return handler(request)
@@ -299,6 +351,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         handler: Callable[[ModelRequest], Any],
     ) -> ModelResponse:
         """Async version of wrap_model_call for use with astream."""
+        self._captured_model = getattr(request, "model", None)
         if not self._cached_memory_context:
             return await handler(request)
 
@@ -467,6 +520,276 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         return context, metrics
 
+    # -------------------------------------------------------------------------
+    # Post-run analysis helpers
+    # -------------------------------------------------------------------------
+
+    def _get_analysis_model(self) -> Optional[Any]:
+        """Return the model instance to use for post-run extraction.
+
+        Priority:
+        1. ``postrun_analysis_model`` (override by name) → ``init_chat_model(name)``
+        2. ``_captured_model`` (last model seen in ``wrap_model_call``) → agent's own model
+
+        Returns ``None`` when neither is available; the caller should skip analysis
+        and log a warning rather than failing.
+        """
+        if self.postrun_analysis_model:
+            try:
+                from langchain.chat_models import init_chat_model
+
+                return init_chat_model(self.postrun_analysis_model)
+            except Exception as e:
+                logger.warning(
+                    "Failed to init postrun_analysis_model '%s', "
+                    "falling back to captured model: %s",
+                    self.postrun_analysis_model,
+                    e,
+                )
+                return self._captured_model
+        return self._captured_model
+
+    # Prompt template used for every post-run extraction call.
+    # Defined at class scope to avoid reconstructing the string on every invocation.
+    _EXTRACTION_PROMPT: str = (
+        "Analyze the following conversation and decide whether it contains "
+        "information worth persisting in long-term memory for future sessions.\n\n"
+        "Information worth persisting includes:\n"
+        "- User preferences (language, tone, tools, response style, formats)\n"
+        "- Personal facts (name, location, profession, goals, current project)\n"
+        "- Explicit future instructions ('always do X', 'never do Y', 'from now on…')\n"
+        "- Significant corrections to agent behaviour\n"
+        "- Project or task context useful beyond this session\n\n"
+        "Do NOT persist: single-question factual exchanges, greetings, or generic "
+        "conversation with no personal context.\n\n"
+        "Write the content field in the SAME language the user spoke.\n\n"
+        "Conversation:\n\n{transcript}"
+    )
+
+    async def _extract_via_model(
+        self,
+        state: MemoryState,
+        model: Any,
+    ) -> tuple[Optional[str], str]:
+        """Ask the model to extract what's worth persisting from the completed session.
+
+        WHY model-based extraction: A model call understands any natural language and catches nuanced
+        signals — implicit corrections, preferences stated in context, multi-turn intent
+        — that deterministic rules cannot.
+
+        Returns:
+            (content, memory_type) where content is None when nothing is worth saving.
+        """
+        messages = state.get("messages", [])
+        lines: list[str] = []
+        for msg in messages:
+            msg_type = getattr(msg, "type", None) or getattr(msg, "role", None)
+            content = getattr(msg, "content", "") or ""
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if msg_type in ("human", "user"):
+                lines.append(f"User: {content.strip()}")
+            elif msg_type in ("ai", "assistant"):
+                lines.append(f"Assistant: {content.strip()}")
+
+        if not lines:
+            return None, ""
+
+        # Limit transcript length to avoid blowing up context windows.
+        transcript = "\n\n".join(lines)[-4000:]
+
+        try:
+            structured = model.with_structured_output(_MemoryExtractionResult)
+            result: _MemoryExtractionResult = await structured.ainvoke(
+                [
+                    {
+                        "role": "user",
+                        "content": self._EXTRACTION_PROMPT.format(
+                            transcript=transcript
+                        ),
+                    }
+                ]
+            )
+            if not result.worth_saving or not result.content.strip():
+                return None, ""
+            memory_type = result.memory_type.strip() or "session_summary"
+            return result.content.strip(), memory_type
+        except Exception as e:
+            logger.warning("Post-run model extraction failed: %s", e)
+            return None, ""
+
+    # -------------------------------------------------------------------------
+    # Post-run analysis hooks
+    # -------------------------------------------------------------------------
+
+    def after_agent(
+        self, state: MemoryState, runtime: Runtime
+    ) -> Dict[str, Any] | None:
+        """Best-effort post-session analysis: persist what the agent may have missed.
+
+        WHY model-based extraction:
+        By reusing the same model the agent used (or a configured cheaper override),
+        the analysis understands any language and detects nuanced signals — implicit
+        corrections, preferences stated in context
+
+        Behavior:
+          - Skips when postrun_analysis is disabled, no user_id is available, or no
+            model was captured from wrap_model_call (agent made no model calls).
+          - Calls _extract_via_model to get structured (content, memory_type).
+          - When the agent already persisted memories explicitly, only a session_summary
+            is added on top — interaction duplicates are skipped.
+          - Saves via AgentMemoryStoreService (NOT tool calls, which would modify the
+            final state the caller has already read).
+          - Always fail-open: errors never propagate to the caller.
+        """
+        if not self.postrun_analysis:
+            return None
+
+        resolved_uid = self._resolve_user_id()
+        if not resolved_uid:
+            logger.debug("Post-run analysis skipped — no user_id available")
+            return None
+
+        messages = state.get("messages", [])
+        if len(messages) < 2:
+            logger.debug(
+                "Post-run analysis skipped — too few messages (%d)", len(messages)
+            )
+            return None
+
+        model = self._get_analysis_model()
+        if model is None:
+            logger.warning(
+                "Post-run analysis skipped — no model available "
+                "(wrap_model_call may not have fired this run)"
+            )
+            return None
+
+        already_saved = self._has_memory_save_in_run(state)
+        start_time = time.monotonic()
+
+        try:
+
+            async def _analyse_and_save() -> Optional[str]:
+                content, memory_type = await self._extract_via_model(state, model)
+                if not content:
+                    return None
+                if already_saved and memory_type != "session_summary":
+                    logger.debug(
+                        "Post-run analysis: agent already saved; skipping '%s'",
+                        memory_type,
+                    )
+                    return None
+                await self.memory_service.save_memory(
+                    user_id=resolved_uid,
+                    content=content,
+                    memory_type=memory_type,
+                    topic="session_analysis",
+                )
+                return memory_type
+
+            saved_type = run_async_safely(_analyse_and_save(), timeout=15.0)
+            if saved_type is None:
+                return None
+
+            latency_ms = (time.monotonic() - start_time) * 1000
+            logger.info(
+                "Post-run analysis: saved '%s' for user=%s (%.1fms)",
+                saved_type,
+                resolved_uid,
+                latency_ms,
+            )
+            return {
+                "session_analysis_saved": True,
+                "session_analysis_latency_ms": latency_ms,
+            }
+        except Exception as e:
+            logger.warning("Post-run analysis failed (fail-open): %s", e, exc_info=True)
+            return None
+
+    async def aafter_agent(
+        self, state: MemoryState, runtime: Runtime
+    ) -> Dict[str, Any] | None:
+        """Async version of after_agent for Agent Server and astream contexts.
+
+        WHY separate async path: the Agent Server runs after_agent inside an existing
+        asyncio event loop.  run_async_safely would spin up a new thread+loop, causing
+        MissingGreenlet errors with SQLAlchemy async connections.  This method directly
+        awaits _extract_via_model and the memory service instead.
+        """
+        if not self.postrun_analysis:
+            return None
+
+        resolved_uid = self._resolve_user_id()
+        if not resolved_uid:
+            return None
+
+        messages = state.get("messages", [])
+        if len(messages) < 2:
+            return None
+
+        model = self._get_analysis_model()
+        if model is None:
+            logger.warning("Post-run analysis (async) skipped — no model available")
+            return None
+
+        already_saved = self._has_memory_save_in_run(state)
+        start_time = time.monotonic()
+
+        try:
+            content, memory_type = await self._extract_via_model(state, model)
+            if not content:
+                return None
+            if already_saved and memory_type != "session_summary":
+                return None
+            await self.memory_service.save_memory(
+                user_id=resolved_uid,
+                content=content,
+                memory_type=memory_type,
+                topic="session_analysis",
+            )
+            latency_ms = (time.monotonic() - start_time) * 1000
+            logger.info(
+                "Post-run analysis (async): saved '%s' for user=%s (%.1fms)",
+                memory_type,
+                resolved_uid,
+                latency_ms,
+            )
+            return {
+                "session_analysis_saved": True,
+                "session_analysis_latency_ms": latency_ms,
+            }
+        except Exception as e:
+            logger.warning(
+                "Post-run analysis (async) failed (fail-open): %s", e, exc_info=True
+            )
+            return None
+
+    # -------------------------------------------------------------------------
+    # Helper: detect explicit saves during the run
+    # -------------------------------------------------------------------------
+
+    def _has_memory_save_in_run(self, state: MemoryState) -> bool:
+        """Return True if the agent explicitly called save_memory_store during this run.
+
+        WHY: When the model already persisted something, the post-run hook acts more
+        conservatively — only adding a session_summary for substantive conversations
+        rather than duplicate interaction entries.
+        """
+        messages = state.get("messages", [])
+        for msg in messages:
+            # Tool-result messages carry the tool name
+            if getattr(msg, "name", None) == "save_memory_store":
+                return True
+            # AI messages carry pending tool_calls before results arrive
+            for tc in getattr(msg, "tool_calls", None) or []:
+                if isinstance(tc, dict):
+                    if tc.get("name") == "save_memory_store":
+                        return True
+                elif getattr(tc, "name", None) == "save_memory_store":
+                    return True
+        return False
+
 
 # ============================================================================
 # Factory function
@@ -480,6 +803,8 @@ def create_memory_middleware(
     max_recall_results: int = 5,
     include_memory_types: Optional[List[str]] = None,
     include_categories: Optional[List[str]] = None,
+    postrun_analysis: bool = True,
+    postrun_analysis_model: Optional[str] = None,
 ) -> MemoryMiddleware:
     """
     Factory function to create MemoryMiddleware instance (CoALA-aware).
@@ -492,6 +817,9 @@ def create_memory_middleware(
         max_recall_results: Max memories to recall per category
         include_memory_types: Memory types to include (uses canonical MemoryType values)
         include_categories: CoALA categories to recall (defaults to all three)
+        postrun_analysis: Enable best-effort post-session analysis in after_agent
+        postrun_analysis_model: Optional model name override for the extraction LLM call.
+            When None, reuses the agent's own model (captured from wrap_model_call).
 
     Returns:
         Configured MemoryMiddleware instance
@@ -503,6 +831,8 @@ def create_memory_middleware(
         max_recall_results=max_recall_results,
         include_memory_types=include_memory_types,
         include_categories=include_categories,
+        postrun_analysis=postrun_analysis,
+        postrun_analysis_model=postrun_analysis_model,
     )
 
 

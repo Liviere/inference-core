@@ -203,6 +203,17 @@ When `AGENT_MEMORY_AUTO_RECALL=true` (default), the `MemoryMiddleware`
 automatically recalls relevant memories at the start of each agent run and
 injects them as context. This happens transparently without agent tool calls.
 
+### Post-Run Memory Analysis
+
+When `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED=true` (default), the same
+`MemoryMiddleware` performs a best-effort extraction pass after the run ends.
+It uses the agent's model by default, or `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`
+when set, to derive a compact session-level memory entry and persist it
+silently via the memory service.
+
+This keeps manual `save_memory_store` calls for explicit user-facing saves,
+while still capturing completed session summaries automatically.
+
 ### Deduplication
 
 Set `AGENT_MEMORY_UPSERT_BY_SIMILARITY=true` to check similarity before saving.
@@ -225,7 +236,7 @@ Agents can be executed remotely via the [LangGraph Platform](https://docs.langch
 agents:
   default_agent:
     primary: 'gemini-3-flash-preview'
-    execution_mode: 'remote'   # delegates to Agent Server
+    execution_mode: 'remote' # delegates to Agent Server
     # remote_graph_id: 'custom_id'  # optional, defaults to agent name
 ```
 

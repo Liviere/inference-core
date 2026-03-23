@@ -268,6 +268,8 @@ def _build_server_middleware(
             user_id=None,
             auto_recall=_mem_settings.agent_memory_auto_recall,
             max_recall_results=_mem_settings.agent_memory_max_results,
+            postrun_analysis=_mem_settings.agent_memory_postrun_analysis_enabled,
+            postrun_analysis_model=_mem_settings.agent_memory_postrun_analysis_model,
         )
         middleware.append(mem_middleware)
 

@@ -536,3 +536,418 @@ class TestAsyncRecallAndFormat:
 
         call_kwargs = mock_memory_service.format_context_for_prompt.call_args[1]
         assert call_kwargs["user_id"] == "override-uid"
+
+
+# ---------------------------------------------------------------------------
+# _has_memory_save_in_run
+# ---------------------------------------------------------------------------
+
+
+class TestHasMemorySaveInRun:
+    """Verify detection of save_memory_store tool calls in run history."""
+
+    def test_returns_false_when_no_messages(self, middleware):
+        state = MemoryState(messages=[])
+        assert middleware._has_memory_save_in_run(state) is False
+
+    def test_detects_tool_result_message_by_name(self, middleware):
+        """ToolMessage with name='save_memory_store' is detected."""
+        msg = MagicMock()
+        msg.name = "save_memory_store"
+        msg.tool_calls = None
+        state = MemoryState(messages=[msg])
+        assert middleware._has_memory_save_in_run(state) is True
+
+    def test_detects_ai_message_with_tool_call_dict(self, middleware):
+        """AI message with tool_calls list of dicts is detected."""
+        msg = MagicMock()
+        msg.name = None
+        msg.tool_calls = [{"name": "save_memory_store", "args": {}}]
+        state = MemoryState(messages=[msg])
+        assert middleware._has_memory_save_in_run(state) is True
+
+    def test_detects_ai_message_with_tool_call_object(self, middleware):
+        """AI message with tool_calls list of objects is detected."""
+        tc = MagicMock()
+        tc.name = "save_memory_store"
+        msg = MagicMock()
+        msg.name = None
+        msg.tool_calls = [tc]
+        state = MemoryState(messages=[msg])
+        assert middleware._has_memory_save_in_run(state) is True
+
+    def test_returns_false_for_other_tool_names(self, middleware):
+        """Other tool names are not confused with save_memory_store."""
+        msg = MagicMock()
+        msg.name = "recall_memories_store"
+        msg.tool_calls = [{"name": "recall_memories_store", "args": {}}]
+        state = MemoryState(messages=[msg])
+        assert middleware._has_memory_save_in_run(state) is False
+
+    def test_returns_false_when_tool_calls_is_none(self, middleware):
+        msg = MagicMock()
+        msg.name = None
+        msg.tool_calls = None
+        state = MemoryState(messages=[msg])
+        assert middleware._has_memory_save_in_run(state) is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers for message construction
+# ---------------------------------------------------------------------------
+
+
+def _make_human(content: str):
+    m = MagicMock()
+    m.type = "human"
+    m.role = None
+    m.content = content
+    return m
+
+
+def _make_ai(content: str):
+    m = MagicMock()
+    m.type = "ai"
+    m.role = None
+    m.content = content
+    return m
+
+
+# ---------------------------------------------------------------------------
+# _get_analysis_model
+# ---------------------------------------------------------------------------
+
+
+class TestGetAnalysisModel:
+    """Verify model selection priority for post-run extraction."""
+
+    def test_returns_none_when_both_absent(self, middleware):
+        """When neither _captured_model nor postrun_analysis_model is set → None."""
+        assert middleware._get_analysis_model() is None
+
+    def test_returns_captured_model(self, middleware):
+        mock_model = MagicMock()
+        middleware._captured_model = mock_model
+        assert middleware._get_analysis_model() is mock_model
+
+    def test_postrun_analysis_model_name_stored(self, mock_memory_service):
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            postrun_analysis_model="gpt-4.1-mini",
+        )
+        assert mw.postrun_analysis_model == "gpt-4.1-mini"
+
+    def test_falls_back_to_captured_when_no_override(self, mock_memory_service):
+        """Without postrun_analysis_model set, returns _captured_model."""
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        fallback = MagicMock()
+        mw._captured_model = fallback
+        assert mw._get_analysis_model() is fallback
+
+
+# ---------------------------------------------------------------------------
+# _extract_via_model
+# ---------------------------------------------------------------------------
+
+
+class TestExtractViaModel:
+    """Verify model-based session extraction."""
+
+    async def test_returns_none_for_empty_messages(self, middleware):
+        state = MemoryState(messages=[])
+        model = MagicMock()
+        content, mtype = await middleware._extract_via_model(state, model)
+        assert content is None
+        assert mtype == ""
+
+    async def test_returns_content_on_worth_saving(self, middleware):
+        from inference_core.agents.middleware.memory import _MemoryExtractionResult
+
+        state = MemoryState(
+            messages=[_make_human("I prefer TypeScript"), _make_ai("Got it.")]
+        )
+        mock_result = _MemoryExtractionResult(
+            worth_saving=True,
+            content="User prefers TypeScript",
+            memory_type="session_summary",
+        )
+        model = MagicMock()
+        model.with_structured_output.return_value.ainvoke = AsyncMock(
+            return_value=mock_result
+        )
+        content, mtype = await middleware._extract_via_model(state, model)
+        assert content == "User prefers TypeScript"
+        assert mtype == "session_summary"
+
+    async def test_returns_none_when_worth_saving_false(self, middleware):
+        from inference_core.agents.middleware.memory import _MemoryExtractionResult
+
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        mock_result = _MemoryExtractionResult(
+            worth_saving=False, content="", memory_type=""
+        )
+        model = MagicMock()
+        model.with_structured_output.return_value.ainvoke = AsyncMock(
+            return_value=mock_result
+        )
+        content, _ = await middleware._extract_via_model(state, model)
+        assert content is None
+
+    async def test_returns_none_on_model_exception(self, middleware):
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        model = MagicMock()
+        model.with_structured_output.return_value.ainvoke = AsyncMock(
+            side_effect=RuntimeError("model error")
+        )
+        content, _ = await middleware._extract_via_model(state, model)
+        assert content is None
+
+    async def test_defaults_memory_type_to_session_summary(self, middleware):
+        """Empty memory_type from model defaults to session_summary."""
+        from inference_core.agents.middleware.memory import _MemoryExtractionResult
+
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        mock_result = _MemoryExtractionResult(
+            worth_saving=True, content="some content", memory_type=""
+        )
+        model = MagicMock()
+        model.with_structured_output.return_value.ainvoke = AsyncMock(
+            return_value=mock_result
+        )
+        _, mtype = await middleware._extract_via_model(state, model)
+        assert mtype == "session_summary"
+
+    async def test_skips_non_text_content(self, middleware):
+        """Messages with non-string content are skipped gracefully."""
+        msg = MagicMock()
+        msg.type = "human"
+        msg.role = None
+        msg.content = None  # non-string
+        state = MemoryState(messages=[msg])
+        model = MagicMock()
+        content, _ = await middleware._extract_via_model(state, model)
+        assert content is None
+
+
+# ---------------------------------------------------------------------------
+# after_agent (sync)
+# ---------------------------------------------------------------------------
+
+
+class TestAfterAgent:
+    """Verify post-run persistence hook — sync path."""
+
+    def test_skips_when_postrun_analysis_disabled(self, mock_memory_service):
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            postrun_analysis=False,
+        )
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        assert mw.after_agent(state, MagicMock()) is None
+
+    def test_skips_when_no_user_id(self, mock_memory_service):
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_user_id",
+            return_value=None,
+        ):
+            assert mw.after_agent(state, MagicMock()) is None
+
+    def test_skips_when_fewer_than_two_messages(self, middleware):
+        state = MemoryState(messages=[_make_human("hi")])
+        assert middleware.after_agent(state, MagicMock()) is None
+
+    def test_skips_when_no_model_available(self, middleware):
+        """When _get_analysis_model returns None, analysis is skipped."""
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch.object(middleware, "_get_analysis_model", return_value=None):
+            assert middleware.after_agent(state, MagicMock()) is None
+
+    def test_returns_none_when_analyse_returns_none(self, middleware):
+        """When run_async_safely returns None (nothing saved), after_agent returns None."""
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        middleware._captured_model = MagicMock()
+        with patch(
+            "inference_core.agents.middleware.memory.run_async_safely",
+            return_value=None,
+        ):
+            assert middleware.after_agent(state, MagicMock()) is None
+
+    def test_saves_and_returns_state_on_success(self, middleware):
+        """When run_async_safely returns memory_type string, state dict is returned."""
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        middleware._captured_model = MagicMock()
+        with patch(
+            "inference_core.agents.middleware.memory.run_async_safely",
+            return_value="session_summary",
+        ):
+            result = middleware.after_agent(state, MagicMock())
+        assert result is not None
+        assert result["session_analysis_saved"] is True
+        assert "session_analysis_latency_ms" in result
+
+    def test_returns_none_on_exception(self, middleware):
+        """run_async_safely raising is swallowed (fail-open)."""
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        middleware._captured_model = MagicMock()
+        with patch(
+            "inference_core.agents.middleware.memory.run_async_safely",
+            side_effect=RuntimeError("DB down"),
+        ):
+            assert middleware.after_agent(state, MagicMock()) is None
+
+
+# ---------------------------------------------------------------------------
+# aafter_agent (async)
+# ---------------------------------------------------------------------------
+
+
+class TestAAfterAgent:
+    """Verify post-run persistence hook — async path."""
+
+    async def test_skips_when_postrun_analysis_disabled(self, mock_memory_service):
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            postrun_analysis=False,
+        )
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        assert await mw.aafter_agent(state, MagicMock()) is None
+
+    async def test_skips_when_no_user_id(self, mock_memory_service):
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id=None,
+        )
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_user_id",
+            return_value=None,
+        ):
+            assert await mw.aafter_agent(state, MagicMock()) is None
+
+    async def test_skips_when_no_model_available(self, mock_memory_service):
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch.object(mw, "_get_analysis_model", return_value=None):
+            assert await mw.aafter_agent(state, MagicMock()) is None
+
+    async def test_skips_when_extract_returns_none(self, mock_memory_service):
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        mw._captured_model = MagicMock()
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch.object(
+            mw, "_extract_via_model", new=AsyncMock(return_value=(None, ""))
+        ):
+            assert await mw.aafter_agent(state, MagicMock()) is None
+
+    async def test_saves_and_returns_state_on_success(self, mock_memory_service):
+        mock_memory_service.save_memory = AsyncMock(return_value="mem-id")
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        mw._captured_model = MagicMock()
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch.object(
+            mw,
+            "_extract_via_model",
+            new=AsyncMock(return_value=("some preference", "session_summary")),
+        ):
+            result = await mw.aafter_agent(state, MagicMock())
+        assert result is not None
+        assert result["session_analysis_saved"] is True
+        mock_memory_service.save_memory.assert_awaited_once()
+
+    async def test_skips_non_summary_when_already_saved(self, mock_memory_service):
+        """When agent already called save and extraction type=interaction, skip."""
+        mock_memory_service.save_memory = AsyncMock()
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        mw._captured_model = MagicMock()
+        tc = MagicMock()
+        tc.name = "save_memory_store"
+        ai_msg = MagicMock()
+        ai_msg.name = None
+        ai_msg.tool_calls = [tc]
+        state = MemoryState(messages=[_make_human("msg"), ai_msg])
+        with patch.object(
+            mw,
+            "_extract_via_model",
+            new=AsyncMock(return_value=("correction", "interaction")),
+        ):
+            result = await mw.aafter_agent(state, MagicMock())
+        assert result is None
+        mock_memory_service.save_memory.assert_not_awaited()
+
+    async def test_returns_none_on_service_exception(self, mock_memory_service):
+        mock_memory_service.save_memory = AsyncMock(
+            side_effect=RuntimeError("DB down")
+        )
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        mw._captured_model = MagicMock()
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch.object(
+            mw,
+            "_extract_via_model",
+            new=AsyncMock(return_value=("content", "session_summary")),
+        ):
+            assert await mw.aafter_agent(state, MagicMock()) is None
+
+
+# ---------------------------------------------------------------------------
+# postrun_analysis init param + factory
+# ---------------------------------------------------------------------------
+
+
+class TestPostrunAnalysisParam:
+    """Verify postrun_analysis and postrun_analysis_model are wired correctly."""
+
+    def test_default_postrun_analysis_is_true(self, mock_memory_service):
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        assert mw.postrun_analysis is True
+
+    def test_postrun_analysis_can_be_disabled(self, mock_memory_service):
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            postrun_analysis=False,
+        )
+        assert mw.postrun_analysis is False
+
+    def test_postrun_analysis_model_default_none(self, mock_memory_service):
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        assert mw.postrun_analysis_model is None
+
+    def test_postrun_analysis_model_stored(self, mock_memory_service):
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            postrun_analysis_model="gpt-4.1-mini",
+        )
+        assert mw.postrun_analysis_model == "gpt-4.1-mini"
+
+    def test_factory_passes_postrun_analysis(self, mock_memory_service):
+        mw = create_memory_middleware(
+            memory_service=mock_memory_service,
+            user_id="u42",
+            postrun_analysis=False,
+        )
+        assert mw.postrun_analysis is False
+
+    def test_factory_passes_postrun_analysis_model(self, mock_memory_service):
+        mw = create_memory_middleware(
+            memory_service=mock_memory_service,
+            user_id="u42",
+            postrun_analysis_model="gpt-4.1-mini",
+        )
+        assert mw.postrun_analysis_model == "gpt-4.1-mini"
+
+    def test_factory_default_postrun_analysis_is_true(self, mock_memory_service):
+        mw = create_memory_middleware(
+            memory_service=mock_memory_service,
+            user_id="u42",
+        )
+        assert mw.postrun_analysis is True

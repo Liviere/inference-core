@@ -105,6 +105,8 @@ class AgentService:
         system_prompt_override: Optional[str] = None,
         system_prompt_append: Optional[str] = None,
         user_skills: Optional[list[dict[str, str]]] = None,
+        memory_postrun_analysis: Optional[bool] = None,
+        memory_postrun_model: Optional[str] = None,
     ):
         """Initialize the AgentService.
 
@@ -132,6 +134,11 @@ class AgentService:
                 has a complete custom prompt.
             system_prompt_append: When set, appended to the system_prompt passed to
                 create_agent().  Used when the DB instance extends the base prompt.
+            memory_postrun_analysis: Override for post-run memory analysis flag.
+                When None (default), uses settings.agent_memory_postrun_analysis_enabled.
+            memory_postrun_model: Optional model name for the post-run extraction LLM
+                call.  When None, uses settings.agent_memory_postrun_analysis_model
+                (typically the agent's own model).
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -195,6 +202,10 @@ class AgentService:
 
         # User-defined skills: list of {name, description, content} dicts
         self._user_skills = user_skills or []
+
+        # Post-run memory analysis overrides (None = use settings defaults)
+        self._memory_postrun_analysis = memory_postrun_analysis
+        self._memory_postrun_model = memory_postrun_model
 
     @property
     def display_name(self) -> str:
@@ -368,7 +379,15 @@ class AgentService:
                         user_id=str(self._user_id),
                         auto_recall=settings.agent_memory_auto_recall,
                         max_recall_results=settings.agent_memory_max_results,
-                        # Uses canonical MemoryType values from service by default
+                        postrun_analysis=(
+                            self._memory_postrun_analysis
+                            if self._memory_postrun_analysis is not None
+                            else settings.agent_memory_postrun_analysis_enabled
+                        ),
+                        postrun_analysis_model=(
+                            self._memory_postrun_model
+                            or settings.agent_memory_postrun_analysis_model
+                        ),
                     )
                     # Insert before CostTracking (which sits at the end)
                     # so memory context enrichment runs in before_model first.

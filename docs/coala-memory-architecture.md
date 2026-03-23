@@ -23,6 +23,11 @@ The memory system implements the CoALA (Cognitive Architectures for Language Age
 │  │  (before_agent)   │    │ (CoALA XML sections)     │    │
 │  └──────────────────┘    └──────────────────────────┘    │
 │                                                          │
+│  ┌──────────────────┐    ┌──────────────────────────┐    │
+│  │  MemoryMiddleware │───▶ postrun_analysis          │    │
+│  │   (after_agent)   │    │ (session_summary save)   │    │
+│  └──────────────────┘    └──────────────────────────┘    │
+│                                                          │
 │  ┌──────────────────────────────────────────────┐        │
 │  │              Memory Tools                     │        │
 │  │  save_memory_store  │  recall_memories_store  │        │
@@ -106,6 +111,12 @@ AGENT_MEMORY_CATEGORIES=semantic,episodic,procedural
 
 # Enable per-agent scoping for episodic/procedural
 AGENT_MEMORY_AGENT_SCOPE_ENABLED=true
+
+# Best-effort session summarization after each agent run
+AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED=true
+
+# Optional cheaper model for post-run extraction
+AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL=gpt-5-nano
 ```
 
 ## Usage
@@ -121,6 +132,13 @@ agent_service = AgentService(
 await agent_service.create_agent(system_prompt="You are a helpful assistant.")
 # Memory tools + middleware are auto-configured with CoALA namespaces
 ```
+
+### Post-Run Persistence
+
+The middleware keeps explicit saves user-driven, but it can also persist a
+compact `session_summary` automatically after a completed run. This happens in
+`after_agent` when post-run analysis is enabled, so long sessions can still be
+captured even if the model never called `save_memory_store` directly.
 
 ### Direct Service Usage
 
@@ -229,4 +247,4 @@ The `MemoryMiddleware` injects CoALA-structured XML context into the system prom
 2. **Episodic and procedural are per-agent by default** — each agent has its own history and learned skills.
 3. **Category is auto-resolved from memory_type** — agents don't need to specify category explicitly.
 4. **Backward compatible** — existing memory types (`preferences`, `facts`, `context`, `instructions`, `goals`, `general`) continue to work; they're just routed to the appropriate category.
-5. **Manual episodic saves** — agents explicitly decide what to save as episodic memory (no auto-save of transcripts).
+5. **Manual explicit saves stay explicit** — agents still decide what to save via tools, but enabled post-run analysis can add a compact session summary automatically.

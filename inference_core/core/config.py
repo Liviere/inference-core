@@ -369,6 +369,23 @@ class Settings(BaseSettings):
             "When False, all categories are shared across agents."
         ),
     )
+    agent_memory_postrun_analysis_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable post-run analysis in MemoryMiddleware.after_agent hook. "
+            "When True, the middleware calls the LLM to extract and silently persist "
+            "session-level memories that the agent may not have explicitly saved."
+        ),
+    )
+    agent_memory_postrun_analysis_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional model name for the post-run extraction LLM call. "
+            "When None (default), the middleware reuses the agent's own model "
+            "(captured from wrap_model_call). Set to a cheaper model "
+            "(e.g. 'gpt-4.1-mini') to keep extraction costs low."
+        ),
+    )
 
     ###################################
     #     LANGGRAPH AGENT SERVER      #
