@@ -37,12 +37,17 @@ if TYPE_CHECKING:
         AgentMemoryStoreService,
     )
 
+from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, Field
 
 from inference_core.agents.middleware._runtime_context import (
     get_user_id as _ctx_get_user_id,
 )
-from inference_core.agents.tools.memory_tools import SaveMemoryStoreTool
+from inference_core.agents.tools.memory_tools import (
+    RecallMemoryStoreTool,
+    SaveMemoryStoreTool,
+    UpdateMemoryStoreTool,
+)
 from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
 
 logger = logging.getLogger(__name__)
@@ -523,28 +528,81 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         return self._captured_model
 
     # Prompt template for the post-run tool-call analysis.
-    # {transcript} — full conversation text; {already_saved_note} — optional hint.
+    # Placeholders: {existing_memories_section}, {already_saved_note}, {transcript}.
     # Defined at class scope to avoid reconstructing the string on every invocation.
     _TOOL_ANALYSIS_PROMPT: str = (
-        "Review the following conversation and call `save_memory_store` for every "
-        "distinct piece of information worth keeping in long-term memory for future "
-        "sessions.\n\n"
+        "Review the following conversation and save to long-term memory every "
+        "distinct piece of information worth keeping for future sessions.\n\n"
         "Save when the conversation contains:\n"
-        "- User preferences (language, tone, tools, response style, output formats,"
-        "things he prefers to use or avoid)\n"
+        "- User preferences (language, tone, tools, response style, output formats, "
+        "things they prefer to use or avoid)\n"
         "- Personal facts (name, location, profession, goals, current project)\n"
-        "- Explicit standing instructions ('always do X', 'never do Y', "
-        "'from now on…')\n"
+        "- Explicit standing instructions ('always do X', 'never do Y', 'from now on…')\n"
         "- Significant corrections to agent behaviour\n"
         "- Project or task context useful beyond this session\n\n"
         "Do NOT save: single-question factual lookups, greetings, or generic "
         "exchanges with no personal or durable context.\n\n"
+        "{existing_memories_section}"
+        "DEDUPLICATION RULES:\n"
+        "1. Check the existing memories listed above before saving anything.\n"
+        "   If a very similar memory already exists, call `update_memory_store` with "
+        "its id to enrich or correct it got any new details from the conversation, "
+        "instead of creating a new entry. — do NOT create a duplicate.\n"
+        "2. If the conversation covers multiple distinct topics and you are unsure "
+        "whether a specific fact is already stored, call `recall_memories_store` "
+        "with a focused query for that single topic before saving.\n"
+        "3. Only call `save_memory_store` for information genuinely not yet captured.\n\n"
         "Write the `content` argument in the SAME language the user spoke.\n"
-        "You may call `save_memory_store` multiple times if there are several "
-        "distinct pieces of information worth saving.\n\n"
+        "You may call the tools multiple times for distinct pieces of information.\n\n"
         "{already_saved_note}"
         "Conversation:\n\n{transcript}"
     )
+
+    async def _prefetch_existing_memories(self, transcript: str, user_id: str) -> str:
+        """Retrieve memories semantically similar to the conversation transcript.
+
+        WHY: Providing pre-fetched similar memories in the analysis prompt lets the
+        model call update_memory_store instead of save_memory_store when the content
+        is already captured, preventing near-duplicate accumulation across sessions.
+
+        Returns:
+            Plain-text formatted memory list, or empty string if nothing found or
+            the recall fails (fail-open — never blocks the analysis).
+        """
+        try:
+            memories = await self.memory_service.recall_memories(
+                user_id=user_id,
+                query=transcript[:2000],
+                k=12,
+                include_scores=True,
+            )
+        except Exception as e:
+            logger.debug("Pre-fetch for post-run analysis failed (non-blocking): %s", e)
+            return ""
+
+        if not memories:
+            return ""
+
+        lines: list[str] = [f"Found {len(memories)} potentially related memories:"]
+        for idx, mem in enumerate(memories, 1):
+            mem_id = getattr(mem, "id", "unknown")
+            mem_type = getattr(mem, "memory_type", None) or "general"
+            mem_cat = getattr(mem, "memory_category", None) or ""
+            mem_topic = getattr(mem, "topic", None) or ""
+            created_at = getattr(mem, "created_at", None)
+            created_str = ""
+            if created_at:
+                if hasattr(created_at, "strftime"):
+                    created_str = f" [created: {created_at.strftime('%Y-%m-%d %H:%M')}]"
+                elif isinstance(created_at, str):
+                    created_str = f" [created: {created_at[:16]}]"
+            cat_str = f" [{mem_cat}]" if mem_cat else ""
+            topic_str = f" ({mem_topic})" if mem_topic else ""
+            lines.append(
+                f"{idx}. [id: {mem_id}]{cat_str} [{mem_type}]{topic_str}{created_str}:"
+                f" {mem.content}"
+            )
+        return "\n".join(lines)
 
     async def _analyse_via_tool_call(
         self,
@@ -553,16 +611,20 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         user_id: str,
         already_saved: bool,
     ) -> int:
-        """Ask the model to call save_memory_store for anything worth persisting.
+        """Ask the model to call save/update/recall tools for anything worth persisting.
 
-        The model participates in the decision as a first-class tool-caller — it
-        can save zero, one, or many distinct memories in a single pass,
-        matching exactly how it behaves inside the main agent loop.
-        There is no Python gate on type or content; the model decides
-        what is worth persisting and how to classify it.
+        Runs a short agentic loop (up to 4 iterations) so the model can call
+        recall_memories_store to verify per-topic deduplication before deciding to
+        save a new entry or update an existing one.
+
+        The loop stops naturally when the model issues no tool calls (done) or
+        after the iteration cap (runaway guard).  Only save_memory_store and
+        update_memory_store calls increment the returned counter; recall calls
+        provide information to the model and are not counted.
 
         Returns:
-            Number of successful save_memory_store calls executed (0 = nothing saved).
+            Number of successful save_memory_store + update_memory_store calls
+            executed (0 = nothing persisted).
         """
         messages = state.get("messages", [])
         lines: list[str] = []
@@ -581,6 +643,19 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         # Limit transcript to avoid blowing up context windows.
         transcript = "\n\n".join(lines)[-4000:]
+
+        # Pre-fetch semantically similar memories to give the model a head-start
+        # on deduplication without requiring a recall round-trip first.
+        existing_text = await self._prefetch_existing_memories(transcript, user_id)
+        if existing_text:
+            existing_memories_section = (
+                "EXISTING MEMORIES (retrieved by semantic similarity to this conversation)\n"
+                "=========================================================================\n"
+                f"{existing_text}\n\n"
+            )
+        else:
+            existing_memories_section = ""
+
         already_saved_note = (
             "Note: the agent already saved some memories during this session. "
             "Only save genuinely new information not already captured.\n\n"
@@ -588,37 +663,78 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             else ""
         )
         prompt = self._TOOL_ANALYSIS_PROMPT.format(
+            existing_memories_section=existing_memories_section,
             already_saved_note=already_saved_note,
             transcript=transcript,
         )
 
         save_tool = SaveMemoryStoreTool(
-            memory_service=self.memory_service,
-            user_id=user_id,
+            memory_service=self.memory_service, user_id=user_id
         )
-        try:
-            response = await model.bind_tools([save_tool]).ainvoke(
-                [{"role": "user", "content": prompt}]
-            )
-        except Exception as e:
-            logger.warning(
-                "Post-run tool-call analysis: model invocation failed: %s", e
-            )
-            return 0
+        recall_tool = RecallMemoryStoreTool(
+            memory_service=self.memory_service, user_id=user_id
+        )
+        update_tool = UpdateMemoryStoreTool(
+            memory_service=self.memory_service, user_id=user_id
+        )
+        bound_model = model.bind_tools([save_tool, recall_tool, update_tool])
 
+        messages_ctx: list[Any] = [{"role": "user", "content": prompt}]
         saved_count = 0
-        for tc in getattr(response, "tool_calls", []) or []:
-            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-            if name != "save_memory_store":
-                continue
-            args = (
-                tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
-            )
+
+        for loop_idx in range(4):  # cap prevents runaway loops
             try:
-                await save_tool._arun(**args)
-                saved_count += 1
+                response = await bound_model.ainvoke(messages_ctx)
             except Exception as e:
-                logger.warning("Post-run save_memory_store call failed: %s", e)
+                logger.warning(
+                    "Post-run tool-call analysis: model invocation failed: %s", e
+                )
+                break
+
+            tool_calls = getattr(response, "tool_calls", []) or []
+            if not tool_calls:
+                break
+
+            messages_ctx.append(response)
+
+            tool_results: list[ToolMessage] = []
+            for call_idx, tc in enumerate(tool_calls):
+                name = (
+                    tc.get("name")
+                    if isinstance(tc, dict)
+                    else getattr(tc, "name", None)
+                )
+                args = (
+                    tc.get("args", {})
+                    if isinstance(tc, dict)
+                    else getattr(tc, "args", {})
+                )
+                tc_id = (
+                    tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                ) or f"call_{loop_idx}_{call_idx}"
+
+                try:
+                    if name == "save_memory_store":
+                        result = await save_tool._arun(**args)
+                        saved_count += 1
+                    elif name == "update_memory_store":
+                        result = await update_tool._arun(**args)
+                        saved_count += 1
+                    elif name == "recall_memories_store":
+                        result = await recall_tool._arun(**args)
+                    else:
+                        continue
+                except Exception as e:
+                    logger.warning("Post-run tool call %r failed: %s", name, e)
+                    result = f"✗ Tool call failed: {e}"
+
+                tool_results.append(ToolMessage(content=result, tool_call_id=tc_id))
+
+            if not tool_results:
+                break
+
+            messages_ctx.extend(tool_results)
+
         return saved_count
 
     # -------------------------------------------------------------------------

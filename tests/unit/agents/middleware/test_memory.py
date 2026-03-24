@@ -26,6 +26,8 @@ from inference_core.services.agent_memory_service import MemoryCategory, MemoryT
 def mock_memory_service():
     """Mock AgentMemoryStoreService with async methods."""
     service = MagicMock()
+    # recall_memories is used by _prefetch_existing_memories in post-run analysis
+    service.recall_memories = AsyncMock(return_value=[])
     return service
 
 
@@ -682,8 +684,10 @@ class TestAnalyseViaToolCall:
         }
         mock_response = MagicMock()
         mock_response.tool_calls = [tc]
+        done_response = MagicMock()
+        done_response.tool_calls = []
         model = MagicMock()
-        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        model.bind_tools.return_value.ainvoke = AsyncMock(side_effect=[mock_response, done_response])
         result = await middleware._analyse_via_tool_call(state, model, "u1", False)
         assert result == 1
         mock_memory_service.save_memory.assert_awaited_once()
@@ -700,8 +704,10 @@ class TestAnalyseViaToolCall:
         ]
         mock_response = MagicMock()
         mock_response.tool_calls = tcs
+        done_response = MagicMock()
+        done_response.tool_calls = []
         model = MagicMock()
-        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        model.bind_tools.return_value.ainvoke = AsyncMock(side_effect=[mock_response, done_response])
         result = await middleware._analyse_via_tool_call(state, model, "u1", False)
         assert result == 2
         assert mock_memory_service.save_memory.await_count == 2
@@ -745,7 +751,9 @@ class TestAnalyseViaToolCall:
         mock_response = MagicMock()
         mock_response.tool_calls = tcs
         model = MagicMock()
-        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        done_response = MagicMock()
+        done_response.tool_calls = []
+        model.bind_tools.return_value.ainvoke = AsyncMock(side_effect=[mock_response, done_response])
         result = await middleware._analyse_via_tool_call(state, model, "u1", False)
         # _arun swallows internally — both calls complete, save_memory called twice
         assert result == 2
@@ -775,6 +783,152 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = capture
         await middleware._analyse_via_tool_call(state, model, "u1", already_saved=True)
         assert "already saved" in captured_prompt[0].lower()
+
+
+    async def test_counts_update_memory_store_calls(self, middleware, mock_memory_service):
+        """update_memory_store calls are counted the same as save calls."""
+        mock_memory_service.save_memory = AsyncMock(return_value="mem-id-updated")
+        state = MemoryState(messages=[_make_human("my name is Jan"), _make_ai("Noted.")])
+        tc = {"name": "update_memory_store", "args": {"memory_id": "abc", "content": "Name: Jan"}}
+        mock_response = MagicMock()
+        mock_response.tool_calls = [tc]
+        done_response = MagicMock()
+        done_response.tool_calls = []
+        model = MagicMock()
+        model.bind_tools.return_value.ainvoke = AsyncMock(side_effect=[mock_response, done_response])
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        assert result == 1
+        mock_memory_service.save_memory.assert_awaited_once()
+
+    async def test_executes_recall_but_does_not_count_it(self, middleware, mock_memory_service):
+        """recall_memories_store calls are executed for the model but not counted."""
+        recalled = MagicMock()
+        recalled.id = "r1"
+        recalled.memory_type = "preferences"
+        recalled.memory_category = "semantic"
+        recalled.topic = "food"
+        recalled.created_at = None
+        recalled.content = "Likes pizza"
+        mock_memory_service.recall_memories = AsyncMock(return_value=[recalled])
+
+        state = MemoryState(messages=[_make_human("I also like pasta"), _make_ai("Nice.")])
+        recall_tc = {"name": "recall_memories_store", "args": {"query": "food preferences"}, "id": "r-call-1"}
+        mock_recall_response = MagicMock()
+        mock_recall_response.tool_calls = [recall_tc]
+        done_response = MagicMock()
+        done_response.tool_calls = []
+        model = MagicMock()
+        model.bind_tools.return_value.ainvoke = AsyncMock(side_effect=[mock_recall_response, done_response])
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        # recall is executed but not counted
+        assert result == 0
+
+    async def test_multi_turn_recall_then_save(self, middleware, mock_memory_service):
+        """Model recalls in first turn, saves in second — multi-turn loop works."""
+        recalled = MagicMock()
+        recalled.id = "r1"
+        recalled.memory_type = "preferences"
+        recalled.memory_category = "semantic"
+        recalled.topic = "food"
+        recalled.created_at = None
+        recalled.content = "Likes pizza"
+        # This recall_memories is for the tool call (not the pre-fetch — pre-fetch uses service directly)
+        mock_memory_service.recall_memories = AsyncMock(return_value=[recalled])
+        mock_memory_service.save_memory = AsyncMock(return_value="new-mem-id")
+
+        state = MemoryState(messages=[_make_human("I also like sushi"), _make_ai("Noted.")])
+
+        recall_tc = {"name": "recall_memories_store", "args": {"query": "food"}, "id": "recall-1"}
+        save_tc = {"name": "save_memory_store", "args": {"content": "Likes sushi"}}
+
+        recall_response = MagicMock()
+        recall_response.tool_calls = [recall_tc]
+        save_response = MagicMock()
+        save_response.tool_calls = [save_tc]
+        done_response = MagicMock()
+        done_response.tool_calls = []
+
+        model = MagicMock()
+        model.bind_tools.return_value.ainvoke = AsyncMock(
+            side_effect=[recall_response, save_response, done_response]
+        )
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        assert result == 1
+        mock_memory_service.save_memory.assert_awaited_once()
+
+    async def test_binds_all_three_tools(self, middleware, mock_memory_service):
+        """bind_tools must receive save, recall, and update tool instances."""
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        mock_response = MagicMock()
+        mock_response.tool_calls = []
+        model = MagicMock()
+        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        await middleware._analyse_via_tool_call(state, model, "u1", False)
+        tools_passed = model.bind_tools.call_args[0][0]
+        tool_names = [t.name for t in tools_passed]
+        assert "save_memory_store" in tool_names
+        assert "recall_memories_store" in tool_names
+        assert "update_memory_store" in tool_names
+
+
+
+# ---------------------------------------------------------------------------
+# _prefetch_existing_memories
+# ---------------------------------------------------------------------------
+
+
+class TestPrefetchExistingMemories:
+    """Verify semantic pre-fetch of relevant existing memories."""
+
+    async def test_returns_empty_string_for_no_memories(self, middleware, mock_memory_service):
+        mock_memory_service.recall_memories = AsyncMock(return_value=[])
+        result = await middleware._prefetch_existing_memories("some transcript", "u1")
+        assert result == ""
+
+    async def test_formats_memories_with_id_and_content(self, middleware, mock_memory_service):
+        """Pre-fetched memories include id (for update calls) and readable content."""
+        mem = MagicMock()
+        mem.id = "abc123"
+        mem.memory_type = "preferences"
+        mem.memory_category = "semantic"
+        mem.topic = "cooking"
+        mem.created_at = None
+        mem.content = "Likes aniagotuje.pl"
+        mock_memory_service.recall_memories = AsyncMock(return_value=[mem])
+        result = await middleware._prefetch_existing_memories("cooking transcript", "u1")
+        assert "abc123" in result
+        assert "Likes aniagotuje.pl" in result
+        assert "preferences" in result
+
+    async def test_returns_empty_on_recall_exception(self, middleware, mock_memory_service):
+        """Fail-open: exception during recall returns empty string, never raises."""
+        mock_memory_service.recall_memories = AsyncMock(side_effect=RuntimeError("store down"))
+        result = await middleware._prefetch_existing_memories("transcript", "u1")
+        assert result == ""
+
+    async def test_truncates_transcript_to_2000_chars_for_query(self, middleware, mock_memory_service):
+        """Only first 2000 chars of transcript are sent as the recall query."""
+        mock_memory_service.recall_memories = AsyncMock(return_value=[])
+        long_transcript = "x" * 5000
+        await middleware._prefetch_existing_memories(long_transcript, "u1")
+        call_kwargs = mock_memory_service.recall_memories.call_args
+        query = call_kwargs[1].get("query") or call_kwargs[0][1]
+        assert len(query) == 2000
+
+    async def test_includes_created_at_in_output(self, middleware, mock_memory_service):
+        """created_at timestamp is included when available."""
+        import datetime
+        mem = MagicMock()
+        mem.id = "xyz"
+        mem.memory_type = "facts"
+        mem.memory_category = "episodic"
+        mem.topic = None
+        mem.created_at = datetime.datetime(2026, 3, 24, 10, 10)
+        mem.content = "User prefers dark mode"
+        mock_memory_service.recall_memories = AsyncMock(return_value=[mem])
+        result = await middleware._prefetch_existing_memories("dark mode", "u1")
+        assert "2026-03-24" in result
+        assert "User prefers dark mode" in result
 
 
 # ---------------------------------------------------------------------------

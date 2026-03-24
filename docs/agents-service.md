@@ -208,8 +208,9 @@ injects them as context. This happens transparently without agent tool calls.
 When `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED=true` (default), the same
 `MemoryMiddleware` performs a best-effort extraction pass after the run ends.
 It uses the agent's model by default, or `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`
-when set, to ask the model to call `save_memory_store` for any distinct
-memories worth persisting. The middleware then executes those tool calls and
+when set, to ask the model to inspect semantically similar memories first and
+then call `save_memory_store`, `update_memory_store`, or
+`recall_memories_store` as needed. The middleware executes those tool calls and
 can save multiple memories in one pass when the conversation contains several
 durable facts, preferences, or corrections.
 
@@ -221,6 +222,10 @@ while still capturing completed session summaries automatically.
 Set `AGENT_MEMORY_UPSERT_BY_SIMILARITY=true` to check similarity before saving.
 If a memory with similarity ≥ `AGENT_MEMORY_SIMILARITY_THRESHOLD` (default 0.85)
 exists, the save is skipped to avoid duplicates.
+
+The post-run analysis also prefetches semantically similar memories and asks the
+model to update an existing record instead of creating a duplicate when the new
+conversation content clearly extends or corrects what is already stored.
 
 ## Migration Notes
 

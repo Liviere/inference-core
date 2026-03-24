@@ -25,7 +25,8 @@ The memory system implements the CoALA (Cognitive Architectures for Language Age
 │                                                          │
 │  ┌──────────────────┐    ┌──────────────────────────┐    │
 │  │  MemoryMiddleware │───▶ postrun_analysis          │    │
-│  │   (after_agent)   │    │ (save_memory_store tool)  │    │
+│  │   (after_agent)   │    │ (save/update/recall      │    │
+│  │                   │    │  memory tools)           │    │
 │  └──────────────────┘    └──────────────────────────┘    │
 │                                                          │
 │  ┌──────────────────────────────────────────────┐        │
@@ -138,10 +139,12 @@ await agent_service.create_agent(system_prompt="You are a helpful assistant.")
 The middleware keeps explicit saves user-driven, but it can also persist a
 compact session-level memory automatically after a completed run. This happens
 in `after_agent` when post-run analysis is enabled, where the middleware asks
-the model to call `save_memory_store` for each distinct memory worth keeping,
-then executes those tool calls best-effort. That means the post-run pass can
-record more than one memory when the conversation contains several durable
-facts, preferences, or corrections.
+the model to inspect relevant memories first and then call
+`save_memory_store`, `update_memory_store`, or `recall_memories_store` as
+needed, then executes those tool calls best-effort. That means the post-run
+pass can record more than one memory when the conversation contains several
+durable facts, preferences, or corrections, while also reusing or enriching an
+existing memory when the new context is closely related.
 
 ### Direct Service Usage
 
