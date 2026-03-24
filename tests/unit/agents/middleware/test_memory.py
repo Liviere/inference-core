@@ -647,87 +647,134 @@ class TestGetAnalysisModel:
 
 
 # ---------------------------------------------------------------------------
-# _extract_via_model
+# _analyse_via_tool_call
 # ---------------------------------------------------------------------------
 
 
-class TestExtractViaModel:
-    """Verify model-based session extraction."""
+class TestAnalyseViaToolCall:
+    """Verify the model-based tool-calling extraction path."""
 
-    async def test_returns_none_for_empty_messages(self, middleware):
+    async def test_returns_zero_for_empty_messages(self, middleware):
         state = MemoryState(messages=[])
+        result = await middleware._analyse_via_tool_call(
+            state, MagicMock(), "u1", False
+        )
+        assert result == 0
+
+    async def test_returns_zero_when_model_returns_no_tool_calls(self, middleware):
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        mock_response = MagicMock()
+        mock_response.tool_calls = []
         model = MagicMock()
-        content, mtype = await middleware._extract_via_model(state, model)
-        assert content is None
-        assert mtype == ""
+        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        assert result == 0
 
-    async def test_returns_content_on_worth_saving(self, middleware):
-        from inference_core.agents.middleware.memory import _MemoryExtractionResult
+    async def test_calls_arun_for_save_memory_store_tool_call(
+        self, middleware, mock_memory_service
+    ):
+        """When model issues one save_memory_store tool_call, _arun is invoked."""
+        mock_memory_service.save_memory = AsyncMock(return_value="mem-id-abc")
+        state = MemoryState(messages=[_make_human("I use Python"), _make_ai("Got it.")])
+        tc = {
+            "name": "save_memory_store",
+            "args": {"content": "Uses Python", "memory_type": "general"},
+        }
+        mock_response = MagicMock()
+        mock_response.tool_calls = [tc]
+        model = MagicMock()
+        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        assert result == 1
+        mock_memory_service.save_memory.assert_awaited_once()
 
+    async def test_saves_multiple_tool_calls(self, middleware, mock_memory_service):
+        """When model issues two tool calls, both are executed and count returned."""
+        mock_memory_service.save_memory = AsyncMock(return_value="mem-id")
         state = MemoryState(
-            messages=[_make_human("I prefer TypeScript"), _make_ai("Got it.")]
+            messages=[_make_human("I like Python and dark mode"), _make_ai("Noted.")]
         )
-        mock_result = _MemoryExtractionResult(
-            worth_saving=True,
-            content="User prefers TypeScript",
-            memory_type="session_summary",
-        )
+        tcs = [
+            {"name": "save_memory_store", "args": {"content": "Likes Python"}},
+            {"name": "save_memory_store", "args": {"content": "Prefers dark mode"}},
+        ]
+        mock_response = MagicMock()
+        mock_response.tool_calls = tcs
         model = MagicMock()
-        model.with_structured_output.return_value.ainvoke = AsyncMock(
-            return_value=mock_result
-        )
-        content, mtype = await middleware._extract_via_model(state, model)
-        assert content == "User prefers TypeScript"
-        assert mtype == "session_summary"
+        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        assert result == 2
+        assert mock_memory_service.save_memory.await_count == 2
 
-    async def test_returns_none_when_worth_saving_false(self, middleware):
-        from inference_core.agents.middleware.memory import _MemoryExtractionResult
-
+    async def test_ignores_other_tool_calls(self, middleware):
+        """Non-save_memory_store tool calls are silently skipped."""
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
-        mock_result = _MemoryExtractionResult(
-            worth_saving=False, content="", memory_type=""
-        )
+        tc = {"name": "some_other_tool", "args": {"x": 1}}
+        mock_response = MagicMock()
+        mock_response.tool_calls = [tc]
         model = MagicMock()
-        model.with_structured_output.return_value.ainvoke = AsyncMock(
-            return_value=mock_result
-        )
-        content, _ = await middleware._extract_via_model(state, model)
-        assert content is None
+        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        assert result == 0
 
-    async def test_returns_none_on_model_exception(self, middleware):
+    async def test_continues_even_when_save_memory_raises(
+        self, middleware, mock_memory_service
+    ):
+        """_arun swallows save_memory exceptions internally; both tool calls still complete.
+
+        WHY: SaveMemoryStoreTool._arun catches all exceptions and returns an error string
+        rather than re-raising. So from _analyse_via_tool_call's perspective both calls
+        "complete" (no exception propagates), and saved_count counts invocations not
+        DB-level success.
+        """
+        call_count = 0
+
+        async def flaky(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("DB down")
+            return "ok"
+
+        mock_memory_service.save_memory = flaky
+        state = MemoryState(messages=[_make_human("msg"), _make_ai("resp")])
+        tcs = [
+            {"name": "save_memory_store", "args": {"content": "first"}},
+            {"name": "save_memory_store", "args": {"content": "second"}},
+        ]
+        mock_response = MagicMock()
+        mock_response.tool_calls = tcs
+        model = MagicMock()
+        model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        # _arun swallows internally — both calls complete, save_memory called twice
+        assert result == 2
+        assert call_count == 2
+
+    async def test_returns_zero_on_model_invocation_exception(self, middleware):
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
         model = MagicMock()
-        model.with_structured_output.return_value.ainvoke = AsyncMock(
+        model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=RuntimeError("model error")
         )
-        content, _ = await middleware._extract_via_model(state, model)
-        assert content is None
+        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        assert result == 0
 
-    async def test_defaults_memory_type_to_session_summary(self, middleware):
-        """Empty memory_type from model defaults to session_summary."""
-        from inference_core.agents.middleware.memory import _MemoryExtractionResult
-
+    async def test_forwards_already_saved_flag_in_prompt(self, middleware):
+        """When already_saved=True the prompt must mention it to guide the model."""
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
-        mock_result = _MemoryExtractionResult(
-            worth_saving=True, content="some content", memory_type=""
-        )
-        model = MagicMock()
-        model.with_structured_output.return_value.ainvoke = AsyncMock(
-            return_value=mock_result
-        )
-        _, mtype = await middleware._extract_via_model(state, model)
-        assert mtype == "session_summary"
+        captured_prompt: list[str] = []
 
-    async def test_skips_non_text_content(self, middleware):
-        """Messages with non-string content are skipped gracefully."""
-        msg = MagicMock()
-        msg.type = "human"
-        msg.role = None
-        msg.content = None  # non-string
-        state = MemoryState(messages=[msg])
+        async def capture(messages):
+            captured_prompt.append(messages[0]["content"])
+            mock_response = MagicMock()
+            mock_response.tool_calls = []
+            return mock_response
+
         model = MagicMock()
-        content, _ = await middleware._extract_via_model(state, model)
-        assert content is None
+        model.bind_tools.return_value.ainvoke = capture
+        await middleware._analyse_via_tool_call(state, model, "u1", already_saved=True)
+        assert "already saved" in captured_prompt[0].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -764,28 +811,27 @@ class TestAfterAgent:
         assert middleware.after_agent(state, MagicMock()) is None
 
     def test_skips_when_no_model_available(self, middleware):
-        """When _get_analysis_model returns None, analysis is skipped."""
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
         with patch.object(middleware, "_get_analysis_model", return_value=None):
             assert middleware.after_agent(state, MagicMock()) is None
 
-    def test_returns_none_when_analyse_returns_none(self, middleware):
-        """When run_async_safely returns None (nothing saved), after_agent returns None."""
+    def test_returns_none_when_analyse_returns_zero(self, middleware):
+        """When run_async_safely returns 0 (nothing saved), after_agent returns None."""
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
         middleware._captured_model = MagicMock()
         with patch(
             "inference_core.agents.middleware.memory.run_async_safely",
-            return_value=None,
+            return_value=0,
         ):
             assert middleware.after_agent(state, MagicMock()) is None
 
     def test_saves_and_returns_state_on_success(self, middleware):
-        """When run_async_safely returns memory_type string, state dict is returned."""
+        """When run_async_safely returns saved_count > 0, state dict is returned."""
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
         middleware._captured_model = MagicMock()
         with patch(
             "inference_core.agents.middleware.memory.run_async_safely",
-            return_value="session_summary",
+            return_value=1,
         ):
             result = middleware.after_agent(state, MagicMock())
         assert result is not None
@@ -838,63 +884,53 @@ class TestAAfterAgent:
         with patch.object(mw, "_get_analysis_model", return_value=None):
             assert await mw.aafter_agent(state, MagicMock()) is None
 
-    async def test_skips_when_extract_returns_none(self, mock_memory_service):
+    async def test_returns_none_when_analyse_returns_zero(self, mock_memory_service):
         mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
         mw._captured_model = MagicMock()
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
-        with patch.object(
-            mw, "_extract_via_model", new=AsyncMock(return_value=(None, ""))
-        ):
+        with patch.object(mw, "_analyse_via_tool_call", new=AsyncMock(return_value=0)):
             assert await mw.aafter_agent(state, MagicMock()) is None
 
     async def test_saves_and_returns_state_on_success(self, mock_memory_service):
-        mock_memory_service.save_memory = AsyncMock(return_value="mem-id")
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+        mw._captured_model = MagicMock()
+        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
+        with patch.object(mw, "_analyse_via_tool_call", new=AsyncMock(return_value=2)):
+            result = await mw.aafter_agent(state, MagicMock())
+        assert result is not None
+        assert result["session_analysis_saved"] is True
+
+    async def test_returns_none_on_exception(self, mock_memory_service):
         mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
         mw._captured_model = MagicMock()
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
         with patch.object(
             mw,
-            "_extract_via_model",
-            new=AsyncMock(return_value=("some preference", "session_summary")),
+            "_analyse_via_tool_call",
+            new=AsyncMock(side_effect=RuntimeError("DB down")),
         ):
-            result = await mw.aafter_agent(state, MagicMock())
-        assert result is not None
-        assert result["session_analysis_saved"] is True
-        mock_memory_service.save_memory.assert_awaited_once()
+            assert await mw.aafter_agent(state, MagicMock()) is None
 
-    async def test_skips_non_summary_when_already_saved(self, mock_memory_service):
-        """When agent already called save and extraction type=interaction, skip."""
-        mock_memory_service.save_memory = AsyncMock()
+    async def test_passes_already_saved_flag(self, mock_memory_service):
+        """already_saved flag from _has_memory_save_in_run is forwarded to _analyse_via_tool_call."""
         mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
         mw._captured_model = MagicMock()
+        # Build a state where a save was already made
         tc = MagicMock()
         tc.name = "save_memory_store"
         ai_msg = MagicMock()
         ai_msg.name = None
         ai_msg.tool_calls = [tc]
         state = MemoryState(messages=[_make_human("msg"), ai_msg])
-        with patch.object(
-            mw,
-            "_extract_via_model",
-            new=AsyncMock(return_value=("correction", "interaction")),
-        ):
-            result = await mw.aafter_agent(state, MagicMock())
-        assert result is None
-        mock_memory_service.save_memory.assert_not_awaited()
+        captured_already_saved: list[bool] = []
 
-    async def test_returns_none_on_service_exception(self, mock_memory_service):
-        mock_memory_service.save_memory = AsyncMock(
-            side_effect=RuntimeError("DB down")
-        )
-        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
-        mw._captured_model = MagicMock()
-        state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
-        with patch.object(
-            mw,
-            "_extract_via_model",
-            new=AsyncMock(return_value=("content", "session_summary")),
-        ):
-            assert await mw.aafter_agent(state, MagicMock()) is None
+        async def capture(st, model, uid, already_saved):
+            captured_already_saved.append(already_saved)
+            return 0
+
+        with patch.object(mw, "_analyse_via_tool_call", new=capture):
+            await mw.aafter_agent(state, MagicMock())
+        assert captured_already_saved == [True]
 
 
 # ---------------------------------------------------------------------------

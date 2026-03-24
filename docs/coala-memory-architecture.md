@@ -25,7 +25,7 @@ The memory system implements the CoALA (Cognitive Architectures for Language Age
 │                                                          │
 │  ┌──────────────────┐    ┌──────────────────────────┐    │
 │  │  MemoryMiddleware │───▶ postrun_analysis          │    │
-│  │   (after_agent)   │    │ (session_summary save)   │    │
+│  │   (after_agent)   │    │ (save_memory_store tool)  │    │
 │  └──────────────────┘    └──────────────────────────┘    │
 │                                                          │
 │  ┌──────────────────────────────────────────────┐        │
@@ -136,9 +136,12 @@ await agent_service.create_agent(system_prompt="You are a helpful assistant.")
 ### Post-Run Persistence
 
 The middleware keeps explicit saves user-driven, but it can also persist a
-compact `session_summary` automatically after a completed run. This happens in
-`after_agent` when post-run analysis is enabled, so long sessions can still be
-captured even if the model never called `save_memory_store` directly.
+compact session-level memory automatically after a completed run. This happens
+in `after_agent` when post-run analysis is enabled, where the middleware asks
+the model to call `save_memory_store` for each distinct memory worth keeping,
+then executes those tool calls best-effort. That means the post-run pass can
+record more than one memory when the conversation contains several durable
+facts, preferences, or corrections.
 
 ### Direct Service Usage
 
@@ -247,4 +250,4 @@ The `MemoryMiddleware` injects CoALA-structured XML context into the system prom
 2. **Episodic and procedural are per-agent by default** — each agent has its own history and learned skills.
 3. **Category is auto-resolved from memory_type** — agents don't need to specify category explicitly.
 4. **Backward compatible** — existing memory types (`preferences`, `facts`, `context`, `instructions`, `goals`, `general`) continue to work; they're just routed to the appropriate category.
-5. **Manual explicit saves stay explicit** — agents still decide what to save via tools, but enabled post-run analysis can add a compact session summary automatically.
+5. **Manual explicit saves stay explicit** — agents still decide what to save via tools, but enabled post-run analysis can add one or more compact memories automatically through `save_memory_store`.

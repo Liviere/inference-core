@@ -208,8 +208,10 @@ injects them as context. This happens transparently without agent tool calls.
 When `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED=true` (default), the same
 `MemoryMiddleware` performs a best-effort extraction pass after the run ends.
 It uses the agent's model by default, or `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`
-when set, to derive a compact session-level memory entry and persist it
-silently via the memory service.
+when set, to ask the model to call `save_memory_store` for any distinct
+memories worth persisting. The middleware then executes those tool calls and
+can save multiple memories in one pass when the conversation contains several
+durable facts, preferences, or corrections.
 
 This keeps manual `save_memory_store` calls for explicit user-facing saves,
 while still capturing completed session summaries automatically.

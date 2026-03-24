@@ -145,14 +145,14 @@ embeddings:
 
 Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be configured.
 
-| Variable                                | Default      | Description                                                  |
-| --------------------------------------- | ------------ | ------------------------------------------------------------ |
-| `AGENT_MEMORY_ENABLED`                  | false        | Enable long-term memory for agents                           |
-| `AGENT_MEMORY_COLLECTION`               | agent_memory | Collection name for memory storage (separate from RAG)       |
-| `AGENT_MEMORY_MAX_RESULTS`              | 5            | Max memories to retrieve during recall                       |
-| `AGENT_MEMORY_AUTO_RECALL`              | true         | Auto-recall relevant memories in middleware before_agent     |
-| `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED` | true         | Run best-effort post-run extraction after each agent session |
-| `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`   | (none)       | Optional override model for post-run memory extraction       |
+| Variable                                | Default      | Description                                                          |
+| --------------------------------------- | ------------ | -------------------------------------------------------------------- |
+| `AGENT_MEMORY_ENABLED`                  | false        | Enable long-term memory for agents                                   |
+| `AGENT_MEMORY_COLLECTION`               | agent_memory | Collection name for memory storage (separate from RAG)               |
+| `AGENT_MEMORY_MAX_RESULTS`              | 5            | Max memories to retrieve during recall                               |
+| `AGENT_MEMORY_AUTO_RECALL`              | true         | Auto-recall relevant memories in middleware before_agent             |
+| `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED` | true         | Run best-effort post-run tool-call analysis after each agent session |
+| `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`   | (none)       | Optional override model for post-run memory tool-calling             |
 
 ## Agent Skills & Subagents (DeepAgent)
 

@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field
 from inference_core.agents.middleware._runtime_context import (
     get_user_id as _ctx_get_user_id,
 )
+from inference_core.agents.tools.memory_tools import SaveMemoryStoreTool
 from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
 
 logger = logging.getLogger(__name__)
@@ -67,34 +68,6 @@ class MemoryState(AgentState):
     memory_categories_recalled: NotRequired[List[str]]
     session_analysis_saved: NotRequired[bool]
     session_analysis_latency_ms: NotRequired[float]
-
-
-class _MemoryExtractionResult(BaseModel):
-    """Structured output schema for the post-run memory extraction LLM call.
-
-    WHY this schema: Forces a structured, type-safe response from the model so the
-    middleware can act on it programmatically without text parsing.
-    """
-
-    worth_saving: bool = Field(
-        description=(
-            "True when the session contains information worth persisting in "
-            "long-term memory for future conversations."
-        )
-    )
-    content: str = Field(
-        description=(
-            "Compact memory summary (≤300 words) written in the same language as "
-            "the user. Empty string when worth_saving is False."
-        )
-    )
-    memory_type: str = Field(
-        description=(
-            "'session_summary' for preferences, facts, and contextual information; "
-            "'interaction' for explicit corrections or user feedback on agent behaviour; "
-            "empty string when worth_saving is False."
-        )
-    )
 
 
 @dataclass
@@ -549,36 +522,47 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 return self._captured_model
         return self._captured_model
 
-    # Prompt template used for every post-run extraction call.
+    # Prompt template for the post-run tool-call analysis.
+    # {transcript} — full conversation text; {already_saved_note} — optional hint.
     # Defined at class scope to avoid reconstructing the string on every invocation.
-    _EXTRACTION_PROMPT: str = (
-        "Analyze the following conversation and decide whether it contains "
-        "information worth persisting in long-term memory for future sessions.\n\n"
-        "Information worth persisting includes:\n"
-        "- User preferences (language, tone, tools, response style, formats)\n"
+    _TOOL_ANALYSIS_PROMPT: str = (
+        "Review the following conversation and call `save_memory_store` for every "
+        "distinct piece of information worth keeping in long-term memory for future "
+        "sessions.\n\n"
+        "Save when the conversation contains:\n"
+        "- User preferences (language, tone, tools, response style, output formats,"
+        "things he prefers to use or avoid)\n"
         "- Personal facts (name, location, profession, goals, current project)\n"
-        "- Explicit future instructions ('always do X', 'never do Y', 'from now on…')\n"
+        "- Explicit standing instructions ('always do X', 'never do Y', "
+        "'from now on…')\n"
         "- Significant corrections to agent behaviour\n"
         "- Project or task context useful beyond this session\n\n"
-        "Do NOT persist: single-question factual exchanges, greetings, or generic "
-        "conversation with no personal context.\n\n"
-        "Write the content field in the SAME language the user spoke.\n\n"
+        "Do NOT save: single-question factual lookups, greetings, or generic "
+        "exchanges with no personal or durable context.\n\n"
+        "Write the `content` argument in the SAME language the user spoke.\n"
+        "You may call `save_memory_store` multiple times if there are several "
+        "distinct pieces of information worth saving.\n\n"
+        "{already_saved_note}"
         "Conversation:\n\n{transcript}"
     )
 
-    async def _extract_via_model(
+    async def _analyse_via_tool_call(
         self,
         state: MemoryState,
         model: Any,
-    ) -> tuple[Optional[str], str]:
-        """Ask the model to extract what's worth persisting from the completed session.
+        user_id: str,
+        already_saved: bool,
+    ) -> int:
+        """Ask the model to call save_memory_store for anything worth persisting.
 
-        WHY model-based extraction: A model call understands any natural language and catches nuanced
-        signals — implicit corrections, preferences stated in context, multi-turn intent
-        — that deterministic rules cannot.
+        The model participates in the decision as a first-class tool-caller — it
+        can save zero, one, or many distinct memories in a single pass,
+        matching exactly how it behaves inside the main agent loop.
+        There is no Python gate on type or content; the model decides
+        what is worth persisting and how to classify it.
 
         Returns:
-            (content, memory_type) where content is None when nothing is worth saving.
+            Number of successful save_memory_store calls executed (0 = nothing saved).
         """
         messages = state.get("messages", [])
         lines: list[str] = []
@@ -593,30 +577,49 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 lines.append(f"Assistant: {content.strip()}")
 
         if not lines:
-            return None, ""
+            return 0
 
-        # Limit transcript length to avoid blowing up context windows.
+        # Limit transcript to avoid blowing up context windows.
         transcript = "\n\n".join(lines)[-4000:]
+        already_saved_note = (
+            "Note: the agent already saved some memories during this session. "
+            "Only save genuinely new information not already captured.\n\n"
+            if already_saved
+            else ""
+        )
+        prompt = self._TOOL_ANALYSIS_PROMPT.format(
+            already_saved_note=already_saved_note,
+            transcript=transcript,
+        )
 
+        save_tool = SaveMemoryStoreTool(
+            memory_service=self.memory_service,
+            user_id=user_id,
+        )
         try:
-            structured = model.with_structured_output(_MemoryExtractionResult)
-            result: _MemoryExtractionResult = await structured.ainvoke(
-                [
-                    {
-                        "role": "user",
-                        "content": self._EXTRACTION_PROMPT.format(
-                            transcript=transcript
-                        ),
-                    }
-                ]
+            response = await model.bind_tools([save_tool]).ainvoke(
+                [{"role": "user", "content": prompt}]
             )
-            if not result.worth_saving or not result.content.strip():
-                return None, ""
-            memory_type = result.memory_type.strip() or "session_summary"
-            return result.content.strip(), memory_type
         except Exception as e:
-            logger.warning("Post-run model extraction failed: %s", e)
-            return None, ""
+            logger.warning(
+                "Post-run tool-call analysis: model invocation failed: %s", e
+            )
+            return 0
+
+        saved_count = 0
+        for tc in getattr(response, "tool_calls", []) or []:
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            if name != "save_memory_store":
+                continue
+            args = (
+                tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+            )
+            try:
+                await save_tool._arun(**args)
+                saved_count += 1
+            except Exception as e:
+                logger.warning("Post-run save_memory_store call failed: %s", e)
+        return saved_count
 
     # -------------------------------------------------------------------------
     # Post-run analysis hooks
@@ -627,19 +630,18 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     ) -> Dict[str, Any] | None:
         """Best-effort post-session analysis: persist what the agent may have missed.
 
-        WHY model-based extraction:
-        By reusing the same model the agent used (or a configured cheaper override),
-        the analysis understands any language and detects nuanced signals — implicit
-        corrections, preferences stated in context
+        WHY tool-call approach: the model calls save_memory_store as a first-class
+        tool-caller, matching its behaviour inside the main agent loop.  It decides
+        what is worth saving, in what language, and how many distinct memories to
+        create — no Python gate on type or content.
 
         Behavior:
           - Skips when postrun_analysis is disabled, no user_id is available, or no
             model was captured from wrap_model_call (agent made no model calls).
-          - Calls _extract_via_model to get structured (content, memory_type).
-          - When the agent already persisted memories explicitly, only a session_summary
-            is added on top — interaction duplicates are skipped.
-          - Saves via AgentMemoryStoreService (NOT tool calls, which would modify the
-            final state the caller has already read).
+          - Calls _analyse_via_tool_call which binds SaveMemoryStoreTool to the model
+            and invokes it once; the model issues zero or more tool calls.
+          - always_saved context is forwarded to the prompt so the model avoids
+            duplicates when the agent already persisted memories.
           - Always fail-open: errors never propagate to the caller.
         """
         if not self.postrun_analysis:
@@ -669,33 +671,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         start_time = time.monotonic()
 
         try:
-
-            async def _analyse_and_save() -> Optional[str]:
-                content, memory_type = await self._extract_via_model(state, model)
-                if not content:
-                    return None
-                if already_saved and memory_type != "session_summary":
-                    logger.debug(
-                        "Post-run analysis: agent already saved; skipping '%s'",
-                        memory_type,
-                    )
-                    return None
-                await self.memory_service.save_memory(
-                    user_id=resolved_uid,
-                    content=content,
-                    memory_type=memory_type,
-                    topic="session_analysis",
-                )
-                return memory_type
-
-            saved_type = run_async_safely(_analyse_and_save(), timeout=15.0)
-            if saved_type is None:
+            saved_count = run_async_safely(
+                self._analyse_via_tool_call(state, model, resolved_uid, already_saved),
+                timeout=15.0,
+            )
+            if not saved_count:
                 return None
 
             latency_ms = (time.monotonic() - start_time) * 1000
             logger.info(
-                "Post-run analysis: saved '%s' for user=%s (%.1fms)",
-                saved_type,
+                "Post-run analysis: %d memories saved for user=%s (%.1fms)",
+                saved_count,
                 resolved_uid,
                 latency_ms,
             )
@@ -715,7 +701,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         WHY separate async path: the Agent Server runs after_agent inside an existing
         asyncio event loop.  run_async_safely would spin up a new thread+loop, causing
         MissingGreenlet errors with SQLAlchemy async connections.  This method directly
-        awaits _extract_via_model and the memory service instead.
+        awaits _analyse_via_tool_call instead.
         """
         if not self.postrun_analysis:
             return None
@@ -737,21 +723,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         start_time = time.monotonic()
 
         try:
-            content, memory_type = await self._extract_via_model(state, model)
-            if not content:
-                return None
-            if already_saved and memory_type != "session_summary":
-                return None
-            await self.memory_service.save_memory(
-                user_id=resolved_uid,
-                content=content,
-                memory_type=memory_type,
-                topic="session_analysis",
+            saved_count = await self._analyse_via_tool_call(
+                state, model, resolved_uid, already_saved
             )
+            if not saved_count:
+                return None
+
             latency_ms = (time.monotonic() - start_time) * 1000
             logger.info(
-                "Post-run analysis (async): saved '%s' for user=%s (%.1fms)",
-                memory_type,
+                "Post-run analysis (async): %d memories saved for user=%s (%.1fms)",
+                saved_count,
                 resolved_uid,
                 latency_ms,
             )
