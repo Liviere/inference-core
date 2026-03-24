@@ -214,6 +214,11 @@ then call `save_memory_store`, `update_memory_store`, or
 can save multiple memories in one pass when the conversation contains several
 durable facts, preferences, or corrections.
 
+The post-run analysis runs with a dedicated system prompt so the transcript and
+prefetched memories are treated as data, not instructions. This is the main
+guard against prompt-injection attempts embedded in user content or stored
+memories.
+
 This keeps manual `save_memory_store` calls for explicit user-facing saves,
 while still capturing completed session summaries automatically.
 
@@ -226,6 +231,8 @@ exists, the save is skipped to avoid duplicates.
 The post-run analysis also prefetches semantically similar memories and asks the
 model to update an existing record instead of creating a duplicate when the new
 conversation content clearly extends or corrects what is already stored.
+Only memories with a sufficiently strong similarity score are included in that
+prefetch context, so loosely related entries do not influence deduplication.
 
 ## Migration Notes
 
