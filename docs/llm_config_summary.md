@@ -12,26 +12,22 @@
 **YAML sections → what they configure**
 
 - **`providers`**: raw provider definitions (e.g. `openai`, `custom_openai_compatible`, `gemini`, `claude`). Mapped to `LLMConfig.providers` and validated via `ProviderConfig` when needed. Used for:
-
   - resolving env vars for API keys (`api_key_env`),
   - supplying `base_url`,
   - indicating whether the provider requires an API key (`requires_api_key`).
 
 - **`models`**: each named entry becomes a `ModelConfig` in `LLMConfig.models`.
-
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
   - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
   - directly affects instance creation in `inference_core/llm/models.py`.
   - missing API key / base_url affects `is_model_available()` results.
 
 - **`tasks`**: assignments for task types (e.g. `completion`, `chat`)
-
   - short mapping `task_models` (primary) and full `task_configs` (type `TaskConfig`).
   - `TaskConfig.mcp_profile` points to an MCP profile used to load tools.
   - can be overridden by environment variables listed under `settings.env_overrides`.
 
 - **`agents`**: assignments for named agents (agent-specific model choices)
-
   - short mapping `agent_models` (primary) and full `agent_configs` (type `AgentConfig`).
   - `AgentConfig` is a dedicated Pydantic model (separate from `TaskConfig`) used to represent agent-specific settings and can be extended independently of tasks.
   - Agent primary model can be overridden via environment variables defined in `settings.env_overrides` (same mechanism as for tasks).
@@ -40,44 +36,36 @@
   - Agents are intentionally a separate namespace from `tasks` (no implicit name collision); code first resolves agents from `agents:` and does not mutate existing `tasks` mapping.
 
 - **`settings`**: global behavioral settings (e.g. `enable_caching`, `cache_ttl_seconds`, `default_timeout`, `retry_attempts`, `env_overrides`, `usage_logging`, etc.)
-
   - mapped directly to fields on `LLMConfig` and consumed by the model factory, usage logger, retry logic, and more.
 
 - **`batch`**: batch processing configuration → `LLMConfig.batch_config` (type `BatchConfig`).
-
   - used by batch tasks, Celery scheduling (`inference_core/celery/config.py`), and batch logic (`get_provider_models`, `get_model_config`).
 
 - **`mcp`**: MCP configuration (profiles + servers) → `LLMConfig.mcp_config`.
-
   - server entries support env-var expansion in headers (e.g. `${MCP_PLAYWRIGHT_TOKEN:-}`),
   - in test mode (`ENVIRONMENT==testing` or `PYTEST_CURRENT_TEST`) `_load_mcp_config()` adjusts defaults to avoid relying on local servers (e.g. may disable MCP by default or normalize the Playwright URL).
 
 - **`param_policies`**: declarative overrides for parameter policies for providers and models.
-
   - read dynamically by `inference_core/llm/param_policy.py` and affects `normalize_params()` — allows permitting, renaming, or dropping parameters and setting passthrough prefixes.
 
-- **`pricing`** (inside `models.<model>.pricing`): mapped to `PricingConfig` and items like `DimensionPrice`, `ContextTier` — used by usage/pricing logic (e.g. `inference_core/llm/usage_logging.py`, if implemented).
+- **`pricing`** (inside `models.<model>.pricing`): mapped to `PricingConfig` and items like `DimensionPrice`, `ContextTier` — used by usage/pricing logic (e.g. `inference_core/llm/usage_logging.py`, if implemented). `DimensionPrice` accepts either `cost_per_1m` or the legacy `cost_per_1k`; the loader normalizes both to an internal per-1K representation.
 
 **Additional files to review — agent support (merged)**
 
 - `inference_core/llm/config.py`
-
   - extends the loader with a new Pydantic model `AgentConfig` and adds fields `LLMConfig.agent_models` and `LLMConfig.agent_configs`.
   - responsible for parsing the `agents:` section in `llm_config.yaml`, validating it, and mapping it to runtime structures (including env-overrides).
   - contains logic to load test/production default values for agents (similar to `tasks`).
 
 - `inference_core/llm/models.py`
-
   - `LLMModelFactory` uses `LLMConfig.models` to create model instances for tasks and — as an extension — exposes `get_model_for_agent()` (or a similar method) to obtain the effective model for a given agent, respecting fallback logic and availability checks (API key / `base_url`).
   - respects global settings (e.g., `config.enable_caching`) and parameter policies when instantiating models.
 
 - `inference_core/services/agents_service.py`
-
   - uses the factory (`LLMModelFactory.get_model_for_agent()`) to construct model/agent instances; this centralizes model-selection logic and keeps it consistent with task model selection.
   - responsible for initializing agents, applying runtime configuration, and integrating with MCP/tools where applicable.
 
 - `inference_core/llm/tools.py` and `inference_core/llm/usage_logging.py`
-
   - consume `providers`, `pricing`, and `models` (including agent configs) to load tools and billing/usage logic; when changing agents, review these modules for any impact on tool loading and usage logging.
 
 - tests and CI / Docker

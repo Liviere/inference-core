@@ -262,9 +262,9 @@ models:
     pricing:
       currency: USD
       input:
-        cost_per_1k: 0.00015 # $0.15 per 1M tokens
+        cost_per_1m: 0.15 # $0.15 per 1M tokens
       output:
-        cost_per_1k: 0.0006 # $0.60 per 1M tokens
+        cost_per_1m: 0.6 # $0.60 per 1M tokens
 ```
 
 ### Usage Logging Configuration

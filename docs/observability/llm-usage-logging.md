@@ -7,7 +7,7 @@ The inference-core application includes comprehensive LLM usage and cost logging
 The usage logging system captures detailed metrics for every LLM request, including:
 
 - **Token usage**: Input, output, and total tokens with support for provider-specific extras (reasoning tokens, cache tokens, etc.)
-- **Cost tracking**: Precise USD cost calculations based on configurable per-1K token pricing
+- **Cost tracking**: Precise USD cost calculations based on configurable pricing per token dimension
 - **Performance metrics**: Request latency, success/failure status, error classification
 - **Request metadata**: Task type, model, provider, session correlation
 - **Audit trails**: Raw usage data and pricing snapshots for transparency
@@ -24,7 +24,7 @@ The system uses a "lean core + flexible extras" approach:
 
 ### Pricing Flexibility
 
-- **Per-1K token pricing** for all dimensions
+- **Per-1M or per-1K pricing** for all dimensions, normalized internally to per-1K values
 - **Key aliases** to normalize provider-specific usage keys
 - **Context tier multipliers** for pricing based on input size
 - **Unpriced token passthrough** captures counts even without pricing
@@ -48,14 +48,14 @@ models:
     pricing:
       currency: USD
       input:
-        cost_per_1k: 0.15
+        cost_per_1m: 0.15
       output:
-        cost_per_1k: 0.60
+        cost_per_1m: 0.60
       extras:
         reasoning_token:
-          cost_per_1k: 2.40
+          cost_per_1m: 2.40
         cache_write_token:
-          cost_per_1k: 1.25
+          cost_per_1m: 1.25
       key_aliases:
         reasoning_tokens: reasoning_token
         prompt_tokens: input_tokens

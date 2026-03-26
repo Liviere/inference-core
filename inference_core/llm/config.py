@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 load_dotenv(
     dotenv_path=".env.test" if os.getenv("ENVIRONMENT") == "testing" else ".env"
@@ -161,9 +161,43 @@ class BatchConfig(BaseModel):
 
 
 class DimensionPrice(BaseModel):
-    """Pricing configuration for a token dimension"""
+    """Pricing configuration for a single token dimension.
 
-    cost_per_1k: float = Field(..., ge=0.0, description="Cost per 1,000 tokens")
+    Accepts either cost_per_1m (preferred, matches vendor pricing pages) or
+    cost_per_1k (legacy fallback). When cost_per_1m is provided it is
+    automatically converted to cost_per_1k so the rest of the code has a
+    single, stable internal representation.
+    """
+
+    cost_per_1k: float = Field(
+        ge=0.0, description="Cost per 1,000 tokens (internal representation)"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_cost_field(cls, data: Any) -> Any:
+        """Normalise cost_per_1m → cost_per_1k before field validation.
+
+        This runs before Pydantic validates individual fields, so cost_per_1k
+        can remain required while still accepting the more human-readable
+        cost_per_1m format used on every major vendor pricing page.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        per_1m = data.get("cost_per_1m")
+        per_1k = data.get("cost_per_1k")
+
+        if per_1m is not None:
+            converted = dict(data)
+            converted["cost_per_1k"] = float(per_1m) / 1000.0
+            converted.pop("cost_per_1m", None)
+            return converted
+
+        if per_1k is None:
+            raise ValueError("Either 'cost_per_1m' or 'cost_per_1k' must be provided")
+
+        return data
 
 
 class ContextTier(BaseModel):
