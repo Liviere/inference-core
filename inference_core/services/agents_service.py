@@ -1097,7 +1097,10 @@ class AgentService:
             # and drain remaining internal events for a clean LangSmith trace.
             if graceful_cancel and isinstance(stream, SyncInterruptibleStream):
                 stream.close()
-            raise
+            raise AgentCancelled(
+                "Agent execution cancelled by user",
+                partial_result=last_agent_result,
+            )
         finally:
             # For non-cancel exits (normal completion or unexpected errors)
             # close the raw generator to free resources.  If already drained
@@ -1295,7 +1298,10 @@ class AgentService:
             if graceful_cancel and isinstance(stream, InterruptibleStream):
                 await stream.stop()
                 await stream.close()
-            raise
+            raise AgentCancelled(
+                "Agent execution cancelled by user",
+                partial_result=last_agent_result,
+            )
 
         if last_agent_result:
             result = last_agent_result

@@ -244,7 +244,10 @@ async def stream_remote(
                             await client.runs.cancel(effective_thread_id, run_id)
                         except Exception:
                             pass
-                    raise AgentCancelled("Agent execution cancelled by user")
+                    raise AgentCancelled(
+                        "Agent execution cancelled by user",
+                        partial_result=last_result or None,
+                    )
             except AgentCancelled:
                 raise
             except Exception:
