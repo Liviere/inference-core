@@ -291,6 +291,17 @@ class ModelConfig(ModelParams):
     pricing: Optional[PricingConfig] = Field(
         default=None, description="Pricing configuration"
     )
+    reasoning_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Provider-specific kwargs to enable reasoning/thinking output. "
+            "Passed directly to the LangChain model constructor when "
+            "reasoning_output is activated (e.g. by an agent). "
+            "Examples: {reasoning: {effort: low}} for OpenAI, "
+            "{thinking: {type: enabled, budget_tokens: 5000}} for Claude, "
+            "{thinking_level: low, include_thoughts: true} for Gemini."
+        ),
+    )
 
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 
@@ -504,6 +515,14 @@ class AgentConfig(BaseModel):
     )
     interrupt_on: Optional[Dict[str, Any]] = Field(
         default=None, description="Configuration for human-in-the-loop interruptions"
+    )
+    reasoning_output: bool = Field(
+        default=False,
+        description=(
+            "When True, the agent's model is created with reasoning/thinking "
+            "output enabled using the model's reasoning_config. The model "
+            "must have a reasoning_config defined for this to take effect."
+        ),
     )
     execution_mode: str = Field(
         default="local",

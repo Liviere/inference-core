@@ -93,6 +93,8 @@ def _build_config(
         "primary_model",
         "system_prompt_override",
         "system_prompt_append",
+        # Reasoning output toggle (InstanceConfigMiddleware reads this)
+        "reasoning_output",
         # Per-subagent overrides (SubagentConfigMiddleware reads these)
         "subagent_configs",
     )

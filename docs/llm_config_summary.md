@@ -19,6 +19,8 @@
 - **`models`**: each named entry becomes a `ModelConfig` in `LLMConfig.models`.
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
   - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
+  - `reasoning_config` can store provider-specific nested kwargs for reasoning / thinking models (for example OpenAI reasoning, Claude thinking, or Gemini thought settings).
+  - when an agent enables reasoning output, the factory merges `reasoning_config` into the provider kwargs before model construction.
   - directly affects instance creation in `inference_core/llm/models.py`.
   - missing API key / base_url affects `is_model_available()` results.
 
@@ -30,6 +32,7 @@
 - **`agents`**: assignments for named agents (agent-specific model choices)
   - short mapping `agent_models` (primary) and full `agent_configs` (type `AgentConfig`).
   - `AgentConfig` is a dedicated Pydantic model (separate from `TaskConfig`) used to represent agent-specific settings and can be extended independently of tasks.
+  - `reasoning_output: true` enables reasoning output for that agent and forwards the model's `reasoning_config` into the instantiated provider kwargs.
   - Agent primary model can be overridden via environment variables defined in `settings.env_overrides` (same mechanism as for tasks).
   - `LLMConfig.get_agent_model()` and `LLMConfig.get_agent_model_with_fallback()` resolve the effective model for an agent, including fallback logic and availability checks (API key / base_url).
   - New fields `skills` (list of paths) and `subagents` (list of agent names) enable delegating tasks and using specialized workflows.

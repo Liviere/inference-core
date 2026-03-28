@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 class StreamChunk:
     """Represents a chunk of streamed data"""
 
-    type: str  # 'start', 'token', 'usage', 'end', 'error'
+    type: str  # 'start', 'token', 'reasoning', 'usage', 'end', 'error'
     content: Optional[str] = None
     usage: Optional[Dict[str, int]] = None
     message: Optional[str] = None
@@ -309,30 +309,68 @@ async def stream_chat(
                                     if isinstance(data, dict)
                                     else None
                                 )
-                                # Extract content from chunk_obj
-                                content = getattr(chunk_obj, "content", None)
-                                pieces: list[str] = []
-                                if isinstance(content, str):
-                                    pieces.append(content)
-                                elif isinstance(content, list):
-                                    for part in content:
-                                        if isinstance(part, str):
-                                            pieces.append(part)
-                                        elif isinstance(part, dict):
-                                            t = part.get("text") or part.get("content")
-                                            if isinstance(t, str):
-                                                pieces.append(t)
-                                for piece in pieces:
-                                    if not piece:
-                                        continue
-                                    try:
-                                        token_queue.put_nowait(
-                                            StreamChunk(type="token", content=piece)
-                                        )
-                                    except asyncio.QueueFull:
-                                        logger.warning(
-                                            "Queue full, dropping event token piece"
-                                        )
+                                # Extract content from chunk_obj.
+                                # Prefer content_blocks (normalised across
+                                # providers) to distinguish reasoning from text.
+                                content_blocks = getattr(
+                                    chunk_obj, "content_blocks", None
+                                )
+                                if isinstance(content_blocks, list) and content_blocks:
+                                    for block in content_blocks:
+                                        btype = block.get("type", "")
+                                        if btype == "text" and block.get("text"):
+                                            try:
+                                                token_queue.put_nowait(
+                                                    StreamChunk(
+                                                        type="token",
+                                                        content=block["text"],
+                                                    )
+                                                )
+                                            except asyncio.QueueFull:
+                                                logger.warning(
+                                                    "Queue full, dropping text block"
+                                                )
+                                        elif btype == "reasoning" and block.get(
+                                            "reasoning"
+                                        ):
+                                            try:
+                                                token_queue.put_nowait(
+                                                    StreamChunk(
+                                                        type="reasoning",
+                                                        content=block["reasoning"],
+                                                    )
+                                                )
+                                            except asyncio.QueueFull:
+                                                logger.warning(
+                                                    "Queue full, dropping reasoning block"
+                                                )
+                                else:
+                                    # Fallback: flat content (no content_blocks)
+                                    content = getattr(chunk_obj, "content", None)
+                                    pieces: list[str] = []
+                                    if isinstance(content, str):
+                                        pieces.append(content)
+                                    elif isinstance(content, list):
+                                        for part in content:
+                                            if isinstance(part, str):
+                                                pieces.append(part)
+                                            elif isinstance(part, dict):
+                                                t = part.get("text") or part.get(
+                                                    "content"
+                                                )
+                                                if isinstance(t, str):
+                                                    pieces.append(t)
+                                    for piece in pieces:
+                                        if not piece:
+                                            continue
+                                        try:
+                                            token_queue.put_nowait(
+                                                StreamChunk(type="token", content=piece)
+                                            )
+                                        except asyncio.QueueFull:
+                                            logger.warning(
+                                                "Queue full, dropping event token piece"
+                                            )
                             elif name in ("on_chat_model_end", "on_llm_end"):
                                 data = (
                                     ev.get("data", {}) if isinstance(ev, dict) else {}
@@ -369,29 +407,59 @@ async def stream_chat(
                 if not used_events_api:
                     # Fallback: simple astream iteration (may buffer larger chunks)
                     async for chunk in model.astream(messages):
-                        raw_content = getattr(chunk, "content", None)
-                        parts: list[str] = []
-                        if isinstance(raw_content, str):
-                            parts.append(raw_content)
-                        elif isinstance(raw_content, list):
-                            for part in raw_content:
-                                if isinstance(part, str):
-                                    parts.append(part)
-                                elif isinstance(part, dict):
-                                    t = part.get("text") or part.get("content")
-                                    if isinstance(t, str):
-                                        parts.append(t)
-                        for piece in parts:
-                            if not piece:
-                                continue
-                            try:
-                                token_queue.put_nowait(
-                                    StreamChunk(type="token", content=piece)
-                                )
-                            except asyncio.QueueFull:
-                                logger.warning(
-                                    "Queue full, dropping fallback token piece"
-                                )
+                        # Try content_blocks first for reasoning support
+                        content_blocks = getattr(chunk, "content_blocks", None)
+                        if isinstance(content_blocks, list) and content_blocks:
+                            for block in content_blocks:
+                                btype = block.get("type", "")
+                                if btype == "text" and block.get("text"):
+                                    try:
+                                        token_queue.put_nowait(
+                                            StreamChunk(
+                                                type="token",
+                                                content=block["text"],
+                                            )
+                                        )
+                                    except asyncio.QueueFull:
+                                        logger.warning(
+                                            "Queue full, dropping fallback text block"
+                                        )
+                                elif btype == "reasoning" and block.get("reasoning"):
+                                    try:
+                                        token_queue.put_nowait(
+                                            StreamChunk(
+                                                type="reasoning",
+                                                content=block["reasoning"],
+                                            )
+                                        )
+                                    except asyncio.QueueFull:
+                                        logger.warning(
+                                            "Queue full, dropping fallback reasoning block"
+                                        )
+                        else:
+                            raw_content = getattr(chunk, "content", None)
+                            parts: list[str] = []
+                            if isinstance(raw_content, str):
+                                parts.append(raw_content)
+                            elif isinstance(raw_content, list):
+                                for part in raw_content:
+                                    if isinstance(part, str):
+                                        parts.append(part)
+                                    elif isinstance(part, dict):
+                                        t = part.get("text") or part.get("content")
+                                        if isinstance(t, str):
+                                            parts.append(t)
+                            for piece in parts:
+                                if not piece:
+                                    continue
+                                try:
+                                    token_queue.put_nowait(
+                                        StreamChunk(type="token", content=piece)
+                                    )
+                                except asyncio.QueueFull:
+                                    logger.warning(
+                                        "Queue full, dropping fallback token piece"
+                                    )
                     # Ensure end if fallback path used
                     try:
                         token_queue.put_nowait(StreamChunk(type="end"))
@@ -427,6 +495,13 @@ async def stream_chat(
                     accumulated_content += chunk.content
                     token_data = {"event": "token", "content": chunk.content}
                     yield format_sse(token_data)
+
+                elif chunk.type == "reasoning" and chunk.content:
+                    reasoning_data = {
+                        "event": "reasoning",
+                        "content": chunk.content,
+                    }
+                    yield format_sse(reasoning_data)
 
                 elif chunk.type == "usage" and chunk.usage:
                     # Accumulate usage into session (single snapshot or potential deltas)

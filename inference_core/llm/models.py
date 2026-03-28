@@ -108,6 +108,7 @@ class LLMModelFactory:
             "pricing",
             "display_name",
             "description",
+            "reasoning_config",
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
         config_params = config.model_dump(exclude=exclude_fields)
@@ -115,6 +116,13 @@ class LLMModelFactory:
         # Merge config with kwargs
         # kwargs take precedence over config_params
         raw_params: Dict[str, Any] = {**config_params, **kwargs}
+
+        # Extract reasoning flags before normalization — they are not regular
+        # provider params and must bypass normalize_params() because they
+        # contain nested/structured kwargs (e.g. {reasoning: {effort: "low"}}).
+        reasoning_output = raw_params.pop("reasoning_output", False)
+        # reasoning_config from kwargs overrides the one on ModelConfig
+        reasoning_config = raw_params.pop("reasoning_config", config.reasoning_config)
 
         # Handle 'timeout' which is in config but might need to be 'request_timeout'
         # depending on provider policy, OR just standard normalization.
@@ -135,6 +143,16 @@ class LLMModelFactory:
         except ValueError as e:
             logger.error(f"Parameter normalization failed: {e}")
             return None
+
+        # Merge reasoning kwargs into model_params when reasoning is requested
+        # and the model defines a reasoning_config.
+        if reasoning_output and reasoning_config:
+            model_params.update(reasoning_config)
+            logger.debug(
+                "Reasoning output enabled for '%s' — merged reasoning_config: %s",
+                config.name,
+                list(reasoning_config.keys()),
+            )
 
         if config.provider == ModelProvider.OPENAI:
             return self._create_openai_model(config, model_params)
@@ -289,6 +307,13 @@ class LLMModelFactory:
         """Get the preferred model for a specific agent"""
         # Honor agent override (used by AgentService to map custom agent_type to model)
         model_name = self.get_agent_model_name(agent_name)
+
+        # Forward reasoning_output from agent config when not explicitly set
+        if "reasoning_output" not in kwargs:
+            agent_config = self.config.get_specific_agent_config(agent_name)
+            if agent_config and getattr(agent_config, "reasoning_output", False):
+                kwargs["reasoning_output"] = True
+
         # Extend cache key with agent to avoid reuse between agents
         cache_key = f"{model_name}_{agent_name}_{hash(str(sorted(kwargs.items())))}"
         if cache_key in self._model_cache:

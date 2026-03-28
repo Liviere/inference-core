@@ -82,18 +82,21 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
     # Model creation (cached)
     # ------------------------------------------------------------------
 
-    def _get_model(self, model_name: str) -> Any:
+    def _get_model(self, model_name: str, reasoning_output: bool = False) -> Any:
         """Get or create a model instance by name.
 
         Uses the same factory that ``graph_builder`` used to create the
         default model, ensuring consistent provider resolution.
         """
-        if model_name in self._model_cache:
-            return self._model_cache[model_name]
+        cache_key = f"{model_name}_reasoning={reasoning_output}"
+        if cache_key in self._model_cache:
+            return self._model_cache[cache_key]
 
         if self._model_factory is not None:
             try:
-                model = self._model_factory.create_model(model_name)
+                model = self._model_factory.create_model(
+                    model_name, reasoning_output=reasoning_output
+                )
                 if model is None:
                     raise ValueError(f"Factory returned None for model '{model_name}'")
             except Exception as e:
@@ -111,7 +114,7 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
 
             model = init_chat_model(model_name)
 
-        self._model_cache[model_name] = model
+        self._model_cache[cache_key] = model
         return model
 
     def _get_configurable(self) -> dict[str, Any]:
@@ -164,16 +167,18 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
         override_model_name = configurable.get("primary_model")
         prompt_override = configurable.get("system_prompt_override")
         prompt_append = configurable.get("system_prompt_append")
+        reasoning_output = configurable.get("reasoning_output", False)
 
         logger.debug(
             "InstanceConfigMiddleware._apply_overrides: configurable keys=%s, "
             "primary_model=%r, instance_name=%r, prompt_override=%r, prompt_append=%r, "
-            "subagent_configs=%s",
+            "reasoning_output=%r, subagent_configs=%s",
             list(configurable.keys()),
             override_model_name,
             configurable.get("instance_name"),
             prompt_override[:80] if prompt_override else None,
             prompt_append[:80] if prompt_append else None,
+            reasoning_output,
             (
                 list(configurable["subagent_configs"].keys())
                 if configurable.get("subagent_configs")
@@ -184,7 +189,9 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
         # --- Model override ---
         if override_model_name:
             try:
-                target_model = self._get_model(override_model_name)
+                target_model = self._get_model(
+                    override_model_name, reasoning_output=reasoning_output
+                )
                 request = request.override(model=target_model)
                 logger.debug(
                     "InstanceConfigMiddleware: switched model → '%s'",

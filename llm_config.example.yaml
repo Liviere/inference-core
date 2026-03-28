@@ -50,6 +50,14 @@ models:
     description: 'Most capable model for complex tasks'
     max_tokens: 8192
     temperature: 0.7
+    # Reasoning output configuration (optional)
+    # Provider-specific kwargs passed to LangChain model constructor when
+    # reasoning_output is enabled on an agent. Each provider uses its own format.
+    # OpenAI models use the 'reasoning' kwarg.
+    reasoning_config:
+      reasoning:
+        effort: "low"
+        summary: "auto"
     # Pricing (sourced from OpenAI pricing page)
     # Source: https://platform.openai.com/docs/pricing (values shown are per 1M tokens)
     # Pricing is per 1M tokens (cost_per_1m).
@@ -152,6 +160,10 @@ models:
     description: 'Fast Gemini model for general tasks'
     max_tokens: 8192
     temperature: 0.7
+    # Gemini models use thinking_level + include_thoughts for reasoning.
+    reasoning_config:
+      thinking_level: "low"
+      include_thoughts: true
     # Pricing (sourced from Google Gemini pricing page)
     # Source: https://ai.google.dev/gemini-api/docs/pricing (captured 2025-09-27)
     # Values are per 1M tokens (cost_per_1m).
@@ -239,6 +251,11 @@ models:
     description: 'Claude Sonnet 4 model for high performance'
     max_tokens: 8192
     temperature: 0.7
+    # Claude models use the 'thinking' kwarg for extended thinking.
+    reasoning_config:
+      thinking:
+        type: "enabled"
+        budget_tokens: 5000
     # Pricing (sourced from Claude pricing page)
     # Sonnet 4 uses tiered pricing depending on prompt size (<=200K tokens vs >200K tokens)
     # Values are per MTok (cost_per_1m).
@@ -363,6 +380,10 @@ models:
     max_tokens: 8192
     temperature: 0.7
     default_timeout: 300
+    # DeepInfra models pass reasoning via model_kwargs.
+    reasoning_config:
+      model_kwargs:
+        reasoning_effort: "medium"
 
   deepseek-ai/DeepSeek-V3-0324:
     provider: 'deepinfra'
@@ -438,6 +459,10 @@ agents:
     fallback: ['gemini-2.5-flash']
     description: 'Agent that switches models based on tool usage'
     local_tool_providers: ['assistant_tools']
+    # Enable reasoning/thinking output for this agent.
+    # The agent's model must have a reasoning_config defined — the config
+    # kwargs will be passed to the LangChain model constructor at creation time.
+    reasoning_output: true
 
   # Example: DeepAgent with skills and subagents
   research_agent:

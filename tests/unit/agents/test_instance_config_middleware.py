@@ -68,7 +68,9 @@ class TestWrapModelCallModelSwap:
         handler.assert_called_once()
         called_request = handler.call_args[0][0]
         assert called_request.model is mock_target
-        mock_factory.create_model.assert_called_once_with("claude-haiku-4-5-20251001")
+        mock_factory.create_model.assert_called_once_with(
+            "claude-haiku-4-5-20251001", reasoning_output=False
+        )
 
     def test_no_model_swap_when_no_override(self):
         mw = InstanceConfigMiddleware(model_factory=MagicMock())

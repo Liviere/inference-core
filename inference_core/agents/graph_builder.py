@@ -144,6 +144,11 @@ def build_agent_graph(
     agent_config = factory.config.get_specific_agent_config(agent_name)
     model = factory.get_model_for_agent(agent_name)
 
+    # Resolve whether this agent requests reasoning output — used by
+    # InstanceConfigMiddleware when swapping the model at runtime so that
+    # the replacement model also receives reasoning_config kwargs.
+    agent_reasoning_output = getattr(agent_config, "reasoning_output", False)
+
     # Load tools from registered providers (async → run in a fresh loop)
     tools = list(extra_tools or [])
     _load_provider_tools(agent_name, agent_config, tools)
@@ -172,6 +177,7 @@ def build_agent_graph(
         agent_config,
         factory,
         memory_service=memory_service,
+        reasoning_output=agent_reasoning_output,
     )
 
     # Deep-agent support: compile SubAgentMiddleware and/or SkillsMiddleware
@@ -203,6 +209,7 @@ def _build_server_middleware(
     *,
     include_instance_config: bool = True,
     memory_service: Any = None,
+    reasoning_output: bool = False,
 ) -> list[Any]:
     """Build middleware list for an Agent Server graph.
 
@@ -230,6 +237,9 @@ def _build_server_middleware(
             leak from the parent graph.
         memory_service: Optional ``AgentMemoryStoreService`` instance.
             When provided, ``MemoryMiddleware`` is added to the stack.
+        reasoning_output: Whether the agent has reasoning output enabled.
+            Currently informational — runtime resolution happens via
+            ``configurable["reasoning_output"]`` in InstanceConfigMiddleware.
     """
     from inference_core.agents.middleware.cost_tracking import CostTrackingMiddleware
     from inference_core.agents.middleware.instance_config import (

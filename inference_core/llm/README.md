@@ -29,9 +29,9 @@ File: `inference_core/llm/streaming.py`
 1. API endpoint (`inference_core/api/v1/routes/llm.py`) receives POST and constructs an async generator.
 2. Model is created with `streaming=True` and callback handler.
 3. Preferred streaming path uses `model.astream_events(..., version="v1")` (LangChain 0.3.x) to capture granular events (`on_chat_model_stream`).
-4. Each token (content delta) is pushed into an asyncio queue as `StreamChunk(type="token")`.
+4. Each text delta is pushed into an asyncio queue as `StreamChunk(type="token")`, and provider reasoning blocks are forwarded as `StreamChunk(type="reasoning")` when present.
 5. The generator emits SSE frames (`data: {...}\n\n`).
-6. Usage metadata (if available) emitted as a `usage` event before `end`.
+6. Usage metadata (if available) is emitted as a `usage` event before `end`.
 7. Chat: final assistant message persisted to SQL history.
 
 ### Event JSON structure:
@@ -42,6 +42,10 @@ File: `inference_core/llm/streaming.py`
 {"event":"usage","usage":{"input_tokens":N,"output_tokens":M,"total_tokens":T}}
 {"event":"end"}
 ```
+
+{
+"event":"reasoning","content":"model reasoning output"
+}
 
 ### Fallback: If `astream_events` unsupported or errors, code falls back to `model.astream()` and manually extracts chunk content.
 
