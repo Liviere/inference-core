@@ -164,6 +164,28 @@ class LLMModelFactory:
             return self._create_gemini_model(config, model_params)
 
         elif config.provider == ModelProvider.CLAUDE:
+            # Claude (Anthropic) does not allow `temperature` when extended thinking
+            # is enabled — it must be either omitted or set to exactly 1.
+            # Remove it here so the default (1) is used by the API.
+            if "thinking" in reasoning_config:
+                removed_temp = model_params.pop("temperature", None)
+                if removed_temp is not None:
+                    logger.debug(
+                        "Removed 'temperature' from Claude model params (extended thinking enabled)"
+                    )
+
+                # `max_tokens` must be greater than `thinking.budget_token
+                thinking_budget = reasoning_config.get("thinking", {}).get(
+                    "budget_tokens"
+                )
+                max_tokens = model_params.get("max_tokens")
+                if thinking_budget and max_tokens and max_tokens <= thinking_budget:
+                    # If max_tokens is not greater than thinking budget, increase it to be so.
+                    model_params["max_tokens"] = thinking_budget + 1000
+                    logger.debug(
+                        "Adjusted 'max_tokens' to be greater than 'thinking.budget_tokens' for Claude model"
+                    )
+
             return self._create_claude_model(config, model_params)
 
         elif config.provider == ModelProvider.DEEPINFRA:

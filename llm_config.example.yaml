@@ -252,6 +252,9 @@ models:
     max_tokens: 8192
     temperature: 0.7
     # Claude models use the 'thinking' kwarg for extended thinking.
+    # When thinking is enabled, the runtime removes `temperature` so Claude can
+    # use its default value, and increases `max_tokens` if it would otherwise be
+    # less than or equal to the thinking budget.
     reasoning_config:
       thinking:
         type: "enabled"

@@ -20,6 +20,7 @@
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
   - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
   - `reasoning_config` can store provider-specific nested kwargs for reasoning / thinking models (for example OpenAI reasoning, Claude thinking, or Gemini thought settings).
+  - Claude thinking config is normalized in `LLMModelFactory`: `temperature` is removed when `thinking` is enabled, and `max_tokens` is increased if it is not greater than the thinking budget.
   - when an agent enables reasoning output, the factory merges `reasoning_config` into the provider kwargs before model construction.
   - directly affects instance creation in `inference_core/llm/models.py`.
   - missing API key / base_url affects `is_model_available()` results.
