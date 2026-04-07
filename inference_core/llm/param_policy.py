@@ -109,7 +109,14 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
         passthrough_prefixes=set(),
     ),
     ModelProvider.GEMINI: ProviderParamPolicy(
-        allowed={"temperature", "max_output_tokens", "top_p"},
+        allowed={
+            "temperature",
+            "max_output_tokens",
+            "top_p",
+            "thinking_level",
+            "include_thoughts",
+            "thinking_budget",
+        },
         renamed={"max_tokens": "max_output_tokens"},
         dropped={"frequency_penalty", "presence_penalty", "request_timeout"},
         passthrough_prefixes=set(),
