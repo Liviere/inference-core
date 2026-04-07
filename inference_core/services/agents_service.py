@@ -529,6 +529,7 @@ class AgentService:
                 default_model=self.model_name,
                 model_factory=self.model_factory,
                 cache_models=True,
+                reasoning_output=getattr(self.agent_config, "reasoning_output", False),
             )
 
             # Insert at the end (after cost tracking and memory)
@@ -909,10 +910,18 @@ class AgentService:
                     on_token(block["text"], {**base_meta, "type": "text"})
                 elif btype == "reasoning" and block.get("reasoning"):
                     on_token(block["reasoning"], {**base_meta, "type": "reasoning"})
-                elif btype == "tool_call_chunk":
-                    args = block.get("args")
-                    if args:
-                        on_token(args, {**base_meta, "type": "tool_call"})
+                # elif btype == "tool_call_chunk":
+                elif "tool_call" in btype:
+                    # Emit the tool name as a reasoning token so the
+                    # UI shows "calling `tool`" in the Thinking section.
+                    # Raw args are dropped to prevent them from leaking
+                    # into the chat bubble as visible text.
+                    name = block.get("name")
+                    if name:
+                        on_token(
+                            f"calling `{name}`\n",
+                            {**base_meta, "type": "reasoning"},
+                        )
             return
 
         # Fallback: plain string content (older providers / simple models).
@@ -984,6 +993,8 @@ class AgentService:
 
         if self.checkpoint_config:
             configurable.update(self.checkpoint_config)
+        if getattr(self.agent_config, "reasoning_output", False):
+            configurable["reasoning_output"] = True
 
         # Track state for cost metrics and final result
         accumulated_state: dict[str, Any] = {}
@@ -1200,6 +1211,8 @@ class AgentService:
         configurable = {}
         if self.checkpoint_config:
             configurable.update(self.checkpoint_config)
+        if getattr(self.agent_config, "reasoning_output", False):
+            configurable["reasoning_output"] = True
 
         accumulated_state: dict[str, Any] = {}
         last_agent_result: dict[str, Any] = {}
@@ -1401,6 +1414,10 @@ class AgentService:
             base_model = base_config.agent_models.get(self.agent_name)
             if self.model_name and self.model_name != base_model:
                 metadata["primary_model"] = self.model_name
+        # reasoning_output: forward so InstanceConfigMiddleware on the Agent
+        # Server creates replacement models with reasoning enabled.
+        if getattr(self.agent_config, "reasoning_output", False):
+            metadata["reasoning_output"] = True
 
         # Determine interrupt config from YAML
         interrupt_before = None

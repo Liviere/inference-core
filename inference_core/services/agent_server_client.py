@@ -319,6 +319,13 @@ def _forward_message_event(
                         on_token(block["text"], {**meta, "type": "text"})
                     elif block_type == "thinking" and block.get("thinking"):
                         on_token(block["thinking"], {**meta, "type": "reasoning"})
+                    elif block_type in ("tool_use", "tool_call"):
+                        tool_name = block.get("name")
+                        if tool_name:
+                            on_token(
+                                f"calling `{tool_name}`\n",
+                                {**meta, "type": "reasoning"},
+                            )
 
 
 def _forward_step_event(

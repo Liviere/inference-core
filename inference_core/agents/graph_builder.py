@@ -238,8 +238,10 @@ def _build_server_middleware(
         memory_service: Optional ``AgentMemoryStoreService`` instance.
             When provided, ``MemoryMiddleware`` is added to the stack.
         reasoning_output: Whether the agent has reasoning output enabled.
-            Currently informational — runtime resolution happens via
-            ``configurable["reasoning_output"]`` in InstanceConfigMiddleware.
+            Forwarded to ``InstanceConfigMiddleware`` via
+            ``configurable["reasoning_output"]`` and passed directly to
+            ``ToolBasedModelSwitchMiddleware`` so that switched models are
+            also created with reasoning/thinking output enabled.
     """
     from inference_core.agents.middleware.cost_tracking import CostTrackingMiddleware
     from inference_core.agents.middleware.instance_config import (
@@ -325,6 +327,7 @@ def _build_server_middleware(
                 default_model=model_name,
                 model_factory=factory,
                 cache_models=True,
+                reasoning_output=reasoning_output,
             )
             middleware.append(tool_middleware)
         except Exception as e:
