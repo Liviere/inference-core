@@ -180,6 +180,7 @@ async def stream_remote(
     metadata: Optional[dict[str, Any]] = None,
     on_token: Optional[Callable[[str, dict[str, Any]], None]] = None,
     on_step: Optional[Callable[[str, Any], None]] = None,
+    on_custom: Optional[Callable[[Any], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     interrupt_before: Optional[list[str]] = None,
     interrupt_after: Optional[list[str]] = None,
@@ -187,8 +188,8 @@ async def stream_remote(
     """Stream an agent run from the remote Agent Server.
 
     Streaming remote execution path.  Translates Agent Server SSE
-    events into the same `on_token` / `on_step` callback interface used
-    by local execution.
+    events into the same `on_token` / `on_step` / `on_custom` callback
+    interface used by local execution.
 
     Returns the final result dict after the stream completes.
     """
@@ -207,8 +208,13 @@ async def stream_remote(
 
     config = _build_config(checkpoint_config, metadata)
 
-    # Use messages+updates streaming for token-level + step-level events
-    stream_mode = ["messages", "updates"] if on_token else "updates"
+    # Use messages+updates+custom streaming based on which callbacks are active
+    stream_modes = ["updates"]
+    if on_token:
+        stream_modes.append("messages")
+    if on_custom:
+        stream_modes.append("custom")
+    stream_mode = stream_modes if len(stream_modes) > 1 else stream_modes[0]
 
     logger.info(
         "Remote stream → graph=%s thread=%s mode=%s",
@@ -263,6 +269,11 @@ async def stream_remote(
             _forward_message_event(data, on_token, ns=ns)
         elif event_type == "updates" and on_step:
             _forward_step_event(data, on_step, ns=ns)
+        elif event_type == "custom" and on_custom:
+            try:
+                on_custom(data)
+            except Exception:
+                pass
 
         # Track the latest result
         if event_type in ("values", "updates") and isinstance(data, dict):

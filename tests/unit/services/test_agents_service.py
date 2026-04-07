@@ -292,13 +292,13 @@ class TestRunAgentSteps:
 
     def test_returns_agent_response(self, agent_service):
         """run_agent_steps returns AgentResponse with result, steps, metadata."""
-        # Mock agent.stream to yield a single chunk
+        # Mock agent.stream to yield a single v2 StreamPart chunk
         mock_agent = MagicMock()
         ai_msg = MagicMock()
         ai_msg.content = "Hello!"
 
         mock_agent.stream.return_value = [
-            {"agent": {"messages": [ai_msg]}},
+            {"type": "updates", "data": {"agent": {"messages": [ai_msg]}}, "ns": []},
         ]
         agent_service.agent = mock_agent
 
@@ -314,16 +314,20 @@ class TestRunAgentSteps:
         mock_agent = MagicMock()
         mock_agent.stream.return_value = [
             {
-                "agent": {
-                    "messages": [MagicMock(content="ok")],
-                    "accumulated_input_tokens": 100,
-                    "accumulated_output_tokens": 50,
-                    "accumulated_total_tokens": 150,
-                    "accumulated_extra_tokens": {},
-                    "model_call_count": 1,
-                    "tool_call_count": 0,
-                    "usage_session_id": "u1",
-                }
+                "type": "updates",
+                "ns": [],
+                "data": {
+                    "agent": {
+                        "messages": [MagicMock(content="ok")],
+                        "accumulated_input_tokens": 100,
+                        "accumulated_output_tokens": 50,
+                        "accumulated_total_tokens": 150,
+                        "accumulated_extra_tokens": {},
+                        "model_call_count": 1,
+                        "tool_call_count": 0,
+                        "usage_session_id": "u1",
+                    }
+                },
             },
         ]
         agent_service.agent = mock_agent
@@ -340,7 +344,11 @@ class TestRunAgentSteps:
         svc = _make_agent_service(enable_cost_tracking=False)
         mock_agent = MagicMock()
         mock_agent.stream.return_value = [
-            {"agent": {"messages": [MagicMock(content="ok")]}},
+            {
+                "type": "updates",
+                "data": {"agent": {"messages": [MagicMock(content="ok")]}},
+                "ns": [],
+            },
         ]
         svc.agent = mock_agent
 
@@ -358,16 +366,17 @@ class TestRunAgentSteps:
         assert response.steps == []
 
     def test_interrupt_captured_in_result(self, agent_service):
-        """__interrupt__ step data is captured in result."""
+        """__interrupt__ step data is captured in result messages."""
         mock_agent = MagicMock()
         interrupt_data = [MagicMock()]
         mock_agent.stream.return_value = [
-            {"__interrupt__": interrupt_data},
+            {"type": "updates", "data": {"__interrupt__": interrupt_data}, "ns": []},
         ]
         agent_service.agent = mock_agent
 
         response = agent_service.run_agent_steps("Hello")
-        assert "__interrupt__" in response.result
+        assert "messages" in response.result
+        assert response.result["messages"][0] == {"__interrupt__": interrupt_data}
 
 
 # ---------------------------------------------------------------------------

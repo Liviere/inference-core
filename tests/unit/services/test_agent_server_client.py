@@ -450,7 +450,11 @@ class TestArunAgentStepsRemote:
         mock_agent = AsyncMock()
 
         async def _fake_astream(*args, **kwargs):
-            yield {"agent": {"messages": [MagicMock(content="local response")]}}
+            yield {
+                "type": "updates",
+                "data": {"agent": {"messages": [MagicMock(content="local response")]}},
+                "ns": [],
+            }
 
         mock_agent.astream = _fake_astream
         svc.agent = mock_agent
