@@ -167,7 +167,7 @@ class LLMModelFactory:
             # Claude (Anthropic) does not allow `temperature` when extended thinking
             # is enabled — it must be either omitted or set to exactly 1.
             # Remove it here so the default (1) is used by the API.
-            if "thinking" in reasoning_config:
+            if reasoning_config and "thinking" in reasoning_config:
                 removed_temp = model_params.pop("temperature", None)
                 if removed_temp is not None:
                     logger.debug(

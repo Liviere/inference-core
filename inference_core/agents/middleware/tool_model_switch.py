@@ -347,6 +347,7 @@ def create_tool_model_switch_middleware(
     default_model: Optional[str] = None,
     model_factory: Optional[Any] = None,
     cache_models: bool = True,
+    reasoning_output: bool = False,
 ) -> ToolBasedModelSwitchMiddleware:
     """Create a ToolBasedModelSwitchMiddleware from configuration dicts.
 
@@ -362,6 +363,9 @@ def create_tool_model_switch_middleware(
         default_model: Default model name when no override applies.
         model_factory: Optional model factory for creating model instances.
         cache_models: Whether to cache initialized model instances.
+        reasoning_output: Whether reasoning/thinking output is enabled for
+            the agent.  Stored on the middleware for future use when creating
+            switched model instances with reasoning capabilities.
 
     Returns:
         Configured ToolBasedModelSwitchMiddleware instance.
@@ -395,7 +399,9 @@ def create_tool_model_switch_middleware(
         cache_models=cache_models,
     )
 
-    return ToolBasedModelSwitchMiddleware(
+    middleware = ToolBasedModelSwitchMiddleware(
         config=config,
         model_factory=model_factory,
     )
+    middleware.reasoning_output = reasoning_output
+    return middleware
