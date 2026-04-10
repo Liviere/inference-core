@@ -154,6 +154,13 @@ Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be config
 | `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED` | true         | Run best-effort post-run tool-call analysis after each agent session |
 | `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`   | (none)       | Optional override model for post-run memory tool-calling             |
 
+Per-agent memory behavior can also be tuned in `llm_config.yaml` inside each `agents:` entry:
+
+- `memory_tools` controls which memory tools are exposed to the model. Set it to `[]` to disable all model-facing memory tools while keeping `after_agent` analysis active.
+- `memory_session_context_enabled` controls whether recalled memories are injected into the session prompt during model calls.
+- `memory_tool_instructions_enabled` controls whether CoALA memory usage instructions are appended to the system prompt.
+- All three fields default to `null`, which preserves the existing global behavior for backward compatibility.
+
 ## Agent Skills & Subagents (DeepAgent)
 
 Specialized capabilities and delegation for `DeepAgentService`. Configured in `llm_config.yaml` under `agents:`.

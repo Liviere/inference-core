@@ -41,6 +41,12 @@ from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, Field
 
 from inference_core.agents.middleware._runtime_context import (
+    get_memory_session_context_enabled as _ctx_get_memory_session_context_enabled,
+)
+from inference_core.agents.middleware._runtime_context import (
+    get_memory_tool_instructions_enabled as _ctx_get_memory_tool_instructions_enabled,
+)
+from inference_core.agents.middleware._runtime_context import (
     get_user_id as _ctx_get_user_id,
 )
 from inference_core.agents.tools.memory_tools import (
@@ -112,6 +118,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         include_categories: Optional[List[str]] = None,
         postrun_analysis: bool = True,
         postrun_analysis_model: Optional[str] = None,
+        tool_instructions_enabled: Optional[bool] = None,
+        active_tool_names: Optional[List[str]] = None,
     ):
         """Initialize the memory middleware.
 
@@ -135,6 +143,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 model the agent last used (captured from ``wrap_model_call``).  Set
                 to a cheaper/faster model (e.g. ``"gpt-5-nano"``) when you want
                 to keep extraction costs low without changing the agent's own model.
+            tool_instructions_enabled: Whether to inject memory tool instructions
+                into the system prompt at each model call.  ``None`` = enabled
+                when any model-facing memory tools are active.  On Agent Server,
+                read per-request from the ``_memory_tool_instructions_enabled``
+                context var (overrides this compile-time default).
+            active_tool_names: Names of memory tools exposed to the model.
+                Used to generate scoped instructions that only describe tools
+                the model can actually call.  ``None`` = all four tools.
         """
         self.memory_service = memory_service
         self.user_id = user_id
@@ -142,6 +158,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self.max_recall_results = max_recall_results
         self.postrun_analysis = postrun_analysis
         self.postrun_analysis_model = postrun_analysis_model
+        self.tool_instructions_enabled = tool_instructions_enabled
+        self.active_tool_names = active_tool_names
         # Set in wrap_model_call / awrap_model_call; used by after_agent.
         self._captured_model: Optional[Any] = None
         self.include_memory_types = include_memory_types or [
@@ -179,6 +197,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         ctx_uid = _ctx_get_user_id()
         return str(ctx_uid) if ctx_uid is not None else None
 
+    def _should_inject_tool_instructions(self) -> bool:
+        """Resolve whether to inject memory tool instructions per model call.
+
+        Resolution order (first non-None wins):
+            per-request contextvar → compile-time self.tool_instructions_enabled
+            → default (True when any tools are active).
+        """
+        ctx_override = _ctx_get_memory_tool_instructions_enabled()
+        if ctx_override is not None:
+            return ctx_override
+        if self.tool_instructions_enabled is not None:
+            return self.tool_instructions_enabled
+        # Default: instructions enabled when tools exist
+        return self.active_tool_names is None or len(self.active_tool_names) > 0
+
     # -------------------------------------------------------------------------
     # Node-style hooks
     # -------------------------------------------------------------------------
@@ -204,6 +237,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         """
         if not self.auto_recall:
             logger.debug("Memory auto-recall disabled, skipping")
+            return None
+
+        # Per-request override: on Agent Server, a shared middleware instance
+        # can have auto_recall=True at compile time, but a specific request
+        # may disable session context via configurable → contextvar.
+        ctx_session_override = _ctx_get_memory_session_context_enabled()
+        if ctx_session_override is False:
+            logger.debug(
+                "Memory session context disabled per-request (contextvar override)"
+            )
             return None
 
         # Initialize context
@@ -268,16 +311,53 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     # Wrap-style hooks
     # -------------------------------------------------------------------------
 
+    def _build_injection_blocks(self) -> list[dict[str, str]]:
+        """Build content blocks for system prompt injection.
+
+        Returns blocks for:
+        1. Recalled memory context (when available)
+        2. Memory tool instructions (when enabled and on Agent Server)
+        """
+        blocks: list[dict[str, str]] = []
+
+        if self._cached_memory_context:
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": f"\n<user_memory_context>\n{self._cached_memory_context}\n</user_memory_context>\n\n",
+                }
+            )
+
+        # On Agent Server, tool instructions are NOT baked into the compiled
+        # prompt — they are injected per-request so per-instance/runtime
+        # toggling can work without graph recompilation.
+        if (
+            self.active_tool_names is not None
+            and self._should_inject_tool_instructions()
+        ):
+            from inference_core.agents.tools.memory_tools import (
+                generate_memory_tools_system_instructions,
+            )
+
+            instructions = generate_memory_tools_system_instructions(
+                active_tool_names=self.active_tool_names,
+            )
+            if instructions:
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": f"\n{instructions}\n",
+                    }
+                )
+
+        return blocks
+
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Inject memory context into system prompt before model call.
-
-        This hook modifies the system message to include recalled memory context,
-        ensuring the model has access to relevant user memories when generating
-        responses.
+        """Inject memory context and tool instructions into system prompt before model call.
 
         Args:
             request: ModelRequest containing messages, model, and system_message
@@ -286,29 +366,20 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         Returns:
             ModelResponse from the handler
         """
-        # Capture the current model for post-run analysis (before possible injection override).
         self._captured_model = getattr(request, "model", None)
 
-        # If no memory context was recalled, pass through unchanged
-        if not self._cached_memory_context:
+        injection_blocks = self._build_injection_blocks()
+        if not injection_blocks:
             return handler(request)
 
         try:
-            # Get current system message content blocks
             current_blocks = list(request.system_message.content_blocks)
-
-            # Create memory context block to prepend
-            memory_block = {
-                "type": "text",
-                "text": f"\n<user_memory_context>\n{self._cached_memory_context}\n</user_memory_context>\n\n",
-            }
-
-            # Prepend memory context to system message
-            new_content = current_blocks + [memory_block]
+            new_content = current_blocks + injection_blocks
             new_system_message = SystemMessage(content=new_content)
 
             logger.debug(
-                "Injected memory context into system prompt for user=%s",
+                "Injected %d memory blocks into system prompt for user=%s",
+                len(injection_blocks),
                 self._resolve_user_id(),
             )
 
@@ -320,7 +391,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 e,
                 exc_info=True,
             )
-            # Fall back to original request on error
             return handler(request)
 
     async def awrap_model_call(
@@ -330,16 +400,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     ) -> ModelResponse:
         """Async version of wrap_model_call for use with astream."""
         self._captured_model = getattr(request, "model", None)
-        if not self._cached_memory_context:
+
+        injection_blocks = self._build_injection_blocks()
+        if not injection_blocks:
             return await handler(request)
 
         try:
             current_blocks = list(request.system_message.content_blocks)
-            memory_block = {
-                "type": "text",
-                "text": f"\n<user_memory_context>\n{self._cached_memory_context}\n</user_memory_context>\n\n",
-            }
-            new_content = current_blocks + [memory_block]
+            new_content = current_blocks + injection_blocks
             new_system_message = SystemMessage(content=new_content)
             return await handler(request.override(system_message=new_system_message))
         except Exception as e:

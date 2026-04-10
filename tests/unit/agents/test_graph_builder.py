@@ -787,7 +787,7 @@ class TestMemorySupport:
         mock_store = MagicMock()
         mock_service = MagicMock()
 
-        def capture_add_tools(service, tools):
+        def capture_add_tools(service, tools, include_tools=None):
             tools.extend(["save", "recall", "update", "delete"])
 
         with patch(
@@ -816,3 +816,104 @@ class TestMemorySupport:
 
         call_kwargs = mock_create.call_args[1]
         assert len(call_kwargs["tools"]) == 4
+
+
+# ---------------------------------------------------------------------------
+# _build_server_middleware — memory configuration params
+# ---------------------------------------------------------------------------
+
+
+class TestBuildServerMiddlewareMemoryConfig:
+    """Verify memory_tools_config and memory_tool_instructions_default forwarding."""
+
+    def test_memory_middleware_receives_active_tool_names(self):
+        """active_tool_names on MemoryMiddleware matches memory_tools_config."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+        agent_config = _mock_agent_config()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ):
+            mw = _build_server_middleware(
+                "test_agent",
+                agent_config,
+                factory,
+                memory_service=MagicMock(),
+                memory_tools_config=["save_memory_store", "recall_memories_store"],
+            )
+
+        mem_mws = [m for m in mw if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 1
+        assert mem_mws[0].active_tool_names == [
+            "save_memory_store",
+            "recall_memories_store",
+        ]
+
+    def test_memory_middleware_receives_tool_instructions_default(self):
+        """tool_instructions_enabled on MemoryMiddleware matches param."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+        agent_config = _mock_agent_config()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ):
+            mw = _build_server_middleware(
+                "test_agent",
+                agent_config,
+                factory,
+                memory_service=MagicMock(),
+                memory_tool_instructions_default=False,
+            )
+
+        mem_mws = [m for m in mw if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 1
+        assert mem_mws[0].tool_instructions_enabled is False
+
+    def test_memory_middleware_auto_recall_from_agent_config(self):
+        """auto_recall overridden by AgentConfig.memory_session_context_enabled."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+        agent_config = _mock_agent_config(memory_session_context_enabled=False)
+
+        with patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ):
+            mw = _build_server_middleware(
+                "test_agent",
+                agent_config,
+                factory,
+                memory_service=MagicMock(),
+            )
+
+        mem_mws = [m for m in mw if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 1
+        assert mem_mws[0].auto_recall is False
+
+    def test_no_memory_middleware_without_service(self):
+        """No MemoryMiddleware when memory_service is None."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        factory = _mock_factory()
+        agent_config = _mock_agent_config()
+
+        with patch(
+            "inference_core.agents.graph_builder.get_llm_config",
+            return_value=_mock_llm_config(),
+        ):
+            mw = _build_server_middleware(
+                "test_agent",
+                agent_config,
+                factory,
+                memory_service=None,
+            )
+
+        mem_mws = [m for m in mw if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 0

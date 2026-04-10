@@ -374,69 +374,129 @@ def get_memory_tools(
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     max_recall_results: int = 5,
+    include_tools: Optional[List[str]] = None,
 ) -> List[BaseTool]:
     """Factory for store-backed memory tools to ease agent wiring.
+
+    WHY: Supports per-agent memory tool filtering — only the tools whose
+    names appear in ``include_tools`` are returned.  When ``include_tools``
+    is ``None``, all four tools are returned (backward-compatible default).
+    An empty list means no model-facing memory tools at all.
 
     When ``user_id`` is ``None`` (Agent Server), each tool resolves it at
     call time from the ``_runtime_context`` context var.
     """
+    if include_tools is not None and len(include_tools) == 0:
+        logger.debug("Memory tools disabled (include_tools=[])")
+        return []
 
-    save_tool = SaveMemoryStoreTool(
-        memory_service=memory_service,
-        user_id=user_id,
-        session_id=session_id,
-    )
+    all_tools: dict[str, BaseTool] = {
+        "save_memory_store": SaveMemoryStoreTool(
+            memory_service=memory_service,
+            user_id=user_id,
+            session_id=session_id,
+        ),
+        "recall_memories_store": RecallMemoryStoreTool(
+            memory_service=memory_service,
+            user_id=user_id,
+            default_max_results=max_recall_results,
+        ),
+        "update_memory_store": UpdateMemoryStoreTool(
+            memory_service=memory_service,
+            user_id=user_id,
+            session_id=session_id,
+        ),
+        "delete_memory_store": DeleteMemoryStoreTool(
+            memory_service=memory_service,
+            user_id=user_id,
+        ),
+    }
 
-    recall_tool = RecallMemoryStoreTool(
-        memory_service=memory_service,
-        user_id=user_id,
-        default_max_results=max_recall_results,
-    )
-
-    update_tool = UpdateMemoryStoreTool(
-        memory_service=memory_service,
-        user_id=user_id,
-        session_id=session_id,
-    )
-
-    delete_tool = DeleteMemoryStoreTool(
-        memory_service=memory_service,
-        user_id=user_id,
-    )
+    if include_tools is not None:
+        selected = [all_tools[name] for name in include_tools if name in all_tools]
+    else:
+        selected = list(all_tools.values())
 
     logger.debug(
-        "Created store memory tools for user=%s",
+        "Created %d store memory tools for user=%s (filter=%s)",
+        len(selected),
         user_id,
+        include_tools,
     )
 
-    return [save_tool, recall_tool, update_tool, delete_tool]
+    return selected
 
 
-def generate_memory_tools_system_instructions() -> str:
+def generate_memory_tools_system_instructions(
+    active_tool_names: Optional[List[str]] = None,
+) -> str:
     """Generate system prompt instructions explaining CoALA memory architecture.
 
-    Returns formatted instructions explaining the three memory categories
-    and binding trigger rules for when the model MUST call save_memory_store.
+    WHY: When a subset of memory tools is exposed, the instruction block must
+    only describe those tools — otherwise the model hallucinates calls to
+    tools it cannot invoke.
+
+    Args:
+        active_tool_names: Names of memory tools currently exposed to the model.
+            When ``None``, instructions for all four tools are generated.
+            When empty, returns an empty string.
+
+    Returns:
+        Formatted instructions or empty string when no tools are active.
     """
-    return f"""## Memory Tools Usage (CoALA Architecture)
+    _ALL_TOOL_NAMES = {
+        "save_memory_store",
+        "recall_memories_store",
+        "update_memory_store",
+        "delete_memory_store",
+    }
+    if active_tool_names is not None:
+        active = set(active_tool_names) & _ALL_TOOL_NAMES
+    else:
+        active = _ALL_TOOL_NAMES
 
-### Guiding principle
-Memory is part of how you work — not something you announce. Save information silently
-and use it naturally, the way a person with good memory would. Never say "I've saved
- that" or "I'm noting this down" unless the user explicitly asks "did you remember/save
-that?". The act of saving is invisible to the user.
+    if not active:
+        return ""
 
-### Memory categories
+    # Build per-tool instruction sections
+    tool_sections: list[str] = []
 
-**SEMANTIC MEMORY** — Stable facts about the world and the user.
-  Types: preferences, facts, goals, general.  Shared across all agents.
+    if "save_memory_store" in active:
+        tool_sections.append(
+            "#### save_memory_store — persist information to long-term memory\n"
+            "Arguments: content (required), memory_type (auto-categorized when omitted), topic, category."
+        )
 
-**EPISODIC MEMORY** — Sequences of past experiences and interactions.
-  Types: context, session_summary, interaction.  Scoped per agent.
+    if "recall_memories_store" in active:
+        tool_sections.append(
+            "#### recall_memories_store — retrieve memories by semantic search\n"
+            "When to use:\n"
+            "- Start of a new topic to load relevant user context (→ category: semantic)\n"
+            "- Before giving personalized recommendations (→ semantic + procedural)\n"
+            '- When user says "last time", "before", "we discussed" (→ category: episodic)\n'
+            "- Always before calling update_memory_store (to get memory_id)"
+        )
 
-**PROCEDURAL MEMORY** — Operational rules, workflows, and skills.
-  Types: instructions, workflow, skill.  Scoped per agent.
+    if "update_memory_store" in active:
+        tool_sections.append(
+            "#### update_memory_store — correct or enrich an existing memory\n"
+            "Requires memory_id from recall_memories_store first.\n"
+            "Use when: user corrects saved info, preferences change, additional details emerge."
+        )
 
+    if "delete_memory_store" in active:
+        tool_sections.append(
+            "#### delete_memory_store — remove a specific memory\n"
+            "Requires memory_id from recall_memories_store first.\n"
+            "Use when: user asks to forget something, info is outdated or wrong."
+        )
+
+    tools_block = "\n\n".join(tool_sections)
+
+    # Only include save triggers / decision rules when save_memory_store is active
+    save_triggers = ""
+    if "save_memory_store" in active:
+        save_triggers = """
 ### Mandatory save triggers
 You MUST call save_memory_store (BEFORE finalizing your answer) when any of these occur:
 
@@ -479,26 +539,30 @@ Before finalizing your answer, ask yourself:
   If YES → call save_memory_store first, then respond.
   If NO  → respond directly.
 This check must happen EVERY turn, not only when the user asks explicitly.
+"""
 
+    return f"""## Memory Tools Usage (CoALA Architecture)
+
+### Guiding principle
+Memory is part of how you work — not something you announce. Save information silently
+and use it naturally, the way a person with good memory would. Never say "I've saved
+ that" or "I'm noting this down" unless the user explicitly asks "did you remember/save
+that?". The act of saving is invisible to the user.
+
+### Memory categories
+
+**SEMANTIC MEMORY** — Stable facts about the world and the user.
+  Types: preferences, facts, goals, general.  Shared across all agents.
+
+**EPISODIC MEMORY** — Sequences of past experiences and interactions.
+  Types: context, session_summary, interaction.  Scoped per agent.
+
+**PROCEDURAL MEMORY** — Operational rules, workflows, and skills.
+  Types: instructions, workflow, skill.  Scoped per agent.
+{save_triggers}
 ### Tools
 
-#### save_memory_store — persist information to long-term memory
-Arguments: content (required), memory_type (auto-categorized when omitted), topic, category.
-
-#### recall_memories_store — retrieve memories by semantic search
-When to use:
-- Start of a new topic to load relevant user context (→ category: semantic)
-- Before giving personalized recommendations (→ semantic + procedural)
-- When user says "last time", "before", "we discussed" (→ category: episodic)
-- Always before calling update_memory_store (to get memory_id)
-
-#### update_memory_store — correct or enrich an existing memory
-Requires memory_id from recall_memories_store first.
-Use when: user corrects saved info, preferences change, additional details emerge.
-
-#### delete_memory_store — remove a specific memory
-Requires memory_id from recall_memories_store first.
-Use when: user asks to forget something, info is outdated or wrong.
+{tools_block}
 
 {format_memory_types_for_description()}
 

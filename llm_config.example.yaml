@@ -455,6 +455,29 @@ agents:
     # Optional: Allowlist of tool names (if omitted, all tools from providers are allowed)
     allowed_tools: ['create_todo_task', 'search_knowledge_base']
 
+    # --- Memory surface configuration ---
+    # Controls which memory tools the model can call, whether memory tool
+    # instructions are appended to the system prompt, and whether recalled
+    # memories are injected as context during the session.
+    # All three are optional; omitting them preserves default behaviour.
+
+    # Exact list of memory tool names exposed to the model.
+    # Valid: save_memory_store, recall_memories_store, update_memory_store, delete_memory_store
+    # Empty list [] disables model-facing tools while keeping after_agent postrun analysis.
+    # Omit or set to null to expose all tools (default).
+    # memory_tools: ['save_memory_store', 'recall_memories_store']
+
+    # Whether recalled memories are injected into system prompt during model calls.
+    # false = skip before_agent recall + wrap_model_call injection, but after_agent
+    # postrun analysis still runs independently.
+    # Omit or null = inherit from global agent_memory_auto_recall setting.
+    # memory_session_context_enabled: true
+
+    # Whether CoALA memory tool usage instructions are appended to the system prompt.
+    # false = no instruction block even if memory tools are present.
+    # Omit or null = instructions added when memory tools are active.
+    # memory_tool_instructions_enabled: true
+
   # Example: Agent with tool-based model switching
   # This agent uses different models depending on which tool was just called
   reasoning_agent:

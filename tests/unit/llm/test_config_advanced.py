@@ -424,3 +424,59 @@ class TestGetModelDebugInfo:
         cfg = _make_config()
         info = cfg.get_model_debug_info("nope")
         assert info == {"error": "Model not found"}
+
+
+# ---------------------------------------------------------------------------
+# AgentConfig — memory_tools validator
+# ---------------------------------------------------------------------------
+
+
+class TestAgentConfigMemoryTools:
+    """Verify memory_tools field validation on AgentConfig."""
+
+    def test_none_is_valid(self):
+        """memory_tools=None is accepted (inherit default)."""
+        ac = AgentConfig(primary="gpt-5", memory_tools=None)
+        assert ac.memory_tools is None
+
+    def test_empty_list_is_valid(self):
+        """memory_tools=[] is accepted (disable all tools)."""
+        ac = AgentConfig(primary="gpt-5", memory_tools=[])
+        assert ac.memory_tools == []
+
+    def test_valid_tool_names(self):
+        """All four valid tool names are accepted."""
+        ac = AgentConfig(
+            primary="gpt-5",
+            memory_tools=[
+                "save_memory_store",
+                "recall_memories_store",
+                "update_memory_store",
+                "delete_memory_store",
+            ],
+        )
+        assert len(ac.memory_tools) == 4
+
+    def test_invalid_tool_name_raises(self):
+        """Invalid tool name raises ValidationError."""
+        with pytest.raises(Exception, match="Invalid memory tool names"):
+            AgentConfig(primary="gpt-5", memory_tools=["nonexistent_tool"])
+
+    def test_mixed_valid_invalid_raises(self):
+        """Mix of valid and invalid names raises ValidationError."""
+        with pytest.raises(Exception, match="Invalid memory tool names"):
+            AgentConfig(
+                primary="gpt-5",
+                memory_tools=["save_memory_store", "bad_tool"],
+            )
+
+    def test_session_context_and_instructions_defaults(self):
+        """memory_session_context_enabled and memory_tool_instructions_enabled default to None."""
+        ac = AgentConfig(primary="gpt-5")
+        assert ac.memory_session_context_enabled is None
+        assert ac.memory_tool_instructions_enabled is None
+
+    def test_session_context_explicit_false(self):
+        """memory_session_context_enabled=False is accepted."""
+        ac = AgentConfig(primary="gpt-5", memory_session_context_enabled=False)
+        assert ac.memory_session_context_enabled is False

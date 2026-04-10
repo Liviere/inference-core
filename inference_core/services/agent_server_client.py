@@ -97,6 +97,9 @@ def _build_config(
         "reasoning_output",
         # Per-subagent overrides (SubagentConfigMiddleware reads these)
         "subagent_configs",
+        # Memory surface per-request overrides (MemoryMiddleware reads these)
+        "memory_session_context_enabled",
+        "memory_tool_instructions_enabled",
     )
     if metadata:
         for key in _MW_KEYS:

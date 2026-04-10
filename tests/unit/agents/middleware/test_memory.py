@@ -1257,3 +1257,213 @@ class TestPostrunAnalysisParam:
             user_id="u42",
         )
         assert mw.postrun_analysis is True
+
+
+# ===========================================================================
+# _should_inject_tool_instructions resolution
+# ===========================================================================
+
+
+class TestShouldInjectToolInstructions:
+    """Verify resolution order: contextvar → compile-time → default."""
+
+    def test_default_true_when_tools_present(self, mock_memory_service):
+        """Default is True when active_tool_names has tools."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=["save_memory_store"],
+        )
+        assert mw._should_inject_tool_instructions() is True
+
+    def test_default_true_when_tools_none(self, mock_memory_service):
+        """Default is True when active_tool_names is None (all tools)."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=None,
+        )
+        assert mw._should_inject_tool_instructions() is True
+
+    def test_default_false_when_tools_empty(self, mock_memory_service):
+        """Default is False when active_tool_names is empty list."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=[],
+        )
+        assert mw._should_inject_tool_instructions() is False
+
+    def test_compile_time_override(self, mock_memory_service):
+        """Compile-time tool_instructions_enabled overrides default."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=["save_memory_store"],
+            tool_instructions_enabled=False,
+        )
+        assert mw._should_inject_tool_instructions() is False
+
+    def test_contextvar_overrides_compile_time(self, mock_memory_service):
+        """Per-request contextvar overrides compile-time setting."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=["save_memory_store"],
+            tool_instructions_enabled=False,
+        )
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_memory_tool_instructions_enabled",
+            return_value=True,
+        ):
+            assert mw._should_inject_tool_instructions() is True
+
+    def test_contextvar_false_overrides_default_true(self, mock_memory_service):
+        """Per-request contextvar=False overrides default=True."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=["save_memory_store"],
+        )
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_memory_tool_instructions_enabled",
+            return_value=False,
+        ):
+            assert mw._should_inject_tool_instructions() is False
+
+
+# ===========================================================================
+# _build_injection_blocks
+# ===========================================================================
+
+
+class TestBuildInjectionBlocks:
+    """Verify block construction for memory context + tool instructions."""
+
+    def test_no_blocks_when_nothing_cached(self, mock_memory_service):
+        """Returns empty list when no cached context and no tool instructions needed."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+        )
+        mw._cached_memory_context = None
+        blocks = mw._build_injection_blocks()
+        assert blocks == []
+
+    def test_memory_context_block_only(self, mock_memory_service):
+        """Returns memory context block when cached and no active_tool_names."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=None,
+        )
+        mw._cached_memory_context = "User prefers Python"
+        blocks = mw._build_injection_blocks()
+        assert len(blocks) == 1
+        assert "<user_memory_context>" in blocks[0]["text"]
+        assert "User prefers Python" in blocks[0]["text"]
+
+    def test_both_blocks_on_agent_server(self, mock_memory_service):
+        """Returns memory context + tool instructions when on Agent Server."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=["save_memory_store", "recall_memories_store"],
+        )
+        mw._cached_memory_context = "User prefers Python"
+        blocks = mw._build_injection_blocks()
+        assert len(blocks) == 2
+        assert "<user_memory_context>" in blocks[0]["text"]
+        assert "save_memory_store" in blocks[1]["text"]
+
+    def test_tool_instructions_only_when_no_cached_context(self, mock_memory_service):
+        """Returns only tool instructions when no cached context but tools active."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=["save_memory_store"],
+        )
+        mw._cached_memory_context = None
+        blocks = mw._build_injection_blocks()
+        assert len(blocks) == 1
+        assert "save_memory_store" in blocks[0]["text"]
+
+    def test_no_tool_instructions_when_disabled(self, mock_memory_service):
+        """No tool instruction block when tool_instructions_enabled=False."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=["save_memory_store"],
+            tool_instructions_enabled=False,
+        )
+        mw._cached_memory_context = "context"
+        blocks = mw._build_injection_blocks()
+        assert len(blocks) == 1
+        assert "<user_memory_context>" in blocks[0]["text"]
+
+    def test_no_tool_instructions_when_local_path(self, mock_memory_service):
+        """No tool instruction block on local path (active_tool_names=None)."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            active_tool_names=None,
+        )
+        mw._cached_memory_context = "context"
+        blocks = mw._build_injection_blocks()
+        assert len(blocks) == 1
+        assert "<user_memory_context>" in blocks[0]["text"]
+
+
+# ===========================================================================
+# before_agent — per-request session context override
+# ===========================================================================
+
+
+class TestBeforeAgentSessionContextOverride:
+    """Verify contextvar override disables before_agent recall."""
+
+    def test_contextvar_false_skips_recall(self, mock_memory_service):
+        """before_agent returns None when contextvar disables session context."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            auto_recall=True,
+        )
+        msg = MagicMock()
+        msg.type = "human"
+        msg.content = "test"
+        state = MemoryState(messages=[msg])
+
+        with patch(
+            "inference_core.agents.middleware.memory._ctx_get_memory_session_context_enabled",
+            return_value=False,
+        ):
+            result = mw.before_agent(state, MagicMock())
+
+        assert result is None
+
+    def test_contextvar_none_allows_recall(self, mock_memory_service):
+        """before_agent proceeds normally when contextvar is None (not overridden)."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            auto_recall=True,
+        )
+        msg = MagicMock()
+        msg.type = "human"
+        msg.content = "test query"
+        state = MemoryState(messages=[msg])
+
+        with (
+            patch(
+                "inference_core.agents.middleware.memory._ctx_get_memory_session_context_enabled",
+                return_value=None,
+            ),
+            patch.object(
+                mw, "_recall_and_format", return_value=("", {"latency_ms": 1.0})
+            ),
+        ):
+            result = mw.before_agent(state, MagicMock())
+
+        assert result is not None
+        assert result["memories_recalled"] == 0

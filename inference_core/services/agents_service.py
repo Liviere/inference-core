@@ -204,6 +204,9 @@ class AgentService:
         user_skills: Optional[list[dict[str, str]]] = None,
         memory_postrun_analysis: Optional[bool] = None,
         memory_postrun_model: Optional[str] = None,
+        memory_tools: Optional[list[str]] = None,
+        memory_session_context_enabled: Optional[bool] = None,
+        memory_tool_instructions_enabled: Optional[bool] = None,
     ):
         """Initialize the AgentService.
 
@@ -236,6 +239,16 @@ class AgentService:
             memory_postrun_model: Optional model name for the post-run extraction LLM
                 call.  When None, uses settings.agent_memory_postrun_analysis_model
                 (typically the agent's own model).
+            memory_tools: Override for which memory tools are exposed to the model.
+                When None, inherits from AgentConfig.memory_tools or exposes all.
+                Empty list disables model-facing memory tools while keeping the
+                MemoryMiddleware active for after_agent postrun analysis.
+            memory_session_context_enabled: Override for MemoryMiddleware session
+                context injection.  When None, inherits from
+                AgentConfig.memory_session_context_enabled or global auto_recall.
+            memory_tool_instructions_enabled: Override for memory tool instructions
+                in the system prompt.  When None, inherits from
+                AgentConfig.memory_tool_instructions_enabled or default behaviour.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -304,6 +317,11 @@ class AgentService:
         self._memory_postrun_analysis = memory_postrun_analysis
         self._memory_postrun_model = memory_postrun_model
 
+        # Memory surface configuration overrides (None = inherit from AgentConfig/global)
+        self._memory_tools_override = memory_tools
+        self._memory_session_context_enabled_override = memory_session_context_enabled
+        self._memory_tool_instructions_enabled_override = memory_tool_instructions_enabled
+
     @property
     def display_name(self) -> str:
         """Human-readable agent identity for logging and observability.
@@ -340,6 +358,58 @@ class AgentService:
                 mw.cancel_check = cancel_check
             elif hasattr(mw, "cancel_check"):
                 mw.cancel_check = cancel_check
+
+    # ------------------------------------------------------------------
+    # Memory surface resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_memory_tools(self) -> list[str] | None:
+        """Resolve which memory tool names to expose to the model.
+
+        Resolution order (first non-None wins):
+            runtime override → AgentConfig (YAML / config_overrides) → None (all tools).
+
+        Returns:
+            Explicit list of tool names, or None meaning "expose all tools".
+        """
+        if self._memory_tools_override is not None:
+            return self._memory_tools_override
+        if self.agent_config and self.agent_config.memory_tools is not None:
+            return self.agent_config.memory_tools
+        return None
+
+    def _resolve_memory_session_context_enabled(self) -> bool:
+        """Resolve whether MemoryMiddleware should inject recalled context.
+
+        Resolution order (first non-None wins):
+            runtime override → AgentConfig → global agent_memory_auto_recall.
+        """
+        if self._memory_session_context_enabled_override is not None:
+            return self._memory_session_context_enabled_override
+        if (
+            self.agent_config
+            and self.agent_config.memory_session_context_enabled is not None
+        ):
+            return self.agent_config.memory_session_context_enabled
+        return get_settings().agent_memory_auto_recall
+
+    def _resolve_memory_tool_instructions_enabled(self) -> bool:
+        """Resolve whether memory tool instructions are appended to the system prompt.
+
+        Resolution order (first non-None wins):
+            runtime override → AgentConfig → True when any model-facing tools exist.
+        """
+        if self._memory_tool_instructions_enabled_override is not None:
+            return self._memory_tool_instructions_enabled_override
+        if (
+            self.agent_config
+            and self.agent_config.memory_tool_instructions_enabled is not None
+        ):
+            return self.agent_config.memory_tool_instructions_enabled
+        # Default: instructions enabled when memory tools are active
+        resolved_tools = self._resolve_memory_tools()
+        # None means all tools → instructions on; empty list → instructions off
+        return resolved_tools is None or len(resolved_tools) > 0
 
     async def create_agent(
         self, system_prompt: Optional[str] = None, **kwargs
@@ -471,10 +541,11 @@ class AgentService:
             if not has_memory:
                 try:
                     settings = get_settings()
+                    resolved_auto_recall = self._resolve_memory_session_context_enabled()
                     memory_middleware = MemoryMiddleware(
                         memory_service=self._memory_service,
                         user_id=str(self._user_id),
-                        auto_recall=settings.agent_memory_auto_recall,
+                        auto_recall=resolved_auto_recall,
                         max_recall_results=settings.agent_memory_max_results,
                         postrun_analysis=(
                             self._memory_postrun_analysis
@@ -565,6 +636,11 @@ class AgentService:
     def _build_system_prompt(self, base_prompt: Optional[str] = None) -> Optional[str]:
         """Build enhanced system prompt with memory instructions if enabled.
 
+        WHY: memory tool instructions are appended only when memory is active,
+        tools are exposed to the model, and the instructions switch is on.
+        The instruction block is scoped to the actual set of active tool names
+        so the model never sees docs for tools it cannot call.
+
         Args:
             base_prompt: Base system prompt provided by user.
 
@@ -572,18 +648,20 @@ class AgentService:
             Enhanced system prompt with memory instructions appended,
             or None if no prompt and no memory.
         """
-        # If memory is enabled and we have memory tools, append instructions
         if self._memory_service and self.use_memory:
-            memory_instructions = generate_memory_tools_system_instructions()
+            if self._resolve_memory_tool_instructions_enabled():
+                resolved_tools = self._resolve_memory_tools()
+                memory_instructions = generate_memory_tools_system_instructions(
+                    active_tool_names=resolved_tools,
+                )
 
-            if base_prompt:
-                # Append memory instructions to existing prompt
-                return f"{base_prompt}\n\n{memory_instructions}"
-            else:
-                # Use memory instructions as the system prompt
-                return memory_instructions
+                if memory_instructions:
+                    if base_prompt:
+                        return f"{base_prompt}\n\n{memory_instructions}"
+                    else:
+                        return memory_instructions
 
-        # No memory or no base prompt - return as is
+        # No memory instructions — return as is
         return base_prompt
 
     def _add_tool_model_switch_middleware(self, middleware: list[Any]) -> None:
@@ -793,7 +871,11 @@ class AgentService:
     async def _load_memory_tools(self) -> None:
         """Load memory tools if memory is enabled for this agent.
 
-        Memory tools (save_memory, recall_memories) are added when:
+        WHY: Initialises the memory service (needed by MemoryMiddleware for
+        after_agent postrun analysis) even when no model-facing tools are
+        exposed.  The resolved tool list controls which tools the model sees.
+
+        Memory tools are added when:
         - use_memory=True was passed to constructor
         - agent_memory_enabled=True in settings
         - user_id is available for namespace isolation
@@ -839,17 +921,21 @@ class AgentService:
         self._memory_service = self._memory_store_service
 
         try:
+            resolved_tools = self._resolve_memory_tools()
             memory_tools = get_memory_tools(
                 memory_service=self._memory_store_service,
                 user_id=str(self._user_id),
                 session_id=self._session_id,
                 max_recall_results=settings.agent_memory_max_results,
+                include_tools=resolved_tools,
             )
-            self.tools.extend(memory_tools)
+            if memory_tools:
+                self.tools.extend(memory_tools)
             logging.info(
-                "Added %d store memory tools to agent '%s'",
+                "Added %d store memory tools to agent '%s' (filter=%s)",
                 len(memory_tools),
                 self.display_name,
+                resolved_tools,
             )
         except Exception as exc:
             logging.error(
@@ -1053,6 +1139,18 @@ class AgentService:
                 metadata["primary_model"] = self.model_name
         if getattr(self.agent_config, "reasoning_output", False):
             metadata["reasoning_output"] = True
+
+        # Memory surface per-request overrides (forwarded to MemoryMiddleware
+        # via configurable → contextvars on the Agent Server).
+        resolved_session_ctx = self._resolve_memory_session_context_enabled()
+        # Only forward explicit overrides — None means "use compile-time default"
+        if self._memory_session_context_enabled_override is not None:
+            metadata["memory_session_context_enabled"] = resolved_session_ctx
+        if self._memory_tool_instructions_enabled_override is not None:
+            metadata["memory_tool_instructions_enabled"] = (
+                self._resolve_memory_tool_instructions_enabled()
+            )
+
         return metadata
 
     def _process_stream_chunk(
@@ -1462,7 +1560,14 @@ class AgentService:
             agent_overrides["description"] = description
 
         # Keys from config_overrides that map directly to AgentConfig fields
-        _AGENT_LEVEL_KEYS = ("fallback", "allowed_tools", "mcp_profile")
+        _AGENT_LEVEL_KEYS = (
+            "fallback",
+            "allowed_tools",
+            "mcp_profile",
+            "memory_tools",
+            "memory_session_context_enabled",
+            "memory_tool_instructions_enabled",
+        )
         # Keys from config_overrides that map to ModelConfig / ModelParams fields
         _MODEL_LEVEL_KEYS = (
             "temperature",

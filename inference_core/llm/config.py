@@ -10,7 +10,7 @@ import logging
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -539,6 +539,65 @@ class AgentConfig(BaseModel):
             "if not set. Only used when execution_mode='remote'."
         ),
     )
+
+    # --- Memory surface configuration ---
+    # Controls which memory tools are exposed to the model, whether memory
+    # tool instructions are appended to the system prompt, and whether
+    # recalled memory context is injected into model calls during the session.
+    # None = inherit from global settings (backward-compatible default).
+    memory_tools: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Exact list of memory tool names exposed to the model. "
+            "Valid names: save_memory_store, recall_memories_store, "
+            "update_memory_store, delete_memory_store. "
+            "Empty list [] disables all model-facing memory tools while "
+            "keeping MemoryMiddleware active for after_agent postrun analysis. "
+            "None = expose all tools (default behaviour)."
+        ),
+    )
+    memory_session_context_enabled: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether the MemoryMiddleware injects recalled memories into the "
+            "system prompt during model calls. When False, before_agent recall "
+            "and wrap_model_call injection are skipped, but after_agent postrun "
+            "analysis can still run independently. None = inherit from global "
+            "agent_memory_auto_recall setting."
+        ),
+    )
+    memory_tool_instructions_enabled: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether memory tool usage instructions (CoALA architecture "
+            "guidelines, mandatory save triggers, etc.) are appended to the "
+            "system prompt. When False, the instruction block is omitted even "
+            "if memory tools are present. None = append instructions when "
+            "memory tools are active (default behaviour)."
+        ),
+    )
+
+    _VALID_MEMORY_TOOL_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "save_memory_store",
+            "recall_memories_store",
+            "update_memory_store",
+            "delete_memory_store",
+        }
+    )
+
+    @field_validator("memory_tools")
+    @classmethod
+    def validate_memory_tools(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        invalid = set(v) - cls._VALID_MEMORY_TOOL_NAMES
+        if invalid:
+            raise ValueError(
+                f"Invalid memory tool names: {sorted(invalid)}. "
+                f"Valid names: {sorted(cls._VALID_MEMORY_TOOL_NAMES)}"
+            )
+        return v
 
 
 class TaskConfig(BaseModel):

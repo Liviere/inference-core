@@ -159,7 +159,11 @@ def build_agent_graph(
         try:
             store = _init_memory_store()
             memory_service = _init_memory_service(store, agent_name)
-            _add_memory_tools(memory_service, tools)
+            _add_memory_tools(
+                memory_service,
+                tools,
+                include_tools=agent_config.memory_tools,
+            )
         except Exception as exc:
             logger.error(
                 "Failed to initialise memory for agent '%s': %s",
@@ -171,6 +175,12 @@ def build_agent_graph(
 
     effective_prompt = system_prompt or agent_config.description
 
+    # On Agent Server, memory tool instructions are injected per-request by
+    # MemoryMiddleware.wrap_model_call via the contextvar override, not baked
+    # into the compiled prompt.  This allows per-instance/runtime toggling.
+    # The compile-time AgentConfig.memory_tool_instructions_enabled value is
+    # stored on the middleware as a fallback default.
+
     # Build middleware for Agent Server context
     middleware = _build_server_middleware(
         agent_name,
@@ -178,6 +188,10 @@ def build_agent_graph(
         factory,
         memory_service=memory_service,
         reasoning_output=agent_reasoning_output,
+        memory_tools_config=agent_config.memory_tools,
+        memory_tool_instructions_default=(
+            agent_config.memory_tool_instructions_enabled
+        ),
     )
 
     # Deep-agent support: compile SubAgentMiddleware and/or SkillsMiddleware
@@ -210,6 +224,8 @@ def _build_server_middleware(
     include_instance_config: bool = True,
     memory_service: Any = None,
     reasoning_output: bool = False,
+    memory_tools_config: list[str] | None = None,
+    memory_tool_instructions_default: bool | None = None,
 ) -> list[Any]:
     """Build middleware list for an Agent Server graph.
 
@@ -275,13 +291,22 @@ def _build_server_middleware(
         from inference_core.core.config import get_settings as _get_settings
 
         _mem_settings = _get_settings()
+
+        # Per-agent session context override: AgentConfig.memory_session_context_enabled
+        # takes precedence over global auto_recall when explicitly set.
+        _auto_recall = _mem_settings.agent_memory_auto_recall
+        if agent_config.memory_session_context_enabled is not None:
+            _auto_recall = agent_config.memory_session_context_enabled
+
         mem_middleware = MemoryMiddleware(
             memory_service=memory_service,
             user_id=None,
-            auto_recall=_mem_settings.agent_memory_auto_recall,
+            auto_recall=_auto_recall,
             max_recall_results=_mem_settings.agent_memory_max_results,
             postrun_analysis=_mem_settings.agent_memory_postrun_analysis_enabled,
             postrun_analysis_model=_mem_settings.agent_memory_postrun_analysis_model,
+            tool_instructions_enabled=memory_tool_instructions_default,
+            active_tool_names=memory_tools_config,
         )
         middleware.append(mem_middleware)
 
@@ -380,12 +405,20 @@ def _load_provider_tools(
         logger.exception("Failed to load provider tools for agent '%s'", agent_name)
 
 
-def _add_memory_tools(memory_service: Any, tools: list[Any]) -> None:
+def _add_memory_tools(
+    memory_service: Any,
+    tools: list[Any],
+    include_tools: list[str] | None = None,
+) -> None:
     """Add memory CRUD tools to *tools* (mutated in place).
 
     WHY: ``get_memory_tools`` creates Save / Recall / Update / Delete tools
     wired to the given service.  ``user_id=None`` means each tool will
     resolve user_id from the ``_runtime_context`` context var at call time.
+
+    When ``include_tools`` is provided, only the named tools are added.
+    An empty list means no model-facing memory tools — the middleware can
+    still run for after_agent postrun analysis.
     """
     from inference_core.agents.tools.memory_tools import get_memory_tools
     from inference_core.core.config import get_settings
@@ -396,9 +429,12 @@ def _add_memory_tools(memory_service: Any, tools: list[Any]) -> None:
         user_id=None,
         session_id=None,
         max_recall_results=settings.agent_memory_max_results,
+        include_tools=include_tools,
     )
     tools.extend(mem_tools)
-    logger.debug("Added %d memory tools to tool list", len(mem_tools))
+    logger.debug(
+        "Added %d memory tools to tool list (filter=%s)", len(mem_tools), include_tools
+    )
 
 
 # ------------------------------------------------------------------

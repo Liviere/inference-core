@@ -46,6 +46,17 @@ _system_prompt_append: contextvars.ContextVar[Optional[str]] = contextvars.Conte
     "mw_system_prompt_append", default=None
 )
 
+# Per-request memory session context override (MemoryMiddleware reads this).
+# True/False = explicit override, None = use middleware default (auto_recall).
+_memory_session_context_enabled: contextvars.ContextVar[Optional[bool]] = (
+    contextvars.ContextVar("mw_memory_session_context_enabled", default=None)
+)
+# Per-request memory tool instructions override.
+# True/False = explicit override, None = use compile-time default.
+_memory_tool_instructions_enabled: contextvars.ContextVar[Optional[bool]] = (
+    contextvars.ContextVar("mw_memory_tool_instructions_enabled", default=None)
+)
+
 
 def populate_from_configurable(configurable: dict[str, Any]) -> None:
     """Extract middleware-relevant fields from ``runtime.configurable`` and
@@ -85,6 +96,13 @@ def populate_from_configurable(configurable: dict[str, Any]) -> None:
     if (spa := configurable.get("system_prompt_append")) is not None:
         _system_prompt_append.set(str(spa))
 
+    # Memory surface per-request overrides
+    if (msc := configurable.get("memory_session_context_enabled")) is not None:
+        _memory_session_context_enabled.set(bool(msc))
+
+    if (mti := configurable.get("memory_tool_instructions_enabled")) is not None:
+        _memory_tool_instructions_enabled.set(bool(mti))
+
 
 def get_user_id() -> Optional[uuid.UUID]:
     return _user_id.get()
@@ -118,6 +136,14 @@ def get_system_prompt_append() -> Optional[str]:
     return _system_prompt_append.get()
 
 
+def get_memory_session_context_enabled() -> Optional[bool]:
+    return _memory_session_context_enabled.get()
+
+
+def get_memory_tool_instructions_enabled() -> Optional[bool]:
+    return _memory_tool_instructions_enabled.get()
+
+
 def clear() -> None:
     """Reset all context vars (useful for testing)."""
     for var in (
@@ -129,5 +155,7 @@ def clear() -> None:
         _primary_model,
         _system_prompt_override,
         _system_prompt_append,
+        _memory_session_context_enabled,
+        _memory_tool_instructions_enabled,
     ):
         var.set(None)

@@ -13,6 +13,7 @@ from inference_core.agents.tools.memory_tools import (
     RecallMemoryStoreTool,
     SaveMemoryStoreTool,
     UpdateMemoryStoreTool,
+    generate_memory_tools_system_instructions,
     get_memory_tools,
 )
 from inference_core.services.agent_memory_service import MemoryType
@@ -426,3 +427,118 @@ class TestDeferredUserId:
             ):
                 with pytest.raises(RuntimeError, match="requires user_id"):
                     _resolve_tool_user_id(None)
+
+
+# ===========================================================================
+# get_memory_tools — include_tools filtering
+# ===========================================================================
+
+
+class TestGetMemoryToolsFiltering:
+    """Verify include_tools parameter filters returned tools."""
+
+    def test_include_tools_none_returns_all(self, mock_memory_service):
+        """include_tools=None returns all 4 tools (backward compat)."""
+        tools = get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            include_tools=None,
+        )
+        assert len(tools) == 4
+
+    def test_include_tools_empty_list_returns_empty(self, mock_memory_service):
+        """include_tools=[] disables all model-facing tools."""
+        tools = get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            include_tools=[],
+        )
+        assert tools == []
+
+    def test_include_tools_subset(self, mock_memory_service):
+        """include_tools with subset returns only matching tools."""
+        tools = get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            include_tools=["save_memory_store", "recall_memories_store"],
+        )
+        names = {t.name for t in tools}
+        assert names == {"save_memory_store", "recall_memories_store"}
+        assert len(tools) == 2
+
+    def test_include_tools_single(self, mock_memory_service):
+        """include_tools with single tool returns only that tool."""
+        tools = get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            include_tools=["delete_memory_store"],
+        )
+        assert len(tools) == 1
+        assert tools[0].name == "delete_memory_store"
+
+    def test_include_tools_unknown_name_ignored(self, mock_memory_service):
+        """Unknown tool names in include_tools are silently ignored."""
+        tools = get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            include_tools=["save_memory_store", "nonexistent_tool"],
+        )
+        assert len(tools) == 1
+        assert tools[0].name == "save_memory_store"
+
+
+# ===========================================================================
+# generate_memory_tools_system_instructions — active_tool_names filtering
+# ===========================================================================
+
+
+class TestGenerateMemoryToolsInstructions:
+    """Verify per-tool instruction generation."""
+
+    def test_none_generates_all_sections(self):
+        """active_tool_names=None generates instructions for all 4 tools."""
+        result = generate_memory_tools_system_instructions(active_tool_names=None)
+        assert "save_memory_store" in result
+        assert "recall_memories_store" in result
+        assert "update_memory_store" in result
+        assert "delete_memory_store" in result
+        assert "Mandatory save triggers" in result
+
+    def test_empty_list_returns_empty_string(self):
+        """active_tool_names=[] returns empty string."""
+        result = generate_memory_tools_system_instructions(active_tool_names=[])
+        assert result == ""
+
+    def test_subset_only_includes_active_tools(self):
+        """Only sections for active tools are generated."""
+        result = generate_memory_tools_system_instructions(
+            active_tool_names=["recall_memories_store", "delete_memory_store"]
+        )
+        assert "#### recall_memories_store" in result
+        assert "#### delete_memory_store" in result
+        # save section header must NOT appear
+        assert "#### save_memory_store" not in result
+        assert "Mandatory save triggers" not in result
+
+    def test_save_only_includes_triggers(self):
+        """When save_memory_store is active, save triggers are included."""
+        result = generate_memory_tools_system_instructions(
+            active_tool_names=["save_memory_store"]
+        )
+        assert "save_memory_store" in result
+        assert "Mandatory save triggers" in result
+
+    def test_recall_only_no_triggers(self):
+        """When only recall is active, save triggers are NOT included."""
+        result = generate_memory_tools_system_instructions(
+            active_tool_names=["recall_memories_store"]
+        )
+        assert "recall_memories_store" in result
+        assert "Mandatory save triggers" not in result
+
+    def test_unknown_names_filtered_out(self):
+        """Unknown tool names are ignored; no crash."""
+        result = generate_memory_tools_system_instructions(
+            active_tool_names=["nonexistent_tool"]
+        )
+        assert result == ""

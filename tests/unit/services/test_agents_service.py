@@ -46,6 +46,9 @@ def _make_agent_service(**overrides):
         skills=None,
         subagents=None,
         interrupt_on=None,
+        memory_tools=None,
+        memory_session_context_enabled=None,
+        memory_tool_instructions_enabled=None,
     )
 
     defaults = {
@@ -764,3 +767,199 @@ class TestApplyPromptOverrides:
         agent_service._system_prompt_append = "EXTRA"
         result = agent_service._apply_prompt_overrides("base")
         assert result == "OVERRIDE"
+
+
+# ---------------------------------------------------------------------------
+# Memory surface resolution helpers
+# ---------------------------------------------------------------------------
+
+
+class TestResolveMemoryTools:
+    """Verify _resolve_memory_tools precedence: runtime → AgentConfig → None."""
+
+    def test_returns_none_by_default(self):
+        """No override, no AgentConfig → None (all tools)."""
+        svc = _make_agent_service()
+        assert svc._resolve_memory_tools() is None
+
+    def test_runtime_override_wins(self):
+        """Runtime override takes precedence over AgentConfig."""
+        svc = _make_agent_service(
+            memory_tools=["save_memory_store"],
+        )
+        svc.agent_config = MagicMock(
+            memory_tools=["recall_memories_store", "delete_memory_store"],
+        )
+        assert svc._resolve_memory_tools() == ["save_memory_store"]
+
+    def test_agent_config_fallback(self):
+        """AgentConfig is used when no runtime override."""
+        svc = _make_agent_service()
+        svc.agent_config = MagicMock(
+            memory_tools=["save_memory_store", "recall_memories_store"],
+        )
+        assert svc._resolve_memory_tools() == [
+            "save_memory_store",
+            "recall_memories_store",
+        ]
+
+    def test_empty_list_runtime(self):
+        """Runtime override with empty list disables all tools."""
+        svc = _make_agent_service(memory_tools=[])
+        assert svc._resolve_memory_tools() == []
+
+    def test_agent_config_none_returns_none(self):
+        """AgentConfig.memory_tools=None → returns None."""
+        svc = _make_agent_service()
+        svc.agent_config = MagicMock(memory_tools=None)
+        assert svc._resolve_memory_tools() is None
+
+
+class TestResolveMemorySessionContextEnabled:
+    """Verify _resolve_memory_session_context_enabled precedence."""
+
+    def test_defaults_to_settings_auto_recall(self):
+        """Falls back to global agent_memory_auto_recall when no overrides."""
+        svc = _make_agent_service()
+        with patch(
+            "inference_core.services.agents_service.get_settings",
+        ) as mock_settings:
+            mock_settings.return_value.agent_memory_auto_recall = True
+            assert svc._resolve_memory_session_context_enabled() is True
+
+    def test_runtime_override_wins(self):
+        """Runtime override takes precedence."""
+        svc = _make_agent_service(memory_session_context_enabled=False)
+        svc.agent_config = MagicMock(memory_session_context_enabled=True)
+        assert svc._resolve_memory_session_context_enabled() is False
+
+    def test_agent_config_fallback(self):
+        """AgentConfig is used when no runtime override."""
+        svc = _make_agent_service()
+        svc.agent_config = MagicMock(memory_session_context_enabled=False)
+        assert svc._resolve_memory_session_context_enabled() is False
+
+
+class TestResolveMemoryToolInstructionsEnabled:
+    """Verify _resolve_memory_tool_instructions_enabled precedence."""
+
+    def test_default_true_when_all_tools(self):
+        """Default is True when memory_tools is None (all tools active)."""
+        svc = _make_agent_service()
+        assert svc._resolve_memory_tool_instructions_enabled() is True
+
+    def test_default_false_when_tools_empty(self):
+        """Default is False when memory_tools=[] (no tools active)."""
+        svc = _make_agent_service(memory_tools=[])
+        assert svc._resolve_memory_tool_instructions_enabled() is False
+
+    def test_runtime_override_wins(self):
+        """Runtime override takes precedence."""
+        svc = _make_agent_service(memory_tool_instructions_enabled=False)
+        assert svc._resolve_memory_tool_instructions_enabled() is False
+
+    def test_agent_config_fallback(self):
+        """AgentConfig is used when no runtime override."""
+        svc = _make_agent_service()
+        svc.agent_config = MagicMock(memory_tool_instructions_enabled=False)
+        assert svc._resolve_memory_tool_instructions_enabled() is False
+
+
+class TestBuildSystemPromptMemoryConfig:
+    """Verify _build_system_prompt respects memory_tool_instructions_enabled."""
+
+    def test_instructions_omitted_when_disabled(self):
+        """No memory instructions when tool_instructions_enabled=False."""
+        svc = _make_agent_service(memory_tool_instructions_enabled=False)
+        svc._memory_service = MagicMock()
+        svc.use_memory = True
+        result = svc._build_system_prompt("Base prompt.")
+        assert result == "Base prompt."
+
+    def test_instructions_included_when_enabled(self):
+        """Memory instructions appended when tool_instructions_enabled=True."""
+        svc = _make_agent_service(memory_tool_instructions_enabled=True)
+        svc._memory_service = MagicMock()
+        svc.use_memory = True
+
+        with patch(
+            "inference_core.services.agents_service.generate_memory_tools_system_instructions",
+            return_value="[MEMORY INSTRUCTIONS]",
+        ):
+            result = svc._build_system_prompt("Base prompt.")
+
+        assert "[MEMORY INSTRUCTIONS]" in result
+
+    def test_instructions_pass_resolved_tools(self):
+        """generate_memory_tools_system_instructions receives resolved tool names."""
+        svc = _make_agent_service(
+            memory_tools=["save_memory_store"],
+            memory_tool_instructions_enabled=True,
+        )
+        svc._memory_service = MagicMock()
+        svc.use_memory = True
+
+        with patch(
+            "inference_core.services.agents_service.generate_memory_tools_system_instructions",
+            return_value="[INSTRUCTIONS]",
+        ) as mock_gen:
+            svc._build_system_prompt("Base.")
+            mock_gen.assert_called_once_with(
+                active_tool_names=["save_memory_store"],
+            )
+
+
+class TestBuildMiddlewareMemoryConfig:
+    """Verify _build_middleware respects memory_session_context_enabled."""
+
+    def test_memory_middleware_auto_recall_follows_resolution(self):
+        """MemoryMiddleware auto_recall uses _resolve_memory_session_context_enabled."""
+        from inference_core.agents.middleware.memory import MemoryMiddleware
+
+        svc = _make_agent_service(
+            memory_session_context_enabled=False,
+        )
+        svc._memory_service = MagicMock()
+        svc._user_id = uuid.uuid4()
+        svc.use_memory = True
+
+        with patch(
+            "inference_core.services.agents_service.get_settings",
+        ) as mock_settings, patch(
+            "inference_core.services.agents_service.get_llm_config",
+        ) as mock_cfg:
+            mock_settings.return_value.agent_memory_auto_recall = True
+            mock_settings.return_value.agent_memory_max_results = 5
+            mock_settings.return_value.agent_memory_postrun_analysis_enabled = True
+            mock_settings.return_value.agent_memory_postrun_analysis_model = None
+            mock_cfg.return_value.models = {}
+            middleware = svc._build_middleware()
+
+        mem_mws = [m for m in middleware if isinstance(m, MemoryMiddleware)]
+        assert len(mem_mws) == 1
+        assert mem_mws[0].auto_recall is False
+
+
+class TestBuildRemoteMetadataMemoryOverrides:
+    """Verify _build_remote_metadata forwards memory overrides."""
+
+    def test_no_memory_keys_when_no_overrides(self):
+        """No memory_session_context_enabled key when no runtime override."""
+        svc = _make_agent_service()
+        metadata = svc._build_remote_metadata()
+        assert "memory_session_context_enabled" not in metadata
+        assert "memory_tool_instructions_enabled" not in metadata
+
+    def test_forwards_session_context_override(self):
+        """Forwards memory_session_context_enabled when runtime override set."""
+        svc = _make_agent_service(memory_session_context_enabled=False)
+        metadata = svc._build_remote_metadata()
+        assert "memory_session_context_enabled" in metadata
+        assert metadata["memory_session_context_enabled"] is False
+
+    def test_forwards_tool_instructions_override(self):
+        """Forwards memory_tool_instructions_enabled when runtime override set."""
+        svc = _make_agent_service(memory_tool_instructions_enabled=False)
+        metadata = svc._build_remote_metadata()
+        assert "memory_tool_instructions_enabled" in metadata
+        assert metadata["memory_tool_instructions_enabled"] is False

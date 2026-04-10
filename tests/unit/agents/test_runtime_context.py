@@ -16,6 +16,8 @@ from inference_core.agents.middleware._runtime_context import (
     clear,
     get_instance_id,
     get_instance_name,
+    get_memory_session_context_enabled,
+    get_memory_tool_instructions_enabled,
     get_primary_model,
     get_request_id,
     get_session_id,
@@ -120,3 +122,50 @@ class TestAsyncIsolation:
 
         assert results["a"] == uid_a
         assert results["b"] == uid_b
+
+
+# ---------------------------------------------------------------------------
+# Memory configuration context vars
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryConfigContextVars:
+    """Verify memory_session_context_enabled and memory_tool_instructions_enabled."""
+
+    def test_defaults_are_none(self):
+        """Both memory config getters return None by default."""
+        assert get_memory_session_context_enabled() is None
+        assert get_memory_tool_instructions_enabled() is None
+
+    def test_populate_sets_memory_session_context(self):
+        """populate_from_configurable sets memory_session_context_enabled."""
+        populate_from_configurable({"memory_session_context_enabled": False})
+        assert get_memory_session_context_enabled() is False
+
+    def test_populate_sets_memory_tool_instructions(self):
+        """populate_from_configurable sets memory_tool_instructions_enabled."""
+        populate_from_configurable({"memory_tool_instructions_enabled": True})
+        assert get_memory_tool_instructions_enabled() is True
+
+    def test_populate_coerces_to_bool(self):
+        """Non-bool values are coerced to bool."""
+        populate_from_configurable({"memory_session_context_enabled": 0})
+        assert get_memory_session_context_enabled() is False
+
+    def test_clear_resets_memory_vars(self):
+        """clear() resets memory config vars to None."""
+        populate_from_configurable(
+            {
+                "memory_session_context_enabled": True,
+                "memory_tool_instructions_enabled": False,
+            }
+        )
+        clear()
+        assert get_memory_session_context_enabled() is None
+        assert get_memory_tool_instructions_enabled() is None
+
+    def test_missing_keys_leave_default(self):
+        """Missing memory keys leave context vars as None."""
+        populate_from_configurable({"user_id": str(uuid.uuid4())})
+        assert get_memory_session_context_enabled() is None
+        assert get_memory_tool_instructions_enabled() is None
