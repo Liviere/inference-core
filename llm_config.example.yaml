@@ -68,12 +68,12 @@ models:
       output:
         cost_per_1m: 10 # $10.00 per 1M tokens 
       extras:
-        cache_read_token:
+        cache_read_tokens:
           cost_per_1m: 0.125 # cached input $0.125 per 1M 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cached_input: cache_read_token
+        cached_input: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -92,12 +92,12 @@ models:
       output:
         cost_per_1m: 2 # $2.00 per 1M 
       extras:
-        cache_read_token:
+        cache_read_tokens:
           cost_per_1m: 0.025 # cached input $0.025 per 1M 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cached_input: cache_read_token
+        cached_input: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -121,12 +121,12 @@ models:
       output:
         cost_per_1m: 0.4 # $0.40 per 1M 
       extras:
-        cache_read_token:
+        cache_read_tokens:
           cost_per_1m: 0.005 # cached input $0.005 per 1M 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cached_input: cache_read_token
+        cached_input: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -144,12 +144,12 @@ models:
       output:
         cost_per_1m: 8 # $8.00 per 1M 
       extras:
-        cache_read_token:
+        cache_read_tokens:
           cost_per_1m: 0.5 # cached input $0.50 per 1M 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cached_input: cache_read_token
+        cached_input: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -174,12 +174,12 @@ models:
       output:
         cost_per_1m: 2.5 # $2.50 per 1M tokens 
       extras:
-        cache_read_token:
+        cache_read_tokens:
           cost_per_1m: 0.075 # context caching $0.075 per 1M 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cached_input: cache_read_token
+        cached_input: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -199,7 +199,7 @@ models:
       output:
         cost_per_1m: 10 # $10.00 per 1M tokens 
       extras:
-        cache_read_token:
+        cache_read_tokens:
           cost_per_1m: 0.31 # context caching $0.31 per 1M  (see page for tiered values)
       # Gemini 2.5 Pro uses tiered pricing depending on prompt/context size (notably around 200k tokens).
       # The public pricing page lists different paid-tier prices for prompts <= 200k tokens vs other sizes.
@@ -212,7 +212,7 @@ models:
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cached_input: cache_read_token
+        cached_input: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -233,15 +233,16 @@ models:
       output:
         cost_per_1m: 75 # $75 / MTok 
       extras:
-        cache_write_token:
+        cache_write_tokens:
           cost_per_1m: 18.75 # $18.75 / MTok 
-        cache_read_token:
+          billed_separately: true
+        cache_read_tokens:
           cost_per_1m: 1.5 # $1.50 / MTok 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cache_write: cache_write_token
-        cache_read: cache_read_token
+        cache_write: cache_write_tokens
+        cache_read: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -270,9 +271,10 @@ models:
       output:
         cost_per_1m: 15 # $15 / MTok  (prompts <= 200k)
       extras:
-        cache_write_token:
+        cache_write_tokens:
           cost_per_1m: 3.75 # $3.75 / MTok  (<=200k)
-        cache_read_token:
+          billed_separately: true
+        cache_read_tokens:
           cost_per_1m: 0.3 # $0.30 / MTok  (<=200k)
       # context_tiers allow per-context multipliers; Sonnet's >200K tier uses different multipliers per-dimension
       context_tiers:
@@ -281,20 +283,20 @@ models:
             input: 1.0
             output: 1.0
             extras:
-              cache_write_token: 1.0
-              cache_read_token: 1.0
+              cache_write_tokens: 1.0
+              cache_read_tokens: 1.0
         - max_context: 1000000
           multipliers:
             input: 2.0 # input doubles: $6 / MTok -> multiplier 2.0
             output: 1.5 # output increases by 1.5x: $22.50 / MTok
             extras:
-              cache_write_token: 2.0
-              cache_read_token: 2.0
+              cache_write_tokens: 2.0
+              cache_read_tokens: 2.0
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cache_write: cache_write_token
-        cache_read: cache_read_token
+        cache_write: cache_write_tokens
+        cache_read: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -313,15 +315,16 @@ models:
       output:
         cost_per_1m: 15 # $15 / MTok 
       extras:
-        cache_write_token:
+        cache_write_tokens:
           cost_per_1m: 3.75 # $3.75 / MTok 
-        cache_read_token:
+          billed_separately: true
+        cache_read_tokens:
           cost_per_1m: 0.3 # $0.30 / MTok 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cache_write: cache_write_token
-        cache_read: cache_read_token
+        cache_write: cache_write_tokens
+        cache_read: cache_read_tokens
       rounding:
         decimals: 6
 
@@ -340,15 +343,16 @@ models:
       output:
         cost_per_1m: 4 # $4 / MTok 
       extras:
-        cache_write_token:
+        cache_write_tokens:
           cost_per_1m: 1 # $1 / MTok 
-        cache_read_token:
+          billed_separately: true
+        cache_read_tokens:
           cost_per_1m: 0.08 # $0.08 / MTok 
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cache_write: cache_write_token
-        cache_read: cache_read_token
+        cache_write: cache_write_tokens
+        cache_read: cache_read_tokens
       rounding:
         decimals: 6
 

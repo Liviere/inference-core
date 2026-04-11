@@ -74,6 +74,23 @@ class PricingCalculator:
     """Handles cost calculations for LLM usage"""
 
     @staticmethod
+    def _resolve_parent_dimension(dim_name: str) -> Optional[str]:
+        """Resolve which core dimension already contains a priced extra token count.
+
+        Standard LangChain token details such as cache_read_tokens and
+        reasoning_tokens are typically reported as breakdowns of input_tokens or
+        output_tokens. Provider-specific names should be normalized first via
+        key_aliases so the relationship can be inferred from the final key.
+        """
+        if any(token in dim_name for token in ("cache", "cached", "prompt", "input")):
+            return "input_tokens"
+
+        if any(token in dim_name for token in ("reasoning", "completion", "output")):
+            return "output_tokens"
+
+        return None
+
+    @staticmethod
     def compute_cost(
         normalized_usage: Dict[str, Any], pricing_config: PricingConfig
     ) -> Dict[str, Any]:
@@ -108,15 +125,34 @@ class PricingCalculator:
         )
         result["context_multiplier"] = context_multiplier
 
-        # Calculate core costs
+        # Collect subset deductions for extras that are already represented
+        # inside a core token count. This is the default for standard
+        # LangChain-style breakdowns such as cache_read_tokens.
+        subset_deductions: Dict[str, int] = {}  # parent_dim → total_to_subtract
+        for dim_name, dim_pricing in pricing_config.extras.items():
+            if dim_pricing.billed_separately or dim_name not in normalized_usage:
+                continue
+
+            parent = PricingCalculator._resolve_parent_dimension(dim_name)
+            if parent is not None:
+                subset_deductions[parent] = (
+                    subset_deductions.get(parent, 0) + normalized_usage[dim_name]
+                )
+
+        # Calculate core costs (after deducting discounted subsets)
+        billable_input = max(0, input_tokens - subset_deductions.get("input_tokens", 0))
+        billable_output = max(
+            0, output_tokens - subset_deductions.get("output_tokens", 0)
+        )
+
         if input_tokens:
             result["cost_input_usd"] = PricingCalculator._calculate_dimension_cost(
-                input_tokens, pricing_config.input.cost_per_1k, context_multiplier
+                billable_input, pricing_config.input.cost_per_1k, context_multiplier
             )
 
         if output_tokens:
             result["cost_output_usd"] = PricingCalculator._calculate_dimension_cost(
-                output_tokens, pricing_config.output.cost_per_1k, context_multiplier
+                billable_output, pricing_config.output.cost_per_1k, context_multiplier
             )
 
         # Calculate extra dimension costs
@@ -133,10 +169,12 @@ class PricingCalculator:
 
         result["cost_extras_usd"] = extra_costs_total
 
-        # Check for unpriced tokens
+        # Build set of known dimensions for cost_estimated detection
         known_dimensions = {"input_tokens", "output_tokens"} | set(
             pricing_config.extras.keys()
         )
+
+        # Check for unpriced tokens
         for key, value in normalized_usage.items():
             if key.endswith("_tokens") and key not in known_dimensions and value > 0:
                 result["cost_estimated"] = True

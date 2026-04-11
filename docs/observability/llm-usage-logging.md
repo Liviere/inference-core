@@ -26,6 +26,7 @@ The system uses a "lean core + flexible extras" approach:
 
 - **Per-1M or per-1K pricing** for all dimensions, normalized internally to per-1K values
 - **Key aliases** to normalize provider-specific usage keys
+- **billed_separately** marks additive extras such as cache write charges
 - **Context tier multipliers** for pricing based on input size
 - **Unpriced token passthrough** captures counts even without pricing
 
@@ -52,12 +53,15 @@ models:
       output:
         cost_per_1m: 0.60
       extras:
-        reasoning_token:
+        reasoning_tokens:
           cost_per_1m: 2.40
-        cache_write_token:
+          billed_separately: true
+        cache_read_tokens:
+          cost_per_1m: 0.03
+        cache_write_tokens:
           cost_per_1m: 1.25
+          billed_separately: true
       key_aliases:
-        reasoning_tokens: reasoning_token
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
       context_tiers:
@@ -70,6 +74,12 @@ models:
       extras_policy:
         passthrough_unpriced: true
 ```
+
+Standard LangChain-style extras are treated as token breakdowns already included
+in input_tokens or output_tokens. Use billed_separately: true when a provider
+charges for an extra dimension on top of the core token count. If a provider
+uses nonstandard detail names, map them with key_aliases to a normalized extra
+key whose name already makes the parent dimension clear.
 
 ### Global Settings
 

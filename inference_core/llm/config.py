@@ -172,6 +172,14 @@ class DimensionPrice(BaseModel):
     cost_per_1k: float = Field(
         ge=0.0, description="Cost per 1,000 tokens (internal representation)"
     )
+    billed_separately: bool = Field(
+        default=False,
+        description=(
+            "When true, this extra dimension is billed in addition to the core "
+            "input/output dimensions instead of being treated as a token "
+            "breakdown already included in them."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -198,7 +206,6 @@ class DimensionPrice(BaseModel):
             raise ValueError("Either 'cost_per_1m' or 'cost_per_1k' must be provided")
 
         return data
-
 
 class ContextTier(BaseModel):
     """Context tier configuration for pricing multipliers"""
