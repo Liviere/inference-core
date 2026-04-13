@@ -181,6 +181,35 @@ agents:
     local_tool_providers: ['assistant_tools']
 ```
 
+## Agent Tool-Call Limits
+
+Per-agent tool call caps are also configured in `llm_config.yaml` under each
+`agents:` entry:
+
+```yaml
+agents:
+  research_agent:
+    primary: 'gpt-5-mini'
+    tool_call_limits:
+      global_limit:
+        run_limit: 30
+        thread_limit: 120
+        exit_behavior: continue
+      per_tool:
+        - tool_name: 'fetch_url'
+          run_limit: 5
+```
+
+- `run_limit` resets for each user invocation.
+- `thread_limit` persists for the whole conversation thread.
+- `exit_behavior: continue` blocks the tool call and lets the model finish the
+  response with the context it already has.
+- `exit_behavior: error` raises when the limit is hit.
+
+When `tool_call_limits` is present, the runtime also appends policy
+instructions to the system prompt so the model can summarize progress and stop
+retrying blocked tools in the same response.
+
 ## Email / Notifications
 
 | Variable                | Default               | Description             |

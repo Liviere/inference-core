@@ -48,6 +48,10 @@ from .cost_tracking import (
 )
 from .instance_config import InstanceConfigMiddleware
 from .memory import MemoryMiddleware, MemoryState, create_memory_middleware
+from .tool_call_limits import (
+    build_tool_call_limit_middleware,
+    generate_tool_call_limits_instructions,
+)
 from .tool_model_switch import (
     ToolBasedModelSwitchMiddleware,
     ToolModelOverride,
@@ -73,4 +77,7 @@ __all__ = [
     "ToolModelSwitchConfig",
     "ToolModelSwitchState",
     "create_tool_model_switch_middleware",
+    # Tool-call limits
+    "build_tool_call_limit_middleware",
+    "generate_tool_call_limits_instructions",
 ]

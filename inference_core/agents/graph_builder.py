@@ -181,6 +181,23 @@ def build_agent_graph(
     # The compile-time AgentConfig.memory_tool_instructions_enabled value is
     # stored on the middleware as a fallback default.
 
+    # Tool-call limit instructions: baked into compile-time prompt because
+    # the policy is static per agent config (no per-request overrides needed).
+    from inference_core.llm.config import ToolCallLimitsConfig
+
+    _tcl = getattr(agent_config, "tool_call_limits", None)
+    if isinstance(_tcl, ToolCallLimitsConfig):
+        from inference_core.agents.middleware.tool_call_limits import (
+            generate_tool_call_limits_instructions,
+        )
+
+        _tcl_instructions = generate_tool_call_limits_instructions(_tcl)
+        if _tcl_instructions:
+            if effective_prompt:
+                effective_prompt = f"{effective_prompt}\n\n{_tcl_instructions}"
+            else:
+                effective_prompt = _tcl_instructions
+
     # Build middleware for Agent Server context
     middleware = _build_server_middleware(
         agent_name,
@@ -362,6 +379,28 @@ def _build_server_middleware(
                 e,
                 exc_info=True,
             )
+
+    # --- ToolCallLimitMiddleware (if configured) ---
+    from inference_core.llm.config import ToolCallLimitsConfig
+
+    tool_call_limits = getattr(agent_config, "tool_call_limits", None)
+    if isinstance(tool_call_limits, ToolCallLimitsConfig):
+        from inference_core.agents.middleware.tool_call_limits import (
+            build_tool_call_limit_middleware,
+        )
+
+        limiters = build_tool_call_limit_middleware(tool_call_limits)
+        # Insert before CostTracking (which must stay last in the list).
+        ct_index = next(
+            (
+                i
+                for i, m in enumerate(middleware)
+                if isinstance(m, CostTrackingMiddleware)
+            ),
+            len(middleware),
+        )
+        for j, limiter in enumerate(limiters):
+            middleware.insert(ct_index + j, limiter)
 
     return middleware
 

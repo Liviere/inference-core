@@ -37,6 +37,9 @@
   - Agent primary model can be overridden via environment variables defined in `settings.env_overrides` (same mechanism as for tasks).
   - `LLMConfig.get_agent_model()` and `LLMConfig.get_agent_model_with_fallback()` resolve the effective model for an agent, including fallback logic and availability checks (API key / base_url).
   - New fields `skills` (list of paths) and `subagents` (list of agent names) enable delegating tasks and using specialized workflows.
+  - `tool_call_limits` configures `ToolCallLimitMiddleware` instances for the agent: `global_limit` applies to all tools, while `per_tool` adds stricter limits for named tools.
+  - `run_limit` resets for each invocation; `thread_limit` persists across the conversation thread.
+  - When `tool_call_limits` is present, both local and remote agent builders append matching policy instructions to the system prompt so the model can recover gracefully after a blocked tool call.
   - Agents are intentionally a separate namespace from `tasks` (no implicit name collision); code first resolves agents from `agents:` and does not mutate existing `tasks` mapping.
 
 - **`settings`**: global behavioral settings (e.g. `enable_caching`, `cache_ttl_seconds`, `default_timeout`, `retry_attempts`, `env_overrides`, `usage_logging`, etc.)
@@ -68,6 +71,10 @@
 - `inference_core/services/agents_service.py`
   - uses the factory (`LLMModelFactory.get_model_for_agent()`) to construct model/agent instances; this centralizes model-selection logic and keeps it consistent with task model selection.
   - responsible for initializing agents, applying runtime configuration, and integrating with MCP/tools where applicable.
+  - appends `tool_call_limits` prompt instructions and injects tool-call limit middleware in local agent and deep-agent execution paths.
+
+- `inference_core/agents/middleware/tool_call_limits.py`
+  - shared factory for building `ToolCallLimitMiddleware` instances from YAML config and for generating the companion system-prompt instructions shown to the model.
 
 - `inference_core/llm/tools.py` and `inference_core/llm/usage_logging.py`
   - consume `providers`, `pricing`, and `models` (including agent configs) to load tools and billing/usage logic; when changing agents, review these modules for any impact on tool loading and usage logging.
@@ -89,6 +96,7 @@ In short: agent configuration is loaded and validated in `config.py`; model sele
 **Key files for quick review**
 
 - `inference_core/llm/config.py` — main YAML loader and structures.
+- `inference_core/agents/middleware/tool_call_limits.py` — shared tool-call limit builder and prompt policy generator.
 - `inference_core/services/llm_service.py` — configuration integration with LLM runtime.
 - `inference_core/llm/models.py` — model instantiation.
 - `inference_core/llm/param_policy.py` — parameter policies and override mechanism.
@@ -105,4 +113,5 @@ Additional agent-specific notes:
 
 - `AgentConfig` is a dedicated configuration model for agents and is intentionally separated from `TaskConfig` — this keeps agent settings independent and easier to extend in the future (e.g., checkpointing, subagents, agent-specific runtime flags).
 - Agents live in their own namespace under `agents:` in the YAML; the loader populates `LLMConfig.agent_models` and `LLMConfig.agent_configs`. Agent resolution uses `LLMConfig.get_agent_model()` and `get_agent_model_with_fallback()` and does not override or mutate `tasks` mappings.
+- `tool_call_limits` is enforced in both the local `AgentService` path and the remote Agent Server graph builder; deep-agent subagents also apply their own configured limits.
 - Remember to restart the application when you change `agents:` in `llm_config.yaml` (same restart requirement as for `tasks`).

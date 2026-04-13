@@ -7,7 +7,8 @@ integrations keep working while new agent features are developed.
 ## Configuration
 
 Agents are configured via `llm_config.yaml` in the `agents` section.
-The configuration includes models, tools, skills, and subagents:
+The configuration includes models, tools, skills, subagents, and optional
+tool-call limits:
 
 ```yaml
 # llm_config.yaml
@@ -29,6 +30,39 @@ Key concepts:
 - **Local Tool Providers** – reusable bundles of tools registered in the code.
 - **MCP Profiles** – configuration for Model Context Protocol servers.
 - **Agent Memory** – integrated long-term memory for persistence across sessions.
+- **Tool-Call Limits** – per-agent policies that cap tool usage per run or
+  across a whole conversation thread.
+
+## Tool-Call Limits
+
+Agents can opt into `ToolCallLimitMiddleware` directly from `llm_config.yaml`:
+
+```yaml
+agents:
+  browser_researcher:
+    primary: gpt-5
+    tool_call_limits:
+      global_limit:
+        run_limit: 30
+        thread_limit: 120
+        exit_behavior: continue
+      per_tool:
+        - tool_name: fetch_url
+          run_limit: 5
+```
+
+Use this when an agent has access to expensive or loop-prone tools.
+
+- `run_limit` resets for each new agent invocation.
+- `thread_limit` persists across the whole conversation thread.
+- `exit_behavior: continue` blocks the tool call but lets the model finish the
+  response using the context it already has.
+- `exit_behavior: error` raises instead of letting the model recover.
+
+When limits are configured, the agent system also appends a static policy block
+to the system prompt so the model knows how to behave after a limit is hit.
+The same configuration is applied in local `AgentService` runs, deep-agent
+subagents, and remote LangGraph Agent Server graphs.
 
 ## Tool Providers & MCP
 

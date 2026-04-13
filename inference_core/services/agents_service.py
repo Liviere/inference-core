@@ -320,7 +320,9 @@ class AgentService:
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
         self._memory_session_context_enabled_override = memory_session_context_enabled
-        self._memory_tool_instructions_enabled_override = memory_tool_instructions_enabled
+        self._memory_tool_instructions_enabled_override = (
+            memory_tool_instructions_enabled
+        )
 
     @property
     def display_name(self) -> str:
@@ -541,7 +543,9 @@ class AgentService:
             if not has_memory:
                 try:
                     settings = get_settings()
-                    resolved_auto_recall = self._resolve_memory_session_context_enabled()
+                    resolved_auto_recall = (
+                        self._resolve_memory_session_context_enabled()
+                    )
                     memory_middleware = MemoryMiddleware(
                         memory_service=self._memory_service,
                         user_id=str(self._user_id),
@@ -579,6 +583,9 @@ class AgentService:
 
         # Add ToolBasedModelSwitchMiddleware if configured in agent config
         self._add_tool_model_switch_middleware(middleware)
+
+        # Add ToolCallLimitMiddleware instances if configured in agent config
+        self._add_tool_call_limit_middleware(middleware)
 
         return middleware
 
@@ -634,20 +641,22 @@ class AgentService:
         return base_prompt
 
     def _build_system_prompt(self, base_prompt: Optional[str] = None) -> Optional[str]:
-        """Build enhanced system prompt with memory instructions if enabled.
+        """Build enhanced system prompt with memory and tool-call-limit instructions.
 
-        WHY: memory tool instructions are appended only when memory is active,
-        tools are exposed to the model, and the instructions switch is on.
-        The instruction block is scoped to the actual set of active tool names
-        so the model never sees docs for tools it cannot call.
+        Appends instruction blocks when the corresponding features are active:
+        - Memory tool usage instructions (when memory is enabled)
+        - Tool-call limit policy instructions (when tool_call_limits is configured)
 
         Args:
             base_prompt: Base system prompt provided by user.
 
         Returns:
-            Enhanced system prompt with memory instructions appended,
-            or None if no prompt and no memory.
+            Enhanced system prompt with appended instructions,
+            or None if no prompt and no instructions.
         """
+        prompt = base_prompt
+
+        # --- Memory tool instructions ---
         if self._memory_service and self.use_memory:
             if self._resolve_memory_tool_instructions_enabled():
                 resolved_tools = self._resolve_memory_tools()
@@ -656,13 +665,30 @@ class AgentService:
                 )
 
                 if memory_instructions:
-                    if base_prompt:
-                        return f"{base_prompt}\n\n{memory_instructions}"
+                    if prompt:
+                        prompt = f"{prompt}\n\n{memory_instructions}"
                     else:
-                        return memory_instructions
+                        prompt = memory_instructions
 
-        # No memory instructions — return as is
-        return base_prompt
+        # --- Tool-call limit instructions ---
+        from inference_core.llm.config import ToolCallLimitsConfig
+
+        tool_call_limits = getattr(self.agent_config, "tool_call_limits", None)
+        if isinstance(tool_call_limits, ToolCallLimitsConfig):
+            from inference_core.agents.middleware.tool_call_limits import (
+                generate_tool_call_limits_instructions,
+            )
+
+            limit_instructions = generate_tool_call_limits_instructions(
+                tool_call_limits
+            )
+            if limit_instructions:
+                if prompt:
+                    prompt = f"{prompt}\n\n{limit_instructions}"
+                else:
+                    prompt = limit_instructions
+
+        return prompt
 
     def _add_tool_model_switch_middleware(self, middleware: list[Any]) -> None:
         """Add ToolBasedModelSwitchMiddleware if tool_model_overrides is configured.
@@ -720,6 +746,47 @@ class AgentService:
                 f"Failed to add ToolBasedModelSwitchMiddleware for agent "
                 f"'{self.display_name}': {e}",
                 exc_info=True,
+            )
+
+    def _add_tool_call_limit_middleware(self, middleware: list[Any]) -> None:
+        """Add ToolCallLimitMiddleware instances from agent config.
+
+        Reads ``tool_call_limits`` from the agent's YAML config and builds
+        middleware via the shared ``build_tool_call_limit_middleware`` factory.
+        Inserts before CostTrackingMiddleware so limits are enforced before
+        cost accounting.
+        """
+        if not self.agent_config:
+            return
+
+        from inference_core.llm.config import ToolCallLimitsConfig
+
+        tool_call_limits = getattr(self.agent_config, "tool_call_limits", None)
+        if not isinstance(tool_call_limits, ToolCallLimitsConfig):
+            return
+
+        from inference_core.agents.middleware.tool_call_limits import (
+            build_tool_call_limit_middleware,
+        )
+
+        limiters = build_tool_call_limit_middleware(tool_call_limits)
+        if limiters:
+            # Insert before CostTracking (which must stay last).
+            ct_index = next(
+                (
+                    i
+                    for i, m in enumerate(middleware)
+                    if isinstance(m, CostTrackingMiddleware)
+                ),
+                len(middleware),
+            )
+            for j, limiter in enumerate(limiters):
+                middleware.insert(ct_index + j, limiter)
+
+            logging.info(
+                "Added %d ToolCallLimitMiddleware instance(s) for agent '%s'",
+                len(limiters),
+                self.display_name,
             )
 
     @staticmethod
@@ -2243,6 +2310,17 @@ class DeepAgentService(AgentService):
         middleware = []
         if inherited_middleware:
             middleware.extend(inherited_middleware)
+
+        # Add subagent's own tool-call limits from its YAML config
+        from inference_core.llm.config import ToolCallLimitsConfig as _TCL
+
+        sub_tool_call_limits = getattr(sub_config, "tool_call_limits", None)
+        if isinstance(sub_tool_call_limits, _TCL):
+            from inference_core.agents.middleware.tool_call_limits import (
+                build_tool_call_limit_middleware,
+            )
+
+            middleware.extend(build_tool_call_limit_middleware(sub_tool_call_limits))
 
         # CostTracking must be last so it runs first in after_model
         self._ensure_cost_tracking_last(middleware)

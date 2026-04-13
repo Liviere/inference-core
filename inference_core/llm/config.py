@@ -207,6 +207,7 @@ class DimensionPrice(BaseModel):
 
         return data
 
+
 class ContextTier(BaseModel):
     """Context tier configuration for pricing multipliers"""
 
@@ -453,6 +454,80 @@ class ToolLimits(BaseModel):
     )
 
 
+class ToolCallLimitEntry(BaseModel):
+    """A single tool-call limit rule.
+
+    Maps 1:1 to a ``ToolCallLimitMiddleware`` instance.
+    When ``tool_name`` is ``None`` the limit applies to *all* tools (global).
+    """
+
+    tool_name: Optional[str] = Field(
+        default=None,
+        description=("Tool to limit. None means a global limit for all tool calls."),
+    )
+    run_limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Max calls per single agent run (resets each invocation).",
+    )
+    thread_limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Max calls across the whole thread / conversation.",
+    )
+    exit_behavior: str = Field(
+        default="continue",
+        description=(
+            "What happens when the limit is hit: "
+            "'continue' (block the call, let the model finish), "
+            "'error' (raise an exception)."
+        ),
+    )
+
+    @field_validator("exit_behavior")
+    @classmethod
+    def validate_exit_behavior(cls, v: str) -> str:
+        allowed = ("continue", "error")
+        if v not in allowed:
+            raise ValueError(f"exit_behavior must be one of: {list(allowed)}")
+        return v
+
+    @model_validator(mode="after")
+    def at_least_one_limit(self) -> "ToolCallLimitEntry":
+        if self.run_limit is None and self.thread_limit is None:
+            raise ValueError("At least one of run_limit or thread_limit must be set.")
+        return self
+
+
+class ToolCallLimitsConfig(BaseModel):
+    """Agent-level tool-call limiting configuration.
+
+    ``global_limit`` applies to every tool call regardless of name.
+    ``per_tool`` contains additional, stricter limits for specific tools.
+    Each entry produces a separate ``ToolCallLimitMiddleware`` instance.
+    """
+
+    global_limit: Optional[ToolCallLimitEntry] = Field(
+        default=None,
+        description="Global limit applied to all tool calls.",
+    )
+    per_tool: List[ToolCallLimitEntry] = Field(
+        default_factory=list,
+        description="Per-tool limits (tool_name required for each entry).",
+    )
+
+    @field_validator("per_tool")
+    @classmethod
+    def per_tool_must_have_names(
+        cls,
+        v: List[ToolCallLimitEntry],
+    ) -> List[ToolCallLimitEntry]:
+        for entry in v:
+            if entry.tool_name is None:
+                raise ValueError("Each per_tool entry must specify a tool_name.")
+        return v
+
+
 class ToolModelOverrideConfig(BaseModel):
     """Configuration for tool-based model override.
 
@@ -509,6 +584,14 @@ class AgentConfig(BaseModel):
         default=None,
         description="Model overrides triggered by specific tool calls. "
         "Allows using different models for different tools.",
+    )
+    tool_call_limits: Optional[ToolCallLimitsConfig] = Field(
+        default=None,
+        description=(
+            "Agent-level tool-call limiting. Produces ToolCallLimitMiddleware "
+            "instances that enforce run_limit and thread_limit per tool or "
+            "globally. None means no tool-call limiting."
+        ),
     )
     system_prompt: Optional[str] = Field(
         default=None,

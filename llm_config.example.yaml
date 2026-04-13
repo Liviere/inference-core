@@ -528,6 +528,19 @@ agents:
         trigger: 'after_tool'
         description: 'Use nano model for simple follow-ups after lookups'
 
+    # Tool-call limits example (ToolCallLimitMiddleware)
+    # Prevents tool-call loops by capping how many times tools can be called
+    # per run or per thread. Each entry produces a separate middleware instance.
+    # tool_call_limits:
+    #   global_limit:                  # Applies to all tools
+    #     run_limit: 30                # Max calls per single agent invocation
+    #     thread_limit: 120            # Max calls across the whole conversation
+    #     exit_behavior: continue      # 'continue' (block call, let model finish) or 'error'
+    #   per_tool:                      # Stricter limits for specific heavy tools
+    #     - tool_name: 'fetch_url'
+    #       run_limit: 5
+    #       exit_behavior: continue
+
   # Example: Agent running on remote LangGraph Agent Server
   # Requires AGENT_SERVER_ENABLED=True and AGENT_SERVER_URL in .env
   # remote_agent:
