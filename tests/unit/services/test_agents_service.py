@@ -286,6 +286,60 @@ class TestBuildMiddleware:
 
 
 # ---------------------------------------------------------------------------
+# _build_stream_config — sync vs async callback selection
+# ---------------------------------------------------------------------------
+
+
+class TestBuildStreamConfigSyncMode:
+    """Verify that _build_stream_config selects the right callback type."""
+
+    def test_sync_true_uses_sync_callback(self, agent_service):
+        from inference_core.services.stream_utils import SyncStreamCancelCallback
+
+        _, cancel_cb, _ = agent_service._build_stream_config(
+            {},
+            on_token=None,
+            on_custom=None,
+            graceful_cancel=True,
+            sync=True,
+        )
+        assert isinstance(cancel_cb, SyncStreamCancelCallback)
+
+    def test_sync_false_uses_async_callback(self, agent_service):
+        from inference_core.services.stream_utils import StreamCancelCallback
+
+        _, cancel_cb, _ = agent_service._build_stream_config(
+            {},
+            on_token=None,
+            on_custom=None,
+            graceful_cancel=True,
+            sync=False,
+        )
+        assert isinstance(cancel_cb, StreamCancelCallback)
+
+    def test_default_uses_async_callback(self, agent_service):
+        from inference_core.services.stream_utils import StreamCancelCallback
+
+        _, cancel_cb, _ = agent_service._build_stream_config(
+            {},
+            on_token=None,
+            on_custom=None,
+            graceful_cancel=True,
+        )
+        assert isinstance(cancel_cb, StreamCancelCallback)
+
+    def test_no_callback_when_graceful_cancel_false(self, agent_service):
+        _, cancel_cb, _ = agent_service._build_stream_config(
+            {},
+            on_token=None,
+            on_custom=None,
+            graceful_cancel=False,
+            sync=True,
+        )
+        assert cancel_cb is None
+
+
+# ---------------------------------------------------------------------------
 # run_agent_steps
 # ---------------------------------------------------------------------------
 

@@ -1135,14 +1135,28 @@ class AgentService:
         on_token: Callable | None,
         on_custom: Callable | None,
         graceful_cancel: bool,
-    ) -> tuple[dict[str, Any], "StreamCancelCallback | None", list[str]]:
+        sync: bool = False,
+    ) -> tuple[
+        dict[str, Any],
+        "StreamCancelCallback | SyncStreamCancelCallback | None",
+        list[str],
+    ]:
         """Build stream config, cancel callback, and stream mode list.
 
         WHY: Both sync and async execution paths need identical setup —
         dynamic stream_mode based on which callbacks are provided, and
-        optional StreamCancelCallback injection for graceful cancellation.
+        optional cancel-callback injection for graceful cancellation.
+
+        Args:
+            sync: When ``True``, use :class:`SyncStreamCancelCallback`
+                (``BaseCallbackHandler``) so that ``GraphInterrupt``
+                propagates synchronously.  When ``False`` (default), use
+                the async :class:`StreamCancelCallback`.
         """
-        from inference_core.services.stream_utils import StreamCancelCallback
+        from inference_core.services.stream_utils import (
+            StreamCancelCallback,
+            SyncStreamCancelCallback,
+        )
 
         stream_modes: list[str] = ["updates"]
         if on_token is not None:
@@ -1150,10 +1164,10 @@ class AgentService:
         if on_custom is not None:
             stream_modes.append("custom")
 
-        cancel_cb: StreamCancelCallback | None = None
+        cancel_cb: StreamCancelCallback | SyncStreamCancelCallback | None = None
         stream_config: dict[str, Any] = {"configurable": configurable}
         if graceful_cancel:
-            cancel_cb = StreamCancelCallback()
+            cancel_cb = SyncStreamCancelCallback() if sync else StreamCancelCallback()
             stream_config["callbacks"] = [cancel_cb]
 
         return stream_config, cancel_cb, stream_modes
@@ -1362,6 +1376,7 @@ class AgentService:
             on_token=on_token,
             on_custom=on_custom,
             graceful_cancel=graceful_cancel,
+            sync=True,
         )
 
         raw_stream = self.agent.stream(

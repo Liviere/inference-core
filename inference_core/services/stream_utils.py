@@ -56,7 +56,8 @@ import asyncio
 import logging
 from typing import Any, AsyncIterator
 
-from langchain_core.callbacks import AsyncCallbackHandler
+from langchain_core.callbacks import AsyncCallbackHandler, BaseCallbackHandler
+from langchain_core.messages import BaseMessage
 from langgraph.errors import GraphInterrupt
 
 logger = logging.getLogger(__name__)
@@ -67,12 +68,11 @@ _DEFAULT_DRAIN_TIMEOUT: float = 10.0
 
 
 class StreamCancelCallback(AsyncCallbackHandler):
-    """LangChain callback that raises ``GraphInterrupt`` on cancellation.
+    """Async LangChain callback that raises ``GraphInterrupt`` on cancellation.
 
-    WHY: This is the *only* way to stop LLM token generation while keeping
-    the LangGraph graph-level trace successful in LangSmith.
-    ``GraphInterrupt`` is handled by LangGraph's execution loop as a clean
-    pause, not as an error.
+    Use this callback **only** with async execution paths
+    (``arun_agent_steps`` / ``astream``).  For sync execution paths use
+    :class:`SyncStreamCancelCallback` instead — see its docstring for why.
 
     Requires ``raise_error = True`` so that the exception propagates from
     the callback through the chat model back to LangGraph's runner.
@@ -98,6 +98,73 @@ class StreamCancelCallback(AsyncCallbackHandler):
     async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         if self._cancel:
             raise GraphInterrupt(())
+
+    # No-op overrides — prevent ``NotImplementedError`` noise from the
+    # inherited ``AsyncCallbackHandler`` default implementations.
+    async def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[BaseMessage]],
+        **kwargs: Any,
+    ) -> None:
+        pass
+
+    async def on_llm_start(
+        self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any
+    ) -> None:
+        pass
+
+
+class SyncStreamCancelCallback(BaseCallbackHandler):
+    """Sync LangChain callback that raises ``GraphInterrupt`` on cancellation.
+
+    WHY: LangChain's sync ``handle_event`` dispatches ``AsyncCallbackHandler``
+    methods via ``_run_coros`` which **catches and logs** all exceptions
+    instead of propagating them.  This means ``GraphInterrupt`` raised inside
+    an async callback is silently swallowed — producing repeated
+    ``"Error in callback coroutine: GraphInterrupt(())"`` warnings and never
+    actually stopping the LLM.
+
+    By extending ``BaseCallbackHandler`` (sync), the ``on_llm_new_token``
+    call runs synchronously on the same thread and its ``GraphInterrupt``
+    propagates directly through LangGraph's execution loop, stopping the
+    provider immediately.
+
+    Use this callback with sync execution paths (``run_agent_steps`` /
+    ``stream``).
+    """
+
+    raise_error: bool = True
+    run_inline: bool = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cancel: bool = False
+
+    def cancel(self) -> None:
+        """Signal that the next LLM token should trigger a GraphInterrupt."""
+        self._cancel = True
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancel
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        if self._cancel:
+            raise GraphInterrupt(())
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[BaseMessage]],
+        **kwargs: Any,
+    ) -> None:
+        pass
+
+    def on_llm_start(
+        self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any
+    ) -> None:
+        pass
 
 
 class InterruptibleStream:
@@ -245,7 +312,7 @@ class SyncInterruptibleStream:
 
     Usage::
 
-        cancel_cb = StreamCancelCallback()
+        cancel_cb = SyncStreamCancelCallback()
         config = {"callbacks": [cancel_cb], "configurable": {"thread_id": "…"}}
 
         raw = agent.stream(input, config, stream_mode="messages")
@@ -261,7 +328,7 @@ class SyncInterruptibleStream:
     def __init__(
         self,
         inner_stream,
-        cancel_callback: StreamCancelCallback | None = None,
+        cancel_callback: StreamCancelCallback | SyncStreamCancelCallback | None = None,
         drain_timeout: float = _DEFAULT_DRAIN_TIMEOUT,
     ) -> None:
         self._inner = iter(inner_stream)

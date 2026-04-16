@@ -3,8 +3,14 @@
 import asyncio
 
 import pytest
+from langgraph.errors import GraphInterrupt
 
-from inference_core.services.stream_utils import InterruptibleStream
+from inference_core.services.stream_utils import (
+    InterruptibleStream,
+    StreamCancelCallback,
+    SyncInterruptibleStream,
+    SyncStreamCancelCallback,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -167,3 +173,105 @@ class TestInterruptibleStreamSafe:
 
         await stream.aclose()
         # Should complete without raising — error is suppressed
+
+
+# ---------------------------------------------------------------------------
+# SyncStreamCancelCallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestSyncStreamCancelCallback:
+    """Verify the sync cancel callback raises GraphInterrupt synchronously."""
+
+    def test_raises_graph_interrupt_when_cancelled(self):
+        cb = SyncStreamCancelCallback()
+        cb.cancel()
+        with pytest.raises(GraphInterrupt):
+            cb.on_llm_new_token("token")
+
+    def test_no_raise_when_not_cancelled(self):
+        cb = SyncStreamCancelCallback()
+        cb.on_llm_new_token("token")  # should not raise
+
+    def test_is_cancelled_flag(self):
+        cb = SyncStreamCancelCallback()
+        assert not cb.is_cancelled
+        cb.cancel()
+        assert cb.is_cancelled
+
+    def test_on_chat_model_start_is_noop(self):
+        cb = SyncStreamCancelCallback()
+        cb.on_chat_model_start({}, [[]])  # should not raise
+
+    def test_on_llm_start_is_noop(self):
+        cb = SyncStreamCancelCallback()
+        cb.on_llm_start({}, [])  # should not raise
+
+
+class TestStreamCancelCallbackNoops:
+    """Verify the async cancel callback has no-op startup hooks."""
+
+    async def test_on_chat_model_start_is_noop(self):
+        cb = StreamCancelCallback()
+        await cb.on_chat_model_start({}, [[]])  # should not raise
+
+    async def test_on_llm_start_is_noop(self):
+        cb = StreamCancelCallback()
+        await cb.on_llm_start({}, [])  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# SyncInterruptibleStream tests
+# ---------------------------------------------------------------------------
+
+
+class TestSyncInterruptibleStreamBasic:
+    """Verify SyncInterruptibleStream with the sync cancel callback."""
+
+    def test_passes_all_chunks_when_not_stopped(self):
+        stream = SyncInterruptibleStream(range(5))
+        collected = list(stream)
+        assert collected == [0, 1, 2, 3, 4]
+
+    def test_stop_causes_early_exit(self):
+        cb = SyncStreamCancelCallback()
+        stream = SyncInterruptibleStream(range(10), cancel_callback=cb)
+        collected = []
+        for chunk in stream:
+            collected.append(chunk)
+            if chunk == 2:
+                stream.stop()
+                break
+        assert collected == [0, 1, 2]
+        assert cb.is_cancelled
+
+    def test_drain_after_stop(self):
+        consumed = []
+
+        def tracked_gen():
+            for i in range(8):
+                consumed.append(i)
+                yield i
+
+        cb = SyncStreamCancelCallback()
+        stream = SyncInterruptibleStream(tracked_gen(), cancel_callback=cb)
+        for chunk in stream:
+            if chunk == 2:
+                stream.stop()
+                break
+        stream.drain()
+        assert consumed == list(range(8))
+
+    def test_close_combines_stop_and_drain(self):
+        consumed = []
+
+        def tracked_gen():
+            for i in range(5):
+                consumed.append(i)
+                yield i
+
+        cb = SyncStreamCancelCallback()
+        stream = SyncInterruptibleStream(tracked_gen(), cancel_callback=cb)
+        _ = next(iter(stream))
+        stream.close()
+        assert consumed == [0, 1, 2, 3, 4]
