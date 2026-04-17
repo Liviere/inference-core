@@ -18,6 +18,7 @@
 
 - **`models`**: each named entry becomes a `ModelConfig` in `LLMConfig.models`.
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
+  - `multimodal: true|false` declares whether the model can accept multimodal inputs. Tool loading uses this flag to decide whether tools that declare `requires_multimodal = True` are exposed directly, skipped, or retained for delegation.
   - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
   - `reasoning_config` can store provider-specific nested kwargs for reasoning / thinking models (for example OpenAI reasoning, Claude thinking, or Gemini thought settings).
   - Claude thinking config is normalized in `LLMModelFactory`: `temperature` is removed when `thinking` is enabled, and `max_tokens` is increased if it is not greater than the thinking budget.
@@ -34,6 +35,8 @@
   - short mapping `agent_models` (primary) and full `agent_configs` (type `AgentConfig`).
   - `AgentConfig` is a dedicated Pydantic model (separate from `TaskConfig`) used to represent agent-specific settings and can be extended independently of tasks.
   - `reasoning_output: true` enables reasoning output for that agent and forwards the model's `reasoning_config` into the instantiated provider kwargs.
+  - `on_missing_capability` controls what happens when a tool requires a capability the primary model lacks. `skip` filters the tool out; `delegate` keeps it exposed so runtime middleware can swap to a support model for that tool call.
+  - `multimodal_support_model` names the model used for delegated multimodal tool calls. It must resolve to an entry in `models:` and should declare `multimodal: true`.
   - Agent primary model can be overridden via environment variables defined in `settings.env_overrides` (same mechanism as for tasks).
   - `LLMConfig.get_agent_model()` and `LLMConfig.get_agent_model_with_fallback()` resolve the effective model for an agent, including fallback logic and availability checks (API key / base_url).
   - New fields `skills` (list of paths) and `subagents` (list of agent names) enable delegating tasks and using specialized workflows.
@@ -71,13 +74,14 @@
 - `inference_core/services/agents_service.py`
   - uses the factory (`LLMModelFactory.get_model_for_agent()`) to construct model/agent instances; this centralizes model-selection logic and keeps it consistent with task model selection.
   - responsible for initializing agents, applying runtime configuration, and integrating with MCP/tools where applicable.
+  - synthesizes tool-model overrides for multimodal tools retained under `on_missing_capability: delegate`, while preserving explicit YAML overrides when both target the same tool name.
   - appends `tool_call_limits` prompt instructions and injects tool-call limit middleware in local agent and deep-agent execution paths.
 
 - `inference_core/agents/middleware/tool_call_limits.py`
   - shared factory for building `ToolCallLimitMiddleware` instances from YAML config and for generating the companion system-prompt instructions shown to the model.
 
 - `inference_core/llm/tools.py` and `inference_core/llm/usage_logging.py`
-  - consume `providers`, `pricing`, and `models` (including agent configs) to load tools and billing/usage logic; when changing agents, review these modules for any impact on tool loading and usage logging.
+  - consume `providers`, `pricing`, and `models` (including agent configs) to load tools and billing/usage logic; the tool loader also filters or retains multimodal-only tools based on the active model capability and delegation strategy.
 
 - tests and CI / Docker
   - ensure unit and integration tests account for new agent behavior (e.g., parsing `agents:` in `tests/unit/llm/test_mcp_config.py` or by adding dedicated agent tests).
@@ -92,6 +96,8 @@ In short: agent configuration is loaded and validated in `config.py`; model sele
 - **Test mode**: `_load_mcp_config()` contains logic to change defaults in test environments to avoid external services (e.g. disable MCP, normalize Playwright URL), making local tests easier.
 - **Fallback**: when `llm_config.yaml` is absent or unparsable, the app will fall back to default models (e.g. `gpt-5-mini`) and baseline settings — the app remains usable but limited.
 - **Param policy**: `param_policies` lets you introduce new rules without code changes: add `patch`/`replace` for providers or models and the system applies them dynamically in `param_policy`.
+- **Capability-aware delegation**: when `on_missing_capability: delegate` is set, the loader keeps multimodal-only tools visible even if the primary model is text-only, and `AgentService` injects synthetic tool-model overrides that route those calls to `multimodal_support_model`.
+- **Startup validation is soft**: if `multimodal_support_model` is missing from `models:` or is not marked `multimodal: true`, config loading emits warnings rather than failing startup.
 
 **Key files for quick review**
 

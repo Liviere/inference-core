@@ -310,6 +310,16 @@ class ModelConfig(ModelParams):
             "{thinking_level: low, include_thoughts: true} for Gemini."
         ),
     )
+    multimodal: bool = Field(
+        default=False,
+        description=(
+            "Whether this model supports multimodal inputs (e.g. images). "
+            "Used by the tool loader to filter or delegate tools that declare "
+            "``requires_multimodal = True`` when the active model cannot "
+            "handle them. Future extension: may be replaced by a richer "
+            "``capabilities`` list (vision/audio/pdf/...)."
+        ),
+    )
 
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 
@@ -667,6 +677,28 @@ class AgentConfig(BaseModel):
         ),
     )
 
+    # --- Capability-aware tool routing ---
+    on_missing_capability: str = Field(
+        default="skip",
+        description=(
+            "Strategy applied when a tool declares a capability requirement "
+            "(e.g. ``requires_multimodal = True``) that the agent's primary "
+            "model does not satisfy. ``skip`` drops the tool so the model "
+            "never sees it. ``delegate`` keeps the tool exposed and routes "
+            "its invocation through ``multimodal_support_model`` via the "
+            "tool-based model switch middleware."
+        ),
+    )
+    multimodal_support_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Model name used to execute multimodal tool calls when the "
+            "agent's primary model is not multimodal and "
+            "``on_missing_capability='delegate'``. Must be defined in the "
+            "``models`` section and have ``multimodal: true``."
+        ),
+    )
+
     _VALID_MEMORY_TOOL_NAMES: ClassVar[frozenset[str]] = frozenset(
         {
             "save_memory_store",
@@ -674,6 +706,9 @@ class AgentConfig(BaseModel):
             "update_memory_store",
             "delete_memory_store",
         }
+    )
+    _VALID_MISSING_CAPABILITY_STRATEGIES: ClassVar[frozenset[str]] = frozenset(
+        {"skip", "delegate"}
     )
 
     @field_validator("memory_tools")
@@ -688,6 +723,28 @@ class AgentConfig(BaseModel):
                 f"Valid names: {sorted(cls._VALID_MEMORY_TOOL_NAMES)}"
             )
         return v
+
+    @field_validator("on_missing_capability")
+    @classmethod
+    def validate_on_missing_capability(cls, v: str) -> str:
+        if v not in cls._VALID_MISSING_CAPABILITY_STRATEGIES:
+            raise ValueError(
+                "on_missing_capability must be one of: "
+                f"{sorted(cls._VALID_MISSING_CAPABILITY_STRATEGIES)}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_capability_delegation(self) -> "AgentConfig":
+        if (
+            self.on_missing_capability == "delegate"
+            and not self.multimodal_support_model
+        ):
+            raise ValueError(
+                "on_missing_capability='delegate' requires "
+                "'multimodal_support_model' to be set."
+            )
+        return self
 
 
 class TaskConfig(BaseModel):
@@ -940,6 +997,28 @@ class LLMConfig:
             except Exception as e:
                 logging.warning(f"Error parsing agent config for {agent_name}: {e}")
 
+            # Validate that multimodal_support_model (if set) refers to a known
+            # multimodal model. We warn rather than hard-fail to keep startup
+            # resilient when a support model is defined in another yaml layer.
+            parsed_agent = self.agent_configs.get(agent_name)
+            if parsed_agent and parsed_agent.multimodal_support_model:
+                support = parsed_agent.multimodal_support_model
+                support_cfg = self.models.get(support)
+                if support_cfg is None:
+                    logging.warning(
+                        "Agent '%s' references multimodal_support_model '%s' "
+                        "which is not defined in 'models'.",
+                        agent_name,
+                        support,
+                    )
+                elif not getattr(support_cfg, "multimodal", False):
+                    logging.warning(
+                        "Agent '%s' references multimodal_support_model '%s' "
+                        "but that model has multimodal=False. Delegation will "
+                        "not actually provide multimodal capability.",
+                        agent_name,
+                        support,
+                    )
             # Check for environment variable override
             env_var = (
                 yaml_config.get("settings", {}).get("env_overrides", {}).get(agent_name)

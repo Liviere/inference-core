@@ -161,6 +161,42 @@ Per-agent memory behavior can also be tuned in `llm_config.yaml` inside each `ag
 - `memory_tool_instructions_enabled` controls whether CoALA memory usage instructions are appended to the system prompt.
 - All three fields default to `null`, which preserves the existing global behavior for backward compatibility.
 
+## Capability-Aware Tool Routing
+
+Agents can expose tools that need capabilities the primary model may not have,
+such as vision tools that return image inputs. This is configured in
+`llm_config.yaml` across both `models:` and `agents:`.
+
+- Set `multimodal: true` on a model when it can accept multimodal inputs.
+- Tools opt in by declaring `requires_multimodal = True` on the tool class.
+- `on_missing_capability: skip` filters those tools out when the agent's primary model is not multimodal.
+- `on_missing_capability: delegate` keeps those tools visible and auto-routes their execution through `multimodal_support_model` using the tool-model switch middleware.
+- `multimodal_support_model` must point to a model defined under `models:` and that model should also declare `multimodal: true`.
+
+Example `llm_config.yaml`:
+
+```yaml
+models:
+  gpt-5-mini:
+    provider: 'openai'
+    multimodal: true
+
+  deepseek-ai/DeepSeek-V3-0324:
+    provider: 'deepinfra'
+    multimodal: false
+
+agents:
+  vision_aware_agent:
+    primary: 'deepseek-ai/DeepSeek-V3-0324'
+    local_tool_providers: ['browser_tools']
+    on_missing_capability: 'delegate' # 'skip' | 'delegate'
+    multimodal_support_model: 'gpt-5-mini'
+```
+
+Use `skip` when you want a strict tool set that matches the primary model.
+Use `delegate` when the primary model should remain text-only but selected tool
+calls need a multimodal fallback.
+
 ## Agent Skills & Subagents (DeepAgent)
 
 Specialized capabilities and delegation for `DeepAgentService`. Configured in `llm_config.yaml` under `agents:`.

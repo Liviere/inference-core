@@ -109,6 +109,7 @@ class LLMModelFactory:
             "display_name",
             "description",
             "reasoning_config",
+            "multimodal",
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
         config_params = config.model_dump(exclude=exclude_fields)

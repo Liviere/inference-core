@@ -50,6 +50,8 @@ models:
     description: 'Most capable model for complex tasks'
     max_tokens: 8192
     temperature: 0.7
+    # Multimodal (vision) capable. Drives capability-aware tool routing.
+    multimodal: true
     # Reasoning output configuration (optional)
     # Provider-specific kwargs passed to LangChain model constructor when
     # reasoning_output is enabled on an agent. Each provider uses its own format.
@@ -83,6 +85,7 @@ models:
     description: 'Affordable and intelligent small model'
     max_tokens: 8192
     temperature: 0.7
+    multimodal: true
     # Pricing (sourced from OpenAI pricing page)
     # Pricing is per 1M tokens (cost_per_1m).
     pricing:
@@ -107,6 +110,7 @@ models:
     description: 'Fast and efficient for most tasks'
     max_tokens: 4096
     temperature: 0.7
+    multimodal: true
     # Example of extra/nested parameters supported by the core:
     # These must also be added to 'allowed' in param_policies for the provider
     logit_bias:
@@ -136,6 +140,7 @@ models:
     description: 'Legacy model with advanced capabilities'
     max_tokens: 8192
     temperature: 0.7
+    multimodal: true
     # Pricing (sourced from OpenAI pricing page)
     pricing:
       currency: USD
@@ -160,6 +165,7 @@ models:
     description: 'Fast Gemini model for general tasks'
     max_tokens: 8192
     temperature: 0.7
+    multimodal: true
     # Gemini models use thinking_level + include_thoughts for reasoning.
     reasoning_config:
       thinking_level: "low"
@@ -189,6 +195,7 @@ models:
     description: 'High quality Gemini model for complex reasoning'
     max_tokens: 8192
     temperature: 0.6
+    multimodal: true
     # Pricing (sourced from Google Gemini pricing page)
     # Source: https://ai.google.dev/gemini-api/docs/pricing (captured 2025-09-27)
     # Values are per 1M tokens (cost_per_1m).
@@ -223,6 +230,7 @@ models:
     description: 'Latest Claude model with the most advanced capabilities'
     max_tokens: 8192
     temperature: 0.7
+    multimodal: true
     # Pricing (sourced from Claude pricing page)
     # Source: https://claude.com/pricing#api (captured live)
     # Values shown on the page are per MTok (1,000,000 tokens) — use cost_per_1m directly.
@@ -252,6 +260,7 @@ models:
     description: 'Claude Sonnet 4 model for high performance'
     max_tokens: 8192
     temperature: 0.7
+    multimodal: true
     # Claude models use the 'thinking' kwarg for extended thinking.
     # When thinking is enabled, the runtime removes `temperature` so Claude can
     # use its default value, and increases `max_tokens` if it would otherwise be
@@ -306,6 +315,7 @@ models:
     description: 'Balanced performance Claude model'
     max_tokens: 8192
     temperature: 0.7
+    multimodal: true
     # Pricing (sourced from Claude pricing page - legacy models section)
     # Values are per MTok; converted to per-1k.
     pricing:
@@ -494,6 +504,19 @@ agents:
     # kwargs will be passed to the LangChain model constructor at creation time.
     reasoning_output: true
 
+  # Example: Capability-aware tool routing
+  # Primary model is text-only but the agent still exposes a multimodal tool
+  # (e.g. a screenshot tool that declares `requires_multimodal = True`).
+  # With `on_missing_capability: delegate`, the tool stays available and its
+  # invocation is auto-routed through `multimodal_support_model` via the
+  # ToolBasedModelSwitchMiddleware. Use `skip` (default) to simply filter out
+  # such tools.
+  vision_aware_agent:
+    primary: 'deepseek-ai/DeepSeek-V3-0324'
+    description: 'Text-only agent that can still call vision tools via delegation'
+    local_tool_providers: ['browser_tools']
+    on_missing_capability: 'delegate'          # 'skip' (default) or 'delegate'
+    multimodal_support_model: 'gpt-5-mini'     # must have multimodal: true
   # Example: DeepAgent with skills and subagents
   research_agent:
     primary: 'gpt-5-mini'

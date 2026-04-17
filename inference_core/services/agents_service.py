@@ -324,6 +324,12 @@ class AgentService:
             memory_tool_instructions_enabled
         )
 
+        # Tools whose invocation must be delegated to ``multimodal_support_model``
+        # because the primary model does not support multimodal inputs. Populated
+        # by ``_load_providers_tools`` and consumed by
+        # ``_add_tool_model_switch_middleware``.
+        self._delegated_multimodal_tools: list[str] = []
+
     @property
     def display_name(self) -> str:
         """Human-readable agent identity for logging and observability.
@@ -696,13 +702,47 @@ class AgentService:
         Checks the agent configuration for tool_model_overrides and creates
         the middleware if any overrides are defined.
 
+        Also synthesizes overrides for tools retained under the ``delegate``
+        capability strategy so that multimodal-requiring tools are routed to
+        the configured ``multimodal_support_model`` without losing any
+        user-defined overrides (yaml config wins on name collision).
+
         Args:
             middleware: List of middleware to append to (modified in place).
         """
         if not self.agent_config:
             return
 
-        overrides = self.agent_config.tool_model_overrides
+        overrides = list(self.agent_config.tool_model_overrides or [])
+
+        # Merge in synthetic overrides for delegated multimodal tools.
+        support_model = getattr(self.agent_config, "multimodal_support_model", None)
+        if self._delegated_multimodal_tools and support_model:
+            from inference_core.llm.config import ToolModelOverrideConfig
+
+            existing_names = {o.tool_name for o in overrides}
+            for tool_name in self._delegated_multimodal_tools:
+                if tool_name in existing_names:
+                    continue
+                overrides.append(
+                    ToolModelOverrideConfig(
+                        tool_name=tool_name,
+                        model=support_model,
+                        trigger="before_tool",
+                        description=(
+                            "Auto-delegated: tool requires multimodal and primary "
+                            "model is not multimodal."
+                        ),
+                    )
+                )
+                logging.info(
+                    "Agent '%s': auto-delegating tool '%s' to multimodal "
+                    "support model '%s'",
+                    self.display_name,
+                    tool_name,
+                    support_model,
+                )
+
         if not overrides:
             return
 
@@ -894,21 +934,52 @@ class AgentService:
 
         try:
             provider_context = self._build_provider_user_context(user_context)
+            model_multimodal = self._primary_model_is_multimodal()
+            on_missing_capability = getattr(
+                self.agent_config, "on_missing_capability", "skip"
+            )
+            multimodal_support_model = getattr(
+                self.agent_config, "multimodal_support_model", None
+            )
             provider_tools = await load_tools_for_agent(
                 self.agent_name,
                 confirmed_providers,
                 allowed_tools=self.agent_config.allowed_tools,
+                model_multimodal=model_multimodal,
+                on_missing_capability=on_missing_capability,
+                multimodal_support_model=multimodal_support_model,
                 user_context=provider_context,
                 user_id=provider_context.get("user_id"),
                 session_id=provider_context.get("session_id"),
                 request_id=provider_context.get("request_id"),
             )
+
+            # Track any multimodal tools that were retained under 'delegate'
+            # strategy so _add_tool_model_switch_middleware can route them to
+            # the configured support model.
+            if not model_multimodal and on_missing_capability == "delegate":
+                from inference_core.llm.tools import tool_requires_multimodal
+
+                for t in provider_tools:
+                    if tool_requires_multimodal(t):
+                        t_name = getattr(t, "name", None)
+                        if t_name:
+                            self._delegated_multimodal_tools.append(t_name)
+
             self.tools.extend(provider_tools)
         except Exception as e:
             logging.error(
                 f"Error loading tools from provider '{registered_provider_name}': {e}",
                 exc_info=True,
             )
+
+    def _primary_model_is_multimodal(self) -> bool:
+        """Return True if the agent's primary model declares multimodal support."""
+        try:
+            model_cfg = self.model_factory.config.get_model_config(self.model_name)
+        except Exception:
+            return False
+        return bool(getattr(model_cfg, "multimodal", False))
 
     async def _load_mcp_tools(self) -> None:
         """Load tools from MCP if configured for this agent."""
@@ -2465,11 +2536,24 @@ class DeepAgentService(AgentService):
         # reusing the parent agent's identity fields.
         provider_context = self._build_provider_user_context()
 
+        # Resolve multimodal capability for the subagent's primary model so
+        # the loader can filter/delegate tools consistently.
+        sub_model_name = self.model_factory.get_agent_model_name(agent_name)
+        sub_model_cfg = (
+            self.model_factory.config.get_model_config(sub_model_name)
+            if sub_model_name
+            else None
+        )
+        model_multimodal = bool(getattr(sub_model_cfg, "multimodal", False))
+        on_missing_capability = getattr(agent_config, "on_missing_capability", "skip")
+
         try:
             return await load_tools_for_agent(
                 agent_name,
                 provider_names=confirmed,
                 allowed_tools=agent_config.allowed_tools,
+                model_multimodal=model_multimodal,
+                on_missing_capability=on_missing_capability,
                 user_context=provider_context,
                 user_id=provider_context.get("user_id"),
                 session_id=provider_context.get("session_id"),

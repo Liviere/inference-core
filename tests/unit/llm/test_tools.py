@@ -4,16 +4,17 @@ Unit tests for pluggable tool provider system.
 Tests the tool provider registry, tool loading, deduplication, and filtering logic.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from inference_core.llm.tools import (
     ToolProvider,
-    register_tool_provider,
-    get_registered_providers,
-    unregister_tool_provider,
     clear_tool_providers,
+    get_registered_providers,
     load_tools_for_task,
+    register_tool_provider,
+    unregister_tool_provider,
 )
 
 
@@ -344,3 +345,77 @@ class TestLoadToolsForTask:
             provider_names=[],
         )
         assert len(loaded) == 0
+
+
+class MultimodalMockTool(MockTool):
+    """Mock tool that declares a multimodal requirement."""
+
+    requires_multimodal = True
+
+
+class TestCapabilityFiltering:
+    """Tests for capability-aware tool loading (multimodal)."""
+
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        clear_tool_providers()
+        yield
+        clear_tool_providers()
+
+    @pytest.mark.asyncio
+    async def test_multimodal_tool_skipped_when_model_non_multimodal(self):
+        tools = [MockTool("plain_tool"), MultimodalMockTool("needs_vision")]
+        register_tool_provider(SimpleToolProvider("p", tools))
+
+        loaded = await load_tools_for_task(
+            task_type="chat",
+            provider_names=["p"],
+            model_multimodal=False,
+            on_missing_capability="skip",
+        )
+
+        names = {t.name for t in loaded}
+        assert names == {"plain_tool"}
+
+    @pytest.mark.asyncio
+    async def test_multimodal_tool_kept_under_delegate_strategy(self):
+        tools = [MockTool("plain_tool"), MultimodalMockTool("needs_vision")]
+        register_tool_provider(SimpleToolProvider("p", tools))
+
+        loaded = await load_tools_for_task(
+            task_type="chat",
+            provider_names=["p"],
+            model_multimodal=False,
+            on_missing_capability="delegate",
+        )
+
+        names = {t.name for t in loaded}
+        assert names == {"plain_tool", "needs_vision"}
+
+    @pytest.mark.asyncio
+    async def test_multimodal_tool_kept_when_model_multimodal(self):
+        tools = [MultimodalMockTool("needs_vision")]
+        register_tool_provider(SimpleToolProvider("p", tools))
+
+        loaded = await load_tools_for_task(
+            task_type="chat",
+            provider_names=["p"],
+            model_multimodal=True,
+            on_missing_capability="skip",
+        )
+
+        assert len(loaded) == 1
+        assert loaded[0].name == "needs_vision"
+
+    @pytest.mark.asyncio
+    async def test_default_kwargs_are_backward_compatible(self):
+        """Omitting capability kwargs keeps the legacy behavior (no filtering)."""
+        tools = [MultimodalMockTool("needs_vision")]
+        register_tool_provider(SimpleToolProvider("p", tools))
+
+        loaded = await load_tools_for_task(
+            task_type="chat",
+            provider_names=["p"],
+        )
+
+        assert len(loaded) == 1

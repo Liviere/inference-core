@@ -480,3 +480,47 @@ class TestAgentConfigMemoryTools:
         """memory_session_context_enabled=False is accepted."""
         ac = AgentConfig(primary="gpt-5", memory_session_context_enabled=False)
         assert ac.memory_session_context_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# AgentConfig — capability-aware routing
+# ---------------------------------------------------------------------------
+
+
+class TestAgentConfigCapabilityRouting:
+    """Verify on_missing_capability / multimodal_support_model validation."""
+
+    def test_defaults(self):
+        ac = AgentConfig(primary="gpt-5")
+        assert ac.on_missing_capability == "skip"
+        assert ac.multimodal_support_model is None
+
+    def test_skip_without_support_model_is_valid(self):
+        ac = AgentConfig(primary="gpt-5", on_missing_capability="skip")
+        assert ac.on_missing_capability == "skip"
+
+    def test_delegate_requires_support_model(self):
+        with pytest.raises(Exception, match="multimodal_support_model"):
+            AgentConfig(primary="gpt-5", on_missing_capability="delegate")
+
+    def test_delegate_with_support_model_is_valid(self):
+        ac = AgentConfig(
+            primary="gpt-5",
+            on_missing_capability="delegate",
+            multimodal_support_model="gpt-5-mini",
+        )
+        assert ac.multimodal_support_model == "gpt-5-mini"
+
+    def test_invalid_strategy_rejected(self):
+        with pytest.raises(Exception, match="on_missing_capability"):
+            AgentConfig(primary="gpt-5", on_missing_capability="ignore")
+
+
+class TestModelConfigMultimodalFlag:
+    def test_defaults_to_false(self):
+        mc = ModelConfig(name="m", provider=ModelProvider.OPENAI)
+        assert mc.multimodal is False
+
+    def test_can_be_set_true(self):
+        mc = ModelConfig(name="m", provider=ModelProvider.OPENAI, multimodal=True)
+        assert mc.multimodal is True
