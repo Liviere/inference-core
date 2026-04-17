@@ -27,6 +27,7 @@ class ModelProvider(str, Enum):
     OPENAI = "openai"
     CUSTOM_OPENAI_COMPATIBLE = "custom_openai_compatible"
     DEEPINFRA = "deepinfra"
+    FIREWORKS = "fireworks"
     GEMINI = "gemini"
     CLAUDE = "claude"
     OLLAMA = "ollama"

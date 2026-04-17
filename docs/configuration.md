@@ -93,6 +93,7 @@ Docker compose uses a split worker topology by default: the threads worker handl
 | `OPENAI_API_KEY`            | (none)    | OpenAI API key                         |
 | `GOOGLE_API_KEY`            | (none)    | Gemini key                             |
 | `ANTHROPIC_API_KEY`         | (none)    | Claude key                             |
+| `FIREWORKS_API_KEY`         | (none)    | Fireworks key                          |
 | `LLM_COMPLETION_MODEL`      | (none)    | Override model for completion task     |
 | `LLM_CHAT_MODEL`            | (none)    | Override model for chat task           |
 | `LLM_ENABLE_CACHING`        | true      | Enable in-process fallback cache       |
@@ -129,7 +130,7 @@ Controls how embeddings are generated for vector operations, agent memory, and t
 Backend behavior:
 
 - `local`: `EmbeddingService` sends `embeddings.generate` tasks to the dedicated `embeddings` queue. Run a separate Celery worker with `--queues=embeddings --pool=prefork`.
-- `remote`: `EmbeddingService` instantiates a LangChain embedding provider from the `embeddings:` section in `llm_config.yaml`.
+- `remote`: `EmbeddingService` instantiates a LangChain embedding provider from the `embeddings:` section in `llm_config.yaml` (OpenAI, Gemini, DeepInfra, Fireworks, Ollama).
 
 Example YAML for `EMBEDDING_BACKEND=remote`:
 

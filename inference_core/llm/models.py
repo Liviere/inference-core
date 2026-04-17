@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from langchain_anthropic import ChatAnthropic
 from langchain_community.chat_models.deepinfra import ChatDeepInfra
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_fireworks import ChatFireworks
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
@@ -192,6 +193,9 @@ class LLMModelFactory:
         elif config.provider == ModelProvider.DEEPINFRA:
             return self._create_deepinfra_model(config, model_params)
 
+        elif config.provider == ModelProvider.FIREWORKS:
+            return self._create_fireworks_model(config, model_params)
+
         elif config.provider == ModelProvider.OLLAMA:
             return self._create_ollama_model(config, model_params)
 
@@ -287,6 +291,28 @@ class LLMModelFactory:
             )
         except Exception as e:
             logger.error(f"Failed to create DeepInfra model: {str(e)}")
+            return None
+
+    def _create_fireworks_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatFireworks]:
+        """Create Fireworks AI model instance via the dedicated LangChain integration.
+
+        Uses ChatFireworks from langchain-fireworks, giving access to
+        Fireworks-specific features like native tool calling and proper
+        token tracking.
+        """
+        if not config.api_key:
+            logger.error("Fireworks API key (FIREWORKS_API_KEY) not provided")
+            return None
+        try:
+            return ChatFireworks(
+                model=config.name,
+                api_key=config.api_key,
+                **params,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create Fireworks model: {str(e)}")
             return None
 
     def _create_ollama_model(

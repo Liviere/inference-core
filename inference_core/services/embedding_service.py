@@ -199,6 +199,22 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
                 deepinfra_api_token=os.getenv(api_key_env),
             )
 
+        if provider == ModelProvider.FIREWORKS:
+            from langchain_fireworks import FireworksEmbeddings
+
+            provider_cfg = RemoteLangChainBackend._get_provider_config(
+                providers, provider
+            )
+            api_key_env = RemoteLangChainBackend._resolve_api_key_env(
+                embed_config,
+                provider_cfg,
+                default_env="FIREWORKS_API_KEY",
+            )
+            return FireworksEmbeddings(
+                model=model,
+                fireworks_api_key=os.getenv(api_key_env),
+            )
+
         raise ValueError(f"Unsupported embedding provider: {provider}")
 
     @staticmethod

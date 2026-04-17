@@ -41,6 +41,12 @@ providers:
     requires_api_key: true
     openai_compatible: false
 
+  fireworks:
+    name: 'Fireworks AI'
+    api_key_env: 'FIREWORKS_API_KEY'
+    requires_api_key: true
+    openai_compatible: false
+
 # Available Models Configuration
 models:
   # OpenAI Models
@@ -409,6 +415,14 @@ models:
     max_tokens: 8192
     temperature: 0.7
 
+  # Fireworks AI Models (dedicated provider)
+  accounts/fireworks/models/kimi-k2-instruct-0905:
+    provider: 'fireworks'
+    display_name: 'Kimi K2 Instruct'
+    description: 'Kimi K2 Instruct model, hosted on Fireworks AI'
+    max_tokens: 8192
+    temperature: 0.7
+
 # Task Model Assignments
 tasks:
   completion:
@@ -582,7 +596,7 @@ agents:
 # is used unless overridden.
 embeddings:
   default:
-    provider: openai                 # openai | gemini | deepinfra | ollama
+    provider: openai                 # openai | gemini | deepinfra | fireworks | ollama
     model: text-embedding-3-small    # Provider-specific model name
     # dimensions: 1536              # Optional dimension override (OpenAI v3 supports this)
     # api_key_env: OPENAI_API_KEY   # Defaults to provider's api_key_env

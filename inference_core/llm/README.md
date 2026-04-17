@@ -146,6 +146,7 @@ Provider API keys (examples, depending on your providers):
 - `OPENAI_API_KEY`
 - `CUSTOM_LLM_API_KEY`
 - `DEEPINFRA_API_KEY`
+- `FIREWORKS_API_KEY`
 
 ### LLM Parameter Policies & Dynamic Parameters
 
