@@ -13,12 +13,12 @@ from typing import Any, Dict, Optional
 from langchain_anthropic import ChatAnthropic
 from langchain_community.chat_models.deepinfra import ChatDeepInfra
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_fireworks import ChatFireworks
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from .chat_fireworks import ChatFireworksReasoning
 from .config import LLMConfig, ModelConfig, ModelProvider
 from .param_policy import normalize_params
 
@@ -295,18 +295,18 @@ class LLMModelFactory:
 
     def _create_fireworks_model(
         self, config: ModelConfig, params: Dict[str, Any]
-    ) -> Optional[ChatFireworks]:
-        """Create Fireworks AI model instance via the dedicated LangChain integration.
+    ) -> Optional[ChatFireworksReasoning]:
+        """Create Fireworks AI model instance with reasoning support.
 
-        Uses ChatFireworks from langchain-fireworks, giving access to
-        Fireworks-specific features like native tool calling and proper
-        token tracking.
+        Uses ChatFireworksReasoning — a drop-in replacement for
+        ChatFireworks that correctly handles ``reasoning_content``
+        in both streaming and non-streaming responses.
         """
         if not config.api_key:
             logger.error("Fireworks API key (FIREWORKS_API_KEY) not provided")
             return None
         try:
-            return ChatFireworks(
+            return ChatFireworksReasoning(
                 model=config.name,
                 api_key=config.api_key,
                 **params,

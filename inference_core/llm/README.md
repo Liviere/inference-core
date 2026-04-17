@@ -231,6 +231,31 @@ GET /api/v1/llm/param-policy/openai              # Provider policy
 GET /api/v1/llm/param-policy/openai?model=gpt-5  # Effective merged model policy
 ```
 
+### Fireworks Reasoning Responses
+
+Fireworks reasoning models can emit `reasoning_content` alongside the normal
+assistant content. The local `ChatFireworksReasoning` adapter preserves that
+field for both standard responses and streaming chunks, and serializes it back
+into subsequent requests so multi-turn conversations can keep preserved
+reasoning history.
+
+Example model config:
+
+```yaml
+accounts/fireworks/models/kimi-k2p5:
+  provider: 'fireworks'
+  max_tokens: 8192
+  reasoning_config:
+    reasoning_effort: 'medium'
+    reasoning_history: 'preserved'
+```
+
+Notes:
+
+- Use `reasoning_effort` or `thinking` depending on the Fireworks model API.
+- `reasoning_history: 'preserved'` sends prior `reasoning_content` back on later turns when present.
+- The built-in Fireworks provider policy already allows `reasoning_effort`, `thinking`, and `reasoning_history`, so no extra `param_policies` override is required.
+
 Migration Tips:
 
 1. Start new parameters behind a passthrough prefix.
