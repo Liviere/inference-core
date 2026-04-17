@@ -255,6 +255,7 @@ Notes:
 - Use `reasoning_effort` or `thinking` depending on the Fireworks model API.
 - `reasoning_history: 'preserved'` sends prior `reasoning_content` back on later turns when present.
 - The built-in Fireworks provider policy already allows `reasoning_effort`, `thinking`, and `reasoning_history`, so no extra `param_policies` override is required.
+- Multimodal image blocks are normalized automatically to Fireworks `image_url` payloads.
 
 Migration Tips:
 

@@ -424,6 +424,8 @@ models:
     temperature: 0.7
     # Fireworks reasoning models can preserve reasoning_content across turns.
     # Use either reasoning_effort or thinking, depending on model support.
+    # Multimodal image blocks are normalized automatically to image_url payloads.
+    multimodal: true
     reasoning_config:
       reasoning_effort: 'medium'
       reasoning_history: 'preserved'

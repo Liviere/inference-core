@@ -53,6 +53,40 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _normalize_content_blocks(content: Any) -> Any:
+    """Convert LangChain-internal content blocks to Fireworks/OpenAI API format.
+
+    LangChain stores images as ``{"type": "image", "base64": "...",
+    "mime_type": "image/jpeg"}`` internally, but the Fireworks (and OpenAI)
+    Chat Completions API expects
+    ``{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}``.
+
+    Plain strings and already-conformant blocks pass through unchanged.
+    """
+    if not isinstance(content, list):
+        return content
+    normalized: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            normalized.append(block)
+            continue
+        btype = block.get("type", "")
+        if btype == "image" and "base64" in block:
+            mime = block.get("mime_type", "image/png")
+            b64 = block["base64"]
+            normalized.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}"},
+                }
+            )
+        elif btype == "image" and "url" in block:
+            normalized.append({"type": "image_url", "image_url": {"url": block["url"]}})
+        else:
+            normalized.append(block)
+    return normalized
+
+
 def _convert_dict_to_message_with_reasoning(
     _dict: Mapping[str, Any],
 ) -> BaseMessage:
@@ -85,8 +119,14 @@ def _convert_message_to_dict_with_reasoning(message: BaseMessage) -> dict:
     This is required for interleaved / preserved thinking: the Fireworks
     API expects ``reasoning_content`` to be sent back alongside ``content``
     and ``tool_calls`` in subsequent turns.
+
+    Also normalises LangChain-internal image blocks (``type: "image"``)
+    to the OpenAI/Fireworks ``image_url`` format expected by the API.
     """
     message_dict = _convert_message_to_dict(message)
+    # Normalise multimodal content blocks
+    if isinstance(message_dict.get("content"), list):
+        message_dict["content"] = _normalize_content_blocks(message_dict["content"])
     if isinstance(message, AIMessage):
         reasoning_content = message.additional_kwargs.get("reasoning_content")
         if reasoning_content:
