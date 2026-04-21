@@ -1,11 +1,20 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useStream } from '@langchain/langgraph-sdk/react';
+import { useEffect, useMemo, useState } from 'react';
+import { useStream } from '@langchain/react';
+import { HumanMessage, AIMessage } from 'langchain';
+
 import {
 	ApiError,
 	getRunBundle,
 	type AgentInstance,
 	type RunBundleResponse,
 } from '../lib/api';
+import { ChatContainer } from './chat/ChatContainer';
+import { AIBubble, HumanBubble } from './chat/Bubble';
+import { ChatInput } from './chat/ChatInput';
+import { TypingIndicator } from './chat/TypingIndicator';
+import { PresetPrompts } from './chat/PresetPrompts';
+import { Markdown } from './Markdown';
+import { ThemeToggle } from './ThemeToggle';
 
 interface Props {
 	instance: AgentInstance;
@@ -13,19 +22,24 @@ interface Props {
 	onLogout: () => void;
 }
 
+const PRESETS = [
+	'Write a quick-start guide for building a REST API with Express.js',
+	'Compare Python and Rust in a table with pros and cons',
+	'Explain the merge sort algorithm with code examples',
+];
+
 /**
- * Live chat backed by LangGraph's ``useStream`` directly against the
- * Agent Server.
+ * Live chat backed by @langchain/react's ``useStream`` against the
+ * LangGraph Agent Server, layered on top of our run-bundle flow.
  *
  * Flow:
- *   1. Fetch the run-bundle from the backend (auth, configurable, URL).
- *   2. Mount ``useStream`` with that bundle.
- *   3. Render messages + a single textarea/input that calls ``thread.submit``
- *      with the bundle's ``configurable`` so middleware (InstanceConfig,
- *      Memory, SubagentConfig…) sees the right per-user overrides.
- *
- * Stream mode "messages-tuple" gives us partial token streaming for the AI
- * response — sufficient for an MVP without custom UI for tool/reasoning.
+ *   1. Fetch the run-bundle from FastAPI (auth, configurable, URL).
+ *   2. Mount ``useStream`` with the bundle's apiUrl + assistantId.
+ *      Optional same-origin proxy (VITE_USE_AGENT_PROXY) rewrites
+ *      the URL to ``/api/langgraph`` — avoids browser CORS in dev.
+ *   3. Submit user messages with ``config: bundle.config`` so that the
+ *      InstanceConfigMiddleware on the server side sees the per-user
+ *      overrides (primary_model, system_prompt_override, subagent_configs).
  */
 export function ChatView({ instance, onBack, onLogout }: Props) {
 	const [bundle, setBundle] = useState<RunBundleResponse | null>(null);
@@ -52,38 +66,27 @@ export function ChatView({ instance, onBack, onLogout }: Props) {
 		};
 	}, [instance.id, onLogout]);
 
-	if (bundleError) {
-		return (
-			<ChatShell instance={instance} onBack={onBack} onLogout={onLogout}>
-				<div className="rounded-lg border border-rose-700/50 bg-rose-900/30 p-4 text-sm text-rose-200">
-					Failed to load run bundle: {bundleError}
-				</div>
-			</ChatShell>
-		);
-	}
-
-	if (!bundle) {
-		return (
-			<ChatShell instance={instance} onBack={onBack} onLogout={onLogout}>
-				<p className="text-sm text-slate-400">
-					Connecting to the Agent Server…
-				</p>
-			</ChatShell>
-		);
-	}
-
 	return (
 		<ChatShell instance={instance} onBack={onBack} onLogout={onLogout}>
-			<ChatStream bundle={bundle} />
+			{bundleError ? (
+				<div className="m-4 rounded-lg border border-[color:var(--color-error)]/40 bg-[color:var(--color-error)]/10 p-4 text-sm text-[color:var(--color-error)]">
+					Failed to load run bundle: {bundleError}
+				</div>
+			) : !bundle ? (
+				<p className="p-4 text-sm text-text-secondary">
+					Connecting to the Agent Server…
+				</p>
+			) : (
+				<ChatStream bundle={bundle} />
+			)}
 		</ChatShell>
 	);
 }
 
 // --------------------------------------------------------------------------
-// Layout shell — separated so the stream component can remount on bundle
-// changes without disturbing surrounding state (back/logout buttons).
+// Layout shell — header (agent meta + back/logout) + slot for the stream.
+// Kept separate so the stream remounts cleanly on bundle changes.
 // --------------------------------------------------------------------------
-
 function ChatShell({
 	instance,
 	onBack,
@@ -99,51 +102,56 @@ function ChatShell({
 		<div className="mx-auto flex h-screen max-w-3xl flex-col px-4 py-4">
 			<header className="mb-3 flex items-center justify-between">
 				<div>
-					<h1 className="text-lg font-semibold">{instance.display_name}</h1>
-					<p className="text-xs text-slate-500">
+					<h1 className="text-lg font-semibold text-text">
+						{instance.display_name}
+					</h1>
+					<p className="text-xs text-text-tertiary">
 						{instance.base_agent_name}
 						{instance.primary_model && ` · ${instance.primary_model}`}
 					</p>
 				</div>
 				<div className="flex gap-2">
+					<ThemeToggle />
 					<button
 						onClick={onBack}
-						className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800"
+						className="rounded-lg border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary hover:border-primary hover:text-primary transition-colors"
 					>
 						← Agents
 					</button>
 					<button
 						onClick={onLogout}
-						className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800"
+						className="rounded-lg border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary hover:border-primary hover:text-primary transition-colors"
 					>
 						Sign out
 					</button>
 				</div>
 			</header>
-			<div className="flex-1 min-h-0">{children}</div>
+			<div className="flex-1 min-h-0 rounded-xl border border-border bg-surface overflow-hidden">
+				{children}
+			</div>
 		</div>
 	);
 }
 
 // --------------------------------------------------------------------------
-// Stream container — keeps useStream isolated so it only initialises after
-// the bundle is loaded (useStream cannot be conditionally called).
+// Stream container — isolated so useStream is only called once the
+// bundle is available (hook order must be stable).
 // --------------------------------------------------------------------------
 
-interface StreamProps {
-	bundle: RunBundleResponse;
+function resolveApiUrl(bundleUrl: string): string {
+	// Same-origin proxy switch: keeps browser CORS out of the picture in dev.
+	const useProxy = import.meta.env.VITE_USE_AGENT_PROXY === 'true';
+	if (useProxy && typeof window !== 'undefined') {
+		return `${window.location.origin}/api/langgraph`;
+	}
+	return bundleUrl;
 }
 
-interface MessageLike {
-	id?: string;
-	type?: string;
-	role?: string;
-	content?: unknown;
-}
-
-function ChatStream({ bundle }: StreamProps) {
-	const [input, setInput] = useState('');
-	const scrollRef = useRef<HTMLDivElement>(null);
+function ChatStream({ bundle }: { bundle: RunBundleResponse }) {
+	const apiUrl = useMemo(
+		() => resolveApiUrl(bundle.agent_server_url),
+		[bundle.agent_server_url]
+	);
 
 	const defaultHeaders = useMemo<Record<string, string>>(() => {
 		const h: Record<string, string> = {};
@@ -151,127 +159,74 @@ function ChatStream({ bundle }: StreamProps) {
 		return h;
 	}, [bundle.access_token]);
 
-	const thread = useStream<{ messages: MessageLike[] }>({
-		apiUrl: bundle.agent_server_url,
+	// NOTE: we intentionally omit the generic type argument — we don't ship
+	// a compiled langchain graph type on the frontend. ``HumanMessage.isInstance``
+	// / ``AIMessage.isInstance`` work at runtime regardless of the static type.
+	const stream = useStream({
+		apiUrl,
 		assistantId: bundle.assistant_id,
-		messagesKey: 'messages',
 		defaultHeaders,
 	});
 
-	const messages = (thread.messages ?? []) as MessageLike[];
-
-	// Auto-scroll on new messages or while streaming.
-	useEffect(() => {
-		const el = scrollRef.current;
-		if (el) el.scrollTop = el.scrollHeight;
-	}, [messages.length, thread.isLoading]);
-
-	function onSubmit(e: FormEvent) {
-		e.preventDefault();
-		const text = input.trim();
-		if (!text || thread.isLoading) return;
-		setInput('');
-		thread.submit(
-			{ messages: [{ type: 'human', content: text }] },
+	const handleSubmit = (text: string) => {
+		stream.submit(
+			{ messages: [{ type: 'human' as const, content: text }] },
 			{ config: bundle.config }
 		);
-	}
+	};
+
+	const handleNewThread = () => {
+		// ``switchThread(null)`` starts a fresh thread on the next submit.
+		stream.switchThread(null);
+	};
+
+	const messages = stream.messages ?? [];
 
 	return (
-		<div className="flex h-full flex-col rounded-2xl border border-slate-800 bg-slate-900/40">
-			<div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4">
-				{messages.length === 0 && (
-					<p className="text-sm text-slate-500">
-						Say hello — the agent is ready.
-					</p>
-				)}
-				{messages.map((m, idx) => (
-					<MessageBubble key={m.id ?? idx} msg={m} />
-				))}
-				{thread.isLoading && (
-					<p className="text-xs text-slate-500 italic">Streaming…</p>
-				)}
-				{thread.error != null && (
-					<div className="rounded-lg border border-rose-700/50 bg-rose-900/30 px-3 py-2 text-sm text-rose-200">
-						{formatThreadError(thread.error)}
-					</div>
-				)}
-			</div>
-
-			<form
-				onSubmit={onSubmit}
-				className="flex gap-2 border-t border-slate-800 p-3"
-			>
-				<input
-					value={input}
-					onChange={(e) => setInput(e.target.value)}
-					placeholder="Type a message…"
-					disabled={thread.isLoading}
-					className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-sky-500 disabled:opacity-50"
+		<ChatContainer
+			input={
+				<ChatInput
+					onSubmit={handleSubmit}
+					disabled={stream.isLoading}
+					onNewThread={messages.length > 0 ? handleNewThread : undefined}
 				/>
-				<button
-					type="submit"
-					disabled={thread.isLoading || !input.trim()}
-					className="rounded-lg bg-sky-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-sky-400 disabled:opacity-50"
-				>
-					Send
-				</button>
-				{thread.isLoading && (
-					<button
-						type="button"
-						onClick={() => thread.stop()}
-						className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800"
-					>
-						Stop
-					</button>
-				)}
-			</form>
-		</div>
-	);
-}
+			}
+		>
+			{messages.length === 0 && (
+				<PresetPrompts prompts={PRESETS} onSelect={handleSubmit} />
+			)}
 
-function MessageBubble({ msg }: { msg: MessageLike }) {
-	const role = msg.type ?? msg.role ?? 'ai';
-	const isUser = role === 'human' || role === 'user';
-	const text = renderContent(msg.content);
-
-	return (
-		<div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-			<div
-				className={`max-w-[80%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${
-					isUser ? 'bg-sky-600 text-slate-950' : 'bg-slate-800 text-slate-100'
-				}`}
-			>
-				{text || <span className="opacity-50">…</span>}
-			</div>
-		</div>
-	);
-}
-
-/**
- * LangChain message ``content`` is either a string or a list of typed blocks
- * (``text``, ``tool_use``, ``thinking`` …).  For the MVP we render only the
- * text payloads and drop the rest — keeps the surface tiny.
- */
-function renderContent(content: unknown): string {
-	if (typeof content === 'string') return content;
-	if (Array.isArray(content)) {
-		return content
-			.map((block) => {
-				if (typeof block === 'string') return block;
-				if (block && typeof block === 'object') {
-					const b = block as { type?: string; text?: string };
-					if (b.type === 'text' && typeof b.text === 'string') return b.text;
+			{messages.map((msg, idx) => {
+				const key = msg.id ?? idx;
+				if (HumanMessage.isInstance(msg)) {
+					return (
+						<HumanBubble key={key}>
+							<Markdown>{msg.text}</Markdown>
+						</HumanBubble>
+					);
 				}
-				return '';
-			})
-			.filter(Boolean)
-			.join('');
-	}
-	return '';
+				if (AIMessage.isInstance(msg)) {
+					return (
+						<AIBubble key={key}>
+							<Markdown>{msg.text}</Markdown>
+						</AIBubble>
+					);
+				}
+				return null;
+			})}
+
+			{stream.isLoading && <TypingIndicator />}
+
+			{stream.error != null && (
+				<div className="rounded-lg border border-[color:var(--color-error)]/40 bg-[color:var(--color-error)]/10 px-3 py-2 text-sm text-[color:var(--color-error)]">
+					{formatStreamError(stream.error)}
+				</div>
+			)}
+		</ChatContainer>
+	);
 }
 
-function formatThreadError(err: unknown): string {
+function formatStreamError(err: unknown): string {
 	if (!err) return 'Unknown error';
 	if (err instanceof Error) return err.message;
 	if (typeof err === 'string') return err;

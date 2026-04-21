@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { ApiError, login } from '../lib/api';
 import { setToken } from '../lib/auth';
+import { ThemeToggle } from './ThemeToggle';
 
 interface Props {
 	onAuthenticated: () => void;
@@ -41,20 +42,27 @@ export function LoginForm({ onAuthenticated }: Props) {
 	}
 
 	return (
-		<div className="flex min-h-screen items-center justify-center px-4">
+		<div className="flex min-h-screen items-center justify-center bg-surface px-4">
 			<form
 				onSubmit={onSubmit}
-				className="w-full max-w-sm space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-6 shadow-xl"
+				className="w-full max-w-sm space-y-4 rounded-2xl border border-border bg-surface-secondary p-6 shadow-lg"
 			>
-				<header>
-					<h1 className="text-xl font-semibold">Inference Core — Chat</h1>
-					<p className="text-sm text-slate-400">Sign in to continue</p>
+				<header className="flex items-start justify-between gap-2">
+					<div>
+						<h1 className="text-xl font-semibold text-text">
+							Inference Core — Chat
+						</h1>
+						<p className="text-sm text-text-secondary">Sign in to continue</p>
+					</div>
+					<ThemeToggle />
 				</header>
 
 				<label className="block text-sm">
-					<span className="mb-1 block text-slate-300">Username or email</span>
+					<span className="mb-1 block text-text-secondary">
+						Username or email
+					</span>
 					<input
-						className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-sky-500"
+						className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
 						value={username}
 						onChange={(e) => setUsername(e.target.value)}
 						autoFocus
@@ -64,10 +72,10 @@ export function LoginForm({ onAuthenticated }: Props) {
 				</label>
 
 				<label className="block text-sm">
-					<span className="mb-1 block text-slate-300">Password</span>
+					<span className="mb-1 block text-text-secondary">Password</span>
 					<input
 						type="password"
-						className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-sky-500"
+						className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
 						value={password}
 						onChange={(e) => setPassword(e.target.value)}
 						required
@@ -76,7 +84,7 @@ export function LoginForm({ onAuthenticated }: Props) {
 				</label>
 
 				{error && (
-					<div className="rounded-lg border border-rose-700/50 bg-rose-900/30 px-3 py-2 text-sm text-rose-200">
+					<div className="rounded-lg border border-[color:var(--color-error)]/40 bg-[color:var(--color-error)]/10 px-3 py-2 text-sm text-[color:var(--color-error)]">
 						{error}
 					</div>
 				)}
@@ -84,7 +92,7 @@ export function LoginForm({ onAuthenticated }: Props) {
 				<button
 					type="submit"
 					disabled={loading}
-					className="w-full rounded-lg bg-sky-500 px-3 py-2 font-medium text-slate-950 transition hover:bg-sky-400 disabled:opacity-50"
+					className="w-full rounded-lg bg-primary-dark px-3 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40 transition-opacity"
 				>
 					{loading ? 'Signing in…' : 'Sign in'}
 				</button>
