@@ -1,9 +1,32 @@
 {
-  "dependencies": ["."],
-  "graphs": {
-    "default_agent": "./agent_graphs.py:default_agent",
-    "weather_agent": "./agent_graphs.py:weather_agent",
-    "deep_planner": "./agent_graphs.py:deep_planner"
-  },
-  "env": "./.env"
+	"dependencies": ["."],
+	"graphs": {
+		"default_agent": "./agent_graphs.py:default_agent",
+		"weather_agent": "./agent_graphs.py:weather_agent",
+		"deep_planner": "./agent_graphs.py:deep_planner"
+	},
+	"env": "./.env",
+	"auth": {
+		"path": "./langgraph_auth.py:auth",
+		"openapi": {
+			"securitySchemes": {
+				"bearerAuth": {
+					"type": "http",
+					"scheme": "bearer",
+					"bearerFormat": "JWT"
+				}
+			},
+			"security": [{ "bearerAuth": [] }]
+		},
+		"disable_studio_auth": true
+	},
+	"http": {
+		"cors": {
+			"allow_origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
+			"allow_methods": ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+			"allow_headers": ["Authorization", "Content-Type", "X-Request-Id"],
+			"allow_credentials": true,
+			"max_age": 600
+		}
+	}
 }

@@ -275,3 +275,126 @@ async def test_agent_instance_validation(async_test_client_factory):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+
+
+# =====================================================================
+# /run-bundle endpoint
+# =====================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_agent_instance_run_bundle(async_test_client_factory, monkeypatch):
+    """`/run-bundle` returns the handshake payload the frontend needs.
+
+    Verifies:
+      * 503 when AGENT_SERVER_URL is unset.
+      * 200 happy path includes all expected fields and the configurable
+        dict carries instance overrides (system_prompt_append, instance_id).
+      * Bearer token from inbound Authorization header is echoed back.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from inference_core.core.config import get_settings
+    from inference_core.core.dependecies import get_current_active_user, get_db
+    from inference_core.database.sql.connection import (
+        Base,
+        create_database_engine,
+        get_non_singleton_session_maker,
+    )
+    from inference_core.main_factory import create_application
+
+    engine = create_database_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_maker = get_non_singleton_session_maker(engine=engine)
+
+    async with session_maker() as session:
+        session.add(
+            User(
+                id=TEST_USER_ID,
+                email="bundle@example.com",
+                username="bundle",
+                hashed_password="x",
+            )
+        )
+        await session.commit()
+
+    async def override_get_db():
+        async with session_maker() as s:
+            yield s
+
+    async def override_user():
+        return {"id": str(TEST_USER_ID), "username": "bundle"}
+
+    app = create_application()
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_active_user] = override_user
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # --- Create instance to bundle ---
+            templates = (await client.get("/api/v1/agent-instances/templates")).json()[
+                "templates"
+            ]
+            base_agent = templates[0]["agent_name"]
+
+            create = await client.post(
+                "/api/v1/agent-instances",
+                json={
+                    "instance_name": "bundle-agent",
+                    "display_name": "Bundle Agent",
+                    "base_agent_name": base_agent,
+                    "system_prompt_append": "Be terse.",
+                },
+            )
+            assert create.status_code == 201, create.text
+            instance_id = create.json()["id"]
+
+            # --- 503 when no Agent Server URL configured ---
+            settings = get_settings()
+            original_url = settings.agent_server_url
+            settings.agent_server_url = None
+            try:
+                resp_no_url = await client.get(
+                    f"/api/v1/agent-instances/{instance_id}/run-bundle"
+                )
+                assert resp_no_url.status_code == 503
+            finally:
+                settings.agent_server_url = original_url or "http://localhost:2024"
+
+            # --- Happy path with token echo ---
+            resp = await client.get(
+                f"/api/v1/agent-instances/{instance_id}/run-bundle?session_id=sess-1",
+                headers={"Authorization": "Bearer dummy-token-xyz"},
+            )
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+
+            assert data["instance_id"] == instance_id
+            assert data["instance_name"] == "bundle-agent"
+            assert data["base_agent_name"] == base_agent
+            assert data["assistant_id"] == base_agent
+            assert data["agent_server_url"] == settings.agent_server_url
+            assert data["access_token"] == "dummy-token-xyz"
+            assert isinstance(data["is_remote"], bool)
+
+            cfg = data["config"]["configurable"]
+            assert cfg["instance_id"] == instance_id
+            assert cfg["instance_name"] == "bundle-agent"
+            assert cfg["session_id"] == "sess-1"
+            assert cfg["user_id"] == str(TEST_USER_ID)
+            assert cfg["system_prompt_append"] == "Be terse."
+
+            # --- 404 for foreign instance ---
+            other_uuid = uuid.uuid4()
+            resp_404 = await client.get(
+                f"/api/v1/agent-instances/{other_uuid}/run-bundle"
+            )
+            assert resp_404.status_code == 404
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()

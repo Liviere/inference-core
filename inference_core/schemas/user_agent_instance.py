@@ -229,3 +229,81 @@ class AgentInstanceRunResponse(BaseModel):
     instance_id: UUID
     instance_name: str
     cost_metrics: Optional[Dict[str, Any]] = None
+
+
+# ============================================================
+# Run Bundle (frontend handshake)
+# ============================================================
+
+
+class RunBundleConfig(BaseModel):
+    """Wrapper around the ``configurable`` dict consumed by the Agent Server.
+
+    Mirrors the LangGraph SDK ``RunnableConfig`` shape so the frontend can
+    feed it straight into ``useStream({ defaultConfig: bundle.config })``.
+    """
+
+    configurable: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Runtime overrides forwarded to the Agent Server via "
+            "``config.configurable`` — read by InstanceConfigMiddleware, "
+            "MemoryMiddleware, SubagentConfigMiddleware, etc."
+        ),
+    )
+
+
+class RunBundleResponse(BaseModel):
+    """Everything the frontend needs to open a ``useStream`` connection.
+
+    WHY: Hides backend wiring from the frontend.  When the user picks an
+    agent instance, the UI calls this endpoint once and receives:
+
+      * ``assistant_id`` — graph identifier on the Agent Server
+      * ``agent_server_url`` — base URL where ``useStream`` should connect
+      * ``access_token`` — short-lived JWT for the LangGraph auth handler
+      * ``config.configurable`` — instance overrides (model, prompts,
+        subagent_configs, memory flags) that the middleware stack honours
+
+    The frontend then opens a ``useStream`` session.  No additional backend
+    round-trips are required for the lifetime of that conversation.
+    """
+
+    instance_id: UUID
+    instance_name: str
+    display_name: str
+    base_agent_name: str
+    description: Optional[str] = None
+
+    assistant_id: str = Field(
+        ...,
+        description=(
+            "Graph identifier on the Agent Server (matches the YAML "
+            "``remote_graph_id`` or the agent name)."
+        ),
+    )
+    agent_server_url: str = Field(
+        ...,
+        description="Base URL of the LangGraph Agent Server.",
+    )
+    access_token: Optional[str] = Field(
+        None,
+        description=(
+            "JWT to attach as ``Authorization: Bearer <token>`` when "
+            "connecting to the Agent Server.  Echoed from the inbound "
+            "Authorization header so the same token flows through."
+        ),
+    )
+
+    config: RunBundleConfig = Field(
+        default_factory=RunBundleConfig,
+        description="Runtime overrides for this instance.",
+    )
+
+    is_remote: bool = Field(
+        ...,
+        description=(
+            "Whether the agent will be served by the Agent Server "
+            "(execution_mode='remote' + AGENT_SERVER_ENABLED=True)."
+        ),
+    )

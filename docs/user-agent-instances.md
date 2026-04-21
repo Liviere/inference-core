@@ -47,6 +47,30 @@ When creating or updating an instance, the following fields are available:
 - **Delete Instance**: `DELETE /api/v1/agent-instances/{id}`  
   Soft-delete an instance.
 
+- **Get Run Bundle**: `GET /api/v1/agent-instances/{id}/run-bundle`  
+  Returns the frontend handshake payload for a direct LangGraph Agent Server
+  connection. Accepts optional `session_id` query param for resumable threads.
+
+## Direct Frontend Connection
+
+When the chat UI talks to the LangGraph Agent Server directly (for example via
+`@langchain/react` `useStream`), it should first call the run-bundle endpoint.
+The backend resolves the user's instance overrides and returns:
+
+- `assistant_id` — which graph to invoke on the Agent Server.
+- `agent_server_url` — base URL for the LangGraph runtime.
+- `access_token` — the same bearer token received by FastAPI, echoed back so
+  the frontend can reuse it for the Agent Server request.
+- `config.configurable` — resolved runtime overrides such as `primary_model`,
+  `system_prompt_override`, `system_prompt_append`, `user_id`, `session_id`,
+  `instance_id`, and subagent settings.
+- `is_remote` — whether the selected instance is currently configured to run
+  through the Agent Server.
+
+This keeps the frontend unaware of the YAML schema and guarantees that the
+same override resolution path is used for both backend-triggered runs and
+direct frontend streaming sessions.
+
 ## Example Workflow
 
 1.  **Check Templates**:
@@ -65,5 +89,12 @@ When creating or updating an instance, the following fields are available:
     }
     ```
 
-3.  **Use in Chat**:
-    (Future Integration) When starting a chat, the user provides `agent_instance_id` instead of a generic `agent_config_name`. The system loads the base configuration and applies the user's overrides at runtime.
+3.  **Request Run Bundle**:
+    The chat UI calls `/api/v1/agent-instances/{id}/run-bundle` and receives
+    the Agent Server URL, assistant identifier, echoed bearer token, and the
+    resolved `config.configurable` payload for this instance.
+
+4.  **Use in Chat**:
+    The frontend opens a direct streaming session to the Agent Server using the
+    bundle data. The same per-instance overrides are honoured by the remote
+    middleware stack without the UI needing to reconstruct them.
