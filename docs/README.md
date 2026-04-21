@@ -15,6 +15,7 @@ Central index of project documentation
 | LangChain Agents                   | YAML-configured agents, tools, middleware   | `agents-service.md`                  |
 | LangGraph Agent Server             | Remote execution, dev/prod workflow         | `agents-service.md#remote-execution` |
 | User Agent Instances               | User-customizable agent configurations      | `user-agent-instances.md`            |
+| Frontend Chat MVP                  | React + Vite UI for direct Agent Server chat | `../frontend/chat/README.md`         |
 | Agent Memory                       | Long-term memory for agents                 | `agents.md#agent-memory`             |
 | Vector Store Guide                 | Semantic search & ingestion                 | `vector-store.md`                    |
 | Provider Extensions (OpenAI batch) | Provider specific behavior                  | `providers/openai-batch-provider.md` |
