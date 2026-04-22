@@ -10,7 +10,7 @@ import {
 	type RunBundleResponse,
 } from '../lib/api';
 import { ChatContainer } from './chat/ChatContainer';
-import { AIBubble, HumanBubble } from './chat/Bubble';
+import { AIBubble, HumanBubble, ThinkingBubble } from './chat/Bubble';
 import { ChatInput } from './chat/ChatInput';
 import { TypingIndicator } from './chat/TypingIndicator';
 import { PresetPrompts } from './chat/PresetPrompts';
@@ -231,8 +231,66 @@ function ChatStream({ bundle }: { bundle: RunBundleResponse }) {
 					);
 					const hasText = typeof msg.text === 'string' && msg.text.length > 0;
 
+					// Reasoning tokens: extract the model's chain-of-thought.
+					//
+					// Sources are provider-dependent and we accept either:
+					//   1. Standardized `contentBlocks` with `type === 'reasoning'`
+					//      (OpenAI o-series, Anthropic extended thinking — when the
+					//       langchain adapter already normalizes them).
+					//   2. `additional_kwargs.reasoning_content` — Fireworks, some
+					//      DeepInfra models, vLLM-compatible servers.
+					//   3. `additional_kwargs.reasoning` — a few other adapters.
+					//
+					// We prefer contentBlocks when present (gives us multiple
+					// chunks in order) and fall back to the flat string fields.
+					const reasoningFromBlocks = (
+						(
+							msg as unknown as {
+								contentBlocks?: Array<{ type: string; reasoning?: string }>;
+							}
+						).contentBlocks ?? []
+					)
+						.filter(
+							(b) =>
+								b.type === 'reasoning' &&
+								typeof b.reasoning === 'string' &&
+								b.reasoning.trim().length > 0
+						)
+						.map((b) => b.reasoning as string)
+						.join('');
+
+					const additionalKwargs = (
+						msg as unknown as {
+							additional_kwargs?: Record<string, unknown>;
+						}
+					).additional_kwargs;
+					const reasoningFromKwargs =
+						typeof additionalKwargs?.reasoning_content === 'string'
+							? (additionalKwargs.reasoning_content as string)
+							: typeof additionalKwargs?.reasoning === 'string'
+								? (additionalKwargs.reasoning as string)
+								: '';
+
+					const reasoning =
+						reasoningFromBlocks.length > 0
+							? reasoningFromBlocks
+							: reasoningFromKwargs;
+
+					// "Reasoning phase" = model is still streaming and hasn't
+					// produced any text blocks yet. Once text shows up the
+					// thinking bubble stops spinning.
+					const isLastMessage = idx === messages.length - 1;
+					const isReasoningStreaming =
+						stream.isLoading && isLastMessage && !hasText;
+
 					return (
 						<div key={key} className="space-y-2">
+							{reasoning.length > 0 && (
+								<ThinkingBubble
+									content={reasoning}
+									isStreaming={isReasoningStreaming}
+								/>
+							)}
 							{hasText && (
 								<AIBubble>
 									<Markdown>{msg.text}</Markdown>

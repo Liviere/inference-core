@@ -94,6 +94,8 @@ poetry run langgraph dev --no-browser
   typing-indicator, and prompt-preset components.
 - Message bubbles render markdown using GFM, so tables, fenced code blocks,
   lists, and inline code display correctly.
+- Reasoning output is shown in a collapsible thought-process bubble while the
+  model is streaming or after the final answer lands.
 - Supported tool calls render as structured cards instead of raw JSON:
   weather results, calculator output, search hits, and a generic fallback for
   unknown tool names.
@@ -102,7 +104,7 @@ poetry run langgraph dev --no-browser
 ## What this MVP does NOT cover
 
 - Refresh-token rotation (token simply expires and the user re-logs in)
-- Reasoning bubbles and dedicated UI for subagent / branch timelines
+- Dedicated UI for subagent / branch timelines
 - HITL / `interrupt()` resumes
 - Time travel / thread history sidebar
 - Streaming of subagent / supervisor branches with their own UI
