@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { ToolCallState, ToolMessage } from './utils';
 import { tryParseJSON } from './utils';
 
@@ -7,6 +8,50 @@ interface SearchResult {
 	title: string;
 	url: string;
 	snippet: string;
+}
+
+/**
+ * Single search result row. Keeps its own expand/collapse state so each
+ * snippet can be toggled independently. Collapsed view clamps the snippet
+ * to three lines; expanded view shows the full text.
+ */
+function SearchResultItem({ r }: { r: SearchResult }) {
+	const [expanded, setExpanded] = useState(false);
+	const snippet = r.snippet ?? '';
+	// Heuristic: only show the toggle when there's plausibly more than 3 lines
+	// worth of content. Avoids a useless "Show more" on short snippets.
+	const canExpand = snippet.length > 180 || snippet.split('\n').length > 3;
+
+	return (
+		<div>
+			<div className="text-sm font-medium text-text">{r.title}</div>
+			<a
+				href={r.url}
+				target="_blank"
+				rel="noopener noreferrer"
+				className="text-[11px] text-primary truncate mt-0.5 block"
+			>
+				{r.url}
+			</a>
+			<div
+				className={
+					'text-xs text-text-tertiary mt-0.5 leading-relaxed whitespace-pre-wrap ' +
+					(expanded ? '' : 'line-clamp-3')
+				}
+			>
+				{snippet}
+			</div>
+			{canExpand && (
+				<button
+					type="button"
+					onClick={() => setExpanded((v) => !v)}
+					className="text-[11px] text-primary hover:underline mt-1"
+				>
+					{expanded ? 'Show less' : 'Show more'}
+				</button>
+			)}
+		</div>
+	);
 }
 
 /**
@@ -88,18 +133,7 @@ export function SearchToolCard({
 			<div className="space-y-3">
 				{results.map((r, i) => (
 					<div key={i} className={i > 0 ? 'pt-3 border-t border-border' : ''}>
-						<div className="text-sm font-medium text-text">{r.title}</div>
-						<a
-							href={r.url}
-							target="_blank"
-							rel="noopener noreferrer"
-							className="text-[11px] text-primary truncate mt-0.5 block"
-						>
-							{r.url}
-						</a>
-						<div className="text-xs text-text-tertiary mt-0.5 leading-relaxed">
-							{r.snippet}
-						</div>
+						<SearchResultItem r={r} />
 					</div>
 				))}
 			</div>
