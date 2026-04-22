@@ -30,18 +30,44 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_tool_user_id(user_id: Optional[str]) -> str:
-    """Return user_id or resolve from runtime context var.
+    """Return user_id or resolve it from the current runtime.
 
     WHY: On the Agent Server, tools are instantiated at graph-build time
     (module load) without a concrete user_id.  The actual value is injected
-    per-request via ``populate_from_configurable()`` which writes to the
-    ``_runtime_context._user_id`` context var.
+    per-request via ``RunnableConfig.configurable`` — we check that source
+    directly because LangGraph tool-nodes may run in a different asyncio
+    task than the middleware hook that populates ``_runtime_context``
+    contextvars (e.g. subagent graphs, which skip InstanceConfigMiddleware
+    by design), making the contextvar fallback unreliable.
+
+    Resolution order:
+      1. Explicit ``user_id`` passed to the tool at construction time.
+      2. ``get_config()["configurable"]["user_id"]`` — always available
+         inside a LangGraph run, unaffected by task boundaries.
+      3. ``_runtime_context._user_id`` contextvar — legacy fallback for
+         callers that populate it but do not set configurable.
 
     Raises:
-        RuntimeError: When no user_id is available from either source.
+        RuntimeError: When no user_id is available from any source.
     """
     if user_id:
         return user_id
+
+    # Source 2: RunnableConfig.configurable — robust across task boundaries.
+    try:
+        from langgraph.config import get_config
+
+        cfg = get_config() or {}
+        configurable = cfg.get("configurable", {}) if isinstance(cfg, dict) else {}
+        cfg_uid = configurable.get("user_id")
+        if cfg_uid:
+            return str(cfg_uid)
+    except (RuntimeError, ImportError):
+        # get_config() raises RuntimeError outside a LangGraph run; ImportError
+        # guards against unexpected langgraph packaging changes.
+        pass
+
+    # Source 3: legacy contextvar set by InstanceConfigMiddleware.before_agent.
     from inference_core.agents.middleware._runtime_context import (
         get_user_id as _ctx_get_user_id,
     )
@@ -49,9 +75,11 @@ def _resolve_tool_user_id(user_id: Optional[str]) -> str:
     ctx_uid = _ctx_get_user_id()
     if ctx_uid is not None:
         return str(ctx_uid)
+
     raise RuntimeError(
-        "Memory tool requires user_id but none was provided and "
-        "runtime context var is empty.  Ensure user_id is forwarded "
+        "Memory tool requires user_id but none was provided, "
+        "RunnableConfig.configurable['user_id'] is missing, and the "
+        "runtime contextvar is empty.  Ensure user_id is forwarded "
         "in configurable metadata."
     )
 
