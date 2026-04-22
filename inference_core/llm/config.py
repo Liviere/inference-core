@@ -700,6 +700,28 @@ class AgentConfig(BaseModel):
         ),
     )
 
+    # --- Agent Server (LangGraph) graph-build policy ---
+    # These fields move decisions previously hardcoded in agent_graphs.py into
+    # the YAML so the Agent Server entry point can iterate config generically.
+    server_graph: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether a compiled graph for this agent should be exposed by the "
+            "LangGraph Agent Server entry point (``agent_graphs.py``). "
+            "None (default) = auto: build iff ``execution_mode == 'remote'``. "
+            "Explicit True/False overrides the auto rule."
+        ),
+    )
+    use_memory: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether the Agent Server should compile this agent with memory "
+            "middleware (store + tools). None (default) = auto-detect from "
+            "``memory_tools`` / ``memory_session_context_enabled`` / the "
+            "global AGENT_MEMORY_ENABLED setting. Explicit True/False wins."
+        ),
+    )
+
     _VALID_MEMORY_TOOL_NAMES: ClassVar[frozenset[str]] = frozenset(
         {
             "save_memory_store",
@@ -825,6 +847,51 @@ class EmbeddingConfig(BaseModel):
         return value
 
 
+class ToolProviderEntry(BaseModel):
+    """Declarative registration entry for a LangChain ``ToolProvider``.
+
+    WHY: Moves provider wiring out of ``agent_graphs.py`` into YAML so that
+    the Agent Server entry point can iterate and register providers without
+    per-app code edits.
+
+    The dict key in ``LLMConfig.tool_providers`` is the *logical provider
+    name* and must equal the ``name`` attribute of the instantiated provider;
+    this equality is enforced at registration time.
+    """
+
+    class_path: str = Field(
+        ...,
+        description=(
+            "Fully qualified import path to the provider class in the form "
+            "'module.submodule:ClassName'. Example: "
+            "'inference_core.agents.tools.weather_provider:WeatherToolsProvider'."
+        ),
+    )
+    enabled: bool = Field(
+        default=True,
+        description="When False, the provider is skipped during registration.",
+    )
+    kwargs: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional keyword arguments passed to the provider constructor.",
+    )
+
+    @field_validator("class_path")
+    @classmethod
+    def validate_class_path(cls, v: str) -> str:
+        # Enforce 'module:Attr' format so importlib + getattr can resolve it.
+        if ":" not in v or v.count(":") != 1:
+            raise ValueError(
+                f"class_path must be in the form 'module.path:ClassName', got: {v!r}"
+            )
+        module_part, attr_part = v.split(":", 1)
+        if not module_part or not attr_part:
+            raise ValueError(
+                f"class_path must have non-empty module and class parts, got: {v!r}"
+            )
+        return v
+
+
 class LLMConfig:
     """Main LLM configuration class"""
 
@@ -848,6 +915,7 @@ class LLMConfig:
         )  # Initialize with defaults
         self.mcp_config: MCPConfig = MCPConfig()  # Initialize MCP config
         self.embedding_configs: Dict[str, EmbeddingConfig] = {}
+        self.tool_provider_configs: Dict[str, ToolProviderEntry] = {}
         self._load_config()
 
     def _load_config(self):
@@ -1057,6 +1125,9 @@ class LLMConfig:
         # Parse embedding configurations
         self._load_embedding_config(yaml_config)
 
+        # Parse tool provider registry (declarative provider registration)
+        self._load_tool_provider_configs(yaml_config)
+
     def _load_batch_config(self, yaml_config: Dict[str, Any]):
         """Load and validate batch configuration from YAML"""
         batch_data = yaml_config.get("batch", {})
@@ -1251,6 +1322,39 @@ class LLMConfig:
     def get_embedding_config(self, name: str = "default") -> Optional[EmbeddingConfig]:
         """Get a named embedding configuration."""
         return self.embedding_configs.get(name)
+
+    def _load_tool_provider_configs(self, yaml_config: Dict[str, Any]):
+        """Parse the top-level ``tool_providers:`` section.
+
+        WHY: Declarative tool provider registration keeps ``agent_graphs.py``
+        generic — the Agent Server entry point iterates this mapping instead
+        of hand-wiring ``register_*_provider()`` calls per application.
+
+        Each entry is validated as :class:`ToolProviderEntry`. Parse errors
+        are logged and the entry is skipped so a single malformed block does
+        not break the whole config load.
+        """
+        providers_data = yaml_config.get("tool_providers", {}) or {}
+        self.tool_provider_configs = {}
+
+        for name, entry_data in providers_data.items():
+            if not isinstance(entry_data, dict):
+                logging.warning(
+                    "tool_providers['%s'] must be a mapping, got %s; skipping",
+                    name,
+                    type(entry_data).__name__,
+                )
+                continue
+            try:
+                self.tool_provider_configs[name] = ToolProviderEntry(**entry_data)
+            except Exception as exc:
+                logging.error(
+                    "Failed to parse tool_providers['%s']: %s", name, exc
+                )
+
+    def get_tool_provider_config(self, name: str) -> Optional[ToolProviderEntry]:
+        """Return a named tool provider entry, or None when not configured."""
+        return self.tool_provider_configs.get(name)
 
     def _load_fallback_config(self):
         """Load fallback configuration when YAML file is not available"""

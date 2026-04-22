@@ -62,3 +62,23 @@ export function SparklesIcon({
 		</svg>
 	);
 }
+
+/**
+ * Rotating chevron used by collapsibles (e.g. GenericToolCard's result
+ * panel). ``open`` toggles a CSS rotate transform.
+ */
+export function ChevronIcon({ open = false }: { open?: boolean }) {
+	return (
+		<svg
+			className={`w-3.5 h-3.5 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={2}
+			strokeLinecap="round"
+			strokeLinejoin="round"
+		>
+			<polyline points="9 18 15 12 9 6" />
+		</svg>
+	);
+}

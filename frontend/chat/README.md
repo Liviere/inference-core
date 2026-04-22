@@ -60,7 +60,7 @@ Relevant env vars:
 - `VITE_BACKEND_URL` — FastAPI base URL for the `/api` dev proxy.
 - `VITE_AGENT_SERVER_URL` — LangGraph Agent Server URL behind `/api/langgraph`.
 - `VITE_USE_AGENT_PROXY=true` — rewrites `bundle.agent_server_url` to
-   `${window.location.origin}/api/langgraph`, avoiding browser CORS in dev.
+  `${window.location.origin}/api/langgraph`, avoiding browser CORS in dev.
 
 In separate terminals:
 
@@ -94,12 +94,15 @@ poetry run langgraph dev --no-browser
   typing-indicator, and prompt-preset components.
 - Message bubbles render markdown using GFM, so tables, fenced code blocks,
   lists, and inline code display correctly.
+- Supported tool calls render as structured cards instead of raw JSON:
+  weather results, calculator output, search hits, and a generic fallback for
+  unknown tool names.
 - The input exposes a "new thread" action once a conversation exists.
 
 ## What this MVP does NOT cover
 
 - Refresh-token rotation (token simply expires and the user re-logs in)
-- Tool-call cards and reasoning bubbles
+- Reasoning bubbles and dedicated UI for subagent / branch timelines
 - HITL / `interrupt()` resumes
 - Time travel / thread history sidebar
 - Streaming of subagent / supervisor branches with their own UI

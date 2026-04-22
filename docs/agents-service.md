@@ -312,7 +312,27 @@ AGENT_SERVER_ENABLED=true
 AGENT_SERVER_URL=http://localhost:2024
 ```
 
-Graphs are defined in `langgraph.json` → `agent_graphs.py` → `graph_builder.py`. The builder reads the same `llm_config.yaml` to create identical model + tool configurations.
+Graphs are exposed through `langgraph.json` → `agent_graphs.py` → `graph_registry.py` → `graph_builder.py`.
+
+The Agent Server entry point is now YAML-driven:
+
+- top-level `tool_providers:` entries declare provider classes to import and register before graph compilation
+- each agent decides whether it is exposed by the Agent Server via `server_graph` or the default `execution_mode: 'remote'` rule
+- each compiled graph decides whether memory middleware is included via `use_memory` or auto-detection from the agent's `memory_*` hints
+
+That keeps the remote bootstrap path aligned with the same `llm_config.yaml` used by local agent execution.
+
+When the set of exposed Agent Server graphs changes, regenerate `langgraph.json` from YAML:
+
+```bash
+# Rewrite only langgraph.json -> graphs from llm_config.yaml
+python scripts/sync_langgraph_json.py
+
+# CI / validation mode: fail when langgraph.json is out of sync
+python scripts/sync_langgraph_json.py --check
+```
+
+The `tool_providers:` dictionary key must match the provider instance's `name`, because agents still reference that logical key from `local_tool_providers`.
 
 ### Architecture
 

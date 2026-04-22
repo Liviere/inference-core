@@ -94,6 +94,8 @@ Docker compose uses a split worker topology by default: the threads worker handl
 | `GOOGLE_API_KEY`            | (none)    | Gemini key                             |
 | `ANTHROPIC_API_KEY`         | (none)    | Claude key                             |
 | `FIREWORKS_API_KEY`         | (none)    | Fireworks key                          |
+| `TAVILY_API_KEY`            | (none)    | Tavily key for internet search tools   |
+| `OPEN_WEATHER_API_KEY`      | (none)    | OpenWeatherMap key for weather tools   |
 | `LLM_COMPLETION_MODEL`      | (none)    | Override model for completion task     |
 | `LLM_CHAT_MODEL`            | (none)    | Override model for chat task           |
 | `LLM_ENABLE_CACHING`        | true      | Enable in-process fallback cache       |
@@ -354,6 +356,45 @@ agents:
     primary: 'gpt-5-mini'
     execution_mode: 'remote' # 'local' | 'remote'
 ```
+
+### YAML-driven Agent Server Graphs
+
+The Agent Server bootstrap path can now be driven entirely from `llm_config.yaml`.
+
+- `tool_providers:` declaratively registers LangChain tool-provider classes for the Agent Server using `class_path: 'module.path:ClassName'`.
+- `enabled: false` skips a provider without deleting its YAML entry.
+- `kwargs:` passes constructor arguments into the provider instance.
+- `server_graph:` controls whether an agent is exposed by `agent_graphs.py`.
+  Omit it to use the default rule: build only when `execution_mode: 'remote'`.
+- `use_memory:` controls whether the compiled Agent Server graph includes
+  memory middleware. Omit it to auto-detect from the agent's `memory_*`
+  hints together with `AGENT_MEMORY_ENABLED`.
+
+Example:
+
+```yaml
+tool_providers:
+  weather_agent_tools:
+    class_path: 'inference_core.agents.tools.weather_provider:WeatherToolsProvider'
+  default_agent_tools:
+    class_path: 'inference_core.agents.tools.weather_provider:DefaultAgentToolsProvider'
+
+agents:
+  weather_agent:
+    primary: 'gpt-5-mini'
+    execution_mode: 'remote'
+    local_tool_providers: ['weather_agent_tools']
+    server_graph: true
+    use_memory: false
+```
+
+Operational note: after changing which agents should be exposed remotely, run
+`python scripts/sync_langgraph_json.py` to rewrite the `graphs` section in
+`langgraph.json`, or `python scripts/sync_langgraph_json.py --check` in CI.
+
+Provider-specific note: the example weather provider requires
+`OPEN_WEATHER_API_KEY`; the bundled `default_agent_tools` provider also uses
+`TAVILY_API_KEY` for `internet_search`.
 
 Examples:
 

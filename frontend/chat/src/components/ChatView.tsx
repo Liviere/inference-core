@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStream } from '@langchain/react';
+import type { ToolCallWithResult } from '@langchain/react';
 import { HumanMessage, AIMessage } from 'langchain';
 
 import {
@@ -15,6 +16,7 @@ import { TypingIndicator } from './chat/TypingIndicator';
 import { PresetPrompts } from './chat/PresetPrompts';
 import { Markdown } from './Markdown';
 import { ThemeToggle } from './ThemeToggle';
+import { ToolCallCard } from './tool-cards/ToolCallCard';
 
 interface Props {
 	instance: AgentInstance;
@@ -23,9 +25,9 @@ interface Props {
 }
 
 const PRESETS = [
-	'Write a quick-start guide for building a REST API with Express.js',
-	'Compare Python and Rust in a table with pros and cons',
-	'Explain the merge sort algorithm with code examples',
+	"What's the weather like in San Francisco?",
+	'What is (25 * 4) + 130 / 2?',
+	'Search for LangChain documentation',
 ];
 
 /**
@@ -168,6 +170,16 @@ function ChatStream({ bundle }: { bundle: RunBundleResponse }) {
 		defaultHeaders,
 	});
 
+	// ``toolCalls`` is exposed at runtime by the stream hook but only appears
+	// in the static types when a typed graph parameter is supplied. Since we
+	// don't ship compiled graph types on the frontend, we re-type it here.
+	const toolCalls =
+		(
+			stream as unknown as {
+				toolCalls?: ToolCallWithResult[];
+			}
+		).toolCalls ?? [];
+
 	const handleSubmit = (text: string) => {
 		stream.submit(
 			{ messages: [{ type: 'human' as const, content: text }] },
@@ -206,10 +218,32 @@ function ChatStream({ bundle }: { bundle: RunBundleResponse }) {
 					);
 				}
 				if (AIMessage.isInstance(msg)) {
+					// Tool calls attached to THIS AI message. We match by id so
+					// multi-turn conversations don't render a tool card under the
+					// wrong message.
+					const callIds = new Set(
+						(msg.tool_calls ?? [])
+							.map((tc) => tc.id)
+							.filter(Boolean) as string[]
+					);
+					const toolCallsForMessage = toolCalls.filter((tc) =>
+						callIds.has(tc.call.id ?? '')
+					);
+					const hasText = typeof msg.text === 'string' && msg.text.length > 0;
+
 					return (
-						<AIBubble key={key}>
-							<Markdown>{msg.text}</Markdown>
-						</AIBubble>
+						<div key={key} className="space-y-2">
+							{hasText && (
+								<AIBubble>
+									<Markdown>{msg.text}</Markdown>
+								</AIBubble>
+							)}
+							{toolCallsForMessage.map((tc) => (
+								<div key={tc.id} className="pl-9 max-w-[80%]">
+									<ToolCallCard toolCall={tc} />
+								</div>
+							))}
+						</div>
 					);
 				}
 				return null;

@@ -472,6 +472,29 @@ tasks:
     # Optional: Allowlist of tool names (if omitted, all tools from providers are allowed)
     allowed_tools: ['create_todo_task', 'search_knowledge_base']
 
+# Tool Providers Registry
+# Declaratively register LangChain ToolProvider classes so that
+# ``agent_graphs.py`` (the LangGraph Agent Server entry point) can wire them
+# without hardcoded ``register_*_provider()`` calls. The dict key MUST match
+# the provider's ``name`` attribute; each agent references the key via its
+# ``local_tool_providers`` list.
+#
+# Entry fields:
+#   class_path (required) — 'module.path:ClassName'
+#   enabled    (optional) — default True; skip registration when False
+#   kwargs     (optional) — forwarded to the provider constructor
+#
+# Example:
+# tool_providers:
+#   weather_agent_tools:
+#     class_path: 'inference_core.agents.tools.weather_provider:WeatherToolsProvider'
+#   default_agent_tools:
+#     class_path: 'inference_core.agents.tools.weather_provider:DefaultAgentToolsProvider'
+#   demo_tool_calling:
+#     class_path: 'inference_core.agents.tools.demo_tool_calling:DemoToolCallingProvider'
+#     enabled: true
+#     kwargs: {}
+
 # Agent Model Assignments
 agents:
   default_agent:
@@ -486,6 +509,16 @@ agents:
     description: 'Default agent for general tasks'
     # List of registered tool provider names (see application code for registration)
     local_tool_providers: ['assistant_tools']
+
+    # --- Agent Server (LangGraph) build policy ---
+    # execution_mode: 'local' (default) or 'remote' — where the agent runs.
+    # server_graph: override whether agent_graphs.py compiles a graph for this
+    #   agent. None/omitted = auto (build iff execution_mode == 'remote').
+    # use_memory: override whether the server graph includes MemoryMiddleware.
+    #   None/omitted = auto-detect from memory_* hints + AGENT_MEMORY_ENABLED.
+    # execution_mode: 'remote'
+    # server_graph: true
+    # use_memory: true
 
     # Optional: Allowlist of tool names (if omitted, all tools from providers are allowed)
     allowed_tools: ['create_todo_task', 'search_knowledge_base']
