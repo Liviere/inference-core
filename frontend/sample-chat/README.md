@@ -1,4 +1,4 @@
-# Inference Core — Chat (Frontend MVP)
+# Inference Core — Sample Chat
 
 React + Vite chat UI that talks to the **LangGraph Agent Server** via
 [`useStream`](https://github.com/langchain-ai/langgraph) while using the
@@ -49,7 +49,7 @@ directly and must be allowed by `langgraph.json → http.cors`.
 ## Setup
 
 ```bash
-cd frontend/chat
+cd frontend/sample-chat
 cp .env.example .env       # adjust backend / Agent Server URLs if needed
 npm install                # or pnpm install / yarn
 npm run dev                # http://localhost:5173

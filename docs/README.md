@@ -4,24 +4,24 @@ Central index of project documentation
 
 ## Sections
 
-| Area                               | Purpose                                     | File                                 |
-| ---------------------------------- | ------------------------------------------- | ------------------------------------ |
-| Quickstart & Overview              | Entry point for newcomers                   | `../README.md`                       |
-| Configuration Reference            | All environment variables grouped by domain | `configuration.md`                   |
-| LLM Configuration                  | Reference for `llm_config.yaml`             | `llm_config_summary.md`              |
-| Dynamic & DB Configuration         | DB overrides & user-specific preferences    | `dynamic-configuration.md`           |
-| Repository Structure Snapshot      | Auto/Manual snapshot of directories         | `structure.md`                       |
-| Custom Prompts (Jinja2)            | How to add your own prompt templates        | `custom-prompts.md`                  |
-| LangChain Agents                   | YAML-configured agents, tools, middleware   | `agents-service.md`                  |
-| LangGraph Agent Server             | Remote execution, dev/prod workflow         | `agents-service.md#remote-execution` |
-| User Agent Instances               | User-customizable agent configurations      | `user-agent-instances.md`            |
-| Frontend Chat MVP                  | React + Vite UI for direct Agent Server chat | `../frontend/chat/README.md`         |
-| Agent Memory                       | Long-term memory for agents                 | `agents.md#agent-memory`             |
-| Vector Store Guide                 | Semantic search & ingestion                 | `vector-store.md`                    |
-| Provider Extensions (OpenAI batch) | Provider specific behavior                  | `providers/openai-batch-provider.md` |
-| Docker Test Environments           | Isolated test setup                         | `testing-docker.md`                  |
-| Database Migrations (Alembic)      | Schema management & history                 | `database-migrations.md`             |
-| LLM Usage Logging                  | Cost / usage persistence & privacy notes    | `observability/llm-usage-logging.md` |
+| Area                               | Purpose                                      | File                                 |
+| ---------------------------------- | -------------------------------------------- | ------------------------------------ |
+| Quickstart & Overview              | Entry point for newcomers                    | `../README.md`                       |
+| Configuration Reference            | All environment variables grouped by domain  | `configuration.md`                   |
+| LLM Configuration                  | Reference for `llm_config.yaml`              | `llm_config_summary.md`              |
+| Dynamic & DB Configuration         | DB overrides & user-specific preferences     | `dynamic-configuration.md`           |
+| Repository Structure Snapshot      | Auto/Manual snapshot of directories          | `structure.md`                       |
+| Custom Prompts (Jinja2)            | How to add your own prompt templates         | `custom-prompts.md`                  |
+| LangChain Agents                   | YAML-configured agents, tools, middleware    | `agents-service.md`                  |
+| LangGraph Agent Server             | Remote execution, dev/prod workflow          | `agents-service.md#remote-execution` |
+| User Agent Instances               | User-customizable agent configurations       | `user-agent-instances.md`            |
+| Frontend Sample Chat               | React + Vite UI for direct Agent Server chat | `../frontend/sample-chat/README.md`  |
+| Agent Memory                       | Long-term memory for agents                  | `agents.md#agent-memory`             |
+| Vector Store Guide                 | Semantic search & ingestion                  | `vector-store.md`                    |
+| Provider Extensions (OpenAI batch) | Provider specific behavior                   | `providers/openai-batch-provider.md` |
+| Docker Test Environments           | Isolated test setup                          | `testing-docker.md`                  |
+| Database Migrations (Alembic)      | Schema management & history                  | `database-migrations.md`             |
+| LLM Usage Logging                  | Cost / usage persistence & privacy notes     | `observability/llm-usage-logging.md` |
 
 ## How to Navigate
 
