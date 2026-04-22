@@ -1,0 +1,30 @@
+agents:
+  default_agent:
+    prompts:
+      - "What's the weather like in San Francisco?"
+      - 'What is (25 * 4) + 130 / 2?'
+      - 'Search for LangChain documentation'
+
+  tool_calling_demo:
+    prompts:
+      - "What's the weather like in Warsaw?"
+      - 'What is (25 * 4) + 130 / 2?'
+      - 'Search for LangChain documentation'
+
+  weather_agent:
+    prompts:
+      - "What's the weather like in Berlin?"
+      - 'Will it rain in Krakow tomorrow?'
+      - 'Compare the weather in Paris and Madrid'
+
+  deep_planner:
+    prompts:
+      - 'Break down a payment integration rollout into milestones and risks'
+      - 'Create a debugging plan for intermittent API timeouts'
+      - 'Prepare a release checklist for a database migration'
+
+  reasoning_agent:
+    prompts:
+      - 'Solve a logic puzzle step by step'
+      - 'Compare two implementation options and justify the tradeoffs'
+      - 'Explain how you would debug a flaky test suite'

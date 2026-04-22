@@ -17,18 +17,13 @@ import { PresetPrompts } from './chat/PresetPrompts';
 import { Markdown } from './Markdown';
 import { ThemeToggle } from './ThemeToggle';
 import { ToolCallCard } from './tool-cards/ToolCallCard';
+import { getPresetPrompts } from '../lib/presetPrompts';
 
 interface Props {
 	instance: AgentInstance;
 	onBack: () => void;
 	onLogout: () => void;
 }
-
-const PRESETS = [
-	"What's the weather like in San Francisco?",
-	'What is (25 * 4) + 130 / 2?',
-	'Search for LangChain documentation',
-];
 
 /**
  * Live chat backed by @langchain/react's ``useStream`` against the
@@ -154,6 +149,10 @@ function ChatStream({ bundle }: { bundle: RunBundleResponse }) {
 		() => resolveApiUrl(bundle.agent_server_url),
 		[bundle.agent_server_url]
 	);
+	const presetPrompts = useMemo(
+		() => getPresetPrompts(bundle.base_agent_name),
+		[bundle.base_agent_name]
+	);
 
 	const defaultHeaders = useMemo<Record<string, string>>(() => {
 		const h: Record<string, string> = {};
@@ -205,7 +204,7 @@ function ChatStream({ bundle }: { bundle: RunBundleResponse }) {
 			}
 		>
 			{messages.length === 0 && (
-				<PresetPrompts prompts={PRESETS} onSelect={handleSubmit} />
+				<PresetPrompts prompts={presetPrompts} onSelect={handleSubmit} />
 			)}
 
 			{messages.map((msg, idx) => {

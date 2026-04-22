@@ -13,6 +13,10 @@ export function PresetPrompts({
 	onSelect,
 	disabled = false,
 }: PresetPromptsProps) {
+	if (prompts.length === 0) {
+		return null;
+	}
+
 	return (
 		<div className="flex flex-col items-center justify-center gap-2 px-4 py-3">
 			<div className="text-xs text-text-secondary font-medium">

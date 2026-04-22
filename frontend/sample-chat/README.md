@@ -62,6 +62,10 @@ Relevant env vars:
 - `VITE_USE_AGENT_PROXY=true` — rewrites `bundle.agent_server_url` to
   `${window.location.origin}/api/langgraph`, avoiding browser CORS in dev.
 
+Preset prompts are configured per base agent in
+`src/config/preset-prompts.yaml`. When an agent has no entry, the empty-thread
+view simply omits the suggestion chips.
+
 In separate terminals:
 
 ```bash
@@ -92,6 +96,8 @@ poetry run langgraph dev --no-browser
   tokens and expose a theme toggle.
 - `ChatView` renders a structured chat shell with reusable bubble, input,
   typing-indicator, and prompt-preset components.
+- Empty-thread preset prompts are loaded from `src/config/preset-prompts.yaml`
+  based on `bundle.base_agent_name`.
 - Message bubbles render markdown using GFM, so tables, fenced code blocks,
   lists, and inline code display correctly.
 - Reasoning output is shown in a collapsible thought-process bubble while the
