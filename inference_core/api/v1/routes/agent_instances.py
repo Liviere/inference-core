@@ -8,6 +8,7 @@ based on available base agent templates.
 
 import logging
 import uuid as _uuid
+from datetime import timedelta
 from typing import Optional
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from inference_core.core.dependecies import (
     get_db,
     get_llm_config_service,
 )
+from inference_core.core.security import create_access_token
 from inference_core.schemas.user_agent_instance import (
     AgentInstanceCreate,
     AgentInstanceListResponse,
@@ -355,6 +357,41 @@ def _extract_bearer_from_request(request: Request) -> Optional[str]:
     return parts[1].strip() or None
 
 
+def _mint_public_access_token(public_user_id: UUID) -> str:
+    """Issue a short-lived JWT for the shared public user.
+
+    WHY: In public access mode anonymous callers have no Authorization
+    header, so there is nothing to echo back in the run bundle.  Rather
+    than special-casing the Agent Server's auth layer, we mint a token
+    whose ``sub`` matches the seeded public user — the Agent Server then
+    authenticates it exactly like any other request and ``ctx.user`` maps
+    to the same identity the backend used when building the bundle.
+
+    SECURITY:
+      The upstream dependency (``get_current_user_or_public``) only marks a
+      caller as public when both (1) no credentials were supplied and
+      (2) ``LLM_API_ACCESS_MODE == 'public'``.  The defensive settings
+      check below is redundant today but guards against a future
+      refactor silently broadening that path — we must never hand out a
+      public-user token in ``user`` or ``superuser`` mode, because that
+      would turn this endpoint into an authentication bypass.
+
+    The token TTL is intentionally short: the handshake only needs to
+    survive long enough for the frontend to open a streaming session.
+    """
+    if get_settings().llm_api_access_mode != "public":
+        # Defence-in-depth: should be unreachable given the dependency
+        # contract.  Fail loud instead of silently issuing a token.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Public token mint attempted outside public access mode",
+        )
+    return create_access_token(
+        data={"sub": str(public_user_id)},
+        expires_delta=timedelta(minutes=15),
+    )
+
+
 @router.get(
     "/{instance_id}/run-bundle",
     response_model=RunBundleResponse,
@@ -388,21 +425,17 @@ async def get_agent_instance_run_bundle(
     the Agent Server's own ``/threads`` endpoint.
     """
     user_id = UUID(current_user["id"])
+    is_public_caller = bool(current_user.get("is_public_anonymous"))
     service = get_user_agent_instance_service(db, llm_config_service)
 
-    # run-bundle forwards the caller's bearer JWT so the frontend can talk
-    # directly to the Agent Server (which authenticates via langgraph_auth.py).
-    # Anonymous public callers have no JWT to forward, so this handshake is
-    # unavailable in public mode — frontends should use POST /run instead.
-    if current_user.get("is_public_anonymous"):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "run-bundle is not available in public access mode "
-                "(no bearer token to forward). Use POST /agent-instances/"
-                "{id}/run for server-side execution."
-            ),
-        )
+    # run-bundle forwards a bearer JWT so the frontend can talk directly to
+    # the Agent Server (which authenticates via ``langgraph_auth.py``).
+    #
+    # * Authenticated callers  → echo back their own Authorization header.
+    # * Public (anonymous) mode → mint a short-lived token for the shared
+    #   public user so the Agent Server still sees a valid identity.  This
+    #   keeps RBAC, owner-scoping and memory isolation uniform across both
+    #   modes without having to special-case the Agent Server's auth layer.
 
     instance = await service.get_instance(user_id, instance_id)
     if not instance:
@@ -457,7 +490,11 @@ async def get_agent_instance_run_bundle(
         description=instance.description,
         assistant_id=instance.base_agent_name,
         agent_server_url=settings.agent_server_url,
-        access_token=_extract_bearer_from_request(request),
+        access_token=(
+            _mint_public_access_token(user_id)
+            if is_public_caller
+            else _extract_bearer_from_request(request)
+        ),
         config=RunBundleConfig(configurable=configurable),
         is_remote=agent_svc._is_remote,
     )

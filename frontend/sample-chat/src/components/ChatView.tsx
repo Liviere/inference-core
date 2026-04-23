@@ -6,6 +6,7 @@ import { HumanMessage, AIMessage } from 'langchain';
 import {
 	ApiError,
 	getRunBundle,
+	type AccessMode,
 	type AgentInstance,
 	type RunBundleResponse,
 } from '../lib/api';
@@ -23,6 +24,7 @@ interface Props {
 	instance: AgentInstance;
 	onBack: () => void;
 	onLogout: () => void;
+	mode: AccessMode;
 }
 
 /**
@@ -38,9 +40,10 @@ interface Props {
  *      InstanceConfigMiddleware on the server side sees the per-user
  *      overrides (primary_model, system_prompt_override, subagent_configs).
  */
-export function ChatView({ instance, onBack, onLogout }: Props) {
+export function ChatView({ instance, onBack, onLogout, mode }: Props) {
 	const [bundle, setBundle] = useState<RunBundleResponse | null>(null);
 	const [bundleError, setBundleError] = useState<string | null>(null);
+	const publicMode = mode === 'public';
 
 	useEffect(() => {
 		let cancelled = false;
@@ -52,7 +55,11 @@ export function ChatView({ instance, onBack, onLogout }: Props) {
 			})
 			.catch((err) => {
 				if (cancelled) return;
-				if (err instanceof ApiError && err.status === 401) {
+				if (
+					err instanceof ApiError &&
+					err.status === 401 &&
+					!publicMode
+				) {
 					onLogout();
 					return;
 				}
@@ -61,10 +68,15 @@ export function ChatView({ instance, onBack, onLogout }: Props) {
 		return () => {
 			cancelled = true;
 		};
-	}, [instance.id, onLogout]);
+	}, [instance.id, onLogout, publicMode]);
 
 	return (
-		<ChatShell instance={instance} onBack={onBack} onLogout={onLogout}>
+		<ChatShell
+			instance={instance}
+			onBack={onBack}
+			onLogout={onLogout}
+			publicMode={publicMode}
+		>
 			{bundleError ? (
 				<div className="m-4 rounded-lg border border-[color:var(--color-error)]/40 bg-[color:var(--color-error)]/10 p-4 text-sm text-[color:var(--color-error)]">
 					Failed to load run bundle: {bundleError}
@@ -88,11 +100,13 @@ function ChatShell({
 	instance,
 	onBack,
 	onLogout,
+	publicMode,
 	children,
 }: {
 	instance: AgentInstance;
 	onBack: () => void;
 	onLogout: () => void;
+	publicMode: boolean;
 	children: React.ReactNode;
 }) {
 	return (
@@ -115,12 +129,14 @@ function ChatShell({
 					>
 						← Agents
 					</button>
-					<button
-						onClick={onLogout}
-						className="rounded-lg border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary hover:border-primary hover:text-primary transition-colors"
-					>
-						Sign out
-					</button>
+					{!publicMode && (
+						<button
+							onClick={onLogout}
+							className="rounded-lg border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary hover:border-primary hover:text-primary transition-colors"
+						>
+							Sign out
+						</button>
+					)}
 				</div>
 			</header>
 			<div className="flex-1 min-h-0 rounded-xl border border-border bg-surface overflow-hidden">

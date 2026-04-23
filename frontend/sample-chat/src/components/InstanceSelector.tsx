@@ -1,10 +1,16 @@
 import { useEffect, useState } from 'react';
-import { ApiError, listAgentInstances, type AgentInstance } from '../lib/api';
+import {
+	ApiError,
+	listAgentInstances,
+	type AccessMode,
+	type AgentInstance,
+} from '../lib/api';
 import { ThemeToggle } from './ThemeToggle';
 
 interface Props {
 	onPick: (instance: AgentInstance) => void;
 	onLogout: () => void;
+	mode: AccessMode;
 }
 
 /**
@@ -14,9 +20,10 @@ interface Props {
  * (model, prompts, subagents) are baked into the run-bundle that the
  * subsequent ChatView consumes.  Picking is a single click, no detail view.
  */
-export function InstanceSelector({ onPick, onLogout }: Props) {
+export function InstanceSelector({ onPick, onLogout, mode }: Props) {
 	const [instances, setInstances] = useState<AgentInstance[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const publicMode = mode === 'public';
 
 	useEffect(() => {
 		let cancelled = false;
@@ -32,7 +39,13 @@ export function InstanceSelector({ onPick, onLogout }: Props) {
 			})
 			.catch((err) => {
 				if (cancelled) return;
-				if (err instanceof ApiError && err.status === 401) {
+				// In public mode there is no login screen to bounce back to,
+				// so even a 401 is reported as a plain error.
+				if (
+					err instanceof ApiError &&
+					err.status === 401 &&
+					!publicMode
+				) {
 					onLogout();
 					return;
 				}
@@ -41,7 +54,7 @@ export function InstanceSelector({ onPick, onLogout }: Props) {
 		return () => {
 			cancelled = true;
 		};
-	}, [onLogout]);
+	}, [onLogout, publicMode]);
 
 	return (
 		<div className="min-h-screen bg-surface">
@@ -52,17 +65,21 @@ export function InstanceSelector({ onPick, onLogout }: Props) {
 							Choose an agent
 						</h1>
 						<p className="text-sm text-text-secondary">
-							Pick one of your configured instances to start a chat.
+							{publicMode
+								? 'Public access mode — all anonymous visitors share this workspace.'
+								: 'Pick one of your configured instances to start a chat.'}
 						</p>
 					</div>
 					<div className="flex gap-2">
 						<ThemeToggle />
-						<button
-							onClick={onLogout}
-							className="rounded-lg border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary hover:border-primary hover:text-primary transition-colors"
-						>
-							Sign out
-						</button>
+						{!publicMode && (
+							<button
+								onClick={onLogout}
+								className="rounded-lg border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary hover:border-primary hover:text-primary transition-colors"
+							>
+								Sign out
+							</button>
+						)}
 					</div>
 				</header>
 

@@ -115,10 +115,12 @@ once after switching to public mode — the `seed_public_user` migration
 inserts the row with a locked password hash so the account cannot be
 logged into via `/auth`. All anonymous callers share the same agent
 instances and memory, so public mode is only appropriate for
-single-tenant or demo deployments. `GET /agent-instances/{id}/run-bundle`
-is disabled in public mode because it forwards the caller's JWT to the
-Agent Server; use `POST /agent-instances/{id}/run` for server-side
-execution instead.
+single-tenant or demo deployments. `GET /api/v1/auth/access-mode` lets
+unauthenticated frontends detect whether they should render a login screen.
+`GET /agent-instances/{id}/run-bundle` also works in public mode: instead of
+echoing a caller JWT, the backend mints a short-lived access token for the
+seeded public user so the Agent Server still receives an authenticated
+identity.
 
 ## Vector Store
 

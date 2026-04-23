@@ -79,15 +79,23 @@ poetry run langgraph dev --no-browser
 
 ## Auth flow
 
-1. User signs in — backend returns `{access_token}`.
-2. Token is stored in `localStorage` and attached as `Authorization: Bearer …`
+1. On mount the app calls `GET /api/v1/auth/access-mode` (unauthenticated).
+2. If the backend reports `mode: "public"`, the login screen is skipped —
+   every `/api/*` request goes out without a bearer token and the backend
+   maps the caller to the shared seeded "public" user. All anonymous
+   visitors share the same agent instances and memory.
+3. Otherwise, the user signs in — backend returns `{access_token}`.
+4. Token is stored in `localStorage` and attached as `Authorization: Bearer …`
    to every `/api/*` request.
-3. When the user opens a chat, the backend's `/run-bundle` endpoint echoes
-   that same token in `bundle.access_token`.
-4. The frontend hands it to `useStream` via `defaultHeaders`, so the
-   Agent Server sees the same JWT and validates it through
-   `langgraph_auth.py`.
-5. When `VITE_USE_AGENT_PROXY=true`, the browser calls the Vite dev server at
+5. When the user opens a chat, the backend's `/run-bundle` endpoint returns
+   a token in `bundle.access_token`:
+   - authenticated mode → echoes back the caller's own JWT,
+   - public mode → mints a short-lived JWT for the seeded public user so
+     the Agent Server still sees a valid identity.
+6. The frontend hands that token to `useStream` via `defaultHeaders`, so
+   the Agent Server validates it through `langgraph_auth.py` just like any
+   other request.
+7. When `VITE_USE_AGENT_PROXY=true`, the browser calls the Vite dev server at
    `/api/langgraph` and Vite forwards those requests to the Agent Server.
 
 ## UI Surface

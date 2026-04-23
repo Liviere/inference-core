@@ -42,6 +42,22 @@ security = HTTPBearer()
 logger = logging.getLogger(__name__)
 
 
+@router.get("/access-mode")
+async def get_access_mode(
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Expose the deployment's LLM/agent access mode to unauthenticated clients.
+
+    WHY: The frontend chat needs to know whether to render the login screen
+    at all — in ``public`` mode every caller is auto-mapped to a shared
+    seeded user by the backend, so asking for credentials would be pointless.
+    This endpoint is intentionally unauthenticated; the value it returns
+    (``public`` / ``user`` / ``superuser``) is already visible by observing
+    whether unauth'd requests succeed, so exposing it carries no extra risk.
+    """
+    return {"mode": settings.llm_api_access_mode}
+
+
 @router.post(
     "/register", response_model=UserProfile, status_code=status.HTTP_201_CREATED
 )
