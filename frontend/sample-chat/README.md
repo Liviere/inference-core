@@ -10,6 +10,7 @@ This iteration adds a fuller MVP shell around the original handshake flow:
 - light/dark theme toggle with persisted preference
 - markdown + GFM rendering for AI and user bubbles
 - preset starter prompts on empty threads
+- local conversation history sidebar with resume / rename / remove actions
 - optional same-origin Vite proxy for Agent Server calls in local development
 - richer chat shell components instead of a single monolithic view
 
@@ -37,7 +38,16 @@ ChatView   ───GET /agent-instances/{id}/run-bundle──▶ FastAPI
                 ▼
 useStream  ───POST /threads /runs (SSE) ──▶ LangGraph Agent Server
                 │                           (validates JWT via
-                └─ optional /api/langgraph  langgraph_auth.py)
+                │                            langgraph_auth.py,
+                │                            returns thread id)
+                ▼
+localStorage ◀── sidebar catalog keyed by agent instance
+                │
+                ▼ select / resume prior thread
+useStream       ───switchThread(threadId)──────▶ LangGraph Agent Server
+                │                           (rehydrates checkpointed state)
+                │
+                └─ optional /api/langgraph
                    same-origin Vite proxy
 ```
 
@@ -104,6 +114,10 @@ poetry run langgraph dev --no-browser
   tokens and expose a theme toggle.
 - `ChatView` renders a structured chat shell with reusable bubble, input,
   typing-indicator, and prompt-preset components.
+- A left history sidebar stores a local catalog of thread ids per agent
+  instance, so users can resume prior conversations from the same browser.
+- Sidebar entries can be renamed or removed locally without deleting the
+  underlying Agent Server checkpoint.
 - Empty-thread preset prompts are loaded from `src/config/preset-prompts.yaml`
   based on `bundle.base_agent_name`.
 - Message bubbles render markdown using GFM, so tables, fenced code blocks,
@@ -120,7 +134,7 @@ poetry run langgraph dev --no-browser
 - Refresh-token rotation (token simply expires and the user re-logs in)
 - Dedicated UI for subagent / branch timelines
 - HITL / `interrupt()` resumes
-- Time travel / thread history sidebar
+- Server-side searchable conversation index or cross-device history sync
 - Streaming of subagent / supervisor branches with their own UI
 
 These are deliberate Phase 4+ deferrals — the scope here is "prove the
