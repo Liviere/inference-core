@@ -8,13 +8,23 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import ValidationError
 
 from inference_core.core.config import get_settings
+
+# Bcrypt ignores input bytes beyond position 72. Passlib historically truncated
+# silently; we do the same to keep pre-existing password hashes verifiable and
+# to stay consistent with bcrypt 5.x which otherwise raises on longer inputs.
+_BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+def _encode_password(password: str) -> bytes:
+    """Return UTF-8 bytes truncated to bcrypt's 72-byte input limit."""
+    return password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
 
 # Import TokenData after schemas are available
 try:
@@ -29,7 +39,6 @@ except ImportError:
 
 # Security instances
 security = HTTPBearer()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class SecurityManager:
@@ -49,7 +58,15 @@ class SecurityManager:
         Returns:
             True if password matches
         """
-        return pwd_context.verify(plain_password, hashed_password)
+        # Guard against malformed/legacy hashes so login endpoints surface a
+        # clean 401 instead of a 500 from bcrypt's internal validation.
+        try:
+            return bcrypt.checkpw(
+                _encode_password(plain_password),
+                hashed_password.encode("utf-8"),
+            )
+        except (ValueError, TypeError):
+            return False
 
     def get_password_hash(self, password: str) -> str:
         """
@@ -61,7 +78,9 @@ class SecurityManager:
         Returns:
             Hashed password
         """
-        return pwd_context.hash(password)
+        return bcrypt.hashpw(_encode_password(password), bcrypt.gensalt()).decode(
+            "utf-8"
+        )
 
     def create_access_token(
         self, data: dict, expires_delta: Optional[timedelta] = None
