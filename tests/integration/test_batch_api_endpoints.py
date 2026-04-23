@@ -673,7 +673,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "deepinfra",
-                "model": "deepseek-ai/DeepSeek-V3-0324",
+                "model": "deepseek-ai/DeepSeek-V3.2",
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
             },
             headers={"Authorization": f"Bearer {token}"},

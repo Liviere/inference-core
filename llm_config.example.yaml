@@ -396,10 +396,10 @@ models:
     temperature: 0.7
 
   # DeepInfra Models (dedicated provider)
-  deepseek-ai/DeepSeek-R1-0528:
+  deepseek-ai/DeepSeek-V3.2:
     provider: 'deepinfra'
-    display_name: 'DeepSeek R1 0528'
-    description: 'DeepSeek R1 0528, hosted on DeepInfra'
+    display_name: 'DeepSeek V3.2'
+    description: 'DeepSeek V3 model, hosted on DeepInfra'
     max_tokens: 8192
     temperature: 0.7
     default_timeout: 300
@@ -408,7 +408,7 @@ models:
       model_kwargs:
         reasoning_effort: "medium"
 
-  deepseek-ai/DeepSeek-V3-0324:
+  deepseek-ai/DeepSeek-V3.2:
     provider: 'deepinfra'
     display_name: 'DeepSeek V3 0324'
     description: 'DeepSeek V3 0324, hosted on DeepInfra'
@@ -437,7 +437,7 @@ tasks:
     fallback:
       [
         'gemini-2.5-flash',
-        'deepseek-ai/DeepSeek-V3-0324',
+        'deepseek-ai/DeepSeek-V3.2',
         'claude-3-5-haiku-latest',
         'llama3.2:1b',
       ]
@@ -449,7 +449,7 @@ tasks:
     fallback:
       [
         'gemini-2.5-flash',
-        'deepseek-ai/DeepSeek-V3-0324',
+        'deepseek-ai/DeepSeek-V3.2',
         'claude-3-5-haiku-latest',
         'llama3.2:1b',
       ]
@@ -502,7 +502,7 @@ agents:
     fallback:
       [
         'gemini-2.5-flash',
-        'deepseek-ai/DeepSeek-V3-0324',
+        'deepseek-ai/DeepSeek-V3.2',
         'claude-3-5-haiku-latest',
       ]
     testing: ['gpt-5-nano']
@@ -566,7 +566,7 @@ agents:
   # ToolBasedModelSwitchMiddleware. Use `skip` (default) to simply filter out
   # such tools.
   vision_aware_agent:
-    primary: 'deepseek-ai/DeepSeek-V3-0324'
+    primary: 'deepseek-ai/DeepSeek-V3.2'
     description: 'Text-only agent that can still call vision tools via delegation'
     local_tool_providers: ['browser_tools']
     on_missing_capability: 'delegate'          # 'skip' (default) or 'delegate'

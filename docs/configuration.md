@@ -184,13 +184,13 @@ models:
     provider: 'openai'
     multimodal: true
 
-  deepseek-ai/DeepSeek-V3-0324:
+  deepseek-ai/DeepSeek-V3.2:
     provider: 'deepinfra'
     multimodal: false
 
 agents:
   vision_aware_agent:
-    primary: 'deepseek-ai/DeepSeek-V3-0324'
+    primary: 'deepseek-ai/DeepSeek-V3.2'
     local_tool_providers: ['browser_tools']
     on_missing_capability: 'delegate' # 'skip' | 'delegate'
     multimodal_support_model: 'gpt-5-mini'
