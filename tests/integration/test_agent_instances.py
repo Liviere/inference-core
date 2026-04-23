@@ -36,7 +36,7 @@ async def auth_client(async_test_client_factory, async_engine):
 
     # Let's write a wrapper fixture in the test function instead or inside here.
 
-    # We will override get_current_active_user
+    # We will override get_current_user_or_public
     async def mock_get_current_user():
         return {
             "id": str(TEST_USER_ID),
@@ -77,17 +77,17 @@ async def auth_client(async_test_client_factory, async_engine):
 async def test_agent_templates_list(async_test_client_factory):
     """Test listing available agent templates."""
 
-    from inference_core.core.dependecies import get_current_active_user
+    from inference_core.core.dependecies import get_current_user_or_public
 
     # We don't strictly need a DB user for this endpoint as it just reads config,
-    # assuming get_current_active_user doesn't query DB validation (it usually just decodes JWT).
+    # assuming get_current_user_or_public doesn't query DB validation (it usually just decodes JWT).
     # But for safety, we mock the user dependency.
 
     async def mock_user():
         return {"id": str(TEST_USER_ID), "is_active": True}
 
     async for client in async_test_client_factory(
-        dependency_overrides={get_current_active_user: mock_user}
+        dependency_overrides={get_current_user_or_public: mock_user}
     ):
         resp = await client.get("/api/v1/agent-instances/templates")
         assert resp.status_code == 200
@@ -109,7 +109,7 @@ async def test_agent_instance_crud_flow(async_test_client_factory):
     from httpx import ASGITransport, AsyncClient
 
     from inference_core.core.config import get_settings
-    from inference_core.core.dependecies import get_current_active_user, get_db
+    from inference_core.core.dependecies import get_current_user_or_public, get_db
     from inference_core.database.sql.connection import (
         Base,
         create_database_engine,
@@ -149,7 +149,7 @@ async def test_agent_instance_crud_flow(async_test_client_factory):
 
     app = create_application()
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_active_user] = override_user
+    app.dependency_overrides[get_current_user_or_public] = override_user
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -216,7 +216,7 @@ async def test_agent_instance_validation(async_test_client_factory):
     # Same setup as above, abbreviated
     from httpx import ASGITransport, AsyncClient
 
-    from inference_core.core.dependecies import get_current_active_user, get_db
+    from inference_core.core.dependecies import get_current_user_or_public, get_db
     from inference_core.database.sql.connection import (
         Base,
         create_database_engine,
@@ -248,7 +248,7 @@ async def test_agent_instance_validation(async_test_client_factory):
 
     app = create_application()
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_active_user] = override_user
+    app.dependency_overrides[get_current_user_or_public] = override_user
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -296,7 +296,7 @@ async def test_agent_instance_run_bundle(async_test_client_factory, monkeypatch)
     from httpx import ASGITransport, AsyncClient
 
     from inference_core.core.config import get_settings
-    from inference_core.core.dependecies import get_current_active_user, get_db
+    from inference_core.core.dependecies import get_current_user_or_public, get_db
     from inference_core.database.sql.connection import (
         Base,
         create_database_engine,
@@ -329,7 +329,7 @@ async def test_agent_instance_run_bundle(async_test_client_factory, monkeypatch)
 
     app = create_application()
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_active_user] = override_user
+    app.dependency_overrides[get_current_user_or_public] = override_user
 
     try:
         async with AsyncClient(

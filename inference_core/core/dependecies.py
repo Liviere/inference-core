@@ -5,11 +5,13 @@ Common dependencies for FastAPI endpoints including database,
 authentication, pagination, and other shared functionality.
 """
 
+import uuid as _uuid
 from typing import AsyncGenerator, List, Optional
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inference_core.core.config import get_settings
@@ -180,6 +182,97 @@ async def get_current_superuser(current_user: dict = Depends(get_current_user)) 
             status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
         )
     return current_user
+
+
+async def get_current_user_or_public(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_http_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Authenticate a caller, falling back to the seeded public user ONLY when
+    ``LLM_API_ACCESS_MODE == 'public'``.
+
+    WHY: Agent-instance endpoints need a concrete ``user_id`` to satisfy
+    ``UserAgentInstance.user_id`` FK and to drive ownership filtering. In a
+    public-access deployment every anonymous caller is mapped to the same
+    seeded "public" user so the existing service layer keeps working unchanged.
+
+    Behaviour matrix:
+        * Valid JWT + mode=='superuser' + not superuser → 403
+        * Valid JWT                                     → decoded user
+        * Invalid / revoked JWT                         → 401 (always)
+        * No JWT, mode == 'public'                      → seeded public user
+        * No JWT, mode in {'user','superuser'}          → 401
+    """
+    from inference_core.core.public_user import get_public_user_dict
+
+    settings = get_settings()
+    public_mode = settings.llm_api_access_mode == "public"
+
+    if credentials is None:
+        if not public_mode:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not authenticated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        public_user = await get_public_user_dict(db)
+        if not public_user:
+            # Seed migration missing — fail closed rather than fabricate a row.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Public user not seeded. Run alembic upgrade head to "
+                    "enable public access mode."
+                ),
+            )
+        if not public_user.get("is_active"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Public user is disabled",
+            )
+        return public_user
+
+    # Credentials present — validate strictly; never silently fall back.
+    token_data = security_manager.verify_token(credentials.credentials)
+    if token_data is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_uuid = _uuid.UUID(token_data.user_id)
+    result = await db.execute(select(User).where(User.id == user_uuid))
+    user: User | None = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user"
+        )
+    # Enforce role requirement derived from LLM_API_ACCESS_MODE so this
+    # dependency stays symmetric with get_llm_router_dependencies():
+    #   * superuser mode → only superusers may call the endpoint
+    #   * user / public  → any active user is accepted
+    if settings.llm_api_access_mode == "superuser" and not user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions",
+        )
+    return {
+        "id": str(user.id),
+        "username": user.username,
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "is_active": user.is_active,
+        "is_superuser": user.is_superuser,
+        "is_verified": user.is_verified,
+        "created_at": user.created_at,
+        "updated_at": user.updated_at,
+    }
 
 
 def get_llm_router_dependencies() -> List[Depends]:

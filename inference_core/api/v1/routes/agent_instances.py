@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from inference_core.core.config import get_settings
 from inference_core.core.dependecies import (
-    get_current_active_user,
+    get_current_user_or_public,
     get_db,
     get_llm_config_service,
 )
@@ -54,7 +54,7 @@ router = APIRouter(prefix="/agent-instances", tags=["Agent Instances"])
     summary="List available agent templates",
 )
 async def list_agent_templates(
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -87,7 +87,7 @@ async def list_agent_templates(
 )
 async def list_agent_instances(
     include_inactive: bool = False,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -118,7 +118,7 @@ async def list_agent_instances(
 )
 async def create_agent_instance(
     data: AgentInstanceCreate,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -163,7 +163,7 @@ async def create_agent_instance(
 )
 async def get_agent_instance(
     instance_id: UUID,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -189,7 +189,7 @@ async def get_agent_instance(
 async def update_agent_instance(
     instance_id: UUID,
     data: AgentInstanceUpdate,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -232,7 +232,7 @@ async def update_agent_instance(
 )
 async def delete_agent_instance(
     instance_id: UUID,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -261,7 +261,7 @@ async def delete_agent_instance(
 async def run_agent_instance(
     instance_id: UUID,
     data: AgentInstanceRunRequest,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -364,7 +364,7 @@ async def get_agent_instance_run_bundle(
     instance_id: UUID,
     request: Request,
     session_id: Optional[str] = None,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
 ):
@@ -389,6 +389,20 @@ async def get_agent_instance_run_bundle(
     """
     user_id = UUID(current_user["id"])
     service = get_user_agent_instance_service(db, llm_config_service)
+
+    # run-bundle forwards the caller's bearer JWT so the frontend can talk
+    # directly to the Agent Server (which authenticates via langgraph_auth.py).
+    # Anonymous public callers have no JWT to forward, so this handshake is
+    # unavailable in public mode — frontends should use POST /run instead.
+    if current_user.get("is_public_anonymous"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "run-bundle is not available in public access mode "
+                "(no bearer token to forward). Use POST /agent-instances/"
+                "{id}/run for server-side execution."
+            ),
+        )
 
     instance = await service.get_instance(user_id, instance_id)
     if not instance:

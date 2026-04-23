@@ -106,6 +106,20 @@ Docker compose uses a split worker topology by default: the threads worker handl
 | `LLM_USAGE_FAIL_OPEN`       | true      | Ignore logging errors if true          |
 | `RUN_LLM_REAL_TESTS`        | 0         | Enable real provider test suite        |
 
+### Public access mode notes
+
+When `LLM_API_ACCESS_MODE=public` the agent-instance endpoints
+(`/api/v1/agent-instances/*`) fall back to a shared seeded "public" user
+(UUID `00000000-0000-0000-0000-000000000001`). Run `alembic upgrade head`
+once after switching to public mode — the `seed_public_user` migration
+inserts the row with a locked password hash so the account cannot be
+logged into via `/auth`. All anonymous callers share the same agent
+instances and memory, so public mode is only appropriate for
+single-tenant or demo deployments. `GET /agent-instances/{id}/run-bundle`
+is disabled in public mode because it forwards the caller's JWT to the
+Agent Server; use `POST /agent-instances/{id}/run` for server-side
+execution instead.
+
 ## Vector Store
 
 | Variable                       | Default                                | Description                             |
