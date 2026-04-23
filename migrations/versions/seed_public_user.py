@@ -13,6 +13,7 @@ WHY:
     manager catches and returns False).
 """
 
+import uuid
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -27,12 +28,23 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # Mirrors inference_core.core.public_user constants — duplicated here on
 # purpose so the migration stays self-contained and does not import app code.
-_PUBLIC_USER_ID = "00000000-0000-0000-0000-000000000001"
+_PUBLIC_USER_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 _PUBLIC_USER_USERNAME = "public"
 _PUBLIC_USER_EMAIL = "public@inference-core.local"
 _PUBLIC_USER_FIRST_NAME = "Public"
 _PUBLIC_USER_LAST_NAME = "User"
 _LOCKED_PASSWORD_HASH = "!locked!public-user-no-login!"
+
+
+def _public_user_id_for_bind(bind) -> str:
+    """Return the UUID literal matching the current dialect's storage format.
+
+    SQLite stores SQLAlchemy ``Uuid(as_uuid=True)`` columns as 32-char hex
+    strings, while PostgreSQL/MySQL accept the canonical hyphenated form.
+    """
+    if bind.dialect.name == "sqlite":
+        return _PUBLIC_USER_UUID.hex
+    return str(_PUBLIC_USER_UUID)
 
 
 def upgrade() -> None:
@@ -42,10 +54,11 @@ def upgrade() -> None:
     the migration stays portable across SQLite, PostgreSQL, and MySQL.
     """
     bind = op.get_bind()
+    public_user_id = _public_user_id_for_bind(bind)
 
     existing = bind.execute(
         sa.text("SELECT id FROM users WHERE id = :id"),
-        {"id": _PUBLIC_USER_ID},
+        {"id": public_user_id},
     ).first()
     if existing:
         return
@@ -78,7 +91,7 @@ def upgrade() -> None:
             """
         ),
         {
-            "id": _PUBLIC_USER_ID,
+            "id": public_user_id,
             "email": _PUBLIC_USER_EMAIL,
             "username": _PUBLIC_USER_USERNAME,
             "hashed_password": _LOCKED_PASSWORD_HASH,
@@ -101,5 +114,5 @@ def downgrade() -> None:
     bind = op.get_bind()
     bind.execute(
         sa.text("DELETE FROM users WHERE id = :id"),
-        {"id": _PUBLIC_USER_ID},
+        {"id": _public_user_id_for_bind(bind)},
     )
