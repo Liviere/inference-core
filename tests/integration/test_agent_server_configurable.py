@@ -15,7 +15,7 @@ This file is the Phase 1 validation from the integration plan.
 
 Run with an Agent Server already up:
 
-    poetry run langgraph dev --no-browser
+    LANGGRAPH_AUTH_DISABLED=true poetry run langgraph dev --no-browser
     poetry run pytest -m agent_server \
         tests/integration/test_agent_server_configurable.py
 """
@@ -42,12 +42,29 @@ AGENT_SERVER_URL = os.environ.get("AGENT_SERVER_URL", "http://localhost:2024")
 
 
 async def _server_is_reachable() -> bool:
+    """Quick health check for the live local Agent Server."""
     try:
         async with httpx.AsyncClient(timeout=3) as http:
             resp = await http.get(f"{AGENT_SERVER_URL}/ok")
             return resp.status_code == 200
     except Exception:
         return False
+
+
+async def _server_accepts_local_dev_sdk_calls() -> bool:
+    """Return False when the live server requires Bearer auth for SDK calls."""
+    try:
+        async with httpx.AsyncClient(timeout=3) as http:
+            resp = await http.post(
+                f"{AGENT_SERVER_URL}/assistants/search",
+                json={"limit": 1, "offset": 0},
+            )
+    except Exception:
+        return False
+
+    if resp.status_code == 401 and "Authorization" in resp.text:
+        return False
+    return True
 
 
 def _extract_last_ai_text(result: dict) -> str:
@@ -99,7 +116,14 @@ async def _skip_if_no_server():
     if not await _server_is_reachable():
         pytest.skip(
             f"Agent Server not reachable at {AGENT_SERVER_URL}. "
-            f"Start it with: poetry run langgraph dev --no-browser"
+            f"Start it with: LANGGRAPH_AUTH_DISABLED=true "
+            f"poetry run langgraph dev --no-browser"
+        )
+    if not await _server_accepts_local_dev_sdk_calls():
+        pytest.skip(
+            "Agent Server requires Bearer auth for SDK calls. "
+            "Restart local test server with: LANGGRAPH_AUTH_DISABLED=true "
+            "poetry run langgraph dev --no-browser"
         )
 
 

@@ -1,7 +1,7 @@
 """Integration tests for the LangGraph Agent Server.
 
 Requires a running Agent Server:
-    poetry run langgraph dev --no-browser
+    LANGGRAPH_AUTH_DISABLED=true poetry run langgraph dev --no-browser
 
 Run with:
     poetry run pytest -m agent_server tests/integration/test_agent_server.py
@@ -47,6 +47,22 @@ async def _server_is_reachable() -> bool:
         return False
 
 
+async def _server_accepts_local_dev_sdk_calls() -> bool:
+    """Return False when the live server requires Bearer auth for SDK calls."""
+    try:
+        async with httpx.AsyncClient(timeout=3) as http:
+            resp = await http.post(
+                f"{AGENT_SERVER_URL}/assistants/search",
+                json={"limit": 1, "offset": 0},
+            )
+    except Exception:
+        return False
+
+    if resp.status_code == 401 and "Authorization" in resp.text:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -66,7 +82,14 @@ async def _skip_if_no_server():
     if not await _server_is_reachable():
         pytest.skip(
             f"Agent Server not reachable at {AGENT_SERVER_URL}. "
-            f"Start it with: poetry run langgraph dev --no-browser"
+            f"Start it with: LANGGRAPH_AUTH_DISABLED=true "
+            f"poetry run langgraph dev --no-browser"
+        )
+    if not await _server_accepts_local_dev_sdk_calls():
+        pytest.skip(
+            "Agent Server requires Bearer auth for SDK calls. "
+            "Restart local test server with: LANGGRAPH_AUTH_DISABLED=true "
+            "poetry run langgraph dev --no-browser"
         )
 
 
