@@ -22,17 +22,17 @@ _MISSING = object()
 def fallback_models_from_mapping(
     mapping: Mapping[str, Any] | None,
     *,
-    default: Any = _MISSING,
+    default: Any = None,
 ) -> Any:
     """Return the configured fallback list from ``fallback`` or its alias."""
-    if not mapping:
-        return None if default is _MISSING else default
+    if mapping is None:
+        return default
 
     for key in _FALLBACK_KEYS:
         if key in mapping:
             return mapping[key]
 
-    return None if default is _MISSING else default
+    return default
 
 
 def canonicalize_fallback_overrides(

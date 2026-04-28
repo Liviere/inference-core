@@ -518,3 +518,16 @@ class TestBuildConfig:
         assert c["primary_model"] == "claude-haiku-4-5-20251001"
         assert c["system_prompt_override"] == "Custom prompt"
         assert c["system_prompt_append"] == "Extra"
+
+    def test_forwards_fallback_override_keys(self):
+        cfg = _build_config(
+            None,
+            {
+                "fallback": ["model-b"],
+                "fallback_models": ["model-b"],
+            },
+        )
+
+        c = cfg["configurable"]
+        assert c["fallback"] == ["model-b"]
+        assert c["fallback_models"] == ["model-b"]
