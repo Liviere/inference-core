@@ -25,6 +25,8 @@ from inference_core.agents.middleware import (
     CostTrackingMiddleware,
     MemoryMiddleware,
     ToolBasedModelSwitchMiddleware,
+    build_model_fallback_middleware,
+    canonicalize_fallback_overrides,
     create_tool_model_switch_middleware,
 )
 from inference_core.agents.tools.memory_tools import (
@@ -593,6 +595,10 @@ class AgentService:
         # Add ToolCallLimitMiddleware instances if configured in agent config
         self._add_tool_call_limit_middleware(middleware)
 
+        # Add ModelFallbackMiddleware if fallback models are configured.
+        self._add_model_fallback_middleware(middleware)
+        self._ensure_cost_tracking_last(middleware)
+
         return middleware
 
     @staticmethod
@@ -828,6 +834,27 @@ class AgentService:
                 len(limiters),
                 self.display_name,
             )
+
+    def _add_model_fallback_middleware(self, middleware: list[Any]) -> None:
+        """Add LangChain ModelFallbackMiddleware from agent fallback config."""
+        if not self.agent_config:
+            return
+
+        fallback_middleware = build_model_fallback_middleware(
+            model_factory=self.model_factory,
+            fallback_models=getattr(self.agent_config, "fallback", None),
+            primary_model=self.model_name,
+            reasoning_output=getattr(self.agent_config, "reasoning_output", False),
+            owner=self.display_name,
+        )
+        if fallback_middleware is None:
+            return
+
+        middleware.append(fallback_middleware)
+        logging.info(
+            "Added ModelFallbackMiddleware for agent '%s'",
+            self.display_name,
+        )
 
     @staticmethod
     def _ensure_cost_tracking_last(middleware: list[Any]) -> None:
@@ -1282,6 +1309,11 @@ class AgentService:
             metadata["system_prompt_override"] = self._system_prompt_override
         if self._system_prompt_append is not None:
             metadata["system_prompt_append"] = self._system_prompt_append
+        if (
+            self.agent_config
+            and getattr(self.agent_config, "fallback", None) is not None
+        ):
+            metadata["fallback_models"] = list(self.agent_config.fallback or [])
         if self.instance_context and self.instance_context.subagent_configs:
             metadata["subagent_configs"] = self.instance_context.subagent_configs
         if self.config:
@@ -1731,7 +1763,9 @@ class AgentService:
             "reasoning_effort",
         )
 
-        config_overrides = agent_instance_config.get("config_overrides", {})
+        config_overrides = canonicalize_fallback_overrides(
+            agent_instance_config.get("config_overrides", {})
+        )
         if config_overrides:
             for key in _AGENT_LEVEL_KEYS:
                 if key in config_overrides:
@@ -1802,13 +1836,19 @@ class AgentService:
         # on each subagent graph can apply per-user overrides at runtime.
         subagent_configs: dict[str, dict[str, Any]] = {}
         for sub in getattr(instance, "subagents", None) or []:
-            subagent_configs[sub.base_agent_name] = {
+            sub_config = {
                 "instance_id": str(sub.id),
                 "instance_name": sub.instance_name,
                 "primary_model": sub.primary_model,
                 "system_prompt_override": sub.system_prompt_override,
                 "system_prompt_append": sub.system_prompt_append,
             }
+            sub_overrides = canonicalize_fallback_overrides(
+                getattr(sub, "config_overrides", None) or {}
+            )
+            if "fallback" in sub_overrides:
+                sub_config["fallback_models"] = sub_overrides["fallback"]
+            subagent_configs[sub.base_agent_name] = sub_config
         if subagent_configs:
             logging.debug(
                 "Built subagent_configs for '%s': %s",
@@ -2407,6 +2447,16 @@ class DeepAgentService(AgentService):
             )
 
             middleware.extend(build_tool_call_limit_middleware(sub_tool_call_limits))
+
+        fallback_middleware = build_model_fallback_middleware(
+            model_factory=self.model_factory,
+            fallback_models=getattr(sub_config, "fallback", None),
+            primary_model=self.model_factory.get_agent_model_name(subagent_name),
+            reasoning_output=getattr(sub_config, "reasoning_output", False),
+            owner=f"subagent {subagent_name}",
+        )
+        if fallback_middleware is not None:
+            middleware.append(fallback_middleware)
 
         # CostTracking must be last so it runs first in after_model
         self._ensure_cost_tracking_last(middleware)

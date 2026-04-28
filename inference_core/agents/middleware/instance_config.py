@@ -37,6 +37,11 @@ from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
 from inference_core.agents.middleware._runtime_context import populate_from_configurable
+from inference_core.agents.middleware.model_fallback import (
+    build_model_fallback_middleware,
+    fallback_models_from_mapping,
+    normalize_fallback_model_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +74,13 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
 
     state_schema = AgentState
 
-    def __init__(self, model_factory: Optional[Any] = None):
+    def __init__(
+        self,
+        model_factory: Optional[Any] = None,
+        fallback_models: Optional[list[str]] = None,
+        default_model_name: Optional[str] = None,
+        reasoning_output: bool = False,
+    ):
         """
         Args:
             model_factory: ``LLMModelFactory`` used to create model instances.
@@ -77,6 +88,10 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
         """
         self._model_factory = model_factory
         self._model_cache: dict[str, Any] = {}
+        self._fallback_models = list(fallback_models or [])
+        self._default_model_name = default_model_name
+        self._default_reasoning_output = reasoning_output
+        self._fallback_cache: dict[tuple[tuple[str, ...], bool, str | None], Any] = {}
 
     # ------------------------------------------------------------------
     # Model creation (cached)
@@ -155,7 +170,10 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
     # Wrap-style hooks — model + prompt override
     # ------------------------------------------------------------------
 
-    def _apply_overrides(self, request: ModelRequest) -> ModelRequest:
+    def _apply_overrides(
+        self,
+        request: ModelRequest,
+    ) -> tuple[ModelRequest, dict[str, Any], str | None, bool]:
         """Apply instance overrides (model + system prompt) to a request.
 
         WHY: Reads configurable directly via get_config() instead of relying
@@ -167,7 +185,10 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
         override_model_name = configurable.get("primary_model")
         prompt_override = configurable.get("system_prompt_override")
         prompt_append = configurable.get("system_prompt_append")
-        reasoning_output = configurable.get("reasoning_output", False)
+        reasoning_output = configurable.get(
+            "reasoning_output",
+            self._default_reasoning_output,
+        )
 
         logger.debug(
             "InstanceConfigMiddleware._apply_overrides: configurable keys=%s, "
@@ -221,7 +242,38 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
             )
             logger.debug("InstanceConfigMiddleware: appended to system_prompt")
 
-        return request
+        active_model_name = override_model_name or self._default_model_name
+        return request, configurable, active_model_name, bool(reasoning_output)
+
+    def _get_fallback_middleware(
+        self,
+        configurable: dict[str, Any],
+        active_model_name: str | None,
+        reasoning_output: bool,
+    ):
+        fallback_models = fallback_models_from_mapping(configurable, default=None)
+        if fallback_models is None:
+            fallback_models = self._fallback_models
+
+        fallback_names = normalize_fallback_model_names(
+            fallback_models,
+            primary_model=active_model_name,
+        )
+
+        cache_key = (
+            tuple(fallback_names),
+            bool(reasoning_output),
+            active_model_name,
+        )
+        if cache_key not in self._fallback_cache:
+            self._fallback_cache[cache_key] = build_model_fallback_middleware(
+                model_factory=self._model_factory,
+                fallback_models=fallback_names,
+                primary_model=active_model_name,
+                reasoning_output=reasoning_output,
+                owner=f"instance {configurable.get('instance_name') or 'agent'}",
+            )
+        return self._fallback_cache[cache_key]
 
     def wrap_model_call(
         self,
@@ -229,7 +281,16 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
         """Override model and/or system prompt based on instance config."""
-        request = self._apply_overrides(request)
+        request, configurable, active_model_name, reasoning_output = (
+            self._apply_overrides(request)
+        )
+        fallback_middleware = self._get_fallback_middleware(
+            configurable,
+            active_model_name,
+            reasoning_output,
+        )
+        if fallback_middleware is not None:
+            return fallback_middleware.wrap_model_call(request, handler)
         return handler(request)
 
     async def awrap_model_call(
@@ -238,5 +299,14 @@ class InstanceConfigMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ModelRequest], Any],
     ) -> ModelResponse:
         """Async override of model and/or system prompt."""
-        request = self._apply_overrides(request)
+        request, configurable, active_model_name, reasoning_output = (
+            self._apply_overrides(request)
+        )
+        fallback_middleware = self._get_fallback_middleware(
+            configurable,
+            active_model_name,
+            reasoning_output,
+        )
+        if fallback_middleware is not None:
+            return await fallback_middleware.awrap_model_call(request, handler)
         return await handler(request)

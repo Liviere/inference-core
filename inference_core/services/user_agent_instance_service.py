@@ -13,6 +13,9 @@ from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from inference_core.agents.middleware.model_fallback import (
+    canonicalize_fallback_overrides,
+)
 from inference_core.database.sql.models.user_agent_instance import UserAgentInstance
 from inference_core.services.llm_config_service import LLMConfigService
 
@@ -169,6 +172,11 @@ class UserAgentInstanceService:
                 f"Model '{primary_model}' not found. " f"Available models: {available}"
             )
 
+        config_overrides = self._normalize_and_validate_config_overrides(
+            config_overrides,
+            resolved.available_models,
+        )
+
         # Check uniqueness
         existing = await self.get_instance_by_name(user_id, instance_name)
         if existing:
@@ -267,6 +275,13 @@ class UserAgentInstanceService:
                     f"Model '{updates['primary_model']}' not found. "
                     f"Available models: {available}"
                 )
+
+        if "config_overrides" in updates and updates["config_overrides"] is not None:
+            resolved = await self.llm_config_service.get_resolved_config(user_id)
+            updates["config_overrides"] = self._normalize_and_validate_config_overrides(
+                updates["config_overrides"],
+                resolved.available_models,
+            )
 
         # Handle default flag
         if updates.get("is_default") is True and not instance.is_default:
@@ -386,6 +401,39 @@ class UserAgentInstanceService:
             .values(is_default=False)
         )
         await self.db.execute(stmt)
+
+    @staticmethod
+    def _normalize_and_validate_config_overrides(
+        config_overrides: Optional[Dict[str, Any]],
+        available_models: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize fallback aliases and validate referenced fallback models."""
+        if config_overrides is None:
+            return None
+
+        normalized = canonicalize_fallback_overrides(config_overrides)
+        if "fallback" not in normalized:
+            return normalized
+
+        fallback = normalized.get("fallback")
+        if fallback is None:
+            fallback = []
+            normalized["fallback"] = fallback
+            normalized["fallback_models"] = fallback
+
+        if not isinstance(fallback, list) or not all(
+            isinstance(model, str) for model in fallback
+        ):
+            raise ValueError("config_overrides.fallback must be a list of model names")
+
+        invalid = [model for model in fallback if model not in available_models]
+        if invalid:
+            raise ValueError(
+                f"Fallback model(s) not found: {invalid}. "
+                f"Available models: {available_models}"
+            )
+
+        return normalized
 
 
 # =========================================================

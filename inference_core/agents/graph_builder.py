@@ -293,7 +293,12 @@ def _build_server_middleware(
     # would read the parent's primary_model / system_prompt_* and override
     # its own config — making it look like "the agent calls itself".
     if include_instance_config:
-        instance_middleware = InstanceConfigMiddleware(model_factory=factory)
+        instance_middleware = InstanceConfigMiddleware(
+            model_factory=factory,
+            fallback_models=getattr(agent_config, "fallback", None),
+            default_model_name=model_name,
+            reasoning_output=reasoning_output,
+        )
         middleware.append(instance_middleware)
     else:
         logger.debug(
@@ -601,6 +606,9 @@ def _build_server_subagents(
         subagent_config_mw = SubagentConfigMiddleware(
             agent_name=name,
             model_factory=factory,
+            fallback_models=getattr(sub_config, "fallback", None),
+            default_model_name=factory.get_agent_model_name(name),
+            reasoning_output=getattr(sub_config, "reasoning_output", False),
         )
         sub_middleware.insert(0, subagent_config_mw)
 

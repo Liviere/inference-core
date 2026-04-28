@@ -10,6 +10,7 @@ Key features:
 
 - **Base Template**: Every instance starts from a base agent (e.g., `assistant_agent`) defined by administrators.
 - **Custom Overrides**: Users can override the primary model, replace or append to the system prompt, and tweak other parameters.
+- **Runtime Model Fallbacks**: Users can override the template fallback chain used when the primary model call fails.
 - **Default Instance**: Users can mark one instance as their default for new interactions.
 - **Isolation**: Instances are private to the user who created them.
 
@@ -25,8 +26,15 @@ When creating or updating an instance, the following fields are available:
 | `primary_model` | (Optional) Override the LLM model used by this agent. Must be in the allowed models list. |
 | `system_prompt_override` | (Optional) Completely replace the base agent's system prompt. |
 | `system_prompt_append` | (Optional) Append text to the end of the base agent's system prompt. |
-| `config_overrides` | (Optional) JSON object for advanced overrides (e.g., `temperature`, `max_tokens`, `allowed_tools`). |
+| `config_overrides` | (Optional) JSON object for advanced overrides (e.g., `temperature`, `max_tokens`, `allowed_tools`, `fallback`). |
 | `is_default` | (Boolean) If true, this becomes the user's default agent. Any previous default is unset. |
+
+`config_overrides.fallback` is the canonical list of fallback model names.
+The API also accepts `config_overrides.fallback_models` as a compatibility alias
+and stores both names. If the field is omitted, the instance inherits the YAML
+template fallback chain. If it is an empty list, fallback is explicitly disabled
+for that instance. All fallback models must exist in the user's resolved
+available model list.
 
 ## API Usage
 
@@ -62,8 +70,8 @@ The backend resolves the user's instance overrides and returns:
 - `access_token` — the same bearer token received by FastAPI, echoed back so
   the frontend can reuse it for the Agent Server request.
 - `config.configurable` — resolved runtime overrides such as `primary_model`,
-  `system_prompt_override`, `system_prompt_append`, `user_id`, `session_id`,
-  `instance_id`, and subagent settings.
+  `fallback_models`, `system_prompt_override`, `system_prompt_append`,
+  `user_id`, `session_id`, `instance_id`, and subagent settings.
 - `is_remote` — whether the selected instance is currently configured to run
   through the Agent Server.
 

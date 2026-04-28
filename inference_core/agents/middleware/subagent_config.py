@@ -36,6 +36,12 @@ from langchain.agents.middleware import (
 from langchain_core.messages import SystemMessage
 from langgraph.config import get_config
 
+from inference_core.agents.middleware.model_fallback import (
+    build_model_fallback_middleware,
+    fallback_models_from_mapping,
+    normalize_fallback_model_names,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +74,9 @@ class SubagentConfigMiddleware(AgentMiddleware[AgentState]):
         self,
         agent_name: str,
         model_factory: Optional[Any] = None,
+        fallback_models: Optional[list[str]] = None,
+        default_model_name: Optional[str] = None,
+        reasoning_output: bool = False,
     ):
         """
         Args:
@@ -78,6 +87,10 @@ class SubagentConfigMiddleware(AgentMiddleware[AgentState]):
         self._agent_name = agent_name
         self._model_factory = model_factory
         self._model_cache: dict[str, Any] = {}
+        self._fallback_models = list(fallback_models or [])
+        self._default_model_name = default_model_name
+        self._reasoning_output = reasoning_output
+        self._fallback_cache: dict[tuple[tuple[str, ...], str | None], Any] = {}
 
     def _get_model(self, model_name: str) -> Any:
         """Get or create a model instance by name (cached)."""
@@ -144,7 +157,10 @@ class SubagentConfigMiddleware(AgentMiddleware[AgentState]):
             )
             return {}
 
-    def _apply_overrides(self, request: ModelRequest) -> ModelRequest:
+    def _apply_overrides(
+        self,
+        request: ModelRequest,
+    ) -> tuple[ModelRequest, dict[str, Any], str | None]:
         """Apply subagent-specific overrides (model + system prompt)."""
         my_config = self._get_my_config()
         if not my_config:
@@ -152,7 +168,7 @@ class SubagentConfigMiddleware(AgentMiddleware[AgentState]):
                 "SubagentConfigMiddleware[%s]: no overrides found, using defaults",
                 self._agent_name,
             )
-            return request
+            return request, my_config, self._default_model_name
 
         override_model = my_config.get("primary_model")
         prompt_override = my_config.get("system_prompt_override")
@@ -200,7 +216,36 @@ class SubagentConfigMiddleware(AgentMiddleware[AgentState]):
                 system_message=SystemMessage(content=merged),
             )
 
-        return request
+        active_model_name = override_model or self._default_model_name
+        return request, my_config, active_model_name
+
+    def _get_fallback_middleware(
+        self,
+        my_config: dict[str, Any],
+        active_model_name: str | None,
+    ):
+        fallback_models = fallback_models_from_mapping(my_config, default=None)
+        if fallback_models is None:
+            fallback_models = self._fallback_models
+
+        fallback_names = normalize_fallback_model_names(
+            fallback_models,
+            primary_model=active_model_name,
+        )
+
+        cache_key = (
+            tuple(fallback_names),
+            active_model_name,
+        )
+        if cache_key not in self._fallback_cache:
+            self._fallback_cache[cache_key] = build_model_fallback_middleware(
+                model_factory=self._model_factory,
+                fallback_models=fallback_names,
+                primary_model=active_model_name,
+                reasoning_output=self._reasoning_output,
+                owner=f"subagent {self._agent_name}",
+            )
+        return self._fallback_cache[cache_key]
 
     def wrap_model_call(
         self,
@@ -208,7 +253,13 @@ class SubagentConfigMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
         """Override model/prompt based on subagent-specific config."""
-        request = self._apply_overrides(request)
+        request, my_config, active_model_name = self._apply_overrides(request)
+        fallback_middleware = self._get_fallback_middleware(
+            my_config,
+            active_model_name,
+        )
+        if fallback_middleware is not None:
+            return fallback_middleware.wrap_model_call(request, handler)
         return handler(request)
 
     async def awrap_model_call(
@@ -217,5 +268,11 @@ class SubagentConfigMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ModelRequest], Any],
     ) -> ModelResponse:
         """Async override of model/prompt based on subagent-specific config."""
-        request = self._apply_overrides(request)
+        request, my_config, active_model_name = self._apply_overrides(request)
+        fallback_middleware = self._get_fallback_middleware(
+            my_config,
+            active_model_name,
+        )
+        if fallback_middleware is not None:
+            return await fallback_middleware.awrap_model_call(request, handler)
         return await handler(request)

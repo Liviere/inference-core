@@ -48,6 +48,12 @@ from .cost_tracking import (
 )
 from .instance_config import InstanceConfigMiddleware
 from .memory import MemoryMiddleware, MemoryState, create_memory_middleware
+from .model_fallback import (
+    build_model_fallback_middleware,
+    canonicalize_fallback_overrides,
+    fallback_models_from_mapping,
+    normalize_fallback_model_names,
+)
 from .tool_call_limits import (
     build_tool_call_limit_middleware,
     generate_tool_call_limits_instructions,
@@ -71,6 +77,11 @@ __all__ = [
     "MemoryMiddleware",
     "MemoryState",
     "create_memory_middleware",
+    # Model fallback
+    "build_model_fallback_middleware",
+    "canonicalize_fallback_overrides",
+    "fallback_models_from_mapping",
+    "normalize_fallback_model_names",
     # Tool-based model switching
     "ToolBasedModelSwitchMiddleware",
     "ToolModelOverride",

@@ -212,6 +212,59 @@ class TestWrapModelCallCombined:
         assert called_request.system_message.content == "Custom prompt"
 
 
+class TestWrapModelCallFallback:
+    def test_wraps_with_runtime_fallback_models_alias(self):
+        mock_factory = MagicMock()
+        mock_target = MagicMock(name="primary-model")
+        mock_factory.create_model.return_value = mock_target
+        fake_fallback = MagicMock()
+        fake_fallback.wrap_model_call.return_value = "fallback-response"
+
+        mw = InstanceConfigMiddleware(model_factory=mock_factory)
+
+        request = _make_request()
+        handler = MagicMock(return_value="response")
+
+        with patch(
+            "inference_core.agents.middleware.instance_config."
+            "build_model_fallback_middleware",
+            return_value=fake_fallback,
+        ) as build_fallback:
+            with _patch_configurable(
+                {
+                    "primary_model": "primary-model",
+                    "fallback_models": ["fallback-a", "fallback-a", "primary-model"],
+                }
+            ):
+                result = mw.wrap_model_call(request, handler)
+
+        assert result == "fallback-response"
+        fake_fallback.wrap_model_call.assert_called_once()
+        build_fallback.assert_called_once_with(
+            model_factory=mock_factory,
+            fallback_models=["fallback-a"],
+            primary_model="primary-model",
+            reasoning_output=False,
+            owner="instance agent",
+        )
+
+    def test_empty_runtime_fallback_disables_yaml_default(self):
+        mw = InstanceConfigMiddleware(
+            model_factory=MagicMock(),
+            fallback_models=["yaml-fallback"],
+            default_model_name="primary-model",
+        )
+
+        request = _make_request()
+        handler = MagicMock(return_value="response")
+
+        with _patch_configurable({"fallback": []}):
+            result = mw.wrap_model_call(request, handler)
+
+        assert result == "response"
+        handler.assert_called_once_with(request)
+
+
 class TestBeforeAgent:
     def test_populates_context_from_configurable(self):
         mw = InstanceConfigMiddleware()

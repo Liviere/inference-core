@@ -499,6 +499,8 @@ tasks:
 agents:
   default_agent:
     primary: 'gpt-5-mini'
+    # Runtime fallback chain used when a model call fails.
+    # User instances may override it with config_overrides.fallback.
     fallback:
       [
         'gemini-2.5-flash',

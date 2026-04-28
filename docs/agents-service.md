@@ -7,8 +7,8 @@ integrations keep working while new agent features are developed.
 ## Configuration
 
 Agents are configured via `llm_config.yaml` in the `agents` section.
-The configuration includes models, tools, skills, subagents, and optional
-tool-call limits:
+The configuration includes models, runtime fallback models, tools, skills,
+subagents, and optional tool-call limits:
 
 ```yaml
 # llm_config.yaml
@@ -16,6 +16,7 @@ tool-call limits:
 agents:
   browser_researcher:
     primary: gpt-5
+    fallback: [gemini-2.5-flash, claude-3-5-haiku-latest]
     description: 'Specialized researcher with browser access'
     local_tool_providers: [research_bundle]
     skills: ['./skills/web-research/']
@@ -25,6 +26,11 @@ agents:
 
 Key concepts:
 
+- **Runtime Model Fallbacks** – `fallback` lists alternate model names used by
+  LangChain `ModelFallbackMiddleware` when the active model call fails. User
+  instances can override this chain through `config_overrides.fallback` or the
+  compatibility alias `fallback_models`; an empty list disables inherited
+  fallback for that instance.
 - **Skills** – on-demand instructions loaded from `SKILL.md` files; allow complex workflows without filling the context window.
 - **Subagents** – pointers to other agents defined in `llm_config.yaml` that can be invoked via the `task()` tool.
 - **Local Tool Providers** – reusable bundles of tools registered in the code.
