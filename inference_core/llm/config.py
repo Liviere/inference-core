@@ -332,7 +332,7 @@ class MCPServerTimeouts(BaseModel):
         default=10, ge=1, le=300, description="Connection timeout in seconds"
     )
     read_seconds: int = Field(
-        default=300, ge=1, le=600, description="Read timeout in seconds"
+        default=300, ge=1, le=3600, description="Read timeout in seconds"
     )
 
 
@@ -400,7 +400,7 @@ class MCPProfileConfig(BaseModel):
         default=10, ge=1, le=50, description="Maximum agent reasoning steps"
     )
     max_run_seconds: int = Field(
-        default=60, ge=1, le=600, description="Hard timeout per request in seconds"
+        default=60, ge=1, le=3600, description="Hard timeout per request in seconds"
     )
     tool_retry_attempts: int = Field(
         default=2,
@@ -455,7 +455,7 @@ class ToolLimits(BaseModel):
         default=10, ge=1, le=50, description="Maximum agent reasoning steps"
     )
     max_run_seconds: int = Field(
-        default=60, ge=1, le=600, description="Hard timeout per request in seconds"
+        default=60, ge=1, le=3600, description="Hard timeout per request in seconds"
     )
     tool_retry_attempts: int = Field(
         default=2,
@@ -1348,9 +1348,7 @@ class LLMConfig:
             try:
                 self.tool_provider_configs[name] = ToolProviderEntry(**entry_data)
             except Exception as exc:
-                logging.error(
-                    "Failed to parse tool_providers['%s']: %s", name, exc
-                )
+                logging.error("Failed to parse tool_providers['%s']: %s", name, exc)
 
     def get_tool_provider_config(self, name: str) -> Optional[ToolProviderEntry]:
         """Return a named tool provider entry, or None when not configured."""

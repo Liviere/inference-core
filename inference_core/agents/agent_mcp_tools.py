@@ -183,6 +183,16 @@ class AgentMCPToolManager:
                 config_dict["url"] = server_config.url
                 if server_config.headers:
                     config_dict["headers"] = server_config.headers
+                if server_config.timeouts:
+                    config_dict["timeout"] = float(
+                        server_config.timeouts.connect_seconds
+                    )
+                    if server_config.transport in ["streamable_http", "sse"]:
+                        config_dict["sse_read_timeout"] = float(
+                            server_config.timeouts.read_seconds
+                        )
+                if server_config.terminate_on_close:
+                    config_dict["terminate_on_close"] = True
 
             server_configs[server_name] = config_dict
 

@@ -410,7 +410,7 @@ class Settings(BaseSettings):
         ),
     )
     agent_server_timeout: int = Field(
-        default=300,
+        default=1920,
         ge=10,
         le=3600,
         description="HTTP timeout in seconds for Agent Server requests.",
