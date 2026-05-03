@@ -65,17 +65,21 @@ def _make_agent_service(**overrides):
     }
     defaults.update(overrides)
 
-    with patch(
-        "inference_core.services.agents_service.get_model_factory",
-        return_value=mock_model_factory,
-    ), patch(
-        "inference_core.services.agents_service.get_llm_config",
-        return_value=MagicMock(),
-    ), patch(
-        "inference_core.services.agents_service.get_settings",
-        return_value=MagicMock(
-            database_url="sqlite+aiosqlite:///test.db",
-            agent_memory_enabled=False,
+    with (
+        patch(
+            "inference_core.services.agents_service.get_model_factory",
+            return_value=mock_model_factory,
+        ),
+        patch(
+            "inference_core.services.agents_service.get_llm_config",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "inference_core.services.agents_service.get_settings",
+            return_value=MagicMock(
+                database_url="sqlite+aiosqlite:///test.db",
+                agent_memory_enabled=False,
+            ),
         ),
     ):
         svc = AgentService(**defaults)
@@ -337,6 +341,51 @@ class TestBuildStreamConfigSyncMode:
             sync=True,
         )
         assert cancel_cb is None
+
+    def test_nested_mode_merges_parent_runnable_config(self, agent_service):
+        stream_config, cancel_cb, _ = agent_service._build_stream_config(
+            {"reasoning_output": True},
+            on_token=None,
+            on_custom=None,
+            graceful_cancel=True,
+            parent_runnable_config={
+                "callbacks": ["outer-callback"],
+                "metadata": {"source": "outer"},
+                "configurable": {"thread_id": "outer-thread"},
+            },
+            trace_mode="nested",
+        )
+
+        assert stream_config["callbacks"][0] == "outer-callback"
+        assert cancel_cb in stream_config["callbacks"]
+        assert stream_config["metadata"] == {"source": "outer"}
+        assert stream_config["configurable"]["thread_id"] == "outer-thread"
+        assert stream_config["configurable"]["reasoning_output"] is True
+
+    def test_nested_mode_without_parent_callbacks_falls_back_to_separate(
+        self, agent_service
+    ):
+        stream_config, _, _ = agent_service._build_stream_config(
+            {},
+            on_token=None,
+            on_custom=None,
+            graceful_cancel=False,
+            parent_runnable_config={"metadata": {"source": "outer"}},
+            trace_mode="nested",
+        )
+
+        assert stream_config == {"configurable": {}}
+
+    def test_nested_only_requires_parent_callbacks(self, agent_service):
+        with pytest.raises(ValueError, match="nested-only"):
+            agent_service._build_stream_config(
+                {},
+                on_token=None,
+                on_custom=None,
+                graceful_cancel=False,
+                parent_runnable_config={"metadata": {"source": "outer"}},
+                trace_mode="nested-only",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -706,20 +755,25 @@ def _make_from_user_instance_patches():
 
     @contextlib.contextmanager
     def patches():
-        with patch(
-            "inference_core.services.agents_service.get_model_factory",
-            return_value=mock_factory,
-        ), patch(
-            "inference_core.services.agents_service.LLMModelFactory",
-            return_value=mock_factory,
-        ), patch(
-            "inference_core.services.agents_service.get_llm_config",
-            return_value=mock_base,
-        ), patch(
-            "inference_core.services.agents_service.get_settings",
-            return_value=MagicMock(
-                database_url="sqlite+aiosqlite:///test.db",
-                agent_memory_enabled=False,
+        with (
+            patch(
+                "inference_core.services.agents_service.get_model_factory",
+                return_value=mock_factory,
+            ),
+            patch(
+                "inference_core.services.agents_service.LLMModelFactory",
+                return_value=mock_factory,
+            ),
+            patch(
+                "inference_core.services.agents_service.get_llm_config",
+                return_value=mock_base,
+            ),
+            patch(
+                "inference_core.services.agents_service.get_settings",
+                return_value=MagicMock(
+                    database_url="sqlite+aiosqlite:///test.db",
+                    agent_memory_enabled=False,
+                ),
             ),
         ):
             yield mock_base
@@ -977,11 +1031,14 @@ class TestBuildMiddlewareMemoryConfig:
         svc._user_id = uuid.uuid4()
         svc.use_memory = True
 
-        with patch(
-            "inference_core.services.agents_service.get_settings",
-        ) as mock_settings, patch(
-            "inference_core.services.agents_service.get_llm_config",
-        ) as mock_cfg:
+        with (
+            patch(
+                "inference_core.services.agents_service.get_settings",
+            ) as mock_settings,
+            patch(
+                "inference_core.services.agents_service.get_llm_config",
+            ) as mock_cfg,
+        ):
             mock_settings.return_value.agent_memory_auto_recall = True
             mock_settings.return_value.agent_memory_max_results = 5
             mock_settings.return_value.agent_memory_postrun_analysis_enabled = True

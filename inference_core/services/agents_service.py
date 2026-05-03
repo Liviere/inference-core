@@ -3,7 +3,7 @@ import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from deepagents import CompiledSubAgent, SubAgent
 from deepagents.backends import StateBackend, StoreBackend
@@ -13,6 +13,7 @@ from deepagents.middleware import SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import InterruptOnConfig
 from langchain.messages import AIMessageChunk, HumanMessage
+from langchain_core.runnables.config import RunnableConfig, merge_configs
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -81,6 +82,8 @@ _COST_FIELDS = (
     "tool_call_count",
     "usage_session_id",
 )
+
+_TRACE_MODES = frozenset({"separate", "nested", "nested-only"})
 
 
 @dataclass
@@ -1236,6 +1239,20 @@ class AgentService:
             configurable["reasoning_output"] = True
         return configurable
 
+    @staticmethod
+    def _parent_trace_config_available(
+        parent_runnable_config: RunnableConfig | None,
+    ) -> bool:
+        """Detect whether a parent config can preserve trace nesting.
+
+        WHY: Nested LangSmith traces depend on inheriting the outer callback
+        stack. Metadata or tags alone are not enough to preserve a parent-child
+        run tree when AgentService creates a new inner runnable execution.
+        """
+        if not parent_runnable_config:
+            return False
+        return parent_runnable_config.get("callbacks") is not None
+
     def _build_stream_config(
         self,
         configurable: dict[str, Any],
@@ -1243,10 +1260,12 @@ class AgentService:
         on_token: Callable | None,
         on_custom: Callable | None,
         graceful_cancel: bool,
+        parent_runnable_config: RunnableConfig | None = None,
+        trace_mode: Literal["separate", "nested", "nested-only"] = "separate",
         sync: bool = False,
     ) -> tuple[
         dict[str, Any],
-        "StreamCancelCallback | SyncStreamCancelCallback | None",
+        Any | None,
         list[str],
     ]:
         """Build stream config, cancel callback, and stream mode list.
@@ -1256,6 +1275,12 @@ class AgentService:
         optional cancel-callback injection for graceful cancellation.
 
         Args:
+            parent_runnable_config: Outer LangGraph/LangChain runnable config to
+                inherit when nested tracing should be preserved.
+            trace_mode: ``separate`` keeps AgentService as its own trace root.
+                ``nested`` reuses parent callbacks when available and otherwise
+                falls back to separate tracing. ``nested-only`` requires a
+                parent trace config and raises when one is unavailable.
             sync: When ``True``, use :class:`SyncStreamCancelCallback`
                 (``BaseCallbackHandler``) so that ``GraphInterrupt``
                 propagates synchronously.  When ``False`` (default), use
@@ -1272,11 +1297,28 @@ class AgentService:
         if on_custom is not None:
             stream_modes.append("custom")
 
-        cancel_cb: StreamCancelCallback | SyncStreamCancelCallback | None = None
+        if trace_mode not in _TRACE_MODES:
+            raise ValueError(
+                f"Unsupported trace_mode={trace_mode!r}. Expected one of: "
+                f"{sorted(_TRACE_MODES)}"
+            )
+
+        cancel_cb: Any | None = None
         stream_config: dict[str, Any] = {"configurable": configurable}
         if graceful_cancel:
             cancel_cb = SyncStreamCancelCallback() if sync else StreamCancelCallback()
             stream_config["callbacks"] = [cancel_cb]
+
+        trace_link_available = self._parent_trace_config_available(
+            parent_runnable_config
+        )
+        if trace_mode == "nested-only" and not trace_link_available:
+            raise ValueError(
+                "trace_mode='nested-only' requires a parent RunnableConfig "
+                "with callbacks so AgentService can stay inside the outer trace."
+            )
+        if trace_mode != "separate" and trace_link_available:
+            stream_config = merge_configs(parent_runnable_config, stream_config)
 
         return stream_config, cancel_cb, stream_modes
 
@@ -1450,6 +1492,8 @@ class AgentService:
         on_custom: Callable[[Any], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
         graceful_cancel: bool = True,
+        parent_runnable_config: RunnableConfig | None = None,
+        trace_mode: Literal["separate", "nested", "nested-only"] = "separate",
     ) -> AgentResponse:
         """Execute the agent synchronously and return the response.
 
@@ -1466,6 +1510,10 @@ class AgentService:
                        Tools can emit custom data via ``get_stream_writer()``.
             cancel_check: Returns ``True`` to request cancellation.
             graceful_cancel: Use ``GraphInterrupt`` for clean LangSmith traces.
+            parent_runnable_config: Parent runnable config to reuse when
+                preserving outer trace context.
+            trace_mode: Controls whether the inner agent keeps its own trace or
+                stays nested under the caller's runnable trace.
 
         Raises:
             AgentCancelled: If *cancel_check* returns ``True``.
@@ -1489,6 +1537,8 @@ class AgentService:
             on_token=on_token,
             on_custom=on_custom,
             graceful_cancel=graceful_cancel,
+            parent_runnable_config=parent_runnable_config,
+            trace_mode=trace_mode,
             sync=True,
         )
 
@@ -1539,6 +1589,8 @@ class AgentService:
         on_custom: Callable[[Any], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
         graceful_cancel: bool = True,
+        parent_runnable_config: RunnableConfig | None = None,
+        trace_mode: Literal["separate", "nested", "nested-only"] = "separate",
     ) -> AgentResponse:
         """Async version of run_agent_steps using astream.
 
@@ -1556,6 +1608,13 @@ class AgentService:
         """
         # --- Remote execution path ---
         if self._is_remote:
+            if trace_mode != "separate":
+                raise RuntimeError(
+                    f"trace_mode={trace_mode!r} is not supported for remote "
+                    "Agent Server execution because the inner run is delegated "
+                    "over HTTP and cannot inherit local parent callbacks. "
+                    "Use trace_mode='separate' or force local agent execution."
+                )
             return await self._arun_agent_steps_remote(
                 user_input=user_input,
                 on_step=on_step,
@@ -1576,6 +1635,8 @@ class AgentService:
             on_token=on_token,
             on_custom=on_custom,
             graceful_cancel=graceful_cancel,
+            parent_runnable_config=parent_runnable_config,
+            trace_mode=trace_mode,
         )
 
         raw_stream = self.agent.astream(

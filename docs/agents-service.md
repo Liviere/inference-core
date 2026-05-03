@@ -242,6 +242,31 @@ This is different from the Agent Server path below:
   inner run when `AGENT_SERVER_ENABLED=true` and the selected agent has
   `execution_mode: remote`
 
+Start with the no-LLM teaching path:
+
+```bash
+poetry run python examples/langgraph_agentservice_tutorial.py \
+  --mock-agent \
+  --prompt "Explain how this bridge works" \
+  --outer-stream
+```
+
+The tutorial exposes `--trace-mode` for trace linkage control:
+
+- `separate` keeps the inner `AgentService` trace separate from the outer graph
+- `nested` reuses the outer `RunnableConfig` when parent callbacks are available
+- `nested-only` refuses to create a standalone inner trace when parent trace context is missing
+
+The tutorial also exposes `--agent-execution-mode` because nested LangSmith
+traces require in-process callback propagation. Remote Agent Server execution
+crosses an HTTP boundary and remains a separate root trace.
+
+- `auto` uses the configured agent execution for `separate`, and forces local
+  execution for `nested` / `nested-only`
+- `configured` honors `llm_config.yaml`; nested modes fail fast if that resolves
+  to remote Agent Server execution
+- `local` always bypasses Agent Server for this tutorial run
+
 ## Agent Memory
 
 Agents can store and recall long-term memories about users using the integrated

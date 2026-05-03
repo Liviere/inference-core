@@ -86,15 +86,19 @@ def _make_agent_service_for_remote(execution_mode="remote", **overrides):
     }
     defaults.update(overrides)
 
-    with patch(
-        "inference_core.services.agents_service.get_model_factory",
-        return_value=mock_model_factory,
-    ), patch(
-        "inference_core.services.agents_service.get_llm_config",
-        return_value=MagicMock(),
-    ), patch(
-        "inference_core.services.agents_service.get_settings",
-        return_value=_mock_settings(),
+    with (
+        patch(
+            "inference_core.services.agents_service.get_model_factory",
+            return_value=mock_model_factory,
+        ),
+        patch(
+            "inference_core.services.agents_service.get_llm_config",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "inference_core.services.agents_service.get_settings",
+            return_value=_mock_settings(),
+        ),
     ):
         svc = AgentService(**defaults)
 
@@ -416,6 +420,17 @@ class TestRunAgentStepsRemoteGuard:
                 svc.run_agent_steps("Hello")
 
 
+class TestTraceModeRemoteGuard:
+    async def test_async_nested_trace_raises_for_remote(self):
+        svc = _make_agent_service_for_remote(execution_mode="remote")
+        with patch(
+            "inference_core.services.agents_service.get_settings",
+            return_value=_mock_settings(agent_server_enabled=True),
+        ):
+            with pytest.raises(RuntimeError, match="force local agent execution"):
+                await svc.arun_agent_steps("Hello", trace_mode="nested")
+
+
 # ---------------------------------------------------------------------------
 # AgentService.arun_agent_steps — remote delegation
 # ---------------------------------------------------------------------------
@@ -427,13 +442,16 @@ class TestArunAgentStepsRemote:
 
         mock_result = {"messages": [{"role": "ai", "content": "Remote response"}]}
 
-        with patch(
-            "inference_core.services.agents_service.get_settings",
-            return_value=_mock_settings(agent_server_enabled=True),
-        ), patch(
-            "inference_core.services.agent_server_client.get_agent_server_client",
-            return_value=MagicMock(
-                runs=MagicMock(wait=AsyncMock(return_value=mock_result))
+        with (
+            patch(
+                "inference_core.services.agents_service.get_settings",
+                return_value=_mock_settings(agent_server_enabled=True),
+            ),
+            patch(
+                "inference_core.services.agent_server_client.get_agent_server_client",
+                return_value=MagicMock(
+                    runs=MagicMock(wait=AsyncMock(return_value=mock_result))
+                ),
             ),
         ):
             response = await svc.arun_agent_steps("Hello remote")
