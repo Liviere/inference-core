@@ -380,7 +380,7 @@ models:
     max_tokens: 4096
     temperature: 0.7
 
-  `gpt-oss:20b`:
+  'gpt-oss:20b':
     provider: 'ollama'
     display_name: 'GPT-OSS 20B (Ollama)'
     description: 'GPT-OSS 20B model served via Ollama'
@@ -418,7 +418,7 @@ models:
   # Fireworks AI Models (dedicated provider)
   accounts/fireworks/models/kimi-k2p5:
     provider: 'fireworks'
-    display_name: 'Kimi K2.5
+    display_name: 'Kimi K2.5'
     description: 'Kimi K2.5 model, hosted on Fireworks AI'
     max_tokens: 8192
     temperature: 0.7
@@ -485,15 +485,15 @@ tasks:
 #   kwargs     (optional) — forwarded to the provider constructor
 #
 # Example:
-# tool_providers:
-#   weather_agent_tools:
-#     class_path: 'inference_core.agents.tools.weather_provider:WeatherToolsProvider'
-#   default_agent_tools:
-#     class_path: 'inference_core.agents.tools.weather_provider:DefaultAgentToolsProvider'
-#   demo_tool_calling:
-#     class_path: 'inference_core.agents.tools.demo_tool_calling:DemoToolCallingProvider'
-#     enabled: true
-#     kwargs: {}
+tool_providers:
+  weather_agent_tools:
+    class_path: 'inference_core.agents.tools.weather_provider:WeatherToolsProvider'
+  default_agent_tools:
+    class_path: 'inference_core.agents.tools.weather_provider:DefaultAgentToolsProvider'
+  demo_tool_calling:
+    class_path: 'inference_core.agents.tools.demo_tool_calling:DemoToolCallingProvider'
+  email_tools:
+    class_path: 'inference_core.agents.tools.email_provider:EmailToolsProvider'
 
 # Agent Model Assignments
 agents:
@@ -560,7 +560,7 @@ agents:
     # kwargs will be passed to the LangChain model constructor at creation time.
     reasoning_output: true
 
-  # Example: Capability-aware tool routing
+  # Example: Capability-aware tool routing for a custom multimodal provider
   # Primary model is text-only but the agent still exposes a multimodal tool
   # (e.g. a screenshot tool that declares `requires_multimodal = True`).
   # With `on_missing_capability: delegate`, the tool stays available and its
@@ -569,56 +569,55 @@ agents:
   # such tools.
   vision_aware_agent:
     primary: 'deepseek-ai/DeepSeek-V3.2'
-    description: 'Text-only agent that can still call vision tools via delegation'
-    local_tool_providers: ['browser_tools']
+    description: 'Text-only agent that can still call custom vision tools via delegation'
+    local_tool_providers: ['custom_multimodal_tools']
     on_missing_capability: 'delegate'          # 'skip' (default) or 'delegate'
     multimodal_support_model: 'gpt-5-mini'     # must have multimodal: true
-  # Example: DeepAgent with skills and subagents
-  research_agent:
+  # Example: Coordinator-style workflows with specialist subagents.
+  # Parent coordinators can expose no direct tools at all and delegate the
+  # actual I/O to MCP-backed or built-in specialists.
+  browser_workflow_coordinator:
     primary: 'gpt-5-mini'
-    description: 'Agent that uses skills and delegates to subagents for research'
+    description: 'Coordinator for browser-heavy workflows that delegates MCP browser work to specialists'
+    subagents: ['browser_readonly_worker', 'browser_action_worker']
+    reasoning_output: true
+
+  browser_readonly_worker:
+    primary: 'gpt-5-mini'
+    description: 'Read-only browser subagent backed by the browser-readonly MCP profile'
+    mcp_profile: 'browser-readonly'
+    reasoning_output: true
+
+  browser_action_worker:
+    primary: 'gpt-5-mini'
+    description: 'Mutating browser subagent backed by the browser-actions MCP profile'
+    mcp_profile: 'browser-actions'
+    reasoning_output: true
+
+  email_workflow_coordinator:
+    primary: 'gpt-5-mini'
+    description: 'Coordinator for inbox triage with optional MCP-backed browser follow-up'
+    subagents: ['email_reader_worker', 'browser_readonly_worker']
+    reasoning_output: true
+
+  email_reader_worker:
+    primary: 'gpt-5-mini'
+    description: 'Email subagent backed by the built-in email tools provider'
+    local_tool_providers: ['email_tools']
+    allowed_tools:
+      - list_email_accounts
+      - read_unseen_emails
+      - search_emails
+      - get_email
+      - summarize_email
+    reasoning_output: true
+
+  research_collection_coordinator:
+    primary: 'gpt-5-mini'
+    description: 'Coordinator for research workflows that delegates browser and email evidence gathering'
     skills: ['./skills/web-research/']
-    subagents: ['web_researcher']
-
-  web_researcher:
-    primary: 'gpt-5-mini'
-    description: 'Subagent specialized in web research'
-    local_tool_providers: ['assistant_tools']
-    allowed_tools: ['web_search', 'write_file', 'read_file', 'list_files', 'fetch_url']
-
-    # Tool-based model overrides example
-    # When a specific tool is called, the next model call will use a different model
-    tool_model_overrides:
-      # After complex analysis tool returns, use Claude for follow-up reasoning
-      - tool_name: 'analyze_complex_data'
-        model: 'claude-opus-4-1-20250805'
-        trigger: 'after_tool'
-        description: 'Use Claude Opus for complex reasoning after data analysis'
-
-      # After code generation tool, use GPT-5 for code review
-      - tool_name: 'generate_code'
-        model: 'gpt-5'
-        trigger: 'after_tool'
-        description: 'Use GPT-5 for code review and refinement'
-
-      # For simple lookup results, use a fast/cheap model
-      - tool_name: 'simple_lookup'
-        model: 'gpt-5-nano'
-        trigger: 'after_tool'
-        description: 'Use nano model for simple follow-ups after lookups'
-
-    # Tool-call limits example (ToolCallLimitMiddleware)
-    # Prevents tool-call loops by capping how many times tools can be called
-    # per run or per thread. Each entry produces a separate middleware instance.
-    # tool_call_limits:
-    #   global_limit:                  # Applies to all tools
-    #     run_limit: 30                # Max calls per single agent invocation
-    #     thread_limit: 120            # Max calls across the whole conversation
-    #     exit_behavior: continue      # 'continue' (block call, let model finish) or 'error'
-    #   per_tool:                      # Stricter limits for specific heavy tools
-    #     - tool_name: 'fetch_url'
-    #       run_limit: 5
-    #       exit_behavior: continue
+    subagents: ['browser_readonly_worker', 'email_reader_worker']
+    reasoning_output: true
 
   # Example: Agent running on remote LangGraph Agent Server
   # Requires AGENT_SERVER_ENABLED=True and AGENT_SERVER_URL in .env
@@ -670,13 +669,23 @@ mcp:
 
   profiles:
     web-browsing:
-      description: 'Web browsing and interaction via Playwright'
+      description: 'General web browsing and interaction via Playwright'
       servers: ['playwright']
       include_tools: [
           'browser_navigate',
           'browser_navigate_back',
           'browser_click',
         ] # Optional tool allowlist
+
+    browser-readonly:
+      description: 'Read-only browser worker profile for navigation-only flows'
+      servers: ['playwright']
+      include_tools: ['browser_navigate', 'browser_navigate_back']
+
+    browser-actions:
+      description: 'Mutating browser worker profile for guarded click-based flows'
+      servers: ['playwright']
+      include_tools: ['browser_navigate', 'browser_navigate_back', 'browser_click']
 
   servers:
     playwright:

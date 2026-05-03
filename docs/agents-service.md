@@ -7,21 +7,55 @@ integrations keep working while new agent features are developed.
 ## Configuration
 
 Agents are configured via `llm_config.yaml` in the `agents` section.
-The configuration includes models, runtime fallback models, tools, skills,
-subagents, and optional tool-call limits:
+The configuration includes models, runtime fallback models, local tool
+providers, MCP profiles, skills, subagents, and optional tool-call limits:
 
 ```yaml
 # llm_config.yaml
 
+tool_providers:
+  email_tools:
+    class_path: 'inference_core.agents.tools.email_provider:EmailToolsProvider'
+
+mcp:
+  profiles:
+    browser-readonly:
+      servers: [playwright]
+      include_tools: [browser_navigate, browser_navigate_back]
+
+    browser-actions:
+      servers: [playwright]
+      include_tools: [browser_navigate, browser_navigate_back, browser_click]
+
 agents:
-  browser_researcher:
-    primary: gpt-5
-    fallback: [gemini-2.5-flash, claude-3-5-haiku-latest]
-    description: 'Specialized researcher with browser access'
-    local_tool_providers: [research_bundle]
-    skills: ['./skills/web-research/']
-    subagents: ['web_searcher']
-    mcp_profile: 'web-browsing' # Optional MCP integration
+  browser_workflow_coordinator:
+    primary: gpt-5-mini
+    fallback: [gemini-2.5-flash]
+    description: 'Coordinator for browser-heavy workflows that delegates MCP browser work'
+    subagents: [browser_readonly_worker, browser_action_worker]
+
+  browser_readonly_worker:
+    primary: gpt-5-mini
+    description: 'Read-only browser worker backed by Playwright MCP'
+    mcp_profile: browser-readonly
+
+  browser_action_worker:
+    primary: gpt-5-mini
+    description: 'Mutating browser worker backed by Playwright MCP'
+    mcp_profile: browser-actions
+
+  email_reader_worker:
+    primary: gpt-5-mini
+    description: 'Email worker backed by the built-in email provider'
+    local_tool_providers: [email_tools]
+    allowed_tools:
+      [
+        list_email_accounts,
+        read_unseen_emails,
+        search_emails,
+        get_email,
+        summarize_email,
+      ]
 ```
 
 Key concepts:
@@ -32,9 +66,9 @@ Key concepts:
   compatibility alias `fallback_models`; an empty list disables inherited
   fallback for that instance.
 - **Skills** – on-demand instructions loaded from `SKILL.md` files; allow complex workflows without filling the context window.
-- **Subagents** – pointers to other agents defined in `llm_config.yaml` that can be invoked via the `task()` tool.
-- **Local Tool Providers** – reusable bundles of tools registered in the code.
-- **MCP Profiles** – configuration for Model Context Protocol servers.
+- **Subagents** – pointers to other agents defined in `llm_config.yaml` that can be invoked via the `task()` tool. In coordinator workflows, keep the parent tool surface narrow and let specialists handle raw browser/email execution.
+- **Local Tool Providers** – reusable bundles of tools registered in the code. Inference Core ships `weather_agent_tools`, `default_agent_tools`, `demo_tool_calling`, and `email_tools`; application-specific providers can be registered alongside them.
+- **MCP Profiles** – configuration for Model Context Protocol servers. Use these for browser-style tools instead of inventing a local browser provider name.
 - **Agent Memory** – integrated long-term memory for persistence across sessions.
 - **Tool-Call Limits** – per-agent policies that cap tool usage per run or
   across a whole conversation thread.
@@ -72,10 +106,18 @@ subagents, and remote LangGraph Agent Server graphs.
 
 ## Tool Providers & MCP
 
-Local tools are registered through `inference_core.agents.tools.register_agent_tool_provider`.
-A default `internet_research` provider exposes the Tavily search tool. Configured
-`mcp_profiles` reuse the existing MCP manager, so RBAC/permissions remain
-consistent with LLM tasks.
+Local providers come from the global registry in `inference_core.llm.tools`.
+For Agent Server graphs, `agent_graphs.py` registers entries declared under
+`tool_providers:` in `llm_config.yaml`; embedding applications can also call
+`register_tool_provider()` during startup for local `AgentService` usage.
+
+Inference Core ships built-in provider classes for weather/search, demo
+tool-calling, and email workflows. Browser tooling is exposed through MCP
+profiles rather than a built-in local browser provider, so coordinator
+examples should use `mcp_profile` for Playwright-backed workers and reserve
+`local_tool_providers` for built-ins or application-defined extensions. See
+`docs/mcp-integration.md` and `docs/pluggable-tool-providers.md` for the two
+integration paths.
 
 ## API Router
 
@@ -183,6 +225,22 @@ response = await service.arun_agent_steps(
     on_token=handle_token,
 )
 ```
+
+## Custom LangGraph Orchestration
+
+A custom LangGraph orchestration can place the existing `AgentService` inside
+your own LangGraph `StateGraph`. This is useful when you need deterministic
+preparation or reporting nodes around the agent run while still reusing the
+existing `AgentService` integration surface for the middle step.
+
+This is different from the Agent Server path below:
+
+- custom orchestration: your graph calls `AgentService` as one node in a larger workflow
+- Agent Server: `agent_graphs.py` and `build_agent_graph()` compile configured
+  agents for `langgraph dev` / `langgraph up`
+- remote delegation: `AgentService.arun_agent_steps()` can still delegate the
+  inner run when `AGENT_SERVER_ENABLED=true` and the selected agent has
+  `execution_mode: remote`
 
 ## Agent Memory
 

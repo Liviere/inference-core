@@ -207,7 +207,7 @@ models:
 agents:
   vision_aware_agent:
     primary: 'deepseek-ai/DeepSeek-V3.2'
-    local_tool_providers: ['browser_tools']
+    local_tool_providers: ['my_multimodal_tools']
     on_missing_capability: 'delegate' # 'skip' | 'delegate'
     multimodal_support_model: 'gpt-5-mini'
 ```
@@ -215,6 +215,11 @@ agents:
 Use `skip` when you want a strict tool set that matches the primary model.
 Use `delegate` when the primary model should remain text-only but selected tool
 calls need a multimodal fallback.
+
+This pattern assumes a custom registered local provider whose tools declare
+`requires_multimodal = True`. For browser automation in inference-core itself,
+prefer `mcp_profile`-backed workers instead of inventing a local browser
+provider name.
 
 ## Agent Skills & Subagents (DeepAgent)
 
@@ -226,15 +231,63 @@ Specialized capabilities and delegation for `DeepAgentService`. Configured in `l
 Example `llm_config.yaml`:
 
 ```yaml
+tool_providers:
+  email_tools:
+    class_path: 'inference_core.agents.tools.email_provider:EmailToolsProvider'
+
+mcp:
+  profiles:
+    browser-readonly:
+      servers: ['playwright']
+      include_tools: ['browser_navigate', 'browser_navigate_back']
+
+    browser-actions:
+      servers: ['playwright']
+      include_tools:
+        ['browser_navigate', 'browser_navigate_back', 'browser_click']
+
 agents:
-  research_agent:
+  browser_workflow_coordinator:
     primary: 'gpt-5-mini'
-    skills: ['./skills/research/']
-    subagents: ['web_searcher']
-  web_searcher:
+    subagents: ['browser_readonly_worker', 'browser_action_worker']
+
+  browser_readonly_worker:
     primary: 'gpt-5-mini'
-    local_tool_providers: ['assistant_tools']
+    mcp_profile: 'browser-readonly'
+
+  browser_action_worker:
+    primary: 'gpt-5-mini'
+    mcp_profile: 'browser-actions'
+
+  email_workflow_coordinator:
+    primary: 'gpt-5-mini'
+    subagents: ['email_reader_worker', 'browser_readonly_worker']
+
+  email_reader_worker:
+    primary: 'gpt-5-mini'
+    local_tool_providers: ['email_tools']
+    allowed_tools:
+      [
+        'list_email_accounts',
+        'read_unseen_emails',
+        'search_emails',
+        'get_email',
+        'summarize_email',
+      ]
+
+  research_collection_coordinator:
+    primary: 'gpt-5-mini'
+    skills: ['./skills/web-research/']
+    subagents: ['browser_readonly_worker', 'email_reader_worker']
 ```
+
+In this pattern, the coordinator can keep zero direct `local_tool_providers`
+and delegate all I/O to specialists. Splitting a read-only browser worker from
+a mutating worker is useful when approval, HITL, or destructive actions matter.
+
+For MCP-backed browser workers, the effective browser allowlist lives under
+`mcp.profiles.*.include_tools`. Agent-level `allowed_tools` is the right place
+to constrain local providers such as `email_tools`.
 
 ## Agent Tool-Call Limits
 
