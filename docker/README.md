@@ -50,6 +50,8 @@ The Docker configuration is split into multiple files for better modularity:
 
 This modular approach allows you to easily switch between different database backends without modifying the core application configuration.
 
+The main application image installs the full Poetry environment, including the LangGraph CLI, and bakes in the LangGraph and Alembic runtime files (`agent_graphs.py`, `langgraph.json`, `langgraph_auth.py`, `alembic.ini`, and `migrations/`). Rebuild the image after changing any of those files so Docker-based LangGraph validation and database migrations stay in sync.
+
 ### Worker Topology In Docker Compose
 
 The base compose file starts two Celery workers with different execution models:

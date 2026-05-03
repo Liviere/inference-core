@@ -30,12 +30,18 @@ COPY pyproject.toml poetry.lock* ./
 COPY README.md ./
 COPY inference_core ./inference_core
 
-# Install dependencies globally
-RUN poetry install --only=main && rm -rf $POETRY_CACHE_DIR
+# Install project and tool dependencies globally.
+# LangGraph CLI is required by the langgraph-server service.
+RUN poetry install && rm -rf $POETRY_CACHE_DIR
 
 # Copy application code
+COPY alembic.ini ./
+COPY migrations ./migrations
 COPY tests ./tests
 COPY run.py ./
+COPY agent_graphs.py ./
+COPY langgraph.json ./
+COPY langgraph_auth.py ./
 COPY llm_config.yaml ./
 COPY .env ./
 
@@ -52,8 +58,4 @@ USER inference_core
 
 # Expose port
 EXPOSE ${PORT}
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/api/v1/health/ || exit 1
 
