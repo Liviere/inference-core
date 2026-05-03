@@ -459,20 +459,19 @@ async def get_agent_instance_run_bundle(
             ),
         )
 
-    # Reuse AgentService.from_user_instance to keep the override resolution
-    # chain identical to the live runtime path.  We never call create_agent()
-    # so no LLM clients, tools, or graphs are instantiated — only metadata.
+    # Build the same runtime metadata as AgentService without constructing the
+    # service itself.  The frontend is only opening a direct Agent Server stream,
+    # so the API process must not instantiate provider-specific LLM clients here.
     base_config = await llm_config_service.get_config_with_overrides(user_id)
 
     try:
-        agent_svc = AgentService.from_user_instance(
+        configurable, is_remote = AgentService.build_remote_metadata_for_user_instance(
             instance,
             user_id=user_id,
             session_id=session_id,
             request_id=str(_uuid.uuid4()),
             base_config=base_config,
         )
-        configurable = agent_svc._build_remote_metadata()
     except Exception as exc:
         logger.exception(
             "Failed to build run bundle for instance %s: %s", instance_id, exc
@@ -496,5 +495,5 @@ async def get_agent_instance_run_bundle(
             else _extract_bearer_from_request(request)
         ),
         config=RunBundleConfig(configurable=configurable),
-        is_remote=agent_svc._is_remote,
+        is_remote=is_remote,
     )

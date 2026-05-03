@@ -9,6 +9,7 @@ the constructor's dependencies or by testing individual methods on a pre-built i
 
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -721,8 +722,16 @@ def _make_mock_instance(**overrides):
     instance.system_prompt_append = None
     instance.description = None
     instance.config_overrides = {}
+    instance.subagents = []
+    instance.skills = []
     for k, v in overrides.items():
         setattr(instance, k, v)
+    instance.to_dict.return_value = {
+        "base_agent_name": instance.base_agent_name,
+        "primary_model": instance.primary_model,
+        "description": instance.description,
+        "config_overrides": instance.config_overrides,
+    }
     return instance
 
 
@@ -783,6 +792,55 @@ def _make_from_user_instance_patches():
 
 class TestAgentServiceFromUserInstance:
     """Verify AgentService.from_user_instance factory."""
+
+    def test_build_remote_metadata_does_not_create_model(self):
+        """Run-bundle metadata must not instantiate provider LLM clients."""
+        instance = _make_mock_instance(system_prompt_append="Be terse.")
+        base_config = MagicMock()
+        base_config.get_specific_agent_config.return_value = SimpleNamespace(
+            fallback=["fallback-model"],
+            execution_mode="remote",
+            reasoning_output=True,
+        )
+        base_config.get_agent_model.return_value = "gpt-4o"
+
+        with (
+            patch(
+                "inference_core.services.agents_service.LLMModelFactory",
+                side_effect=AssertionError("model factory must not be constructed"),
+            ),
+            patch(
+                "inference_core.services.agents_service.get_model_factory",
+                side_effect=AssertionError("model factory must not be resolved"),
+            ),
+            patch(
+                "inference_core.services.agents_service.get_llm_config",
+                return_value=SimpleNamespace(agent_models={"test_agent": "gpt-4o"}),
+            ),
+            patch(
+                "inference_core.services.agents_service.get_settings",
+                return_value=SimpleNamespace(agent_server_enabled=True),
+            ),
+        ):
+            metadata, is_remote = AgentService.build_remote_metadata_for_user_instance(
+                instance,
+                user_id=uuid.UUID("12345678-1234-5678-1234-567812345678"),
+                session_id="sess-1",
+                request_id="req-1",
+                base_config=base_config,
+            )
+
+        assert is_remote is True
+        assert metadata["agent_name"] == "test_agent"
+        assert metadata["model_name"] == "gpt-4o"
+        assert metadata["instance_id"] == str(instance.id)
+        assert metadata["instance_name"] == "my-instance"
+        assert metadata["user_id"] == "12345678-1234-5678-1234-567812345678"
+        assert metadata["session_id"] == "sess-1"
+        assert metadata["request_id"] == "req-1"
+        assert metadata["system_prompt_append"] == "Be terse."
+        assert metadata["fallback_models"] == ["fallback-model"]
+        assert metadata["reasoning_output"] is True
 
     def test_returns_agent_service(self):
         """from_user_instance returns an AgentService instance."""

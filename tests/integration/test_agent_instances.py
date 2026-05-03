@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -366,10 +367,17 @@ async def test_agent_instance_run_bundle(async_test_client_factory, monkeypatch)
                 settings.agent_server_url = original_url or "http://localhost:2024"
 
             # --- Happy path with token echo ---
-            resp = await client.get(
-                f"/api/v1/agent-instances/{instance_id}/run-bundle?session_id=sess-1",
-                headers={"Authorization": "Bearer dummy-token-xyz"},
-            )
+            with patch(
+                "inference_core.api.v1.routes.agent_instances."
+                "AgentService.from_user_instance",
+                side_effect=AssertionError(
+                    "run-bundle must not instantiate AgentService"
+                ),
+            ):
+                resp = await client.get(
+                    f"/api/v1/agent-instances/{instance_id}/run-bundle?session_id=sess-1",
+                    headers={"Authorization": "Bearer dummy-token-xyz"},
+                )
             assert resp.status_code == 200, resp.text
             data = resp.json()
 

@@ -105,7 +105,7 @@ class QdrantProvider(BaseVectorStoreProvider):
             collection_info = await client.get_collection(name)
             self.logger.debug(f"Collection '{name}' already exists")
             return False
-        except ResponseHandlingException, UnexpectedResponse:
+        except (ResponseHandlingException, UnexpectedResponse):
             # Collection doesn't exist, create it
             dimension = dimension or self.get_dimension()
 
@@ -321,7 +321,7 @@ class QdrantProvider(BaseVectorStoreProvider):
             await client.delete_collection(collection_name=collection)
             self.logger.info(f"Deleted Qdrant collection: {collection}")
             return True
-        except ResponseHandlingException, UnexpectedResponse:
+        except (ResponseHandlingException, UnexpectedResponse):
             self.logger.warning(
                 f"Collection '{collection}' does not exist or could not be deleted"
             )
@@ -383,7 +383,7 @@ class QdrantProvider(BaseVectorStoreProvider):
                 exact=True,
             )
             total_count = count_result.count if hasattr(count_result, "count") else 0
-        except ResponseHandlingException, UnexpectedResponse:
+        except (ResponseHandlingException, UnexpectedResponse):
             # Collection doesn't exist
             return ([], 0)
 

@@ -1389,6 +1389,125 @@ class AgentService:
 
         return metadata
 
+    @staticmethod
+    def build_instance_context(instance: "UserAgentInstance") -> InstanceContext:
+        """Build instance identity metadata without constructing an AgentService.
+
+        WHY: The Agent Server run-bundle endpoint only needs identity and
+        subagent override metadata. Building that data separately avoids the
+        AgentService constructor, which creates provider-specific LLM clients.
+        """
+        subagent_configs: dict[str, dict[str, Any]] = {}
+        for sub in getattr(instance, "subagents", None) or []:
+            sub_config = {
+                "instance_id": str(sub.id),
+                "instance_name": sub.instance_name,
+                "primary_model": sub.primary_model,
+                "system_prompt_override": sub.system_prompt_override,
+                "system_prompt_append": sub.system_prompt_append,
+            }
+            sub_overrides = canonicalize_fallback_overrides(
+                getattr(sub, "config_overrides", None) or {}
+            )
+            if "fallback" in sub_overrides:
+                sub_config["fallback_models"] = sub_overrides["fallback"]
+            subagent_configs[sub.base_agent_name] = sub_config
+
+        return InstanceContext(
+            instance_id=instance.id,
+            instance_name=instance.instance_name,
+            base_agent_name=instance.base_agent_name,
+            subagent_configs=subagent_configs,
+        )
+
+    @classmethod
+    def build_remote_metadata_for_user_instance(
+        cls,
+        instance: "UserAgentInstance",
+        user_id: Optional[uuid.UUID] = None,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        base_config: Optional[LLMConfig] = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Build Agent Server run metadata without creating a local model.
+
+        WHY: Frontend run-bundle calls are a handshake with the Agent Server.
+        They must forward the same resolved instance metadata as AgentService,
+        but they should not require the API process to instantiate a Gemini,
+        OpenAI, Claude, or DeepInfra client just to return configuration.
+        """
+        resolved_config = cls.build_config_for_instance(
+            instance, base_config=base_config
+        )
+        agent_name = instance.base_agent_name
+        agent_config = resolved_config.get_specific_agent_config(agent_name)
+        if agent_config is None:
+            raise ValueError(
+                f"Base agent '{agent_name}' is not present in the resolved LLM config"
+            )
+
+        model_name = resolved_config.get_agent_model(agent_name)
+        if not model_name:
+            raise ValueError(f"Model for agent '{agent_name}' could not be resolved")
+
+        instance_context = cls.build_instance_context(instance)
+        metadata: dict[str, Any] = {
+            "agent_name": agent_name,
+            "model_name": model_name,
+        }
+        if user_id:
+            metadata["user_id"] = str(user_id)
+        if session_id:
+            metadata["session_id"] = session_id
+        if request_id:
+            metadata["request_id"] = request_id
+
+        metadata["instance_id"] = str(instance_context.instance_id)
+        metadata["instance_name"] = instance_context.instance_name
+
+        if instance.system_prompt_override is not None:
+            metadata["system_prompt_override"] = instance.system_prompt_override
+        if instance.system_prompt_append is not None:
+            metadata["system_prompt_append"] = instance.system_prompt_append
+
+        if getattr(agent_config, "fallback", None) is not None:
+            metadata["fallback_models"] = list(agent_config.fallback or [])
+        if instance_context.subagent_configs:
+            metadata["subagent_configs"] = instance_context.subagent_configs
+
+        if base_config is not None:
+            base_model = get_llm_config().agent_models.get(agent_name)
+            if model_name != base_model:
+                metadata["primary_model"] = model_name
+
+        if getattr(agent_config, "reasoning_output", False):
+            metadata["reasoning_output"] = True
+
+        config_overrides = canonicalize_fallback_overrides(
+            getattr(instance, "config_overrides", None) or {}
+        )
+        memory_session_context_enabled = config_overrides.get(
+            "memory_session_context_enabled"
+        )
+        if memory_session_context_enabled is not None:
+            metadata["memory_session_context_enabled"] = memory_session_context_enabled
+
+        memory_tool_instructions_enabled = config_overrides.get(
+            "memory_tool_instructions_enabled"
+        )
+        if memory_tool_instructions_enabled is not None:
+            metadata["memory_tool_instructions_enabled"] = (
+                memory_tool_instructions_enabled
+            )
+
+        settings = get_settings()
+        is_remote = (
+            settings.agent_server_enabled
+            and getattr(agent_config, "execution_mode", None) == "remote"
+        )
+
+        return metadata, is_remote
+
     def _process_stream_chunk(
         self,
         chunk: dict[str, Any],
@@ -1902,37 +2021,13 @@ class AgentService:
             instance, base_config=base_config
         )
 
-        # Build subagent_configs dict for Agent Server remote execution.
-        # Maps base_agent_name → override dict so SubagentConfigMiddleware
-        # on each subagent graph can apply per-user overrides at runtime.
-        subagent_configs: dict[str, dict[str, Any]] = {}
-        for sub in getattr(instance, "subagents", None) or []:
-            sub_config = {
-                "instance_id": str(sub.id),
-                "instance_name": sub.instance_name,
-                "primary_model": sub.primary_model,
-                "system_prompt_override": sub.system_prompt_override,
-                "system_prompt_append": sub.system_prompt_append,
-            }
-            sub_overrides = canonicalize_fallback_overrides(
-                getattr(sub, "config_overrides", None) or {}
-            )
-            if "fallback" in sub_overrides:
-                sub_config["fallback_models"] = sub_overrides["fallback"]
-            subagent_configs[sub.base_agent_name] = sub_config
-        if subagent_configs:
+        instance_ctx = cls.build_instance_context(instance)
+        if instance_ctx.subagent_configs:
             logging.debug(
                 "Built subagent_configs for '%s': %s",
                 instance.instance_name,
-                list(subagent_configs.keys()),
+                list(instance_ctx.subagent_configs.keys()),
             )
-
-        instance_ctx = InstanceContext(
-            instance_id=instance.id,
-            instance_name=instance.instance_name,
-            base_agent_name=instance.base_agent_name,
-            subagent_configs=subagent_configs,
-        )
 
         return cls(
             agent_name=instance.base_agent_name,
