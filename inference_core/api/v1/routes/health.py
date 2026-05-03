@@ -21,6 +21,9 @@ from inference_core.services.vector_store_service import get_vector_store_servic
 
 router = APIRouter(prefix="/health", tags=["Health Check"])
 
+TASK_HEALTH_INSPECT_TIMEOUT_SECONDS = 1.0
+TASK_HEALTH_CACHE_TTL_SECONDS = 5.0
+
 
 ###################################
 #             Schemas            #
@@ -70,7 +73,10 @@ async def health_check(
 
     # Tasks/Celery health (non-critical for overall status here)
     try:
-        worker_stats = task_service.get_worker_stats()
+        worker_stats = await task_service.get_worker_stats_async(
+            timeout=TASK_HEALTH_INSPECT_TIMEOUT_SECONDS,
+            cache_ttl=TASK_HEALTH_CACHE_TTL_SECONDS,
+        )
         ping_responses = worker_stats.get("ping") or {}
         active_workers = (
             len([w for w in ping_responses.values() if w.get("ok") == "pong"])

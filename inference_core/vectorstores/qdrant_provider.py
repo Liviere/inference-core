@@ -9,7 +9,6 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
-import aiohttp
 from langchain_core.retrievers import BaseRetriever
 from qdrant_client import AsyncQdrantClient, QdrantClient
 from qdrant_client.http import models
@@ -106,7 +105,7 @@ class QdrantProvider(BaseVectorStoreProvider):
             collection_info = await client.get_collection(name)
             self.logger.debug(f"Collection '{name}' already exists")
             return False
-        except (ResponseHandlingException, UnexpectedResponse):
+        except ResponseHandlingException, UnexpectedResponse:
             # Collection doesn't exist, create it
             dimension = dimension or self.get_dimension()
 
@@ -322,26 +321,16 @@ class QdrantProvider(BaseVectorStoreProvider):
             await client.delete_collection(collection_name=collection)
             self.logger.info(f"Deleted Qdrant collection: {collection}")
             return True
-        except (ResponseHandlingException, UnexpectedResponse):
+        except ResponseHandlingException, UnexpectedResponse:
             self.logger.warning(
                 f"Collection '{collection}' does not exist or could not be deleted"
             )
             return False
 
     async def health_check(self) -> Dict[str, Any]:
-        """Check Qdrant health and connectivity"""
+        """Check Qdrant health through the managed async client."""
         try:
             client = await self._get_async_client()
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.url}/readyz") as response:
-                    if response.status != 200:
-                        raise ConnectionError(
-                            f"Qdrant readiness check failed with status {response.status}"
-                        )
-                    ready_state = await response.text()
-
-            # Get collections list
             collections = await client.get_collections()
             collection_names = [col.name for col in collections.collections]
 
@@ -352,7 +341,6 @@ class QdrantProvider(BaseVectorStoreProvider):
                 "status": "healthy",
                 "backend": "qdrant",
                 "url": self.url,
-                "ready": ready_state,
                 "collections": collection_names,
                 "embedding_backend": _settings.embedding_backend,
                 "embedding_model": self.embedding_model_name,
@@ -395,7 +383,7 @@ class QdrantProvider(BaseVectorStoreProvider):
                 exact=True,
             )
             total_count = count_result.count if hasattr(count_result, "count") else 0
-        except (ResponseHandlingException, UnexpectedResponse):
+        except ResponseHandlingException, UnexpectedResponse:
             # Collection doesn't exist
             return ([], 0)
 

@@ -201,9 +201,69 @@ class TestTaskService:
         service = TaskService()
         stats = service.get_worker_stats()
 
+        mock_celery_app.control.inspect.assert_called_once_with(timeout=1.0)
         assert stats["stats"] == {"worker1": {"total": 10}}
         assert stats["ping"] == {"worker1": "pong"}
         assert stats["registered"] == {"worker1": ["task.name"]}
+
+    @patch("inference_core.services.task_service.celery_app")
+    def test_get_worker_stats_forwards_custom_timeout(self, mock_celery_app):
+        """Test get_worker_stats forwards custom inspect timeout"""
+        mock_inspect = MagicMock()
+        mock_inspect.stats.return_value = {}
+        mock_inspect.ping.return_value = {}
+        mock_inspect.registered.return_value = {}
+        mock_celery_app.control.inspect.return_value = mock_inspect
+
+        service = TaskService()
+        service.get_worker_stats(timeout=2.5)
+
+        mock_celery_app.control.inspect.assert_called_once_with(timeout=2.5)
+
+    @patch("inference_core.services.task_service.celery_app")
+    def test_get_worker_stats_allows_unbounded_inspect(self, mock_celery_app):
+        """Test get_worker_stats can preserve Celery's default inspect timeout"""
+        mock_inspect = MagicMock()
+        mock_inspect.stats.return_value = {}
+        mock_inspect.ping.return_value = {}
+        mock_inspect.registered.return_value = {}
+        mock_celery_app.control.inspect.return_value = mock_inspect
+
+        service = TaskService()
+        service.get_worker_stats(timeout=None)
+
+        mock_celery_app.control.inspect.assert_called_once_with()
+
+    @patch("inference_core.services.task_service.celery_app")
+    def test_get_worker_stats_uses_short_cache(self, mock_celery_app):
+        """Test get_worker_stats can reuse recent inspect responses"""
+        mock_inspect = MagicMock()
+        mock_inspect.stats.return_value = {"worker1": {"total": 10}}
+        mock_inspect.ping.return_value = {"worker1": {"ok": "pong"}}
+        mock_inspect.registered.return_value = {"worker1": ["task.name"]}
+        mock_celery_app.control.inspect.return_value = mock_inspect
+
+        service = TaskService()
+        first_stats = service.get_worker_stats(cache_ttl=30.0)
+        second_stats = service.get_worker_stats(cache_ttl=30.0)
+
+        assert first_stats == second_stats
+        mock_celery_app.control.inspect.assert_called_once_with(timeout=1.0)
+        mock_inspect.stats.assert_called_once()
+        mock_inspect.ping.assert_called_once()
+        mock_inspect.registered.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_worker_stats_async_forwards_options(self):
+        """Test async worker stats wrapper preserves health-check bounds"""
+        service = TaskService()
+        with patch.object(
+            service, "get_worker_stats", return_value={"ping": {}}
+        ) as mock_get_worker_stats:
+            result = await service.get_worker_stats_async(timeout=2.0, cache_ttl=3.0)
+
+        assert result == {"ping": {}}
+        mock_get_worker_stats.assert_called_once_with(timeout=2.0, cache_ttl=3.0)
 
     @patch("inference_core.services.task_service.celery_app")
     def test_get_worker_stats_with_none_response(self, mock_celery_app):
@@ -218,6 +278,7 @@ class TestTaskService:
         service = TaskService()
         stats = service.get_worker_stats()
 
+        mock_celery_app.control.inspect.assert_called_once_with(timeout=1.0)
         # Should still return a dict structure even with None responses
         assert stats["stats"] is None
         assert stats["ping"] is None
