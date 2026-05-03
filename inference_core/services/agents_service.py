@@ -9,7 +9,7 @@ from deepagents import CompiledSubAgent, SubAgent
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.backends.utils import create_file_data
-from deepagents.middleware import SkillsMiddleware, SubAgentMiddleware
+from deepagents.middleware import SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import InterruptOnConfig
 from langchain.messages import AIMessageChunk, HumanMessage
@@ -32,6 +32,10 @@ from inference_core.agents.middleware import (
 from inference_core.agents.tools.memory_tools import (
     generate_memory_tools_system_instructions,
     get_memory_tools,
+)
+from inference_core.agents.tools.skill_reader import (
+    add_skill_reader_tool,
+    create_skills_middleware,
 )
 from inference_core.core.config import get_settings
 from inference_core.database.sql.models.user_agent_instance import UserAgentInstance
@@ -463,11 +467,17 @@ class AgentService:
         # Add SkillsMiddleware if user-defined skills are present
         if self._user_skills:
             store, skill_sources = self._build_skills_store(self._user_skills)
-            skills_middleware = SkillsMiddleware(
-                backend=(lambda rt: StoreBackend(rt)),
+            skills_backend = lambda rt: StoreBackend(rt)
+            skills_middleware = create_skills_middleware(
+                backend=skills_backend,
                 sources=skill_sources,
             )
             middleware.append(skills_middleware)
+            add_skill_reader_tool(
+                self.tools,
+                backend=skills_backend,
+                sources=skill_sources,
+            )
             # Inject store into kwargs so create_agent passes it to the graph
             kwargs.setdefault("store", store)
 
@@ -2057,11 +2067,16 @@ class DeepAgentService(AgentService):
                 all_sources = list(yaml_skills)
                 skills_backend = self._backend
 
-            skills_middleware = SkillsMiddleware(
+            skills_middleware = create_skills_middleware(
                 backend=skills_backend,
                 sources=all_sources,
             )
             middleware.append(skills_middleware)
+            add_skill_reader_tool(
+                self.tools,
+                backend=skills_backend,
+                sources=all_sources,
+            )
 
         # 6. Ensure CostTrackingMiddleware is absolute last so its
         #    after_model (state accumulation) runs FIRST in reverse order,

@@ -357,6 +357,42 @@ class TestBuildDeepAgentMiddleware:
 
         assert any(isinstance(m, SkillsMiddleware) for m in middleware)
 
+    def test_adds_skill_reader_tool_with_skills(self, tmp_path):
+        from deepagents.middleware import SkillsMiddleware
+
+        from inference_core.agents.graph_builder import _build_deep_agent_middleware
+        from inference_core.agents.tools.skill_reader import READ_SKILL_FILE_TOOL_NAME
+
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: test-skill\ndescription: A test skill\n---\n\n# Test Skill\n"
+        )
+
+        parent_config = _mock_agent_config(
+            subagents=None,
+            skills=[str(skill_file.relative_to(tmp_path))],
+        )
+        factory = _mock_factory()
+        middleware = []
+        tools = []
+
+        with patch("inference_core.agents.graph_builder._PROJECT_ROOT", tmp_path):
+            _build_deep_agent_middleware(
+                parent_config,
+                factory,
+                middleware,
+                tools=tools,
+            )
+
+        skill_middleware = next(
+            m for m in middleware if isinstance(m, SkillsMiddleware)
+        )
+        assert READ_SKILL_FILE_TOOL_NAME in [tool.name for tool in tools]
+        assert "read_skill_file" in skill_middleware.system_prompt_template
+        assert "`read_file`" not in skill_middleware.system_prompt_template
+
     def test_recursion_guard_prevents_circular_subagents(self):
         from inference_core.agents.graph_builder import _build_deep_agent_middleware
 
@@ -628,6 +664,7 @@ class TestBuildAgentGraphDeep:
 
         call_kwargs = mock_create.call_args[1]
         assert "store" not in call_kwargs
+        assert "read_skill_file" in [tool.name for tool in call_kwargs["tools"]]
 
     def test_no_store_without_skills(self):
         agent_config = _mock_agent_config(subagents=None, skills=None)

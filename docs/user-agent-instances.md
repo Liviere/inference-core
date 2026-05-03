@@ -10,6 +10,7 @@ Key features:
 
 - **Base Template**: Every instance starts from a base agent (e.g., `assistant_agent`) defined by administrators.
 - **Custom Overrides**: Users can override the primary model, replace or append to the system prompt, and tweak other parameters.
+- **User-defined Skills**: Instances can include private skill instructions that deep agents load on demand.
 - **Runtime Model Fallbacks**: Users can override the template fallback chain used when the primary model call fails.
 - **Default Instance**: Users can mark one instance as their default for new interactions.
 - **Isolation**: Instances are private to the user who created them.
@@ -26,6 +27,7 @@ When creating or updating an instance, the following fields are available:
 | `primary_model` | (Optional) Override the LLM model used by this agent. Must be in the allowed models list. |
 | `system_prompt_override` | (Optional) Completely replace the base agent's system prompt. |
 | `system_prompt_append` | (Optional) Append text to the end of the base agent's system prompt. |
+| `skills` | (Optional) List of private skill definitions with `name`, `description`, and `content`. |
 | `config_overrides` | (Optional) JSON object for advanced overrides (e.g., `temperature`, `max_tokens`, `allowed_tools`, `fallback`). |
 | `is_default` | (Boolean) If true, this becomes the user's default agent. Any previous default is unset. |
 
@@ -35,6 +37,38 @@ and stores both names. If the field is omitted, the instance inherits the YAML
 template fallback chain. If it is an empty list, fallback is explicitly disabled
 for that instance. All fallback models must exist in the user's resolved
 available model list.
+
+## User-defined Skills
+
+Instances can carry a `skills` array for deep-agent workflows. Each entry is stored as a private `SKILL.md` document for that instance and is exposed to the runtime through the dedicated `read_skill_file` tool rather than arbitrary filesystem access.
+
+Each skill entry must provide:
+
+- `name`: stable slug used as the skill directory name.
+- `description`: short summary shown in the skill list.
+- `content`: full markdown body written to the skill's `SKILL.md` file.
+
+Validation rules enforced by the API:
+
+- At most 20 skills per instance.
+- Skill names must be unique.
+- Skill names may contain lowercase letters, digits, and single hyphens only, with no leading or trailing hyphen.
+- `description` is limited to 1024 characters.
+- `content` is limited to 100000 characters.
+
+Example payload fragment:
+
+```json
+{
+	"skills": [
+		{
+			"name": "monitor-currency-rates",
+			"description": "Watch public exchange-rate feeds and summarize material changes.",
+			"content": "---\nname: monitor-currency-rates\ndescription: Monitor currency rates\n---\n\n# Workflow\n1. Check the configured feeds.\n2. Compare against the previous snapshot.\n3. Report only meaningful changes.\n"
+		}
+	]
+}
+```
 
 ## API Usage
 

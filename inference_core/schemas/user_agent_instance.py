@@ -4,11 +4,70 @@ User Agent Instance Schemas
 Pydantic schemas for the user agent instance API endpoints.
 """
 
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_MAX_USER_SKILLS = 20
+_MAX_SKILL_DESCRIPTION_LENGTH = 1024
+_MAX_SKILL_CONTENT_LENGTH = 100_000
+
+
+def _validate_skill_entries(
+    skills: Optional[List[Dict[str, str]]],
+) -> Optional[List[Dict[str, str]]]:
+    """Validate user-defined skills before storing them as SKILL.md files."""
+    if skills is None:
+        return skills
+    if len(skills) > _MAX_USER_SKILLS:
+        raise ValueError(f"At most {_MAX_USER_SKILLS} skills are allowed")
+
+    seen_names: set[str] = set()
+    normalized_skills: list[dict[str, str]] = []
+    for index, skill in enumerate(skills):
+        if not isinstance(skill, dict):
+            raise ValueError(f"Skill at index {index} must be a dict")
+
+        normalized_skill = dict(skill)
+        for key in ("name", "description", "content"):
+            value = normalized_skill.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"Skill at index {index} missing required field '{key}'"
+                )
+            normalized_skill[key] = value.strip() if key != "content" else value
+
+        name = normalized_skill["name"]
+        if not _SKILL_NAME_PATTERN.match(name) or "--" in name:
+            raise ValueError(
+                f"Skill at index {index} has invalid name '{name}'. "
+                "Use lowercase letters, digits, and single hyphens only"
+            )
+        if name in seen_names:
+            raise ValueError(f"Duplicate skill name '{name}'")
+        seen_names.add(name)
+
+        description = normalized_skill["description"]
+        if len(description) > _MAX_SKILL_DESCRIPTION_LENGTH:
+            raise ValueError(
+                f"Skill '{name}' description exceeds "
+                f"{_MAX_SKILL_DESCRIPTION_LENGTH} characters"
+            )
+
+        content = normalized_skill["content"]
+        if len(content) > _MAX_SKILL_CONTENT_LENGTH:
+            raise ValueError(
+                f"Skill '{name}' content exceeds {_MAX_SKILL_CONTENT_LENGTH} characters"
+            )
+
+        normalized_skills.append(normalized_skill)
+
+    return normalized_skills
+
 
 # ============================================================
 # Request Schemas
@@ -88,18 +147,8 @@ class AgentInstanceCreate(BaseModel):
     def validate_skills(
         cls, v: Optional[List[Dict[str, str]]]
     ) -> Optional[List[Dict[str, str]]]:
-        """Validate that each skill entry has name, description, content."""
-        if v is None:
-            return v
-        for i, skill in enumerate(v):
-            if not isinstance(skill, dict):
-                raise ValueError(f"Skill at index {i} must be a dict")
-            for key in ("name", "description", "content"):
-                if key not in skill or not skill[key]:
-                    raise ValueError(
-                        f"Skill at index {i} missing required field '{key}'"
-                    )
-        return v
+        """Validate that each skill entry is safe to expose as a SKILL.md file."""
+        return _validate_skill_entries(v)
 
     @field_validator("instance_name")
     @classmethod
@@ -129,6 +178,14 @@ class AgentInstanceUpdate(BaseModel):
     is_deepagent: Optional[bool] = None
     subagent_ids: Optional[List[UUID]] = None
     is_active: Optional[bool] = None
+
+    @field_validator("skills")
+    @classmethod
+    def validate_skills(
+        cls, v: Optional[List[Dict[str, str]]]
+    ) -> Optional[List[Dict[str, str]]]:
+        """Validate that each skill entry is safe to expose as a SKILL.md file."""
+        return _validate_skill_entries(v)
 
 
 # ============================================================

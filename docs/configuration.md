@@ -225,7 +225,7 @@ provider name.
 
 Specialized capabilities and delegation for `DeepAgentService`. Configured in `llm_config.yaml` under `agents:`.
 
-- **Skills**: Paths to `SKILL.md` directories containing instructions the agent reads on-demand.
+- **Skills**: Skill sources containing `SKILL.md` instructions the agent reads on-demand through the restricted `read_skill_file` tool.
 - **Subagents**: List of other agents (from `agents:` section) that the main agent can delegate tasks to using the `task()` tool.
 
 Example `llm_config.yaml`:
@@ -284,6 +284,11 @@ agents:
 In this pattern, the coordinator can keep zero direct `local_tool_providers`
 and delegate all I/O to specialists. Splitting a read-only browser worker from
 a mutating worker is useful when approval, HITL, or destructive actions matter.
+
+When `skills` are configured, the runtime advertises the available entries in
+the skills prompt and adds a dedicated `read_skill_file` tool. That tool can
+read only `SKILL.md` files from the configured skill sources, which keeps skill
+instructions available on demand without exposing arbitrary repository paths.
 
 For MCP-backed browser workers, the effective browser allowlist lives under
 `mcp.profiles.*.include_tools`. Agent-level `allowed_tools` is the right place

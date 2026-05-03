@@ -213,7 +213,7 @@ def build_agent_graph(
 
     # Deep-agent support: compile SubAgentMiddleware and/or SkillsMiddleware
     # into the graph when the YAML config declares subagents or skills.
-    _build_deep_agent_middleware(agent_config, factory, middleware)
+    _build_deep_agent_middleware(agent_config, factory, middleware, tools=tools)
 
     graph = create_agent(
         model,
@@ -490,6 +490,7 @@ def _build_deep_agent_middleware(
     agent_config: Any,
     factory: LLMModelFactory,
     middleware: list[Any],
+    tools: Optional[list[Any]] = None,
     visited: Optional[set[str]] = None,
 ) -> None:
     """Add SubAgentMiddleware and/or SkillsMiddleware to *middleware*.
@@ -504,7 +505,12 @@ def _build_deep_agent_middleware(
     which LangGraph Platform rejects — the platform manages its own store.
     """
     from deepagents.backends import StateBackend
-    from deepagents.middleware import SkillsMiddleware, SubAgentMiddleware
+    from deepagents.middleware import SubAgentMiddleware
+
+    from inference_core.agents.tools.skill_reader import (
+        add_skill_reader_tool,
+        create_skills_middleware,
+    )
 
     has_subagents = bool(agent_config.subagents)
     has_skills = bool(agent_config.skills)
@@ -527,11 +533,13 @@ def _build_deep_agent_middleware(
     # --- SkillsMiddleware ---
     if has_skills:
         backend, skill_sources = _build_skills_backend(agent_config.skills)
-        skills_middleware = SkillsMiddleware(
+        skills_middleware = create_skills_middleware(
             backend=backend,
             sources=skill_sources,
         )
         middleware.append(skills_middleware)
+        if tools is not None:
+            add_skill_reader_tool(tools, backend=backend, sources=skill_sources)
 
 
 def _build_server_subagents(
@@ -614,7 +622,11 @@ def _build_server_subagents(
 
         # Recurse into nested deep-agent subagents + skills
         _build_deep_agent_middleware(
-            sub_config, factory, sub_middleware, visited=set(visited)
+            sub_config,
+            factory,
+            sub_middleware,
+            tools=sub_tools,
+            visited=set(visited),
         )
 
         sub_graph = create_agent(
