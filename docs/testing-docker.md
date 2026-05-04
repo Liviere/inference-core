@@ -165,6 +165,12 @@ All services include healthchecks for reliable dependency orchestration:
 - **Databases**: Native health commands (`pg_isready`, `mysqladmin ping`)
 - **Redis**: Redis ping command
 
+Use `/api/v1/health/ping` for automated liveness and readiness polling. The
+full `/api/v1/health/` endpoint is diagnostic: it includes dependency details
+and task-system status, so it may call Celery broker remote-control RPCs. Those
+calls are bounded and cached, but they are not appropriate for high-frequency
+container healthchecks.
+
 ## Tips for CI Usage
 
 ### GitHub Actions Example
@@ -233,7 +239,8 @@ To run tests with no published ports (maximum isolation):
 
 **Test connectivity:**
 
-- Use healthcheck endpoints: `curl http://localhost:8100/api/v1/health/`
+- Use the lightweight app healthcheck: `curl http://localhost:8100/api/v1/health/ping`
+- Use full diagnostics only when needed: `curl http://localhost:8100/api/v1/health/`
 - Check Redis: `docker exec backend-template-test-redis redis-cli -p 6380 ping`
 
 **Memory issues:**

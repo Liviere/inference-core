@@ -2,7 +2,10 @@
 Task Service for managing Celery tasks
 """
 
+import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from celery.result import AsyncResult
@@ -11,12 +14,27 @@ from fastapi.concurrency import run_in_threadpool
 from inference_core.celery.celery_main import celery_app
 
 
+@dataclass(slots=True)
+class _InspectCacheEntry:
+    """Store Celery inspect outcomes so broker outages do not fan out.
+
+    WHY: health checks can run frequently and concurrently. Caching both
+    successful responses and short-lived failures prevents a broker outage from
+    creating a new remote-control connection for every request.
+    """
+
+    cached_at: float
+    value: Dict[str, Any] | None = None
+    error: Exception | None = None
+
+
 class TaskService:
     """Service for managing asynchronous tasks"""
 
     def __init__(self):
         self.celery_app = celery_app
-        self._worker_stats_cache: tuple[float, Dict[str, Any]] | None = None
+        self._inspect_cache: dict[str, _InspectCacheEntry] = {}
+        self._inspect_lock = threading.Lock()
 
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """
@@ -68,22 +86,161 @@ class TaskService:
         task_result.revoke(terminate=True)
         return True
 
-    def get_active_tasks(self) -> Dict[str, Any]:
+    def _read_cached_inspect_result(
+        self,
+        cache_key: str,
+        now: float,
+        cache_ttl: float,
+        failure_cache_ttl: float,
+    ) -> Dict[str, Any] | None:
+        """Read a cached inspect result or re-raise a cached inspect failure.
+
+        WHY: Celery remote-control calls create broker-side resources. Keeping
+        the cache decision in one place makes both success and failure paths
+        bounded under repeated health polling.
         """
-        Get information about currently active tasks
+        entry = self._inspect_cache.get(cache_key)
+        if entry is None:
+            return None
+
+        ttl = failure_cache_ttl if entry.error is not None else cache_ttl
+        if ttl <= 0 or now - entry.cached_at > ttl:
+            self._inspect_cache.pop(cache_key, None)
+            return None
+
+        if entry.error is not None:
+            raise entry.error
+
+        return dict(entry.value or {})
+
+    def _inspect_once(
+        self,
+        timeout: Optional[float],
+        collect: Callable[[Any], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Run one Celery inspect operation inside an explicit connection scope.
+
+        WHY: `control.inspect()` can otherwise acquire broker connections from
+        Celery's pool for each broadcast call. A short-lived read connection
+        keeps all commands for one inspection under a single cleanup boundary.
+        """
+        inspect_kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            inspect_kwargs["timeout"] = timeout
+
+        with self.celery_app.connection_for_read() as connection:
+            inspect = self.celery_app.control.inspect(
+                **inspect_kwargs,
+                connection=connection,
+            )
+            return collect(inspect)
+
+    def _inspect_with_cache(
+        self,
+        cache_key: str,
+        timeout: Optional[float],
+        cache_ttl: float,
+        failure_cache_ttl: float,
+        collect: Callable[[Any], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Serialize and cache Celery inspect calls across health requests.
+
+        WHY: without singleflight behavior, concurrent health checks can all
+        miss cache and create separate broker RPCs. Holding this lock around
+        the short bounded inspect call trades a small wait for stable resource
+        usage during outages.
+        """
+        now = time.monotonic()
+        with self._inspect_lock:
+            cached_result = self._read_cached_inspect_result(
+                cache_key,
+                now,
+                cache_ttl,
+                failure_cache_ttl,
+            )
+            if cached_result is not None:
+                return cached_result
+
+            try:
+                result = self._inspect_once(timeout, collect)
+            except Exception as exc:
+                if failure_cache_ttl > 0:
+                    self._inspect_cache[cache_key] = _InspectCacheEntry(
+                        cached_at=time.monotonic(),
+                        error=exc,
+                    )
+                raise
+
+            if cache_ttl > 0:
+                self._inspect_cache[cache_key] = _InspectCacheEntry(
+                    cached_at=time.monotonic(),
+                    value=dict(result),
+                )
+
+            return result
+
+    def get_active_tasks(
+        self,
+        timeout: Optional[float] = 1.0,
+        cache_ttl: float = 0.0,
+        failure_cache_ttl: float = 1.0,
+    ) -> Dict[str, Any]:
+        """
+        Get information about currently active tasks with bounded broker RPCs.
+
+        WHY: this endpoint is diagnostic, but it still runs from API request
+        handlers. Timeout and short caching prevent slow or missing workers
+        from creating unbounded broker waits.
 
         Returns:
             Dictionary with active tasks information
         """
-        inspect = self.celery_app.control.inspect()
-        return {
-            "active": inspect.active(),
-            "scheduled": inspect.scheduled(),
-            "reserved": inspect.reserved(),
-        }
+
+        def collect(inspect: Any) -> Dict[str, Any]:
+            return {
+                "active": inspect.active(),
+                "scheduled": inspect.scheduled(),
+                "reserved": inspect.reserved(),
+            }
+
+        return self._inspect_with_cache(
+            cache_key=f"active_tasks:{timeout}",
+            timeout=timeout,
+            cache_ttl=cache_ttl,
+            failure_cache_ttl=failure_cache_ttl,
+            collect=collect,
+        )
+
+    def get_worker_ping(
+        self,
+        timeout: Optional[float] = 1.0,
+        cache_ttl: float = 0.0,
+        failure_cache_ttl: float = 1.0,
+    ) -> Any:
+        """Ping Celery workers without collecting expensive worker metadata.
+
+        WHY: API and orchestrator health checks only need to know whether a
+        worker answers. Using ping-only health avoids the extra `stats` and
+        `registered` RPCs that are unnecessary for liveness checks.
+        """
+
+        def collect(inspect: Any) -> Dict[str, Any]:
+            return {"ping": inspect.ping()}
+
+        result = self._inspect_with_cache(
+            cache_key=f"worker_ping:{timeout}",
+            timeout=timeout,
+            cache_ttl=cache_ttl,
+            failure_cache_ttl=failure_cache_ttl,
+            collect=collect,
+        )
+        return result.get("ping")
 
     def get_worker_stats(
-        self, timeout: Optional[float] = 1.0, cache_ttl: float = 0.0
+        self,
+        timeout: Optional[float] = 1.0,
+        cache_ttl: float = 0.0,
+        failure_cache_ttl: float = 1.0,
     ) -> Dict[str, Any]:
         """
         Get statistics about Celery workers with bounded broker RPCs.
@@ -95,26 +252,21 @@ class TaskService:
         Returns:
             Dictionary with worker statistics
         """
-        now = time.monotonic()
-        if cache_ttl > 0 and self._worker_stats_cache is not None:
-            cached_at, cached_stats = self._worker_stats_cache
-            if now - cached_at <= cache_ttl:
-                return cached_stats
 
-        inspect_kwargs = {}
-        if timeout is not None:
-            inspect_kwargs["timeout"] = timeout
+        def collect(inspect: Any) -> Dict[str, Any]:
+            return {
+                "stats": inspect.stats(),
+                "ping": inspect.ping(),
+                "registered": inspect.registered(),
+            }
 
-        inspect = self.celery_app.control.inspect(**inspect_kwargs)
-        worker_stats = {
-            "stats": inspect.stats(),
-            "ping": inspect.ping(),
-            "registered": inspect.registered(),
-        }
-        if cache_ttl > 0:
-            self._worker_stats_cache = (now, worker_stats)
-
-        return worker_stats
+        return self._inspect_with_cache(
+            cache_key=f"worker_stats:{timeout}",
+            timeout=timeout,
+            cache_ttl=cache_ttl,
+            failure_cache_ttl=failure_cache_ttl,
+            collect=collect,
+        )
 
     # -------------------------
     # Async wrappers (threadpool)
@@ -134,18 +286,46 @@ class TaskService:
         """Async wrapper for cancel_task to avoid blocking the event loop."""
         return await run_in_threadpool(self.cancel_task, task_id)
 
-    async def get_active_tasks_async(self) -> Dict[str, Any]:
+    async def get_active_tasks_async(
+        self,
+        timeout: Optional[float] = 1.0,
+        cache_ttl: float = 0.0,
+        failure_cache_ttl: float = 1.0,
+    ) -> Dict[str, Any]:
         """Async wrapper for get_active_tasks to avoid blocking the event loop."""
-        return await run_in_threadpool(self.get_active_tasks)
+        return await run_in_threadpool(
+            self.get_active_tasks,
+            timeout=timeout,
+            cache_ttl=cache_ttl,
+            failure_cache_ttl=failure_cache_ttl,
+        )
+
+    async def get_worker_ping_async(
+        self,
+        timeout: Optional[float] = 1.0,
+        cache_ttl: float = 0.0,
+        failure_cache_ttl: float = 1.0,
+    ) -> Any:
+        """Async wrapper for lightweight worker ping from health routes."""
+        return await run_in_threadpool(
+            self.get_worker_ping,
+            timeout=timeout,
+            cache_ttl=cache_ttl,
+            failure_cache_ttl=failure_cache_ttl,
+        )
 
     async def get_worker_stats_async(
-        self, timeout: Optional[float] = 1.0, cache_ttl: float = 0.0
+        self,
+        timeout: Optional[float] = 1.0,
+        cache_ttl: float = 0.0,
+        failure_cache_ttl: float = 1.0,
     ) -> Dict[str, Any]:
         """Async wrapper for bounded worker inspection from async routes."""
         return await run_in_threadpool(
             self.get_worker_stats,
             timeout=timeout,
             cache_ttl=cache_ttl,
+            failure_cache_ttl=failure_cache_ttl,
         )
 
     def completion_async(self, **kwargs) -> str:

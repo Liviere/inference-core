@@ -5,11 +5,24 @@ Tests TaskService for managing Celery tasks with proper mocking.
 """
 
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from inference_core.services.task_service import TaskService, get_task_service
+
+
+def _inspect_connection(mock_celery_app):
+    return mock_celery_app.connection_for_read.return_value.__enter__.return_value
+
+
+def _assert_inspect_called_once_with_connection(mock_celery_app, **kwargs):
+    mock_celery_app.control.inspect.assert_called_once_with(
+        **kwargs,
+        connection=_inspect_connection(mock_celery_app),
+    )
 
 
 class TestTaskService:
@@ -166,6 +179,7 @@ class TestTaskService:
         service = TaskService()
         tasks = service.get_active_tasks()
 
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=1.0)
         assert tasks["active"] == {"worker1": [{"task": "task1"}]}
         assert tasks["scheduled"] == {"worker1": [{"task": "task2"}]}
         assert tasks["reserved"] == {"worker1": [{"task": "task3"}]}
@@ -183,6 +197,7 @@ class TestTaskService:
         service = TaskService()
         tasks = service.get_active_tasks()
 
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=1.0)
         # Should still return a dict structure even with None responses
         assert tasks["active"] is None
         assert tasks["scheduled"] is None
@@ -201,7 +216,7 @@ class TestTaskService:
         service = TaskService()
         stats = service.get_worker_stats()
 
-        mock_celery_app.control.inspect.assert_called_once_with(timeout=1.0)
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=1.0)
         assert stats["stats"] == {"worker1": {"total": 10}}
         assert stats["ping"] == {"worker1": "pong"}
         assert stats["registered"] == {"worker1": ["task.name"]}
@@ -218,7 +233,7 @@ class TestTaskService:
         service = TaskService()
         service.get_worker_stats(timeout=2.5)
 
-        mock_celery_app.control.inspect.assert_called_once_with(timeout=2.5)
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=2.5)
 
     @patch("inference_core.services.task_service.celery_app")
     def test_get_worker_stats_allows_unbounded_inspect(self, mock_celery_app):
@@ -232,7 +247,7 @@ class TestTaskService:
         service = TaskService()
         service.get_worker_stats(timeout=None)
 
-        mock_celery_app.control.inspect.assert_called_once_with()
+        _assert_inspect_called_once_with_connection(mock_celery_app)
 
     @patch("inference_core.services.task_service.celery_app")
     def test_get_worker_stats_uses_short_cache(self, mock_celery_app):
@@ -248,10 +263,87 @@ class TestTaskService:
         second_stats = service.get_worker_stats(cache_ttl=30.0)
 
         assert first_stats == second_stats
-        mock_celery_app.control.inspect.assert_called_once_with(timeout=1.0)
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=1.0)
         mock_inspect.stats.assert_called_once()
         mock_inspect.ping.assert_called_once()
         mock_inspect.registered.assert_called_once()
+
+    @patch("inference_core.services.task_service.celery_app")
+    def test_get_worker_ping_uses_lightweight_inspect(self, mock_celery_app):
+        """Worker health ping must avoid stats and registered RPCs."""
+        mock_inspect = MagicMock()
+        mock_inspect.ping.return_value = {"worker1": {"ok": "pong"}}
+        mock_celery_app.control.inspect.return_value = mock_inspect
+
+        service = TaskService()
+        ping = service.get_worker_ping(timeout=2.0, cache_ttl=30.0)
+
+        assert ping == {"worker1": {"ok": "pong"}}
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=2.0)
+        mock_inspect.ping.assert_called_once()
+        mock_inspect.stats.assert_not_called()
+        mock_inspect.registered.assert_not_called()
+
+    @patch("inference_core.services.task_service.celery_app")
+    def test_get_worker_ping_caches_failures(self, mock_celery_app):
+        """Broker outages should not create a new inspect per health request."""
+        mock_inspect = MagicMock()
+        mock_inspect.ping.side_effect = RuntimeError("broker unavailable")
+        mock_celery_app.control.inspect.return_value = mock_inspect
+
+        service = TaskService()
+
+        with pytest.raises(RuntimeError, match="broker unavailable"):
+            service.get_worker_ping(failure_cache_ttl=30.0)
+        with pytest.raises(RuntimeError, match="broker unavailable"):
+            service.get_worker_ping(failure_cache_ttl=30.0)
+
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=1.0)
+        mock_inspect.ping.assert_called_once()
+
+    @patch("inference_core.services.task_service.celery_app")
+    def test_get_worker_ping_serializes_concurrent_cache_misses(self, mock_celery_app):
+        """Concurrent health checks should share one broker inspect result."""
+        mock_inspect = MagicMock()
+
+        def delayed_ping():
+            time.sleep(0.02)
+            return {"worker1": {"ok": "pong"}}
+
+        mock_inspect.ping.side_effect = delayed_ping
+        mock_celery_app.control.inspect.return_value = mock_inspect
+
+        service = TaskService()
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(
+                executor.map(
+                    lambda _: service.get_worker_ping(cache_ttl=30.0),
+                    range(5),
+                )
+            )
+
+        assert results == [{"worker1": {"ok": "pong"}}] * 5
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=1.0)
+        mock_inspect.ping.assert_called_once()
+
+    @patch("inference_core.services.task_service.celery_app")
+    def test_get_active_tasks_uses_timeout_and_cache(self, mock_celery_app):
+        """Active task diagnostics should be bounded and cacheable."""
+        mock_inspect = MagicMock()
+        mock_inspect.active.return_value = {"worker1": [{"task": "task1"}]}
+        mock_inspect.scheduled.return_value = {}
+        mock_inspect.reserved.return_value = {}
+        mock_celery_app.control.inspect.return_value = mock_inspect
+
+        service = TaskService()
+        first = service.get_active_tasks(timeout=2.5, cache_ttl=30.0)
+        second = service.get_active_tasks(timeout=2.5, cache_ttl=30.0)
+
+        assert first == second
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=2.5)
+        mock_inspect.active.assert_called_once()
+        mock_inspect.scheduled.assert_called_once()
+        mock_inspect.reserved.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_worker_stats_async_forwards_options(self):
@@ -263,7 +355,51 @@ class TestTaskService:
             result = await service.get_worker_stats_async(timeout=2.0, cache_ttl=3.0)
 
         assert result == {"ping": {}}
-        mock_get_worker_stats.assert_called_once_with(timeout=2.0, cache_ttl=3.0)
+        mock_get_worker_stats.assert_called_once_with(
+            timeout=2.0,
+            cache_ttl=3.0,
+            failure_cache_ttl=1.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_worker_ping_async_forwards_options(self):
+        """Test async worker ping wrapper preserves health-check bounds."""
+        service = TaskService()
+        with patch.object(
+            service, "get_worker_ping", return_value={"worker1": {"ok": "pong"}}
+        ) as mock_get_worker_ping:
+            result = await service.get_worker_ping_async(
+                timeout=2.0,
+                cache_ttl=3.0,
+                failure_cache_ttl=4.0,
+            )
+
+        assert result == {"worker1": {"ok": "pong"}}
+        mock_get_worker_ping.assert_called_once_with(
+            timeout=2.0,
+            cache_ttl=3.0,
+            failure_cache_ttl=4.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_active_tasks_async_forwards_options(self):
+        """Test async active task wrapper preserves inspect bounds."""
+        service = TaskService()
+        with patch.object(
+            service, "get_active_tasks", return_value={"active": {}}
+        ) as mock_get_active_tasks:
+            result = await service.get_active_tasks_async(
+                timeout=2.0,
+                cache_ttl=3.0,
+                failure_cache_ttl=4.0,
+            )
+
+        assert result == {"active": {}}
+        mock_get_active_tasks.assert_called_once_with(
+            timeout=2.0,
+            cache_ttl=3.0,
+            failure_cache_ttl=4.0,
+        )
 
     @patch("inference_core.services.task_service.celery_app")
     def test_get_worker_stats_with_none_response(self, mock_celery_app):
@@ -278,7 +414,7 @@ class TestTaskService:
         service = TaskService()
         stats = service.get_worker_stats()
 
-        mock_celery_app.control.inspect.assert_called_once_with(timeout=1.0)
+        _assert_inspect_called_once_with_connection(mock_celery_app, timeout=1.0)
         # Should still return a dict structure even with None responses
         assert stats["stats"] is None
         assert stats["ping"] is None

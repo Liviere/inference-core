@@ -23,6 +23,7 @@ router = APIRouter(prefix="/health", tags=["Health Check"])
 
 TASK_HEALTH_INSPECT_TIMEOUT_SECONDS = 1.0
 TASK_HEALTH_CACHE_TTL_SECONDS = 5.0
+TASK_HEALTH_FAILURE_CACHE_TTL_SECONDS = 30.0
 
 
 ###################################
@@ -73,13 +74,21 @@ async def health_check(
 
     # Tasks/Celery health (non-critical for overall status here)
     try:
-        worker_stats = await task_service.get_worker_stats_async(
+        ping_responses = await task_service.get_worker_ping_async(
             timeout=TASK_HEALTH_INSPECT_TIMEOUT_SECONDS,
             cache_ttl=TASK_HEALTH_CACHE_TTL_SECONDS,
+            failure_cache_ttl=TASK_HEALTH_FAILURE_CACHE_TTL_SECONDS,
         )
-        ping_responses = worker_stats.get("ping") or {}
+        ping_responses = ping_responses or {}
         active_workers = (
-            len([w for w in ping_responses.values() if w.get("ok") == "pong"])
+            len(
+                [
+                    worker_response
+                    for worker_response in ping_responses.values()
+                    if isinstance(worker_response, dict)
+                    and worker_response.get("ok") == "pong"
+                ]
+            )
             if isinstance(ping_responses, dict)
             else 0
         )

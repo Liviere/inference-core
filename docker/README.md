@@ -52,6 +52,19 @@ This modular approach allows you to easily switch between different database bac
 
 The main application image installs the full Poetry environment, including the LangGraph CLI, and bakes in the LangGraph and Alembic runtime files (`agent_graphs.py`, `langgraph.json`, `langgraph_auth.py`, `alembic.ini`, and `migrations/`). Rebuild the image after changing any of those files so Docker-based LangGraph validation and database migrations stay in sync.
 
+### Health Checks
+
+Docker Compose uses `GET /api/v1/health/ping` for the application healthcheck. This endpoint is intentionally lightweight: it does not call the database, Redis, Celery workers, Qdrant, or any LLM provider.
+
+Use `GET /api/v1/health/` for diagnostics only. The aggregate health response includes dependency status and task-system availability, so it can perform Celery broker remote-control RPCs. It is bounded and cached by the API, but it should not be used as a high-frequency Docker or orchestration liveness probe.
+
+Recommended checks:
+
+- Docker/Kubernetes liveness: `GET /api/v1/health/ping`
+- Database diagnostics: `GET /api/v1/health/database`
+- Full dependency diagnostics: `GET /api/v1/health/`
+- Celery worker diagnostics: `GET /api/v1/tasks/health` or `GET /api/v1/tasks/workers/stats`
+
 ### Worker Topology In Docker Compose
 
 The base compose file starts two Celery workers with different execution models:

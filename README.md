@@ -97,8 +97,12 @@ poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embe
 poetry run langgraph dev --no-browser
 ```
 
-Visit: http://localhost:8000/docs (dev only)  
-Health: `GET /api/v1/health/`  
+Visit: http://localhost:8000/docs (dev only)
+
+Liveness: `GET /api/v1/health/ping`
+
+Diagnostics: `GET /api/v1/health/`
+
 Agent Server Studio: http://localhost:2024 (when `langgraph dev` is running)
 
 Docker Deployment: For containerized deployment (SQLite/MySQL/Postgres) and compose examples, see [`docker/README.md`](docker/README.md).

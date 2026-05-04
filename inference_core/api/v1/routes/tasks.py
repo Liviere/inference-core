@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tasks", tags=["Task Management"])
 
+TASK_INSPECT_TIMEOUT_SECONDS = 1.0
+TASK_HEALTH_CACHE_TTL_SECONDS = 5.0
+TASK_ACTIVE_CACHE_TTL_SECONDS = 2.0
+TASK_FAILURE_CACHE_TTL_SECONDS = 30.0
+
 
 @router.get("/{task_id}/status", response_model=TaskStatusResponse)
 async def get_task_status(
@@ -108,7 +113,11 @@ async def get_active_tasks(task_service: TaskService = Depends(get_task_service)
     Returns lists of active, scheduled, and reserved tasks across all workers.
     """
     try:
-        active_info = await task_service.get_active_tasks_async()
+        active_info = await task_service.get_active_tasks_async(
+            timeout=TASK_INSPECT_TIMEOUT_SECONDS,
+            cache_ttl=TASK_ACTIVE_CACHE_TTL_SECONDS,
+            failure_cache_ttl=TASK_FAILURE_CACHE_TTL_SECONDS,
+        )
 
         return ActiveTasksResponse(
             active=active_info["active"] or {},
@@ -131,7 +140,11 @@ async def get_worker_stats(task_service: TaskService = Depends(get_task_service)
     Returns performance metrics, registered tasks, and worker health information.
     """
     try:
-        stats = await task_service.get_worker_stats_async()
+        stats = await task_service.get_worker_stats_async(
+            timeout=TASK_INSPECT_TIMEOUT_SECONDS,
+            cache_ttl=TASK_HEALTH_CACHE_TTL_SECONDS,
+            failure_cache_ttl=TASK_FAILURE_CACHE_TTL_SECONDS,
+        )
 
         return WorkerStatsResponse(
             stats=stats["stats"] or {},
@@ -154,20 +167,33 @@ async def health_check(task_service: TaskService = Depends(get_task_service)):
     Returns basic connectivity and worker availability information.
     """
     try:
-        # Try to ping workers
-        stats = await task_service.get_worker_stats_async()
-        ping_responses = stats.get("ping", {})
+        # Try to ping workers without collecting expensive worker metadata.
+        ping_responses = await task_service.get_worker_ping_async(
+            timeout=TASK_INSPECT_TIMEOUT_SECONDS,
+            cache_ttl=TASK_HEALTH_CACHE_TTL_SECONDS,
+            failure_cache_ttl=TASK_FAILURE_CACHE_TTL_SECONDS,
+        )
+        ping_responses = ping_responses or {}
 
         # Count active workers
-        active_workers = len(
-            [w for w in ping_responses.values() if w.get("ok") == "pong"]
+        active_workers = (
+            len(
+                [
+                    worker_response
+                    for worker_response in ping_responses.values()
+                    if isinstance(worker_response, dict)
+                    and worker_response.get("ok") == "pong"
+                ]
+            )
+            if isinstance(ping_responses, dict)
+            else 0
         )
 
         return {
             "status": "healthy" if active_workers > 0 else "degraded",
             "active_workers": active_workers,
             "message": f"{active_workers} worker(s) available",
-            "celery_available": True,
+            "celery_available": bool(ping_responses),
         }
 
     except Exception as e:

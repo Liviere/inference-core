@@ -34,6 +34,18 @@ services:
     volumes:
       - core_logs:/inference_core/logs
       - prom_metrics:/tmp/prom_metrics
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'curl',
+          '-f',
+          'http://localhost:${PORT:-8000}/api/v1/health/ping',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
   # Celery Worker (threads pool — I/O-bound tasks)
   celery-worker:
