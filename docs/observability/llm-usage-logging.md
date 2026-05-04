@@ -101,10 +101,6 @@ Override logging settings:
 - `LLM_USAGE_LOGGING_ENABLED`: Enable/disable logging (true/false)
 - `LLM_USAGE_FAIL_OPEN`: Continue on logging errors (true/false)
 
-## Usage Statistics API
-
-The `/api/v1/llm/stats` endpoint returns comprehensive usage and cost statistics with backward compatibility.
-
 ## Security & Privacy
 
 - **No prompt storage**: Only token counts and metadata are logged, never actual content

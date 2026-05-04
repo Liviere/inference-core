@@ -43,20 +43,16 @@ inference_core/
 │   │   └── security.py
 │   ├── database/
 │   │   └── sql/
-│   ├── frontend/
-│   │   └── stream.html
 │   ├── llm/
 │   │   ├── __init__.py
-│   │   ├── chains.py
 │   │   ├── config.py
 │   │   ├── models.py
 │   │   ├── param_policy.py
-│   │   ├── prompts.py
-│   │   ├── streaming.py
+│   │   ├── tools.py
+│   │   ├── usage_logging.py
 │   │   └── batch/
 │   ├── custom_prompts/
-│   │   ├── completion/       # .j2/.jinja2 templates for completion (expects {prompt})
-│   │   └── chat/             # .j2/.jinja2 system prompts for chat (e.g., tutor.system.j2)
+│   │   └── agents/           # Optional reusable agent prompt snippets/examples
 │   ├── observability/
 │   │   ├── __init__.py
 │   │   ├── logging.py

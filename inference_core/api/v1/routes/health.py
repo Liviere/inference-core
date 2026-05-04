@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inference_core.core.config import get_settings
 from inference_core.core.dependecies import get_db
 from inference_core.database.sql.connection import db_manager
-from inference_core.services.llm_service import LLMService, get_llm_service
+from inference_core.llm.models import get_model_factory
 from inference_core.services.task_service import TaskService, get_task_service
 from inference_core.services.vector_store_service import get_vector_store_service
 
@@ -56,7 +56,6 @@ async def health_check(
     settings=Depends(get_settings),
     db_session=Depends(get_db),
     task_service: TaskService = Depends(get_task_service),
-    llm_service: LLMService = Depends(get_llm_service),
 ) -> HealthCheckResponse:
     """
     Overall application health check
@@ -114,7 +113,7 @@ async def health_check(
 
     # LLM health (non-critical for overall status here)
     try:
-        models = llm_service.get_available_models()
+        models = get_model_factory().get_available_models()
         available_count = sum(1 for available in models.values() if available)
         total_count = len(models)
         llm_status = "healthy" if available_count > 0 else "degraded"

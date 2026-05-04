@@ -695,7 +695,7 @@ class LLMConfigService:
         """
         Get effective parameters for a specific model call.
 
-        WHY: Used by LLMService when making actual LLM calls.
+        WHY: Used by runtime services when making actual model calls.
         Merges YAML model defaults → admin overrides → user preferences.
 
         Args:

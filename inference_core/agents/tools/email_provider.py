@@ -2,7 +2,7 @@
 Email Tools Provider
 
 Pluggable tool provider for email operations (reading and sending).
-Integrates with the LLM service tool provider system.
+Integrates with the AgentService tool provider system.
 
 Register this provider during application startup to make email tools
 available to agents configured with 'email_tools' in local_tool_providers.

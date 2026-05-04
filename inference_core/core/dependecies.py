@@ -6,7 +6,7 @@ authentication, pagination, and other shared functionality.
 """
 
 import uuid as _uuid
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, Optional
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query, status
@@ -252,8 +252,8 @@ async def get_current_user_or_public(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user"
         )
-    # Enforce role requirement derived from LLM_API_ACCESS_MODE so this
-    # dependency stays symmetric with get_llm_router_dependencies():
+    # Enforce role requirement derived from LLM_API_ACCESS_MODE so public
+    # agent/vector/embedding endpoints share the same access semantics.
     #   * superuser mode → only superusers may call the endpoint
     #   * user / public  → any active user is accepted
     if settings.llm_api_access_mode == "superuser" and not user.is_superuser:
@@ -273,30 +273,6 @@ async def get_current_user_or_public(
         "created_at": user.created_at,
         "updated_at": user.updated_at,
     }
-
-
-def get_llm_router_dependencies() -> List[Depends]:
-    """
-    Get router-level dependencies for LLM endpoints based on access mode configuration.
-
-    Returns:
-        List of FastAPI dependencies based on the LLM_API_ACCESS_MODE setting:
-        - "public": No dependencies (no authentication required)
-        - "user": Requires authenticated active user
-        - "superuser": Requires superuser privileges (default)
-    """
-    settings = get_settings()
-    access_mode = settings.llm_api_access_mode
-
-    if access_mode == "public":
-        return []
-    elif access_mode == "user":
-        return [Depends(get_current_active_user)]
-    elif access_mode == "superuser":
-        return [Depends(get_current_superuser)]
-    else:
-        # This should not happen due to Literal typing, but handle gracefully
-        return [Depends(get_current_superuser)]
 
 
 # =========================================================
@@ -352,7 +328,7 @@ async def get_effective_model_params_dependency(
     """
     Dependency to get effective model parameters for a specific request.
 
-    WHY: Used by LLMService when making actual LLM calls to apply
+    WHY: Used by runtime services when making actual model calls to apply
     user preferences and admin overrides to model parameters.
     """
 

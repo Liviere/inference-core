@@ -58,7 +58,7 @@ services:
       sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker
              --pool=threads
              --loglevel=info
-             --queues=default,llm_tasks,mail,batch_tasks
+             --queues=default,mail,batch_tasks
              --hostname=threads-worker@%h
              --concurrency=${CELERY_THREADS_CONCURRENCY:-20}
              --time-limit=300

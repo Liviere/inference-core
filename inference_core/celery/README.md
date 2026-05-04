@@ -29,7 +29,7 @@ Notes
 
 ## Using Docker
 
-The base compose file already wires up: API, Redis, Flower, a threads-pool Celery worker for `default`, `llm_tasks`, `mail`, and `batch_tasks`, plus a dedicated prefork embeddings worker for the `embeddings` queue.
+The base compose file already wires up: API, Redis, Flower, a threads-pool Celery worker for `default`, `mail`, and `batch_tasks`, plus a dedicated prefork embeddings worker for the `embeddings` queue.
 
 - Bring everything up (example with SQLite):
   - `docker compose -f docker-compose.base.yml -f docker/docker-compose.sqlite.yml up -d --build`

@@ -1,13 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
 
 from .api.v1.routes import (
     agent_instances,
@@ -16,7 +13,6 @@ from .api.v1.routes import (
     config,
     embeddings,
     health,
-    llm,
     metrics,
     tasks,
     vector,
@@ -151,40 +147,6 @@ def create_application(
     # Configure API routers explicitly
     setup_routers(app, settings, external_routers)
 
-    # Mount simple static test assets (only in debug/development) for LLM streaming manual QA
-    # These assets provide a lightweight in-browser UI to exercise SSE streaming endpoints.
-    test_frontend_url = None
-    try:
-        if settings.debug:
-            frontend_dir = Path(__file__).parent / "frontend"
-            app.mount(
-                "/static/frontend/",
-                StaticFiles(directory=str(frontend_dir), html=True),
-                name="static",
-            )
-            logging.info("✅ Mounted static test assets at /static/frontend/")
-            # Decide what the public test frontend URL should be.
-            index_exists = (frontend_dir / "index.html").exists()
-            stream_exists = (frontend_dir / "stream.html").exists()
-
-            if index_exists:
-                test_frontend_url = f"{settings.app_public_url}/static/frontend/"
-            elif stream_exists:
-                # If there is no index.html but there is stream.html, expose a small
-                # redirect so `/static/frontend/` opens the actual page.
-                @app.get("/static/frontend/", include_in_schema=False)
-                async def _frontend_index_redirect():
-                    return RedirectResponse("/static/frontend/stream.html")
-
-                test_frontend_url = (
-                    f"{settings.app_public_url}/static/frontend/stream.html"
-                )
-            else:
-                # No obvious entry point found
-                test_frontend_url = None
-    except Exception as e:
-        logging.warning(f"Could not mount static test assets: {e}")
-
     # Add root endpoint
     @app.get("/", tags=["Root"])
     async def root(settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
@@ -199,7 +161,6 @@ def create_application(
             "environment": settings.environment,
             "debug": settings.debug,
             "docs": "/docs" if not settings.is_production else "disabled",
-            "test_frontend": test_frontend_url,
         }
 
     return app
@@ -235,7 +196,6 @@ def setup_routers(
     api_v1.include_router(health.router)
     api_v1.include_router(auth.router)
     api_v1.include_router(tasks.router)
-    api_v1.include_router(llm.router)
     api_v1.include_router(config.router)  # LLM configuration management
     api_v1.include_router(agent_instances.router)  # User agent instance management
     # Apply same access control to batch endpoints (public/user/superuser) derived from settings

@@ -1222,7 +1222,7 @@ class AgentService:
     def get_agent(self) -> Callable:
         """Return a callable LangChain agent.
 
-        The agent is created in the constructor and can be used to execute tools/chains.
+        The agent is created in the constructor and can execute model/tool workflows.
         """
         return self.agent
 

@@ -229,7 +229,6 @@ def _on_worker_shutdown(sender=None, **_):
 logger = logging.getLogger(__name__)
 
 DEFAULT_TASK_MODULES: list[str] = [
-    "inference_core.celery.tasks.llm_tasks",
     "inference_core.celery.tasks.batch_tasks",
     "inference_core.celery.tasks.email_tasks",
     "inference_core.celery.tasks.vector_tasks",

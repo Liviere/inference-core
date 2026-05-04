@@ -71,7 +71,7 @@ services:
     command: >
       sh -c "poetry run celery -A inference_core.celery.celery_main:celery_app worker 
              --loglevel=info 
-             --queues=default,llm_tasks
+             --queues=default
              --hostname=test-worker@%h"
     environment:
       ENVIRONMENT: testing

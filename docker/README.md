@@ -69,7 +69,7 @@ Recommended checks:
 
 The base compose file starts two Celery workers with different execution models:
 
-- `celery-worker` - threads pool for I/O-bound queues: `default`, `llm_tasks`, `mail`, `batch_tasks`
+- `celery-worker` - threads pool for I/O-bound queues: `default`, `mail`, `batch_tasks`
 - `celery-embeddings-worker` - prefork pool for the CPU-bound `embeddings` queue used by local SentenceTransformer embeddings
 
 This split keeps long-running or CPU-heavy embedding jobs away from the threads worker that handles normal background tasks.

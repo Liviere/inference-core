@@ -15,7 +15,7 @@
 
 ---
 
-**Documentation Index** → [`docs/README.md`](docs/README.md) • **Configuration Reference** → [`docs/configuration.md`](docs/configuration.md) • **Custom Prompts** → [`docs/custom-prompts.md`](docs/custom-prompts.md) • **Docker Deploy Guide** → [`docker/README.md`](docker/README.md)
+**Documentation Index** → [`docs/README.md`](docs/README.md) • **Configuration Reference** → [`docs/configuration.md`](docs/configuration.md) • **Agent Prompts** → [`docs/custom-prompts.md`](docs/custom-prompts.md) • **Docker Deploy Guide** → [`docker/README.md`](docker/README.md)
 
 ---
 
@@ -60,7 +60,7 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **Model Context Protocol (MCP)** – Tool-augmented LLM reasoning with external capabilities (web browsing, file access, APIs) via standardized MCP integration. Security-first with RBAC, timeouts, and isolation. [Learn more →](docs/mcp-integration.md)
 
-**Pluggable Tool Providers** – Attach custom LangChain tools to chat/completion tasks without MCP servers. Simple protocol-based system for application-local tools with config-driven integration, security controls, and seamless MCP compatibility. [Learn more →](docs/pluggable-tool-providers.md)
+**Pluggable Tool Providers** – Attach custom LangChain tools to configured agents without MCP servers. Simple protocol-based system for application-local tools with config-driven integration, security controls, and seamless MCP compatibility. [Learn more →](docs/pluggable-tool-providers.md)
 
 **Observability** – Structured JSON logging, metrics (Prometheus), tracing & error tracking (Sentry), future dashboards (Grafana).
 
@@ -117,21 +117,20 @@ from inference_core.main_factory import create_application
 app = create_application()  # Standard FastAPI instance
 ```
 
-Simple LLM call (HTTP):
+List agent templates (HTTP):
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/llm/completion \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <ACCESS_TOKEN>' \
-  -d '{"prompt": "Explain vector embeddings simply"}'
+curl -X GET http://localhost:8000/api/v1/agent-instances/templates \
+  -H 'Authorization: Bearer <ACCESS_TOKEN>'
 ```
 
-Streaming (Server-Sent Tokens style endpoint may vary):
+Run an agent instance (HTTP):
 
 ```bash
-curl -X POST -N http://localhost:8000/api/v1/llm/completion/stream \\
-  -H 'Content-Type: application/json' \\
-  -d '{"prompt": "Hello"}'
+curl -X POST http://localhost:8000/api/v1/agent-instances/<INSTANCE_ID>/run \
+  -H 'Authorization: Bearer <ACCESS_TOKEN>' \
+  -H 'Content-Type: application/json' \
+  -d '{"user_input": "Explain vector embeddings simply"}'
 ```
 
 Batch (conceptual – provider-native):
