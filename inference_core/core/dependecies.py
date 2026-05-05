@@ -321,7 +321,6 @@ async def get_user_resolved_config(
 
 async def get_effective_model_params_dependency(
     model_name: str,
-    task_type: Optional[str] = None,
     current_user: Optional[dict] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -341,7 +340,6 @@ async def get_effective_model_params_dependency(
     return await service.get_effective_model_params(
         user_id=user_id,
         model_name=model_name,
-        task_type=task_type,
     )
 
 

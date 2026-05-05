@@ -1,169 +1,33 @@
 # LLM Module
 
-This module provides a dedicated API and service layer for working with Large Language Models (LLMs). It is built on top of LangChain and integrates with the app via FastAPI and Celery.
+This package now contains shared LLM infrastructure, not a standalone completion/chat API. Agent execution lives in `inference_core.services.agents_service`, while this package owns model configuration, provider factories, parameter policy, tool-provider registry, MCP helpers, and usage logging primitives.
 
 ## Components
 
-- `prompts.py`: Prompt templates for various tasks (e.g., completion, chat)
-- `chains.py`: LangChain chains (includes multi-turn chat with message history)
-- `models.py`: Model factory (OpenAI and OpenAI-compatible providers)
-- `config.py`: Loads `llm_config.yaml` with providers/models/tasks mapping
-- `param_policy.py`: Centralized parameter normalization and validation for all providers
-- `../services/llm_service.py`: High-level service interface for LLM operations
+- `config.py`: loads and validates `llm_config.yaml` providers, models, agents, batch settings, MCP profiles, and usage logging config.
+- `models.py`: creates provider-specific chat model instances for AgentService, batch, embeddings, and vector workflows.
+- `param_policy.py`: normalizes provider/model parameters and blocks deprecated parameters for models that no longer accept them.
+- `tools.py`: registry for local LangChain-compatible tool providers used by AgentService.
+- `mcp_tools.py`: MCP integration helpers used by configured agents.
+- `usage_logging.py` and `callbacks.py`: token and cost tracking primitives.
 
-## Features
+## Runtime Entry Points
 
-- Completion task: single-turn text completion for questions/prompts
-- Chat task: multi-turn chat with session-based message history
-- RunnableWithMessageHistory pattern for robust chat state
-- SQL-backed chat history by default using SQLChatMessageHistory (can be swapped for Redis/other DB backends)
-- **Centralized Parameter Normalization**: Automatic parameter filtering and mapping for all providers
-- **Real-Time Token Streaming**: SSE endpoints for chat & completion using LangChain `astream_events` with graceful fallback
-
-## Streaming Architecture
-
-File: `inference_core/llm/streaming.py`
-
-### Pipeline:
-
-1. API endpoint (`inference_core/api/v1/routes/llm.py`) receives POST and constructs an async generator.
-2. Model is created with `streaming=True` and callback handler.
-3. Preferred streaming path uses `model.astream_events(..., version="v1")` (LangChain 0.3.x) to capture granular events (`on_chat_model_stream`).
-4. Each text delta is pushed into an asyncio queue as `StreamChunk(type="token")`, and provider reasoning blocks are forwarded as `StreamChunk(type="reasoning")` when present.
-5. The generator emits SSE frames (`data: {...}\n\n`).
-6. Usage metadata (if available) is emitted as a `usage` event before `end`.
-7. Chat: final assistant message persisted to SQL history.
-
-### Event JSON structure:
-
-```
-{"event":"start","model":"<model>","session_id":"<id?>"}
-{"event":"token","content":"partial"}
-{"event":"usage","usage":{"input_tokens":N,"output_tokens":M,"total_tokens":T}}
-{"event":"end"}
-```
-
-{
-"event":"reasoning","content":"model reasoning output"
-}
-
-### Fallback: If `astream_events` unsupported or errors, code falls back to `model.astream()` and manually extracts chunk content.
-
-Manual Tester (DEV only): Served at `/static/stream.html` when `DEBUG=True`. Provides a unified UI with mode switch (chat / completion), live output, abort, and event log.
-
-### Client Integration Tips:
-
-- Use `fetch` with ReadableStream (POST body) instead of `EventSource`.
-- Split stream buffer on double newline `\n\n`; parse lines starting with `data:`.
-- Treat `end` as authoritative completion; network close alone might be premature.
-- Accumulate only `event == "token"` for final text body.
-
-### Error Handling:
-
-- `error` event includes `message`.
-- Generator ensures an `end` event after an `error`.
-- If client disconnects mid-stream, task is cancelled; no history persistence for partial reply.
-
-### Local Test Page
-
-When `DEBUG=True` a minimal manual QA page is served at: `http://localhost:8000/static/stream.html`.
-
-### cURL Examples
-
-Chat streaming:
-
-```bash
-curl -N -H 'Content-Type: application/json' \
-  -d '{"user_input":"Hello!","session_id":"demo-1"}' \
-  http://localhost:8000/api/v1/llm/chat/stream
-```
-
-Completion streaming:
-
-```bash
-curl -N -H 'Content-Type: application/json' \
-  -d '{"prompt":"completion FastAPI in one sentence"}' \
-  http://localhost:8000/api/v1/llm/completion/stream
-```
+- Programmatic agent runs: `AgentService` and `DeepAgentService`.
+- HTTP agent runs and customization: `/api/v1/agent-instances`.
+- Remote LangGraph execution: Agent Server graphs built from `agent_graphs.py` and `inference_core/agents/graph_builder.py`.
+- Provider-native batch jobs: `/api/v1/llm/batch`.
+- Embeddings and vector workflows: `/api/v1/embeddings/*` and `/api/v1/vector/*`.
 
 ## Parameter Normalization
 
-The LLM module includes a centralized parameter normalization system that prevents runtime errors from provider-specific parameter incompatibilities.
+Parameter normalization happens automatically in `LLMModelFactory`. The policy layer accepts common parameters, applies provider/model-specific renames, drops unsupported values, and raises when a caller supplies parameters that a model explicitly rejects.
 
-### How It Works
-
-The `param_policy.py` module defines parameter policies for each provider:
-
-- **Allowed parameters**: Parameters the provider accepts
-- **Renamed parameters**: Parameter mappings (e.g., `max_tokens` → `max_output_tokens` for Gemini)
-- **Dropped parameters**: Parameters that should be silently removed (e.g., `frequency_penalty` for Claude)
-
-### Provider-Specific Behavior
-
-| Provider      | Allowed Parameters                                                                               | Parameter Mappings                 | Dropped Parameters                                         |
-| ------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------- | ---------------------------------------------------------- |
-| OpenAI        | `temperature`, `max_tokens`, `top_p`, `frequency_penalty`, `presence_penalty`, `request_timeout` | None                               | None                                                       |
-| Custom OpenAI | Same as OpenAI                                                                                   | None                               | None                                                       |
-| Gemini        | `temperature`, `max_output_tokens`, `top_p`                                                      | `max_tokens` → `max_output_tokens` | `frequency_penalty`, `presence_penalty`, `request_timeout` |
-| Claude        | `temperature`, `max_tokens`, `top_p`, `timeout`                                                  | `request_timeout` → `timeout`      | `frequency_penalty`, `presence_penalty`                    |
-
-### Debug Logging
-
-When parameters are renamed or dropped, debug-level log messages are emitted:
-
-```
-DEBUG: Parameter renamed for gemini: max_tokens -> max_output_tokens
-DEBUG: Parameter dropped for claude: frequency_penalty (value: 0.1)
-```
-
-### Usage
-
-Parameter normalization happens automatically in the `LLMModelFactory`. No changes are needed in your application code - the system will:
-
-1. Accept all standard LLM parameters from your service calls
-2. Automatically filter/map them based on the target provider
-3. Log any transformations at debug level
-4. Pass only compatible parameters to the underlying SDK
-
-This prevents errors like `TypeError: unsupported parameter 'frequency_penalty'` when using Claude or similar provider-specific incompatibilities.
-
-## Configuration
-
-Use `llm_config.yaml` (see `llm_config.example.yaml` as a reference) to:
-
-- Define providers and their `api_key_env`
-- List available models and default params
-- Map tasks (e.g., `completion`, `chat`) to preferred models and fallbacks
-- Control caching, timeouts, and monitoring
-
-You can override task model selection via environment variables:
-
-- `LLM_COMPLETION_MODEL`
-- `LLM_CHAT_MODEL`
-
-Provider API keys (examples, depending on your providers):
-
-- `OPENAI_API_KEY`
-- `CUSTOM_LLM_API_KEY`
-- `DEEPINFRA_API_KEY`
-- `FIREWORKS_API_KEY`
-
-### LLM Parameter Policies & Dynamic Parameters
-
-The LLM layer includes a centralized, configurable parameter normalization system allowing you to:
-
-- Maintain per-provider base policies (allowed / renamed / dropped parameters)
-- Apply YAML-driven overrides per provider or per model
-- Introduce entirely new parameters without code changes (allowed or via experimental prefixes)
-- Perform hard replaces (replace) or additive (patch) modifications
-- Enforce deprecation of legacy parameters (e.g., GPT‑5 family no longer accepts temperature/top_p/etc.)
-
-Configuration lives in `llm_config.yaml` under the `param_policies` section:
+Configuration lives in `llm_config.yaml` under `param_policies`:
 
 ```yaml
 param_policies:
   settings:
-    # Any parameter starting with these prefixes is passed through even if unknown
     passthrough_prefixes: ['x_', 'ext_']
   providers:
     openai:
@@ -171,73 +35,35 @@ param_policies:
         allowed: ['logit_bias']
   models:
     gpt-5:
-      replace: # Fully replace base policy for this model
+      replace:
         allowed: ['reasoning_effort', 'verbosity']
         dropped:
-          [
-            'temperature',
-            'top_p',
-            'frequency_penalty',
-            'presence_penalty',
-            'max_tokens',
-            'request_timeout',
-          ]
+          - temperature
+          - top_p
+          - frequency_penalty
+          - presence_penalty
+          - max_tokens
+          - request_timeout
 ```
 
-Semantics:
+## Agent Configuration
 
-- `patch`: merge into existing sets/maps (additive)
-- `replace`: overwrite the entire collection(s) provided
-- `allowed`: parameters forwarded as-is (after rename mapping if present)
-- `renamed`: old_name -> new_name mapping (handled before allowed check)
-- `dropped`: always removed silently
-- `passthrough_prefixes`: wildcard allow-list for experimental parameters (e.g. `x_reasoning_graph_depth`)
+Use `llm_config.yaml` to define models and agents:
 
-Model-Level Overrides:
-The system merges (in order): base provider policy → provider overrides → model override. A model override using `replace` can completely discard legacy parameters.
-
-GPT‑5 Breaking Change Example:
-The GPT‑5 models in the example config remove classic sampling parameters and introduce `reasoning_effort` + `verbosity`. Requests supplying deprecated parameters for a `gpt-5*` model result in a validation error at service layer.
-
-HTTP Request Example (Completion):
-
-```json
-POST /api/v1/llm/completion
-{
-  "prompt": "completion attention in transformers",
-  "model_name": "gpt-5",
-  "reasoning_effort": "high",
-  "verbosity": "high"
-}
+```yaml
+agents:
+  default_agent:
+    primary: gpt-5-mini
+    description: General-purpose assistant.
+    local_tool_providers: []
+    reasoning_output: false
 ```
 
-Experimental Parameter Example:
+For HTTP usage, list templates with `GET /api/v1/agent-instances/templates`, create a user instance with `POST /api/v1/agent-instances`, then run it with `POST /api/v1/agent-instances/{instance_id}/run`.
 
-```json
-{
-	"model_name": "gpt-5",
-	"x_trace_id": "123e4567",
-	"x_reasoning_graph_depth": 4
-}
-```
+## Fireworks Reasoning Responses
 
-If the prefixes are listed in `passthrough_prefixes`, both parameters are forwarded to the underlying model SDK (subject to provider acceptance).
-
-Debugging Policies:
-When `DEBUG=True`, you can inspect effective policies:
-
-```
-GET /api/v1/llm/param-policy/openai              # Provider policy
-GET /api/v1/llm/param-policy/openai?model=gpt-5  # Effective merged model policy
-```
-
-### Fireworks Reasoning Responses
-
-Fireworks reasoning models can emit `reasoning_content` alongside the normal
-assistant content. The local `ChatFireworksReasoning` adapter preserves that
-field for both standard responses and streaming chunks, and serializes it back
-into subsequent requests so multi-turn conversations can keep preserved
-reasoning history.
+Fireworks reasoning models can emit `reasoning_content` alongside the normal assistant content. The local `ChatFireworksReasoning` adapter preserves that field for standard responses and streaming chunks, and serializes it into later requests when reasoning history should be preserved.
 
 Example model config:
 
@@ -249,48 +75,3 @@ accounts/fireworks/models/kimi-k2p5:
     reasoning_effort: 'medium'
     reasoning_history: 'preserved'
 ```
-
-Notes:
-
-- Use `reasoning_effort` or `thinking` depending on the Fireworks model API.
-- `reasoning_history: 'preserved'` sends prior `reasoning_content` back on later turns when present.
-- The built-in Fireworks provider policy already allows `reasoning_effort`, `thinking`, and `reasoning_history`, so no extra `param_policies` override is required.
-- Multimodal image blocks are normalized automatically to Fireworks `image_url` payloads.
-
-Migration Tips:
-
-1. Start new parameters behind a passthrough prefix.
-2. Once stable, move them into `allowed` (remove prefix usage).
-3. When deprecating old params: add them to `dropped` OR use `replace` to exclude them entirely.
-4. Add tests asserting normalization if behavior is critical.
-
-Error Handling:
-
-- Unknown parameter without an allowed prefix → dropped with a warning log.
-- Deprecated legacy param explicitly sent to a GPT‑5 model → raises `ValueError` (mapped to 500 by default; you can adjust to 400 in the router if desired).
-
-Where Logic Lives:
-
-- Policy merging / normalization: `inference_core/llm/param_policy.py`
-- Factory applying normalization: `inference_core/llm/models.py`
-- Service-level deprecation guard (GPT‑5 legacy sampling): `inference_core/services/llm_service.py`
-
-To extend further (ideas):
-
-- Add value constraints (ranges/enums) in YAML for validation
-- Add policy introspection endpoint listing effective differences vs. base
-- Introduce `defaults` section to auto-inject values when caller omits them
-
-## Usage (API)
-
-- Submit completion requests via the dedicated API endpoint (async via Celery).
-- Submit chat turns via the chat endpoint, passing a `session_id` to continue a chat or omitting it to create a new session.
-
-Refer to the app-level API router under `inference_core/api/v1/routes/llm.py` for the exact route paths and request/response schemas.
-
-## Notes
-
-- Chat memory is persisted in your configured SQL database via SQLChatMessageHistory (persists across processes).
-- If you use Postgres/MySQL, ensure the sync DB drivers are installed (psycopg for Postgres, PyMySQL for MySQL); these are included in pyproject.toml.
-- Ensure the appropriate provider API keys are configured in your environment.
-- For local development, use the example configuration files and `.env.example` as a starting point.

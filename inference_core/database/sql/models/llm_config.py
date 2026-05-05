@@ -30,12 +30,11 @@ class ConfigScope(str, Enum):
     Defines scope levels for configuration overrides.
 
     WHY: Allows granular control over what config is being overridden -
-    from global defaults to specific model/task/agent settings.
+    from global defaults to specific model/agent settings.
     """
 
     GLOBAL = "global"  # Affects all LLM operations
     MODEL = "model"  # Specific model (e.g., gpt-5-mini)
-    TASK = "task"  # Specific task (e.g., chat, completion)
     AGENT = "agent"  # Specific agent configuration
 
 
@@ -45,7 +44,7 @@ class LLMConfigOverride(BaseModel):
 
     WHY: Enables runtime configuration changes without server restart.
     Admins can adjust global settings, enable/disable models, or tune
-    parameters for specific tasks without touching YAML files.
+    parameters for specific agents without touching YAML files.
 
     Resolution order (later wins):
     1. YAML base config
@@ -149,7 +148,6 @@ class UserLLMPreferenceType(str, Enum):
 
     DEFAULT_MODEL = "default_model"  # User's preferred default model
     MODEL_PARAMS = "model_params"  # Parameters for specific model
-    TASK_PARAMS = "task_params"  # Parameters for specific task
     AGENT_PARAMS = "agent_params"  # Parameters for specific agent
 
 
@@ -180,7 +178,7 @@ class UserLLMPreference(BaseModel):
         String(30),
         nullable=False,
         index=True,
-        doc="Type of preference: default_model, model_params, task_params, agent_params",
+        doc="Type of preference: default_model, model_params, agent_params",
     )
     preference_key: Mapped[str] = mapped_column(
         String(100),

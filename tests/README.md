@@ -5,14 +5,14 @@
 The test suite is organized as follows:
 
 - `tests/conftest.py` - Test configuration and shared fixtures (async engine/session, HTTP client)
-- `tests/integration/` - Integration tests for API endpoints, DB operations, and LLM tasks
+- `tests/integration/` - Integration tests for API endpoints, DB operations, batch jobs, and agent workflows
 - `tests/unit/` - Fast, isolated unit tests (no network/db) covering core config, security, Redis client, database connection helpers, and services
 
 Unit test layout:
 
 - `tests/unit/core/` — config parsing/validation, security (hashing/JWT), logging config, Redis client
 - `tests/unit/database/` — engine/session creation, event listeners, health and masking helpers
-- `tests/unit/services/` — AuthService (CRUD/auth flows with mocks), TaskService (Celery orchestration with mocks), RefreshSessionStore, LLMService (mocked chains/models)
+- `tests/unit/services/` — AuthService (CRUD/auth flows with mocks), TaskService (Celery orchestration with mocks), RefreshSessionStore, AgentService and related services
 
 ### Running Tests
 
@@ -40,11 +40,8 @@ poetry run pytest tests/unit
 # Only core unit tests (subset)
 poetry run pytest tests/unit/core
 
-# Only LLM task tests (mocked chains)
-poetry run pytest tests/integration/test_llm_tasks.py
-
-# Real-chain LLM tests (opt-in). Requires valid API keys and testing models in llm_config.yaml
-RUN_LLM_REAL_TESTS=1 poetry run pytest tests/integration/test_llm_tasks_real.py -q -m integration
+# Agent and batch focused tests
+poetry run pytest tests/unit/services/test_agents_service.py tests/integration/test_batch_access_control_integration.py
 ```
 
 ### Test Fixtures
@@ -99,19 +96,9 @@ Notes:
 - By default, tests run against SQLite (aiosqlite) unless you override DATABASE_URL/SERVICE in your env/.env.
 - If you point tests to PostgreSQL/MySQL, ensure the server is reachable and credentials match your env.
 
-### LLM Integration Tests
+### Agent Integration Tests
 
-There are two layers of LLM task tests:
-
-- Mocked chains: `tests/integration/test_llm_tasks.py` — fast, no external calls. Chain factories are monkeypatched.
-- Real chains: `tests/integration/test_llm_tasks_real.py` — use authentic chains and models from `llm_config.yaml` under `tasks.<task>.testing`.
-
-Notes for real-chain tests:
-
-- Opt-in via environment variable: set `RUN_LLM_REAL_TESTS=1` to enable.
-- Tests are skipped when the selected model isn't available (e.g., missing API keys).
-- In case of empty provider responses (e.g., network restrictions or invalid keys), tests are marked as xfail to avoid false negatives.
-- Ensure provider API keys are configured via environment variables described in `llm_config.yaml` providers section.
+Agent tests exercise the LangChain v1 AgentService path, including configured tools, middleware, Agent Server routing, and user agent instances. Real provider calls remain opt-in and should be guarded by explicit environment variables or markers when added.
 
 ### Markers
 

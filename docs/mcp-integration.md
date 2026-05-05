@@ -11,6 +11,7 @@ Inference Core supports the **Model Context Protocol (MCP)** to enable tool-augm
 - **Custom tools** via your own MCP servers
 
 This integration uses:
+
 - [LangChain MCP Adapters](https://github.com/langchain-ai/langchain-mcp-adapters) for LangChain compatibility
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) for MCP client/server communication
 
@@ -62,61 +63,61 @@ MCP is configured in `llm_config.yaml` under the `mcp` section.
 mcp:
   # Global feature flag - default OFF for security
   enabled: false
-  
+
   # Require superuser permissions for MCP tool access
   require_superuser: true
-  
+
   # Default profile to use when none specified
   default_profile: null
-  
+
   # Profiles group servers and safety limits per use case
   profiles:
     local-tools:
-      description: "Safe local tools for computation"
-      servers: ["math"]
-      max_steps: 10              # Maximum agent reasoning steps
-      max_run_seconds: 30        # Hard timeout per request
+      description: 'Safe local tools for computation'
+      servers: ['math']
+      max_steps: 10 # Maximum agent reasoning steps
+      max_run_seconds: 30 # Hard timeout per request
       rate_limits:
         requests_per_minute: 60
         tokens_per_minute: 90000
-  
+
   # Individual MCP server configurations
   servers:
     math:
-      transport: "stdio"
-      command: "python"
-      args: ["examples/mcp_math_server.py"]
+      transport: 'stdio'
+      command: 'python'
+      args: ['examples/mcp_math_server.py']
       env:
-        LOG_LEVEL: "info"
+        LOG_LEVEL: 'info'
 ```
 
 ### Advanced Example (Web Browsing)
 
 ```yaml
 mcp:
-  enabled: true  # ENABLE MCP (disabled by default)
+  enabled: true # ENABLE MCP (disabled by default)
   require_superuser: true
-  default_profile: "web-browsing"
-  
+  default_profile: 'web-browsing'
+
   profiles:
     web-browsing:
-      description: "Web browsing and interaction via Playwright"
-      servers: ["playwright"]
-      max_steps: 5              # Limit agent steps
-      max_run_seconds: 60       # Hard timeout
-      allowlist_hosts:          # Restrict to specific domains
-        - "example.com"
-        - "*.docs.example.com"
+      description: 'Web browsing and interaction via Playwright'
+      servers: ['playwright']
+      max_steps: 5 # Limit agent steps
+      max_run_seconds: 60 # Hard timeout
+      allowlist_hosts: # Restrict to specific domains
+        - 'example.com'
+        - '*.docs.example.com'
       rate_limits:
         requests_per_minute: 30
         tokens_per_minute: 60000
-  
+
   servers:
     playwright:
-      transport: "streamable_http"
-      url: "http://localhost:3000/mcp"
+      transport: 'streamable_http'
+      url: 'http://localhost:3000/mcp'
       headers:
-        Authorization: "${MCP_PLAYWRIGHT_TOKEN:-}"  # Env var expansion
+        Authorization: '${MCP_PLAYWRIGHT_TOKEN:-}' # Env var expansion
       timeouts:
         connect_seconds: 10
         read_seconds: 300
@@ -134,12 +135,12 @@ For local processes:
 ```yaml
 servers:
   local-tool:
-    transport: "stdio"
-    command: "python"
-    args: ["/path/to/server.py"]
+    transport: 'stdio'
+    command: 'python'
+    args: ['/path/to/server.py']
     env:
-      LOG_LEVEL: "info"
-    cwd: "/working/directory"  # Optional
+      LOG_LEVEL: 'info'
+    cwd: '/working/directory' # Optional
 ```
 
 ### streamable_http (HTTP with Streaming)
@@ -149,11 +150,11 @@ For remote HTTP servers:
 ```yaml
 servers:
   remote-tool:
-    transport: "streamable_http"
-    url: "http://localhost:8000/mcp"
+    transport: 'streamable_http'
+    url: 'http://localhost:8000/mcp'
     headers:
-      Authorization: "Bearer ${MCP_TOKEN:-}"
-      X-Custom-Header: "value"
+      Authorization: 'Bearer ${MCP_TOKEN:-}'
+      X-Custom-Header: 'value'
     timeouts:
       connect_seconds: 10
       read_seconds: 300
@@ -166,10 +167,10 @@ For streaming event connections:
 ```yaml
 servers:
   sse-tool:
-    transport: "sse"
-    url: "https://sse.example.com/events"
+    transport: 'sse'
+    url: 'https://sse.example.com/events'
     headers:
-      Accept: "text/event-stream"
+      Accept: 'text/event-stream'
     timeouts:
       connect_seconds: 10
       read_seconds: 300
@@ -182,24 +183,24 @@ For bidirectional WebSocket connections:
 ```yaml
 servers:
   ws-tool:
-    transport: "websocket"
-    url: "wss://realtime.example.com/mcp"
+    transport: 'websocket'
+    url: 'wss://realtime.example.com/mcp'
 ```
 
-## Task Configuration
+## Agent Configuration
 
-Link MCP profiles to task types:
+Link MCP profiles to named agents:
 
 ```yaml
-# tasks section in llm_config.yaml
+# agents section in llm_config.yaml
 
-tasks:
-  agent:
+agents:
+  default_agent:
     primary: 'gpt-5-mini'
     fallback: ['gemini-2.5-flash', 'claude-3-5-haiku-latest']
     testing: ['gpt-5-nano']
     description: 'Tool-augmented reasoning with MCP'
-    mcp_profile: "local-tools"  # Link to MCP profile
+    mcp_profile: 'local-tools' # Link to MCP profile
 ```
 
 ## Environment Variables
@@ -210,8 +211,8 @@ Use environment variables for secrets:
 servers:
   secure-server:
     headers:
-      Authorization: "${MCP_AUTH_TOKEN:-default_fallback}"
-      API-Key: "${MCP_API_KEY:-}"
+      Authorization: '${MCP_AUTH_TOKEN:-default_fallback}'
+      API-Key: '${MCP_API_KEY:-}'
 ```
 
 Set variables in `.env`:
@@ -238,15 +239,15 @@ if manager.is_enabled():
     # Get tools for a profile
     user = {"is_superuser": True}  # Superuser required by default
     tools = await manager.get_tools(profile_name="local-tools", user=user)
-    
+
     print(f"Loaded {len(tools)} tools")
     for tool in tools:
         print(f"  - {tool.name}: {tool.description}")
-    
+
     # Execute a tool
     result = await tools[0].ainvoke({"a": 5, "b": 3})
     print(f"Result: {result}")
-    
+
     # Clean up
     await manager.close()
 ```
@@ -301,9 +302,9 @@ Configure in `llm_config.yaml`:
 ```yaml
 servers:
   my-math:
-    transport: "stdio"
-    command: "python"
-    args: ["my_math_server.py"]
+    transport: 'stdio'
+    command: 'python'
+    args: ['my_math_server.py']
 ```
 
 ## Testing
@@ -353,6 +354,7 @@ PermissionError: User does not have permission to use MCP tools
 ```
 
 **Solutions:**
+
 - Set `require_superuser: false` in config for testing
 - Ensure user has `is_superuser: true` flag
 - Or enable MCP globally: `export MCP_ENABLED=true`
@@ -364,6 +366,7 @@ McpError: Connection closed
 ```
 
 **Solutions:**
+
 - Verify server command/path is correct
 - Check server is executable: `python server.py`
 - Review server logs
@@ -376,6 +379,7 @@ ValueError: MCP dependencies not installed
 ```
 
 **Solution:**
+
 ```bash
 poetry add mcp langchain-mcp-adapters
 ```
@@ -383,6 +387,7 @@ poetry add mcp langchain-mcp-adapters
 ## Limitations & Future Work
 
 Current implementation:
+
 - ✅ Configuration and schema
 - ✅ MCP client management
 - ✅ Tool loading and execution
@@ -390,10 +395,10 @@ Current implementation:
 - ✅ Integration tests
 
 Future enhancements:
-- ⏳ Agent execution in LLM service
-- ⏳ Streaming tool events (SSE)
+
+- ⏳ Streaming tool events from agent runs
 - ⏳ Celery worker integration
-- ⏳ API endpoint integration
+- ⏳ Additional Agent Instances API coverage
 - ⏳ Rate limiting implementation
 - ⏳ Detailed audit logging
 

@@ -242,10 +242,10 @@ class TestLLMConfigMCPLoading:
         assert "math" in local_profile.servers
         assert local_profile.max_steps == 10
 
-    def test_task_config_with_mcp_profile(self):
-        """Test that task configs can reference MCP profiles"""
+    def test_agent_config_with_mcp_profile(self):
+        """Test that agent configs can reference MCP profiles"""
         mock_config = {
-            "tasks": {"agent": {"primary": "gpt-4", "mcp_profile": "web-browsing"}}
+            "agents": {"agent": {"primary": "gpt-4", "mcp_profile": "web-browsing"}}
         }
 
         with patch(
@@ -254,12 +254,11 @@ class TestLLMConfigMCPLoading:
             with patch("builtins.open", mock_open(read_data="data")):
                 config = get_llm_config()
 
-        # Agent task should exist
-        assert "agent" in config.task_configs
-        agent_task = config.task_configs["agent"]
-        assert agent_task.primary == "gpt-4"
-        assert hasattr(agent_task, "mcp_profile")
-        assert agent_task.mcp_profile == "web-browsing"
+        assert "agent" in config.agent_configs
+        agent_config = config.agent_configs["agent"]
+        assert agent_config.primary == "gpt-4"
+        assert hasattr(agent_config, "mcp_profile")
+        assert agent_config.mcp_profile == "web-browsing"
 
     def test_mcp_env_var_override(self):
         """Test that MCP_ENABLED env var overrides config"""

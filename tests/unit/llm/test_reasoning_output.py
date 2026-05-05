@@ -6,18 +6,12 @@ Covers:
 - reasoning_output field on AgentConfig
 - _create_model_instance() merging reasoning_config when reasoning_output=True
 - get_model_for_agent() auto-forwarding reasoning_output from AgentConfig
-- StreamChunk reasoning type
-- SSE reasoning event formatting
-- content_blocks parsing in streaming (reasoning + text blocks)
 """
 
-from unittest.mock import MagicMock, Mock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from inference_core.llm.config import AgentConfig, ModelConfig, ModelProvider
 from inference_core.llm.models import LLMModelFactory
-from inference_core.llm.streaming import StreamChunk, format_sse
 
 # ---------------------------------------------------------------------------
 # Config schema tests
@@ -305,87 +299,3 @@ class TestGetModelForAgentReasoning:
             self.factory.get_model_for_agent("reasoning_agent", reasoning_output=False)
             _, kwargs = mock_create.call_args
             assert kwargs.get("reasoning_output") is False
-
-
-# ---------------------------------------------------------------------------
-# Streaming tests
-# ---------------------------------------------------------------------------
-
-
-class TestStreamChunkReasoning:
-    """Test StreamChunk with reasoning type."""
-
-    def test_reasoning_chunk_creation(self):
-        chunk = StreamChunk(type="reasoning", content="Let me think about this...")
-        assert chunk.type == "reasoning"
-        assert chunk.content == "Let me think about this..."
-        assert chunk.usage is None
-
-    def test_reasoning_sse_format(self):
-        data = {"event": "reasoning", "content": "Step 1: analyze the problem"}
-        formatted = format_sse(data)
-        decoded = formatted.decode("utf-8")
-        assert '"event": "reasoning"' in decoded
-        assert '"content": "Step 1: analyze the problem"' in decoded
-        assert decoded.startswith("data: ")
-        assert decoded.endswith("\n\n")
-
-
-class TestContentBlocksParsing:
-    """Test content_blocks parsing extracts reasoning vs text blocks."""
-
-    def test_reasoning_block_produces_reasoning_chunk(self):
-        """A content_block with type=reasoning produces StreamChunk(type='reasoning')."""
-        block = {"type": "reasoning", "reasoning": "I need to consider X"}
-        # Simulate the parsing logic used in streaming
-        btype = block.get("type", "")
-        assert btype == "reasoning"
-        assert block.get("reasoning") == "I need to consider X"
-        chunk = StreamChunk(type="reasoning", content=block["reasoning"])
-        assert chunk.type == "reasoning"
-        assert chunk.content == "I need to consider X"
-
-    def test_text_block_produces_token_chunk(self):
-        """A content_block with type=text produces StreamChunk(type='token')."""
-        block = {"type": "text", "text": "The answer is 42"}
-        btype = block.get("type", "")
-        assert btype == "text"
-        chunk = StreamChunk(type="token", content=block["text"])
-        assert chunk.type == "token"
-        assert chunk.content == "The answer is 42"
-
-    def test_mixed_blocks_produce_correct_types(self):
-        """Mixed content_blocks produce the right StreamChunk types in order."""
-        blocks = [
-            {"type": "reasoning", "reasoning": "Thinking..."},
-            {"type": "text", "text": "Here's the answer"},
-            {"type": "reasoning", "reasoning": "Actually, let me reconsider"},
-            {"type": "text", "text": "The final answer"},
-        ]
-        chunks = []
-        for block in blocks:
-            btype = block.get("type", "")
-            if btype == "text" and block.get("text"):
-                chunks.append(StreamChunk(type="token", content=block["text"]))
-            elif btype == "reasoning" and block.get("reasoning"):
-                chunks.append(StreamChunk(type="reasoning", content=block["reasoning"]))
-
-        assert len(chunks) == 4
-        assert chunks[0].type == "reasoning"
-        assert chunks[1].type == "token"
-        assert chunks[2].type == "reasoning"
-        assert chunks[3].type == "token"
-
-    def test_empty_reasoning_block_skipped(self):
-        """Reasoning block with empty content is ignored."""
-        block = {"type": "reasoning", "reasoning": ""}
-        btype = block.get("type", "")
-        assert btype == "reasoning"
-        assert not block.get("reasoning")
-
-    def test_empty_text_block_skipped(self):
-        """Text block with empty content is ignored."""
-        block = {"type": "text", "text": ""}
-        btype = block.get("type", "")
-        assert btype == "text"
-        assert not block.get("text")

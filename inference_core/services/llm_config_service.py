@@ -33,7 +33,6 @@ from inference_core.schemas.llm_config import (
     PreferenceTypeEnum,
     ResolvedAgentConfig,
     ResolvedConfigResponse,
-    ResolvedTaskConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,7 +144,7 @@ class LLMConfigService:
         Fetch admin configuration overrides from database.
 
         Args:
-            scope: Filter by scope (global, model, task, agent)
+            scope: Filter by scope (global, model, agent)
             scope_key: Filter by scope key (e.g., model name)
             active_only: Only return active, non-expired overrides
         """
@@ -470,7 +469,6 @@ class LLMConfigService:
         result: Dict[str, Dict[str, Any]] = {
             "global": {},
             "model": {},
-            "task": {},
             "agent": {},
         }
 
@@ -501,7 +499,6 @@ class LLMConfigService:
         result: Dict[str, Dict[str, Any]] = {
             "default_model": {},
             "model_params": {},
-            "task_params": {},
             "agent_params": {},
         }
 
@@ -555,28 +552,6 @@ class LLMConfigService:
             disabled = admin_overrides["global"]["disabled_models"].get("value", [])
             available_models = [m for m in available_models if m not in disabled]
             sources["available_models"] = "admin"
-
-        # Build task configs
-        tasks: Dict[str, ResolvedTaskConfig] = {}
-
-        for task_name, task_config in base.task_configs.items():
-            primary = task_config.primary
-            fallback = task_config.fallback
-
-            # Apply admin task overrides
-            if task_name in admin_overrides.get("task", {}):
-                task_override = admin_overrides["task"][task_name]
-                if "primary" in task_override:
-                    primary = task_override["primary"].get("value", primary)
-                    sources[f"tasks.{task_name}.primary"] = "admin"
-                if "fallback" in task_override:
-                    fallback = task_override["fallback"].get("value", fallback)
-                    sources[f"tasks.{task_name}.fallback"] = "admin"
-
-            tasks[task_name] = ResolvedTaskConfig(
-                primary_model=primary,
-                fallback_models=fallback,
-            )
 
         # Resolve Agents
         agents = {}
@@ -671,12 +646,10 @@ class LLMConfigService:
         response = ResolvedConfigResponse(
             sources=sources,
             available_models=available_models,
-            tasks=tasks,
             agents=agents,
             defaults=defaults,
             cache_ttl_seconds=self.CACHE_TTL_SECONDS,
         )
-
         # Cache the result
         if user_id and use_cache:
             await self._set_cached(
@@ -690,7 +663,6 @@ class LLMConfigService:
         self,
         user_id: Optional[UUID],
         model_name: str,
-        task_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get effective parameters for a specific model call.
@@ -701,7 +673,6 @@ class LLMConfigService:
         Args:
             user_id: User making the request (None for anonymous)
             model_name: Target model name
-            task_type: Optional task type for task-specific overrides
 
         Returns:
             Dict of effective parameters for the model call
@@ -737,14 +708,6 @@ class LLMConfigService:
                 params["temperature"] = user_prefs["model_params"][model_key].get(
                     "value", params["temperature"]
                 )
-
-            # Task-specific user params
-            if task_type:
-                task_key = f"{task_type}.temperature"
-                if task_key in user_prefs.get("task_params", {}):
-                    params["temperature"] = user_prefs["task_params"][task_key].get(
-                        "value", params["temperature"]
-                    )
 
             # Global user params (lowest priority for user layer)
             for key in ["temperature", "max_tokens", "top_p"]:
@@ -798,7 +761,6 @@ class LLMConfigService:
         return AvailableOptionsResponse(
             options=options,
             available_models=resolved.available_models,
-            available_tasks=list(resolved.tasks.keys()),
             available_agents=list(resolved.agents.keys()),
         )
 
@@ -841,7 +803,6 @@ class LLMConfigService:
 
         # Normalise admin overrides from {"value": X} wrappers to plain values
         model_overrides = _unwrap(admin_overrides.get("model", {}))
-        task_overrides = _unwrap(admin_overrides.get("task", {}))
         agent_overrides = _unwrap(admin_overrides.get("agent", {}))
 
         # Apply user agent preferences (already stored as plain values via val_dict["value"])
@@ -857,7 +818,6 @@ class LLMConfigService:
 
         return self._base_config.with_overrides(
             model_overrides=model_overrides if model_overrides else None,
-            task_overrides=task_overrides if task_overrides else None,
             agent_overrides=copy.deepcopy(agent_overrides) if agent_overrides else None,
             # global_overrides intentionally omitted: admin global overrides (e.g.
             # "disabled_models", "models") control UI availability filtering in

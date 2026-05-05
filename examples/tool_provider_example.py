@@ -1,12 +1,12 @@
 """
-Example: Using Pluggable Tool Providers with LLM Service
+Example: Using Pluggable Tool Providers with AgentService
 
 This example demonstrates how to:
 1. Create custom LangChain tools
 2. Wrap them in a tool provider
 3. Register the provider
-4. Configure tasks to use the tools
-5. Use the tools in chat interactions
+4. Configure agents to use the tools
+5. Use the tools in agent interactions
 
 Run this example:
     poetry run python examples/tool_provider_example.py
@@ -14,13 +14,13 @@ Run this example:
 
 import asyncio
 import logging
-from typing import Optional
+import uuid
 
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from inference_core.llm.tools import register_tool_provider
-from inference_core.services.llm_service import LLMService
+from inference_core.services.agents_service import AgentService
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -36,7 +36,9 @@ class CalculatorTool(BaseTool):
     """Simple calculator tool for basic arithmetic"""
 
     name: str = "calculator"
-    description: str = "Perform basic arithmetic calculations. Input should be a mathematical expression like '2 + 2' or '10 * 5'"
+    description: str = (
+        "Perform basic arithmetic calculations. Input should be a mathematical expression like '2 + 2' or '10 * 5'"
+    )
 
     def _run(self, expression: str) -> str:
         """Execute calculation synchronously"""
@@ -45,15 +47,15 @@ class CalculatorTool(BaseTool):
             # In production, use a library like sympy or implement proper parsing
             # This is a simplified example for demonstration only
             import operator
-            
+
             # Basic operator map for safe calculation
             ops = {
-                '+': operator.add,
-                '-': operator.sub,
-                '*': operator.mul,
-                '/': operator.truediv,
+                "+": operator.add,
+                "-": operator.sub,
+                "*": operator.mul,
+                "/": operator.truediv,
             }
-            
+
             # Very basic parser - in production use a proper math library
             # This handles simple "num op num" expressions
             for op_str, op_func in ops.items():
@@ -67,7 +69,7 @@ class CalculatorTool(BaseTool):
                             return f"The result is: {result}"
                         except ValueError:
                             pass
-            
+
             return f"Could not parse expression '{expression}'. Use format like '2 + 2' or '10 * 5'"
         except Exception as e:
             return f"Error calculating '{expression}': {str(e)}"
@@ -175,33 +177,47 @@ def setup_tool_providers():
 # ============================================================================
 
 
-async def example_basic_chat():
-    """Example 1: Basic chat without tools"""
+async def example_basic_agent_run():
+    """Run a configured agent so the provider pattern has an end-to-end shape.
+
+    WHY: Tool providers only become useful once AgentService loads an agent
+    whose YAML config references them. This example keeps the call guarded so
+    the file remains runnable even without API keys or a configured model.
+    """
     print("\n" + "=" * 80)
-    print("Example 1: Basic Chat (No Tools)")
+    print("Example 1: Agent Run")
     print("=" * 80)
 
-    llm_service = LLMService()
+    agent_service = AgentService(
+        agent_name="default_agent",
+        user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        session_id="tool-provider-example",
+    )
 
     try:
-        response = await llm_service.chat(
-            session_id="example-session-1",
-            user_input="Hello! How are you?",
-            task_type="chat",  # This task has no tool providers configured
+        await agent_service.create_agent(
+            system_prompt="You are a concise assistant for tool-provider examples."
         )
+        response = await agent_service.arun_agent_steps("Hello! How are you?")
 
-        print(f"\nUser: Hello! How are you?")
-        print(f"Assistant: {response.result['reply']}")
-        print(f"\nTools used: {response.result.get('tools_used', 'None')}")
+        print("\nUser: Hello! How are you?")
+        print(f"Assistant: {response.result}")
 
     except Exception as e:
-        logger.error(f"Error in basic chat: {e}")
+        logger.error(f"Error in agent run: {e}")
+    finally:
+        agent_service.close()
 
 
 async def example_with_mock_config():
-    """Example 2: Chat with tools (using mocked config)"""
+    """Print the YAML shape needed to connect providers to an agent.
+
+    WHY: The concrete model and provider API keys vary by environment, so the
+    most portable example shows the exact configuration contract without
+    pretending every checkout can call a live model.
+    """
     print("\n" + "=" * 80)
-    print("Example 2: Chat with Tools (Mocked Config)")
+    print("Example 2: Agent Tools Configuration")
     print("=" * 80)
 
     # Note: In a real application, you would configure this in llm_config.yaml
@@ -210,7 +226,7 @@ async def example_with_mock_config():
     print("See the example configuration in llm_config.example.yaml")
     print("\nTo use local tool providers, add to your llm_config.yaml:")
     print("""
-tasks:
+agents:
   assistant_chat:
     primary: gpt-5-mini
     local_tool_providers: ['utility_tools', 'user_tools']
@@ -248,7 +264,7 @@ async def demo_tool_capabilities():
 
 
 async def main():
-    """Run all examples"""
+    """Run the provider demo from direct tools toward AgentService usage."""
     print("\n" + "=" * 80)
     print("Pluggable Tool Providers Example")
     print("=" * 80)
@@ -258,16 +274,16 @@ async def main():
 
     # Run examples
     await demo_tool_capabilities()
-    await example_basic_chat()
+    await example_basic_agent_run()
     await example_with_mock_config()
 
     print("\n" + "=" * 80)
     print("Examples Complete!")
     print("=" * 80)
     print("\nNext steps:")
-    print("1. Configure tasks in llm_config.yaml with local_tool_providers")
+    print("1. Configure agents in llm_config.yaml with local_tool_providers")
     print("2. Register your tool providers at application startup")
-    print("3. Use the configured tasks in your chat/completion calls")
+    print("3. Run the configured agent with AgentService or Agent Instances")
     print("4. See docs/pluggable-tool-providers.md for full documentation")
     print("=" * 80)
 

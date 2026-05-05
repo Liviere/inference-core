@@ -340,13 +340,6 @@ class LLMModelFactory:
         self._model_cache.clear()
         logger.info("Model cache cleared")
 
-    def get_model_for_task(self, task: str, **kwargs) -> Optional[BaseChatModel]:
-        """Get the preferred model for a specific task"""
-        # Honor task override (used by LLMService to map custom task_type to model)
-        effective_task = _TASK_OVERRIDE.get() or task
-        model_name = self.config.get_task_model(effective_task)
-        return self.create_model(model_name, **kwargs)
-
     def get_agent_model_name(self, agent_name: BaseChatModel) -> Optional[str]:
         """Get the preferred model name for a specific agent"""
         effective_agent = _AGENT_OVERRIDE.get() or agent_name
@@ -384,12 +377,6 @@ def get_model_factory() -> LLMModelFactory:
     return LLMModelFactory(get_llm_config())
 
 
-# -------- Task override support (thread/async-task local) --------
-# LLMService sets this to ensure model selection honors custom task types
-_TASK_OVERRIDE: ContextVar[Optional[str]] = ContextVar(
-    "llm_task_override", default=None
-)
-
 # -------- Agent override support (thread/async-task local) --------
 # AgentService sets this to ensure model selection honors custom agent types
 _AGENT_OVERRIDE: ContextVar[Optional[str]] = ContextVar(
@@ -397,30 +384,9 @@ _AGENT_OVERRIDE: ContextVar[Optional[str]] = ContextVar(
 )
 
 
-def current_task_override() -> Optional[str]:
-    """Return current effective task override if set."""
-    return _TASK_OVERRIDE.get()
-
-
 def current_agent_override() -> Optional[str]:
     """Return current effective agent override if set."""
     return _AGENT_OVERRIDE.get()
-
-
-@contextmanager
-def task_override(task: Optional[str]):
-    """Temporarily override the task used for default model resolution.
-
-    Usage:
-        with task_override("my_custom_task"):
-            # any factory.get_model_for_task("chat") will resolve using "my_custom_task"
-            ...
-    """
-    token = _TASK_OVERRIDE.set(task)
-    try:
-        yield
-    finally:
-        _TASK_OVERRIDE.reset(token)
 
 
 @contextmanager

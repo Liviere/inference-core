@@ -1,12 +1,10 @@
-"""Tests for advanced LLMConfig methods: availability, fallback, overrides, runtime config.
+"""Tests for advanced LLMConfig methods in the agent-only runtime.
 
-Covers: is_model_available, get_model_params, get_task_model_with_fallback,
-get_agent_model_with_fallback, with_overrides, list_available_models,
-list_models_by_task, get_provider_runtime_config, is_development_mode,
-get_model_debug_info.
+Covers: is_model_available, get_model_params, get_agent_model_with_fallback,
+with_overrides, list_available_models, list_models_by_agent,
+get_provider_runtime_config, is_development_mode, and get_model_debug_info.
 """
 
-import copy
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +17,6 @@ from inference_core.llm.config import (
     ModelProvider,
     PricingConfig,
     ProviderConfig,
-    TaskConfig,
 )
 
 # ---------------------------------------------------------------------------
@@ -30,8 +27,6 @@ from inference_core.llm.config import (
 def _make_config(
     models: dict | None = None,
     providers: dict | None = None,
-    task_models: dict | None = None,
-    task_configs: dict | None = None,
     agent_models: dict | None = None,
     agent_configs: dict | None = None,
     yaml_config: dict | None = None,
@@ -95,8 +90,6 @@ def _make_config(
         ),
     }
 
-    cfg.task_models = task_models or {"completion": "gpt-5", "chat": "gpt-5-mini"}
-    cfg.task_configs = task_configs or {}
     cfg.agent_models = agent_models or {"default": "gpt-5"}
     cfg.agent_configs = agent_configs or {}
 
@@ -194,54 +187,6 @@ class TestGetModelParams:
 
 
 # ===========================================================================
-# get_task_model_with_fallback
-# ===========================================================================
-
-
-class TestGetTaskModelWithFallback:
-    """Test fallback chain: primary → YAML fallback → any available → primary."""
-
-    def test_primary_available_returns_primary(self):
-        """When primary model is available, return it."""
-        cfg = _make_config()
-        assert cfg.get_task_model_with_fallback("completion") == "gpt-5"
-
-    def test_primary_unavailable_uses_yaml_fallback(self):
-        """When primary is unavailable, fall back to YAML fallback list."""
-        cfg = _make_config(
-            task_models={"completion": "gpt-5-mini"},
-            yaml_config={
-                "tasks": {"completion": {"fallback": ["local-llama", "gpt-5"]}}
-            },
-        )
-        # gpt-5-mini has no API key → unavailable; local-llama is available
-        result = cfg.get_task_model_with_fallback("completion")
-        assert result == "local-llama"
-
-    def test_all_unavailable_returns_primary(self):
-        """When nothing is available, return primary anyway."""
-        cfg = _make_config(
-            models={
-                "no-key": ModelConfig(
-                    name="no-key", provider=ModelProvider.OPENAI, api_key=None
-                ),
-            },
-            task_models={"completion": "no-key"},
-        )
-        assert cfg.get_task_model_with_fallback("completion") == "no-key"
-
-    def test_last_resort_any_available(self):
-        """When primary + YAML fallbacks fail, picks any available model."""
-        cfg = _make_config(
-            task_models={"completion": "gpt-5-mini"},
-            yaml_config={"tasks": {"completion": {"fallback": []}}},
-        )
-        # gpt-5-mini unavailable, no fallback, but gpt-5 is available
-        result = cfg.get_task_model_with_fallback("completion")
-        assert result == "gpt-5"  # first available in models dict
-
-
-# ===========================================================================
 # get_agent_model_with_fallback
 # ===========================================================================
 
@@ -294,14 +239,6 @@ class TestWithOverrides:
         cfg.with_overrides(model_overrides={"gpt-5": {"temperature": 0.0}})
         assert cfg.models["gpt-5"].temperature == original_temp
 
-    def test_task_overrides_primary(self):
-        """Task override with 'primary' updates task_models."""
-        cfg = _make_config()
-        new_cfg = cfg.with_overrides(
-            task_overrides={"completion": {"primary": "local-llama"}}
-        )
-        assert new_cfg.task_models["completion"] == "local-llama"
-
     def test_agent_overrides_primary(self):
         """Agent override with 'primary' updates agent_models."""
         cfg = _make_config(
@@ -336,7 +273,7 @@ class TestWithOverrides:
 
 
 # ===========================================================================
-# list_available_models / list_models_by_task
+# list_available_models / list_models_by_agent
 # ===========================================================================
 
 
@@ -351,12 +288,13 @@ class TestListModels:
         assert "gpt-5-mini" not in available  # no API key
         assert "local-llama" in available
 
-    def test_list_models_by_task(self):
-        """Returns primary + fallback models for a task."""
+    def test_list_models_by_agent(self):
+        """Returns primary + fallback models for an agent."""
         cfg = _make_config(
-            yaml_config={"tasks": {"completion": {"fallback": ["local-llama"]}}},
+            agent_models={"default": "gpt-5"},
+            yaml_config={"agents": {"default": {"fallback": ["local-llama"]}}},
         )
-        models = cfg.list_models_by_task("completion")
+        models = cfg.list_models_by_agent("default")
         assert "gpt-5" in models
         assert "local-llama" in models
 

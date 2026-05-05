@@ -9,7 +9,6 @@ from inference_core.database.sql.connection import (
     get_non_singleton_session_maker,
 )
 from inference_core.main_factory import create_application
-from inference_core.services.llm_service import get_llm_service
 from inference_core.services.task_service import get_task_service
 
 
@@ -43,7 +42,7 @@ class EmptyTaskService:
         return {}
 
 
-class FakeLLMService:
+class FakeModelFactory:
     def get_available_models(self):
         return {"gpt-4o-mini": True, "claude-3-haiku": False}
 
@@ -76,11 +75,15 @@ async def test_health_overall(monkeypatch):
         lambda: FakeVectorService(),
         raising=True,
     )
+    monkeypatch.setattr(
+        "inference_core.api.v1.routes.health.get_model_factory",
+        lambda: FakeModelFactory(),
+        raising=True,
+    )
 
     app = create_application()
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_task_service] = lambda: FakeTaskService()
-    app.dependency_overrides[get_llm_service] = lambda: FakeLLMService()
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -120,11 +123,15 @@ async def test_health_no_workers_degrades(monkeypatch):
         lambda: FakeVectorService(),
         raising=True,
     )
+    monkeypatch.setattr(
+        "inference_core.api.v1.routes.health.get_model_factory",
+        lambda: FakeModelFactory(),
+        raising=True,
+    )
 
     app = create_application()
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_task_service] = lambda: EmptyTaskService()
-    app.dependency_overrides[get_llm_service] = lambda: FakeLLMService()
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -161,11 +168,15 @@ async def test_health_task_service_error(monkeypatch):
         lambda: FakeVectorService(),
         raising=True,
     )
+    monkeypatch.setattr(
+        "inference_core.api.v1.routes.health.get_model_factory",
+        lambda: FakeModelFactory(),
+        raising=True,
+    )
 
     app = create_application()
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_task_service] = lambda: FailingTaskService()
-    app.dependency_overrides[get_llm_service] = lambda: FakeLLMService()
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

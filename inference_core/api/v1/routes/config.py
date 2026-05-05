@@ -233,7 +233,7 @@ async def get_resolved_config(
     Get the fully resolved LLM configuration for the current user.
 
     Merges: YAML base config → Admin DB overrides → User preferences.
-    Returns effective models, tasks, and default parameters.
+    Returns effective models, agents, and default parameters.
     """
     user_id = UUID(current_user["id"])
     return await config_service.get_resolved_config(user_id=user_id)
@@ -252,7 +252,7 @@ async def get_available_options(
     Get available configuration options for the current user.
 
     Returns list of configurable parameters with their constraints,
-    available models, and available tasks. Used by frontend to build
+    available models, and available agents. Used by frontend to build
     dynamic settings UI.
     """
     user_id = UUID(current_user["id"])

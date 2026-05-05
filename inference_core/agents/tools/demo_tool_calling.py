@@ -142,7 +142,7 @@ def search_web(query: str) -> str:
 class DemoToolCallingProvider:
     """Provides the three demo tools under the name ``demo_tool_calling``.
 
-    WHY: The LLM service resolves providers by name from
+    WHY: AgentService resolves providers by name from
     ``local_tool_providers`` in the agent YAML. Bundling the tools here
     keeps the registration logic next to their definitions and allows
     the provider to be swapped or extended without touching the agent

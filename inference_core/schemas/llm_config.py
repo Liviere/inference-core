@@ -22,7 +22,6 @@ class ConfigScopeEnum(str, Enum):
 
     GLOBAL = "global"
     MODEL = "model"
-    TASK = "task"
     AGENT = "agent"
 
 
@@ -31,7 +30,6 @@ class PreferenceTypeEnum(str, Enum):
 
     DEFAULT_MODEL = "default_model"
     MODEL_PARAMS = "model_params"
-    TASK_PARAMS = "task_params"
     AGENT_PARAMS = "agent_params"
 
 
@@ -308,14 +306,6 @@ class ResolvedModelConfig(BaseModel):
     extra_params: Optional[Dict[str, Any]] = None
 
 
-class ResolvedTaskConfig(BaseModel):
-    """Resolved configuration for a specific task."""
-
-    primary_model: str
-    fallback_models: Optional[List[str]] = None
-    default_params: Optional[Dict[str, Any]] = None
-
-
 class ResolvedAgentConfig(BaseModel):
     """Resolved configuration for a specific agent."""
 
@@ -347,12 +337,6 @@ class ResolvedConfigResponse(BaseModel):
     available_models: List[str] = Field(
         default_factory=list,
         description="List of model names user can access",
-    )
-
-    # Task configurations
-    tasks: Dict[str, ResolvedTaskConfig] = Field(
-        default_factory=dict,
-        description="Resolved task configurations",
     )
 
     # Agent configurations
@@ -412,7 +396,6 @@ class AvailableOptionsResponse(BaseModel):
     available_models: List[str] = Field(
         ..., description="Models the user can select as defaults"
     )
-    available_tasks: List[str] = Field(..., description="Tasks that can be configured")
     available_agents: List[str] = Field(
         ..., description="Agents that can be configured"
     )

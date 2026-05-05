@@ -11,7 +11,7 @@ Central index of project documentation
 | LLM Configuration                  | Reference for `llm_config.yaml`              | `llm_config_summary.md`              |
 | Dynamic & DB Configuration         | DB overrides & user-specific preferences     | `dynamic-configuration.md`           |
 | Repository Structure Snapshot      | Auto/Manual snapshot of directories          | `structure.md`                       |
-| Custom Prompts (Jinja2)            | How to add your own prompt templates         | `custom-prompts.md`                  |
+| Agent Prompts                      | How to customize AgentService prompts        | `custom-prompts.md`                  |
 | LangChain Agents                   | YAML-configured agents, tools, middleware    | `agents-service.md`                  |
 | LangGraph Agent Server             | Remote execution, dev/prod workflow          | `agents-service.md#remote-execution` |
 | User Agent Instances               | User-customizable agent configurations       | `user-agent-instances.md`            |

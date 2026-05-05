@@ -459,14 +459,17 @@ class TestGetEffectiveModelParams:
         mock_model.max_tokens = 2048
         config_service._base_config.models = {"gpt-4": mock_model}
 
-        with patch.object(
-            config_service,
-            "_load_admin_overrides_dict",
-            return_value={"global": {}, "model": {}, "task": {}, "agent": {}},
-        ), patch.object(
-            config_service,
-            "_load_user_preferences_dict",
-            return_value={"model_params": {}, "task_params": {}},
+        with (
+            patch.object(
+                config_service,
+                "_load_admin_overrides_dict",
+                return_value={"global": {}, "model": {}, "agent": {}},
+            ),
+            patch.object(
+                config_service,
+                "_load_user_preferences_dict",
+                return_value={"model_params": {}},
+            ),
         ):
             result = await config_service.get_effective_model_params(
                 user_id=uuid4(),
@@ -487,18 +490,20 @@ class TestGetEffectiveModelParams:
         admin_overrides = {
             "global": {},
             "model": {"gpt-4": {"temperature": {"value": 0.3}}},
-            "task": {},
             "agent": {},
         }
 
-        with patch.object(
-            config_service,
-            "_load_admin_overrides_dict",
-            return_value=admin_overrides,
-        ), patch.object(
-            config_service,
-            "_load_user_preferences_dict",
-            return_value={"model_params": {}, "task_params": {}},
+        with (
+            patch.object(
+                config_service,
+                "_load_admin_overrides_dict",
+                return_value=admin_overrides,
+            ),
+            patch.object(
+                config_service,
+                "_load_user_preferences_dict",
+                return_value={"model_params": {}},
+            ),
         ):
             result = await config_service.get_effective_model_params(
                 user_id=uuid4(),
@@ -518,23 +523,24 @@ class TestGetEffectiveModelParams:
         admin_overrides = {
             "global": {},
             "model": {"gpt-4": {"temperature": {"value": 0.3}}},
-            "task": {},
             "agent": {},
         }
 
         user_prefs = {
             "model_params": {"gpt-4.temperature": {"value": 1.5}},
-            "task_params": {},
         }
 
-        with patch.object(
-            config_service,
-            "_load_admin_overrides_dict",
-            return_value=admin_overrides,
-        ), patch.object(
-            config_service,
-            "_load_user_preferences_dict",
-            return_value=user_prefs,
+        with (
+            patch.object(
+                config_service,
+                "_load_admin_overrides_dict",
+                return_value=admin_overrides,
+            ),
+            patch.object(
+                config_service,
+                "_load_user_preferences_dict",
+                return_value=user_prefs,
+            ),
         ):
             result = await config_service.get_effective_model_params(
                 user_id=uuid4(),
@@ -554,7 +560,7 @@ class TestGetEffectiveModelParams:
         with patch.object(
             config_service,
             "_load_admin_overrides_dict",
-            return_value={"global": {}, "model": {}, "task": {}, "agent": {}},
+            return_value={"global": {}, "model": {}, "agent": {}},
         ):
             result = await config_service.get_effective_model_params(
                 user_id=None,
@@ -575,7 +581,7 @@ class TestGetConfigWithOverrides:
     @pytest.mark.asyncio
     async def test_calls_with_overrides_on_base(self, config_service):
         """Calls _base_config.with_overrides with admin overrides."""
-        admin = {"global": {}, "model": {}, "task": {}, "agent": {}}
+        admin = {"global": {}, "model": {}, "agent": {}}
         mock_config = MagicMock()
         config_service._base_config = mock_config
 
@@ -589,24 +595,26 @@ class TestGetConfigWithOverrides:
     @pytest.mark.asyncio
     async def test_merges_user_agent_params(self, config_service):
         """User agent_params are merged into admin overrides before with_overrides."""
-        admin = {"global": {}, "model": {}, "task": {}, "agent": {}}
+        admin = {"global": {}, "model": {}, "agent": {}}
         user_prefs = {
             "agent_params": {
                 "my_agent.allowed_tools": {"value": ["tool_a", "tool_b"]},
             },
             "model_params": {},
             "default_model": {},
-            "task_params": {},
         }
 
         mock_config = MagicMock()
         config_service._base_config = mock_config
 
         uid = uuid4()
-        with patch.object(
-            config_service, "_load_admin_overrides_dict", return_value=admin
-        ), patch.object(
-            config_service, "_load_user_preferences_dict", return_value=user_prefs
+        with (
+            patch.object(
+                config_service, "_load_admin_overrides_dict", return_value=admin
+            ),
+            patch.object(
+                config_service, "_load_user_preferences_dict", return_value=user_prefs
+            ),
         ):
             await config_service.get_config_with_overrides(user_id=uid)
 

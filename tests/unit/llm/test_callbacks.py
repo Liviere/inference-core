@@ -1,15 +1,12 @@
-"""Tests for LLMUsageCallbackHandler and ToolUsageCallbackHandler.
+"""Tests for LLMUsageCallbackHandler.
 
 Covers: on_llm_end (delta calculation, fallback to llm_output, detail extraction),
-on_llm_error (partial flag), ToolUsageCallbackHandler events lifecycle.
+on_llm_error (partial flag), and accumulated usage access.
 """
 
 from unittest.mock import MagicMock
 
-from inference_core.llm.callbacks import (
-    LLMUsageCallbackHandler,
-    ToolUsageCallbackHandler,
-)
+from inference_core.llm.callbacks import LLMUsageCallbackHandler
 from inference_core.llm.usage_logging import UsageLoggingConfig, UsageSession
 
 # ---------------------------------------------------------------------------
@@ -168,78 +165,3 @@ class TestLLMUsageCallbackGetAccumulated:
         result = handler.get_accumulated()
         assert result["input_tokens"] == 42
         assert isinstance(result, dict)
-
-
-# ===========================================================================
-# ToolUsageCallbackHandler
-# ===========================================================================
-
-
-class TestToolUsageCallbackHandler:
-    """Test ToolUsageCallbackHandler event lifecycle."""
-
-    def test_on_tool_start_captures_event(self):
-        """on_tool_start records tool name and input."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_start({"name": "browser_navigate"}, input_str="https://example.com")
-
-        assert len(handler.events) == 1
-        assert handler.events[0]["tool"] == "browser_navigate"
-        assert handler.events[0]["input"] == "https://example.com"
-        assert handler.events[0]["event"] == "start"
-
-    def test_on_tool_end_annotates_last_start(self):
-        """on_tool_end annotates the last 'start' event with output."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_start({"name": "search"}, input_str="query")
-        handler.on_tool_end(output="3 results found")
-
-        assert handler.events[0]["event"] == "finish"
-        assert handler.events[0]["output"] == "3 results found"
-
-    def test_on_tool_end_truncates_long_output(self):
-        """Very long output is truncated to 2000 chars."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_start({"name": "fetch"}, input_str="url")
-        long_output = "x" * 3000
-        handler.on_tool_end(output=long_output)
-
-        assert len(handler.events[0]["output"]) < 3000
-        assert handler.events[0]["output"].endswith("…")
-
-    def test_on_tool_error_captures_error(self):
-        """on_tool_error records the error."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_error(RuntimeError("connection failed"))
-
-        assert len(handler.events) == 1
-        assert handler.events[0]["event"] == "error"
-        assert "connection failed" in handler.events[0]["error"]
-
-    def test_get_events_returns_copy(self):
-        """get_events returns a list copy."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_start({"name": "tool1"})
-        events = handler.get_events()
-        assert len(events) == 1
-        events.clear()
-        assert len(handler.events) == 1  # original unchanged
-
-    def test_on_tool_start_unknown_name(self):
-        """Handles serialized dict without a 'name' key."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_start({}, input_str="test")
-        assert handler.events[0]["tool"] == "<unknown>"
-
-    def test_on_tool_start_uses_tool_key(self):
-        """Falls back to 'tool' key in serialized dict."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_start({"tool": "my_tool"}, input_str="arg")
-        assert handler.events[0]["tool"] == "my_tool"
-
-    def test_on_tool_end_without_prior_start(self):
-        """on_tool_end without prior start appends standalone finish event."""
-        handler = ToolUsageCallbackHandler()
-        handler.on_tool_end(output="orphan result")
-        assert handler.events[0]["event"] == "finish"
-        assert handler.events[0]["output"] == "orphan result"

@@ -26,26 +26,19 @@
   - directly affects instance creation in `inference_core/llm/models.py`.
   - missing API key / base_url affects `is_model_available()` results.
 
-- **`tasks`**: assignments for task types (e.g. `completion`, `chat`)
-  - short mapping `task_models` (primary) and full `task_configs` (type `TaskConfig`).
-  - `TaskConfig.mcp_profile` points to an MCP profile used to load tools.
-  - can be overridden by environment variables listed under `settings.env_overrides`.
-
 - **`agents`**: assignments for named agents (agent-specific model choices)
   - short mapping `agent_models` (primary) and full `agent_configs` (type `AgentConfig`).
-  - `AgentConfig` is a dedicated Pydantic model (separate from `TaskConfig`) used to represent agent-specific settings and can be extended independently of tasks.
+  - `AgentConfig` is the dedicated Pydantic model used to represent agent-specific settings.
   - `reasoning_output: true` enables reasoning output for that agent and forwards the model's `reasoning_config` into the instantiated provider kwargs.
   - `on_missing_capability` controls what happens when a tool requires a capability the primary model lacks. `skip` filters the tool out; `delegate` keeps it exposed so runtime middleware can swap to a support model for that tool call.
   - `multimodal_support_model` names the model used for delegated multimodal tool calls. It must resolve to an entry in `models:` and should declare `multimodal: true`.
-  - Agent primary model can be overridden via environment variables defined in `settings.env_overrides` (same mechanism as for tasks).
   - `LLMConfig.get_agent_model()` and `LLMConfig.get_agent_model_with_fallback()` resolve the effective model for an agent, including fallback logic and availability checks (API key / base_url).
   - New fields `skills` (list of paths) and `subagents` (list of agent names) enable delegating tasks and using specialized workflows.
   - `tool_call_limits` configures `ToolCallLimitMiddleware` instances for the agent: `global_limit` applies to all tools, while `per_tool` adds stricter limits for named tools.
   - `run_limit` resets for each invocation; `thread_limit` persists across the conversation thread.
   - When `tool_call_limits` is present, both local and remote agent builders append matching policy instructions to the system prompt so the model can recover gracefully after a blocked tool call.
-  - Agents are intentionally a separate namespace from `tasks` (no implicit name collision); code first resolves agents from `agents:` and does not mutate existing `tasks` mapping.
 
-- **`settings`**: global behavioral settings (e.g. `enable_caching`, `cache_ttl_seconds`, `default_timeout`, `retry_attempts`, `env_overrides`, `usage_logging`, etc.)
+- **`settings`**: global behavioral settings (e.g. `enable_caching`, `cache_ttl_seconds`, `default_timeout`, `retry_attempts`, `usage_logging`, etc.)
   - mapped directly to fields on `LLMConfig` and consumed by the model factory, usage logger, retry logic, and more.
 
 - **`batch`**: batch processing configuration → `LLMConfig.batch_config` (type `BatchConfig`).
@@ -64,15 +57,15 @@
 
 - `inference_core/llm/config.py`
   - extends the loader with a new Pydantic model `AgentConfig` and adds fields `LLMConfig.agent_models` and `LLMConfig.agent_configs`.
-  - responsible for parsing the `agents:` section in `llm_config.yaml`, validating it, and mapping it to runtime structures (including env-overrides).
-  - contains logic to load test/production default values for agents (similar to `tasks`).
+  - responsible for parsing the `agents:` section in `llm_config.yaml`, validating it, and mapping it to runtime structures.
+  - contains logic to load test/production default values for agents.
 
 - `inference_core/llm/models.py`
-  - `LLMModelFactory` uses `LLMConfig.models` to create model instances for tasks and — as an extension — exposes `get_model_for_agent()` (or a similar method) to obtain the effective model for a given agent, respecting fallback logic and availability checks (API key / `base_url`).
+  - `LLMModelFactory` uses `LLMConfig.models` to create model instances and exposes `get_model_for_agent()` to obtain the effective model for a given agent, respecting fallback logic and availability checks (API key / `base_url`).
   - respects global settings (e.g., `config.enable_caching`) and parameter policies when instantiating models.
 
 - `inference_core/services/agents_service.py`
-  - uses the factory (`LLMModelFactory.get_model_for_agent()`) to construct model/agent instances; this centralizes model-selection logic and keeps it consistent with task model selection.
+  - uses the factory (`LLMModelFactory.get_model_for_agent()`) to construct model/agent instances; this centralizes model-selection logic for the v1 runtime.
   - responsible for initializing agents, applying runtime configuration, and integrating with MCP/tools where applicable.
   - synthesizes tool-model overrides for multimodal tools retained under `on_missing_capability: delegate`, while preserving explicit YAML overrides when both target the same tool name.
   - appends `tool_call_limits` prompt instructions and injects tool-call limit middleware in local agent and deep-agent execution paths.
@@ -92,7 +85,6 @@ In short: agent configuration is loaded and validated in `config.py`; model sele
 **Notable behaviors / edge cases**
 
 - **API keys**: if `ProviderConfig.requires_api_key` is `true`, `LLMConfig._load_config()` will attempt to read the value from the env var specified by `api_key_env`; missing key → models for that provider are treated as unavailable by `is_model_available()`.
-- **Env overrides for tasks**: `settings.env_overrides` allows overriding `tasks.<task>.primary` via environment variables — useful for quick switches without editing the YAML.
 - **Test mode**: `_load_mcp_config()` contains logic to change defaults in test environments to avoid external services (e.g. disable MCP, normalize Playwright URL), making local tests easier.
 - **Fallback**: when `llm_config.yaml` is absent or unparsable, the app will fall back to default models (e.g. `gpt-5-mini`) and baseline settings — the app remains usable but limited.
 - **Param policy**: `param_policies` lets you introduce new rules without code changes: add `patch`/`replace` for providers or models and the system applies them dynamically in `param_policy`.

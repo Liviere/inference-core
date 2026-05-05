@@ -770,36 +770,6 @@ class AgentConfig(BaseModel):
         return self
 
 
-class TaskConfig(BaseModel):
-    """Configuration for a task (e.g., completion, chat, agent).
-
-    Note: This is used alongside task_models dict for extended task metadata.
-    - task_models: Stores primary model name for backward compatibility
-    - task_configs: Stores full task configuration including MCP profile
-    Both are populated from the same YAML tasks section.
-    """
-
-    primary: str = Field(..., description="Primary model name")
-    fallback: Optional[List[str]] = Field(
-        default=None, description="Fallback model names"
-    )
-    testing: Optional[List[str]] = Field(default=None, description="Models for testing")
-    description: str = Field(default="", description="Task description")
-    mcp_profile: Optional[str] = Field(
-        default=None, description="Optional MCP profile name for tool-enabled tasks"
-    )
-    local_tool_providers: Optional[List[str]] = Field(
-        default=None,
-        description="Optional list of local tool provider names (non-MCP)",
-    )
-    tool_limits: Optional[ToolLimits] = Field(
-        default=None, description="Optional tool execution limits"
-    )
-    allowed_tools: Optional[List[str]] = Field(
-        default=None, description="Optional allowlist of tool names"
-    )
-
-
 # Backward compatible alias kept for older imports.
 EmbeddingProviderType = ModelProvider
 
@@ -898,8 +868,6 @@ class LLMConfig:
     def __init__(self):
         self.providers: Dict[str, Any] = {}
         self.models: Dict[str, ModelConfig] = {}
-        self.task_models: Dict[str, str] = {}
-        self.task_configs: Dict[str, TaskConfig] = {}  # Store full task configs
         self.agent_models: Dict[str, str] = {}
         self.agent_configs: Dict[str, AgentConfig] = {}  # Store full agent configs
         self.enable_caching: bool = True
@@ -1026,33 +994,6 @@ class LLMConfig:
                 pricing=pricing_config,
                 **init_data,
             )
-
-        # Parse task model assignments
-        tasks_config = yaml_config.get("tasks", {})
-        self.task_models = {}
-        self.task_configs = {}
-
-        for task_name, task_data in tasks_config.items():
-            # Store full task config
-            try:
-                self.task_configs[task_name] = TaskConfig(**task_data)
-            except Exception as e:
-                logging.warning(f"Error parsing task config for {task_name}: {e}")
-
-            # Check for environment variable override
-            env_var = (
-                yaml_config.get("settings", {}).get("env_overrides", {}).get(task_name)
-            )
-            if env_var:
-                override_model = os.getenv(env_var)
-                if override_model:
-                    self.task_models[task_name] = override_model
-                    continue
-
-            # Use primary model from config
-            primary_model = task_data.get("primary")
-            if primary_model:
-                self.task_models[task_name] = primary_model
 
         # Parse agent model assignments
         agents_config = yaml_config.get("agents", {})
@@ -1382,12 +1323,6 @@ class LLMConfig:
             ),
         }
 
-        # Default model preferences for different tasks
-        self.task_models = {
-            "completion": "gpt-5-mini",
-            "chat": "gpt-5-mini",
-        }
-
         # General settings
         self.enable_caching = os.getenv("LLM_ENABLE_CACHING", "true").lower() == "true"
         self.cache_ttl = int(os.getenv("LLM_CACHE_TTL", "3600"))  # 1 hour
@@ -1399,10 +1334,6 @@ class LLMConfig:
     def get_model_config(self, model_name: str) -> Optional[ModelConfig]:
         """Get configuration for a specific model"""
         return self.models.get(model_name)
-
-    def get_task_model(self, task: str) -> str:
-        """Get preferred model for a specific task"""
-        return self.task_models.get(task, "gpt-5-mini")
 
     def get_model_params(self, model_name: str) -> Optional[ModelParams]:
         """Get model parameters for a specific model"""
@@ -1450,32 +1381,6 @@ class LLMConfig:
             return True if not config.base_url else bool(config.base_url.strip())
 
         return False
-
-    def get_task_model_with_fallback(self, task: str) -> str:
-        """Get preferred model for a task, with fallback to available models"""
-        primary_model = self.get_task_model(task)
-
-        # Check if primary model is available
-        if self.is_model_available(primary_model):
-            return primary_model
-
-        # Try fallback models from YAML config
-        if hasattr(self, "_yaml_config"):
-            task_config = self._yaml_config.get("tasks", {}).get(task, {})
-            fallback_models = task_config.get("fallback", [])
-
-            for fallback_model in fallback_models:
-                fallback_model_str = str(fallback_model)
-                if self.is_model_available(fallback_model_str):
-                    return fallback_model_str
-
-        # Last resort: find any available model
-        for model_name in self.models.keys():
-            if self.is_model_available(model_name):
-                return model_name
-
-        # If nothing is available, return the primary model anyway
-        return primary_model
 
     def get_agent_model(self, agent_name: str) -> str:
         """Get preferred model for a specific agent"""
@@ -1547,21 +1452,23 @@ class LLMConfig:
         """List all available models"""
         return [name for name in self.models.keys() if self.is_model_available(name)]
 
-    def list_models_by_task(self, task: str) -> List[str]:
-        """List models suitable for a specific task"""
-        # Get primary and fallback models for the task
+    def list_models_by_agent(self, agent_name: str) -> List[str]:
+        """Return primary and fallback models configured for an agent.
+
+        WHY: Agent-facing configuration UIs and tests still need a compact view
+        of the candidate models for a named agent without re-reading raw YAML.
+        """
         models = []
 
-        primary = self.get_task_model(task)
+        primary = self.get_agent_model(agent_name)
         if primary:
             models.append(primary)
 
         if hasattr(self, "_yaml_config"):
-            task_config = self._yaml_config.get("tasks", {}).get(task, {})
-            fallback_models = task_config.get("fallback", [])
+            agent_config = self._yaml_config.get("agents", {}).get(agent_name, {})
+            fallback_models = agent_config.get("fallback", [])
             models.extend(fallback_models)
 
-        # Remove duplicates while preserving order
         seen = set()
         result = []
         for model in models:
@@ -1613,7 +1520,6 @@ class LLMConfig:
     def with_overrides(
         self,
         model_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
-        task_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         agent_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         global_overrides: Optional[Dict[str, Any]] = None,
     ) -> "LLMConfig":
@@ -1626,7 +1532,6 @@ class LLMConfig:
 
         Args:
             model_overrides: Dict of model_name -> {param: value} overrides
-            task_overrides: Dict of task_name -> {param: value} overrides
             agent_overrides: Dict of agent_name -> {param: value} overrides
             global_overrides: Dict of global param overrides (default_timeout, etc.)
 
@@ -1641,10 +1546,6 @@ class LLMConfig:
         new_config.models = {
             name: copy.deepcopy(config) for name, config in self.models.items()
         }
-        new_config.task_models = dict(self.task_models)
-        new_config.task_configs = {
-            name: copy.deepcopy(config) for name, config in self.task_configs.items()
-        }
         new_config.agent_models = dict(self.agent_models)
         new_config.agent_configs = {
             name: copy.deepcopy(config) for name, config in self.agent_configs.items()
@@ -1657,20 +1558,6 @@ class LLMConfig:
                     model = new_config.models[model_name]
                     for key, value in overrides.items():
                         setattr(model, key, value)
-
-        # Apply task overrides
-        if task_overrides:
-            for task_name, overrides in task_overrides.items():
-                # Update task_models (primary model)
-                if "primary" in overrides:
-                    new_config.task_models[task_name] = overrides["primary"]
-
-                # Update task_configs
-                if task_name in new_config.task_configs:
-                    task_cfg = new_config.task_configs[task_name]
-                    for key, value in overrides.items():
-                        if hasattr(task_cfg, key):
-                            setattr(task_cfg, key, value)
 
         # Apply agent overrides
         if agent_overrides:
@@ -1694,8 +1581,6 @@ class LLMConfig:
             {
                 "models",
                 "providers",
-                "task_models",
-                "task_configs",
                 "agent_models",
                 "agent_configs",
                 "batch_config",

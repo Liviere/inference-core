@@ -328,24 +328,6 @@ class TaskService:
             failure_cache_ttl=failure_cache_ttl,
         )
 
-    def completion_async(self, **kwargs) -> str:
-        """Submit completion task"""
-        task = self.celery_app.send_task("llm.completion", kwargs=kwargs)
-        return task.id
-
-    def chat_async(self, **kwargs) -> str:
-        """Submit chat task (one turn)"""
-        task = self.celery_app.send_task("llm.chat", kwargs=kwargs)
-        return task.id
-
-    async def completion_submit_async(self, **kwargs) -> str:
-        """Async wrapper for completion_async to avoid blocking the event loop."""
-        return await run_in_threadpool(self.completion_async, **kwargs)
-
-    async def chat_submit_async(self, **kwargs) -> str:
-        """Async wrapper for chat_async to avoid blocking the event loop."""
-        return await run_in_threadpool(self.chat_async, **kwargs)
-
 
 # Global task service instance
 task_service = TaskService()

@@ -420,62 +420,6 @@ class TestTaskService:
         assert stats["ping"] is None
         assert stats["registered"] is None
 
-    @patch("inference_core.services.task_service.celery_app")
-    def test_completion_async(self, mock_celery_app):
-        """Test completion_async submits completion task"""
-        mock_task = MagicMock()
-        mock_task.id = "completion-task-123"
-        mock_celery_app.send_task.return_value = mock_task
-
-        service = TaskService()
-        task_id = service.completion_async(query="What is AI?", model="gpt-3.5")
-
-        assert task_id == "completion-task-123"
-        mock_celery_app.send_task.assert_called_once_with(
-            "llm.completion", kwargs={"query": "What is AI?", "model": "gpt-3.5"}
-        )
-
-    @patch("inference_core.services.task_service.celery_app")
-    def test_completion_async_no_kwargs(self, mock_celery_app):
-        """Test completion_async without arguments"""
-        mock_task = MagicMock()
-        mock_task.id = "completion-task-456"
-        mock_celery_app.send_task.return_value = mock_task
-
-        service = TaskService()
-        task_id = service.completion_async()
-
-        assert task_id == "completion-task-456"
-        mock_celery_app.send_task.assert_called_once_with("llm.completion", kwargs={})
-
-    @patch("inference_core.services.task_service.celery_app")
-    def test_chat_async(self, mock_celery_app):
-        """Test chat_async submits chat task"""
-        mock_task = MagicMock()
-        mock_task.id = "chat-task-789"
-        mock_celery_app.send_task.return_value = mock_task
-
-        service = TaskService()
-        task_id = service.chat_async(message="Hello", session_id="session-123")
-
-        assert task_id == "chat-task-789"
-        mock_celery_app.send_task.assert_called_once_with(
-            "llm.chat", kwargs={"message": "Hello", "session_id": "session-123"}
-        )
-
-    @patch("inference_core.services.task_service.celery_app")
-    def test_chat_async_no_kwargs(self, mock_celery_app):
-        """Test chat_async without arguments"""
-        mock_task = MagicMock()
-        mock_task.id = "chat-task-000"
-        mock_celery_app.send_task.return_value = mock_task
-
-        service = TaskService()
-        task_id = service.chat_async()
-
-        assert task_id == "chat-task-000"
-        mock_celery_app.send_task.assert_called_once_with("llm.chat", kwargs={})
-
 
 class TestGetTaskService:
     """Test get_task_service function"""
@@ -554,16 +498,6 @@ class TestTaskServiceErrorHandling:
         with pytest.raises(Exception):
             service.get_active_tasks()
 
-    @patch("inference_core.services.task_service.celery_app")
-    def test_send_task_connection_error(self, mock_celery_app):
-        """Test task submission when broker is unavailable"""
-        mock_celery_app.send_task.side_effect = Exception("Broker connection failed")
-
-        service = TaskService()
-
-        with pytest.raises(Exception, match="Broker connection failed"):
-            service.completion_async(query="test")
-
 
 class TestTaskServiceIntegration:
     """Test TaskService integration scenarios"""
@@ -578,13 +512,7 @@ class TestTaskServiceIntegration:
     @patch("inference_core.services.task_service.AsyncResult")
     @patch("inference_core.services.task_service.celery_app")
     def test_task_lifecycle(self, mock_celery_app, mock_async_result_class):
-        """Test complete task lifecycle: submit, check status, get result, cancel"""
-        # Mock task submission
-        mock_submit_task = MagicMock()
-        mock_submit_task.id = "lifecycle-task-123"
-        mock_celery_app.send_task.return_value = mock_submit_task
-
-        # Mock task result
+        """Test complete task lifecycle: check status, get result, cancel."""
         mock_result = MagicMock()
         mock_result.status = "SUCCESS"
         mock_result.result = {"answer": "AI is artificial intelligence"}
@@ -596,10 +524,7 @@ class TestTaskServiceIntegration:
         mock_async_result_class.return_value = mock_result
 
         service = TaskService()
-
-        # Submit task
-        task_id = service.completion_async(query="What is AI?")
-        assert task_id == "lifecycle-task-123"
+        task_id = "lifecycle-task-123"
 
         # Check status
         status = service.get_task_status(task_id)
@@ -615,6 +540,5 @@ class TestTaskServiceIntegration:
         assert cancelled is True
 
         # Verify all operations were called
-        mock_celery_app.send_task.assert_called_once()
         mock_async_result_class.assert_called()
         mock_result.revoke.assert_called_once_with(terminate=True)

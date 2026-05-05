@@ -1,8 +1,8 @@
 """
-Pluggable Tool Provider System for LLM Service
+Pluggable Tool Provider System for AgentService
 
 Provides a registry for custom LangChain tool providers that can be attached
-to chat/completion tasks without requiring MCP servers.
+to configured agents without requiring MCP servers.
 
 Usage:
     # In application startup code:
@@ -16,14 +16,14 @@ Usage:
     register_tool_provider(MyToolProvider())
 
     # In llm_config.yaml:
-    tasks:
-      assistant_converse:
-        primary: gpt-5-mini
-        local_tool_providers: ['my_tools']
-        tool_limits:
-          max_steps: 4
-          max_run_seconds: 30
-        allowed_tools: ['my_custom_tool']  # optional allowlist
+    agents:
+        assistant_converse:
+            primary: gpt-5-mini
+            local_tool_providers: ['my_tools']
+            tool_limits:
+            max_steps: 4
+            max_run_seconds: 30
+            allowed_tools: ['my_custom_tool']  # optional allowlist
 """
 
 import inspect
@@ -43,7 +43,7 @@ def _filter_kwargs_for_callable(fn: Any, kwargs: Dict[str, Any]) -> Dict[str, An
     """
     try:
         sig = inspect.signature(fn)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return kwargs
     params = sig.parameters
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
@@ -55,7 +55,7 @@ class ToolProvider(Protocol):
     """Protocol for tool providers.
 
     Tool providers supply LangChain-compatible tools based on context
-    (task type, user session, etc.).
+    (agent name, user session, request id, etc.).
 
     Attributes:
         name: Unique identifier for this provider
@@ -71,7 +71,9 @@ class ToolProvider(Protocol):
         """Return list of LangChain tools for the given context.
 
         Args:
-            task_type: Task type (e.g., "chat", "completion", "assistant_converse")
+            task_type: Context label kept as the first argument for provider
+                compatibility. In the agent-only runtime this is the active
+                agent name.
             **kwargs: Additional context-specific parameters
 
         Returns:
@@ -197,10 +199,14 @@ async def load_tools_for_task(
     multimodal_support_model: Optional[str] = None,
     **kwargs,
 ) -> List[Any]:
-    """Load tools from specified providers for a task.
+    """Legacy compatibility helper for context-based tool loading.
+
+    WHY: Some providers still expose ``get_tools(task_type, ...)``. The
+    agent runtime should prefer :func:`load_tools_for_agent`, which forwards
+    the active agent name through the same first positional argument.
 
     Args:
-        task_type: Task type (e.g., "chat", "completion")
+        task_type: Legacy context label forwarded to provider ``get_tools``
         provider_names: List of provider names to load tools from
         allowed_tools: Optional allowlist of tool names
         model_multimodal: Whether the active model supports multimodal inputs.
@@ -290,7 +296,7 @@ async def load_tools_for_task(
             # Continue with other providers
 
     logger.info(
-        f"Loaded {len(all_tools)} tools for task '{task_type}' "
+        f"Loaded {len(all_tools)} tools for context '{task_type}' "
         f"from providers: {provider_names}"
     )
     return all_tools
@@ -308,8 +314,8 @@ async def load_tools_for_agent(
 ) -> List[Any]:
     """Load tools from specified providers for an agent.
 
-    See :func:`load_tools_for_task` for parameter semantics. ``agent_name``
-    replaces ``task_type`` and is forwarded to each provider's ``get_tools``.
+    ``agent_name`` is forwarded as the first positional argument to each
+    provider's ``get_tools`` method for backward compatibility.
     """
     all_tools = []
     seen_names = set()
@@ -323,7 +329,7 @@ async def load_tools_for_agent(
         provider = _tool_providers.get(provider_name)
         if provider is None:
             logger.warning(
-                f"Tool provider '{provider_name}' not found (referenced by task '{agent_name}'). "
+                f"Tool provider '{provider_name}' not found (referenced by agent '{agent_name}'). "
                 f"Skipping. Available providers: {list(_tool_providers.keys())}"
             )
             continue
@@ -334,7 +340,7 @@ async def load_tools_for_agent(
             )
             tools = await provider.get_tools(agent_name, **call_kwargs)
             logger.info(
-                f"Provider '{provider_name}' returned {len(tools)} tools for task '{agent_name}'"
+                f"Provider '{provider_name}' returned {len(tools)} tools for agent '{agent_name}'"
             )
 
             # Deduplicate tools by name
@@ -380,7 +386,7 @@ async def load_tools_for_agent(
             # Continue with other providers
 
     logger.info(
-        f"Loaded {len(all_tools)} tools for task '{agent_name}' "
+        f"Loaded {len(all_tools)} tools for agent '{agent_name}' "
         f"from providers: {provider_names}"
     )
     return all_tools

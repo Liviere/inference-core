@@ -357,14 +357,6 @@ conversation content clearly extends or corrects what is already stored.
 Only memories with a sufficiently strong similarity score are included in that
 prefetch context, so loosely related entries do not influence deduplication.
 
-## Migration Notes
-
-- Legacy chain-based endpoints remain untouched.
-- `agents_config.yaml` is loaded automatically on startup (override path with
-  `AGENTS_CONFIG_PATH`).
-- When enabling checkpointing per agent, ensure the configured database is
-  reachable from the API/Celery containers.
-
 ## Remote Execution (LangGraph Agent Server)
 
 Agents can be executed remotely via the [LangGraph Platform](https://docs.langchain.com/langsmith/agent-server) instead of running in-process. This is controlled per-agent in `llm_config.yaml`:

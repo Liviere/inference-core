@@ -42,33 +42,3 @@ def test_gpt5_reasoning_params_pass_through(mock_chat_openai, mock_normalize, fa
     assert passed_raw["verbosity"] == "high"
 
     assert model is not None
-
-
-def test_gpt5_legacy_param_rejected_in_service_completion(monkeypatch):
-    # Use real service to trigger ValueError when legacy param used with gpt-5
-    from inference_core.services.llm_service import LLMService
-
-    svc = LLMService()
-    # Patch chain factory to avoid hitting real LLM
-    from inference_core.llm import chains
-
-    class DummyChain:
-        model_name = "gpt-5"
-
-        async def completion(self, **_):
-            return "ok"
-
-    monkeypatch.setattr(
-        chains, "create_completion_chain", lambda model_name=None, **p: DummyChain()
-    )
-
-    with pytest.raises(ValueError):
-        import asyncio
-
-        asyncio.run(
-            svc.completion(
-                prompt="Q?",
-                model_name="gpt-5",
-                temperature=0.5,  # legacy should raise
-            )
-        )

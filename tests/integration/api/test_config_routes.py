@@ -45,7 +45,7 @@ class TestConfigRoutes:
         data = response.json()
         assert "options" in data
         assert "available_models" in data
-        assert "available_tasks" in data
+        assert "available_agents" in data
 
     async def test_set_user_preference(self, authenticated_client: AsyncClient):
         """Test setting a user preference."""
@@ -67,8 +67,6 @@ class TestConfigRoutes:
         assert response.status_code == 200
         data = response.json()
         assert "defaults" in data
-        assert "tasks" in data
-        # "agents" key should be present since we added agent support
         assert "agents" in data
 
     async def test_access_without_auth(self, async_test_client: AsyncClient):
