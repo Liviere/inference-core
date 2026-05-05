@@ -202,6 +202,24 @@ class TestBaseBatchProvider:
         assert self.provider.get_provider_name() == "mock_provider"
         assert self.provider.PROVIDER_NAME == "mock_provider"
 
+    def test_context_manager_closes_client(self):
+        """Provider context manager closes SDK clients on exit."""
+
+        class FakeClient:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        self.provider.client = client
+
+        with self.provider as provider:
+            assert provider is self.provider
+
+        assert client.closed is True
+
     def test_supports_model_contract(self):
         """Test supports_model method contract."""
         # Supported combinations

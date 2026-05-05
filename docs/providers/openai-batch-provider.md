@@ -52,6 +52,10 @@ batch:
 
 ## Usage
 
+`BaseBatchProvider` implements `close()` and the context-manager protocol, so
+scripts and custom jobs should prefer `with registry.create_provider(...) as
+provider:` to release SDK HTTP clients promptly.
+
 ### Basic Usage
 
 ```python
@@ -59,37 +63,36 @@ from inference_core.llm.batch import registry
 
 # Create provider instance
 config = {"api_key": "your-openai-api-key"}
-provider = registry.create_provider("openai", config)
-
-# Prepare batch items
-batch_items = [
-    {
-        "id": "request-1",
-        "input_payload": {
-            "messages": [{"role": "user", "content": "What is AI?"}],
-            "max_tokens": 100
+with registry.create_provider("openai", config) as provider:
+    # Prepare batch items
+    batch_items = [
+        {
+            "id": "request-1",
+            "input_payload": {
+                "messages": [{"role": "user", "content": "What is AI?"}],
+                "max_tokens": 100
+            }
+        },
+        {
+            "id": "request-2",
+            "input_payload": {
+                "messages": [{"role": "user", "content": "Explain quantum computing"}],
+                "max_tokens": 150
+            }
         }
-    },
-    {
-        "id": "request-2",
-        "input_payload": {
-            "messages": [{"role": "user", "content": "Explain quantum computing"}],
-            "max_tokens": 150
-        }
-    }
-]
+    ]
 
-# Process through the provider
-prepared = provider.prepare_payloads(batch_items, "gpt-4", "chat")
-submit_result = provider.submit(prepared)
-provider_batch_id = submit_result.provider_batch_id
+    # Process through the provider
+    prepared = provider.prepare_payloads(batch_items, "gpt-4", "chat")
+    submit_result = provider.submit(prepared)
+    provider_batch_id = submit_result.provider_batch_id
 
-# Poll for status
-status = provider.poll_status(provider_batch_id)
+    # Poll for status
+    status = provider.poll_status(provider_batch_id)
 
-# Fetch results when completed
-if status.normalized_status == "completed":
-    results = provider.fetch_results(provider_batch_id)
+    # Fetch results when completed
+    if status.normalized_status == "completed":
+        results = provider.fetch_results(provider_batch_id)
 ```
 
 ### Batch Item Format

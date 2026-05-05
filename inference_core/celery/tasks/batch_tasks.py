@@ -266,37 +266,34 @@ def batch_submit(self, job_id: str) -> Dict[str, Any]:
                 )
                 llm_config = get_llm_config()
 
-                # Build provider runtime config (merge general provider + batch model info)
-                provider_start_time = time.time()
-                provider_instance = registry.create_provider(
+                with registry.create_provider(
                     job.provider,
                     config=llm_config.get_provider_runtime_config(job.provider),
-                )
+                ) as provider_instance:
+                    # Prepare submission
+                    item_data = [
+                        {
+                            # Provider prepare_payloads expects an 'id' field
+                            "id": str(item.id),
+                            "sequence_index": item.sequence_index,
+                            "input_payload": item.input_payload,
+                        }
+                        for item in items
+                    ]
 
-                # Prepare submission
-                item_data = [
-                    {
-                        # Provider prepare_payloads expects an 'id' field
-                        "id": str(item.id),
-                        "sequence_index": item.sequence_index,
-                        "input_payload": item.input_payload,
-                    }
-                    for item in items
-                ]
+                    prepared_submission = provider_instance.prepare_payloads(
+                        batch_items=item_data,
+                        model=job.model,
+                        mode=job.mode,
+                        config=job.config_json,
+                    )
 
-                prepared_submission = provider_instance.prepare_payloads(
-                    batch_items=item_data,
-                    model=job.model,
-                    mode=job.mode,
-                    config=job.config_json,
-                )
+                    # Submit to provider using decorator for automatic timing
+                    @time_provider_operation(provider, "submit")
+                    def submit_batch():
+                        return provider_instance.submit(prepared_submission)
 
-                # Submit to provider using decorator for automatic timing
-                @time_provider_operation(provider, "submit")
-                def submit_batch():
-                    return provider_instance.submit(prepared_submission)
-
-                submit_result = submit_batch()
+                    submit_result = submit_batch()
 
                 batch_logger.info(
                     f"Provider submission completed for job {job_id}",
@@ -628,18 +625,18 @@ def batch_poll(self) -> Dict[str, Any]:
                         )
                         llm_config = get_llm_config()
 
-                        # Get provider instance
-                        provider_instance = registry.create_provider(
+                        with registry.create_provider(
                             job.provider,
                             config=llm_config.get_provider_runtime_config(job.provider),
-                        )
+                        ) as provider_instance:
+                            # Poll provider status using decorator for automatic timing
+                            @time_provider_operation(provider, "poll")
+                            def poll_batch_status():
+                                return provider_instance.poll_status(
+                                    job.provider_batch_id
+                                )
 
-                        # Poll provider status using decorator for automatic timing
-                        @time_provider_operation(provider, "poll")
-                        def poll_batch_status():
-                            return provider_instance.poll_status(job.provider_batch_id)
-
-                        provider_status = poll_batch_status()
+                            provider_status = poll_batch_status()
 
                         jobs_polled += 1
                         provider_stats[provider]["polled"] += 1
@@ -983,18 +980,16 @@ def batch_fetch(self, job_id: str) -> Dict[str, Any]:
 
                 llm_config = get_llm_config()
 
-                # Get provider instance
-                provider_instance = registry.create_provider(
+                with registry.create_provider(
                     job.provider,
                     config=llm_config.get_provider_runtime_config(job.provider),
-                )
+                ) as provider_instance:
+                    # Fetch results from provider using decorator for automatic timing
+                    @time_provider_operation(provider, "fetch")
+                    def fetch_batch_results():
+                        return provider_instance.fetch_results(job.provider_batch_id)
 
-                # Fetch results from provider using decorator for automatic timing
-                @time_provider_operation(provider, "fetch")
-                def fetch_batch_results():
-                    return provider_instance.fetch_results(job.provider_batch_id)
-
-                results = fetch_batch_results()
+                    results = fetch_batch_results()
 
                 batch_logger.info(
                     f"Fetched {len(results)} results from provider",

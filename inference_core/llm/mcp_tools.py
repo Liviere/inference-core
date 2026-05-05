@@ -12,6 +12,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from inference_core.core.resource_lifecycle import close_resource
 from inference_core.llm.config import MCPConfig, MCPProfileConfig, get_llm_config
 
 logger = logging.getLogger(__name__)
@@ -226,8 +227,7 @@ class MCPToolManager:
         """Close the MCP client and cleanup resources."""
         if self._client is not None:
             try:
-                # MultiServerMCPClient doesn't have an explicit close method
-                # but we can clean up our reference
+                await close_resource(self._client, label="mcp_tool_manager.client")
                 self._client = None
                 logger.info("MCP client closed")
             except Exception as e:
@@ -271,3 +271,16 @@ def get_mcp_tool_manager() -> MCPToolManager:
     if _mcp_tool_manager is None:
         _mcp_tool_manager = MCPToolManager()
     return _mcp_tool_manager
+
+
+async def close_mcp_tool_manager() -> None:
+    """Close the global MCP tool manager if it was initialized.
+
+    WHY: Shutdown hooks should release MCP transports without constructing a
+    manager in deployments where MCP was never used.
+    """
+    global _mcp_tool_manager
+    if _mcp_tool_manager is None:
+        return
+    await _mcp_tool_manager.close()
+    _mcp_tool_manager = None

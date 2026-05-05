@@ -36,6 +36,23 @@ _loop_thread: threading.Thread | None = (
 )
 
 
+async def _shutdown_mcp_clients() -> None:
+    """Close MCP clients if a worker initialized them.
+
+    WHY: Agent tasks can load MCP tools inside Celery.  Worker shutdown must
+    release HTTP/SSE/WebSocket transports and stdio process handles before the
+    process exits or the thread loop is closed.
+    """
+    try:
+        from inference_core.agents.agent_mcp_tools import close_agent_mcp_manager
+        from inference_core.llm.mcp_tools import close_mcp_tool_manager
+
+        await close_agent_mcp_manager()
+        await close_mcp_tool_manager()
+    except Exception:  # pragma: no cover - shutdown best effort
+        pass
+
+
 def _setup_celery_file_logging() -> None:
     """Attach a rotating JSON file handler for ``logs/celery.log`` to the root logger.
 
@@ -72,8 +89,7 @@ def _on_worker_process_init(**_):
     global _worker_loop
     # Reset cached Redis clients (created pre-fork)
     try:
-        redis_client.get_redis.cache_clear()  # type: ignore[attr-defined]
-        redis_client.get_sync_redis.cache_clear()  # type: ignore[attr-defined]
+        redis_client.reset_redis_clients()
     except Exception:  # pragma: no cover - defensive
         pass
 
@@ -107,14 +123,9 @@ def _on_worker_process_shutdown(**_):
                 await db_connection.close_database()
             except Exception:  # pragma: no cover
                 pass
-            # Close async Redis if supported
+            await _shutdown_mcp_clients()
             try:
-                r = redis_client.get_redis()
-                await r.close()  # type: ignore[attr-defined]
-                # For redis-py 5.x also: await r.connection_pool.disconnect()
-                pool = getattr(r, "connection_pool", None)
-                if pool and hasattr(pool, "disconnect"):
-                    await pool.disconnect()  # type: ignore
+                await redis_client.close_redis_clients()
             except Exception:  # pragma: no cover
                 pass
 
@@ -155,8 +166,7 @@ def _on_worker_init(sender=None, **_):
 
     # Reset cached Redis clients (may have been created at import time)
     try:
-        redis_client.get_redis.cache_clear()  # type: ignore[attr-defined]
-        redis_client.get_sync_redis.cache_clear()  # type: ignore[attr-defined]
+        redis_client.reset_redis_clients()
     except Exception:  # pragma: no cover - defensive
         pass
 
@@ -201,12 +211,9 @@ def _on_worker_shutdown(sender=None, **_):
                 await db_connection.close_database()
             except Exception:  # pragma: no cover
                 pass
+            await _shutdown_mcp_clients()
             try:
-                r = redis_client.get_redis()
-                await r.close()  # type: ignore[attr-defined]
-                pool = getattr(r, "connection_pool", None)
-                if pool and hasattr(pool, "disconnect"):
-                    await pool.disconnect()  # type: ignore
+                await redis_client.close_redis_clients()
             except Exception:  # pragma: no cover
                 pass
 

@@ -8,6 +8,8 @@ Provides the strategy pattern for pluggable provider implementations.
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
+from inference_core.core.resource_lifecycle import close_resource_sync
+
 from ..dto import (
     PreparedSubmission,
     ProviderResultRow,
@@ -163,3 +165,26 @@ class BaseBatchProvider(ABC):
             True if configuration is valid, False otherwise
         """
         return True
+
+    def close(self) -> None:
+        """Close provider-owned SDK clients if the implementation has them.
+
+        WHY: Batch jobs create provider instances in Celery/API paths.  SDK
+        clients often own HTTP pools, so provider operations need an explicit
+        cleanup boundary instead of relying on garbage collection.
+        """
+        close_resource_sync(
+            [
+                getattr(self, "client", None),
+                getattr(self, "async_client", None),
+                getattr(self, "_client", None),
+                getattr(self, "_async_client", None),
+            ],
+            label=f"batch_provider.{self.PROVIDER_NAME}",
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()

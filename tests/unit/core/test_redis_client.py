@@ -5,12 +5,19 @@ Tests Redis connection management and health check functionality.
 """
 
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import redis.asyncio as aioredis
 
-from inference_core.core.redis_client import ensure_redis_connection, get_redis
+from inference_core.core.redis_client import (
+    close_redis_clients,
+    ensure_redis_connection,
+    get_redis,
+    get_sync_redis,
+    reset_redis_clients,
+)
 
 
 class TestGetRedis:
@@ -24,6 +31,7 @@ class TestGetRedis:
         get_settings.cache_clear()
         # Clear the LRU cache for get_redis
         get_redis.cache_clear()
+        get_sync_redis.cache_clear()
 
     @patch("inference_core.core.redis_client.get_settings")
     @patch("redis.asyncio.from_url")
@@ -92,6 +100,7 @@ class TestEnsureRedisConnection:
 
         get_settings.cache_clear()
         get_redis.cache_clear()
+        get_sync_redis.cache_clear()
 
     @patch("inference_core.core.redis_client.get_redis")
     @pytest.mark.asyncio
@@ -197,6 +206,7 @@ class TestRedisClientIntegration:
 
         get_settings.cache_clear()
         get_redis.cache_clear()
+        get_sync_redis.cache_clear()
 
     @patch("redis.asyncio.from_url")
     @pytest.mark.asyncio
@@ -270,3 +280,78 @@ class TestRedisClientIntegration:
 
         # ping should be called for each health check
         assert mock_redis.ping.call_count == 3
+
+
+class TestRedisLifecycle:
+    """Test explicit Redis client cleanup helpers."""
+
+    def setup_method(self):
+        """Reset cached clients before each cleanup test."""
+        get_redis.cache_clear()
+        get_sync_redis.cache_clear()
+
+    def teardown_method(self):
+        """Leave no cached clients behind for later tests."""
+        get_redis.cache_clear()
+        get_sync_redis.cache_clear()
+
+    @patch("inference_core.core.redis_client.get_settings")
+    @patch("redis.from_url")
+    @patch("redis.asyncio.from_url")
+    @pytest.mark.asyncio
+    async def test_close_redis_clients_closes_cached_async_and_sync_clients(
+        self,
+        mock_async_from_url,
+        mock_sync_from_url,
+        mock_get_settings,
+    ):
+        """Cached async and sync clients are closed before caches are cleared."""
+        async_pool = SimpleNamespace(disconnect=AsyncMock())
+        async_client = SimpleNamespace(close=AsyncMock(), connection_pool=async_pool)
+        sync_pool = SimpleNamespace(disconnect=MagicMock())
+        sync_client = SimpleNamespace(close=MagicMock(), connection_pool=sync_pool)
+
+        mock_settings = MagicMock(redis_url="redis://localhost:6379/0")
+        mock_get_settings.return_value = mock_settings
+        mock_async_from_url.return_value = async_client
+        mock_sync_from_url.return_value = sync_client
+
+        assert get_redis() is async_client
+        assert get_sync_redis() is sync_client
+
+        await close_redis_clients()
+
+        async_client.close.assert_awaited_once()
+        async_pool.disconnect.assert_awaited_once()
+        sync_client.close.assert_called_once()
+        sync_pool.disconnect.assert_called_once()
+        assert get_redis.cache_info().currsize == 0
+        assert get_sync_redis.cache_info().currsize == 0
+
+    @patch("inference_core.core.redis_client.get_settings")
+    @patch("redis.from_url")
+    @patch("redis.asyncio.from_url")
+    def test_reset_redis_clients_closes_clients_from_sync_hooks(
+        self,
+        mock_async_from_url,
+        mock_sync_from_url,
+        mock_get_settings,
+    ):
+        """Celery sync signal hooks can close both Redis client types."""
+        async_client = SimpleNamespace(close=AsyncMock(), connection_pool=None)
+        sync_client = SimpleNamespace(close=MagicMock(), connection_pool=None)
+
+        mock_settings = MagicMock(redis_url="redis://localhost:6379/0")
+        mock_get_settings.return_value = mock_settings
+        mock_async_from_url.return_value = async_client
+        mock_sync_from_url.return_value = sync_client
+
+        get_redis()
+        get_sync_redis()
+
+        reset_redis_clients()
+
+        async_client.close.assert_awaited_once()
+        sync_client.close.assert_called_once()
+        assert get_redis.cache_info().currsize == 0
+        assert get_sync_redis.cache_info().currsize == 0

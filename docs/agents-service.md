@@ -166,22 +166,27 @@ LangGraph bookkeeping events before returning control. Set
 `graceful_cancel=False` only if you prefer an immediate hard close and accept a
 failed LangSmith trace for that run.
 
+When you call `AgentService` from an async request handler or background
+coroutine, prefer `async with AgentService(...) as service:` or call
+`await service.aclose()` in a `finally` block. This ensures model, MCP, and
+tool-provider clients are released as soon as the run finishes.
+
 ```python
 from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agents_service import AgentService
 
-service = AgentService(agent_name="my_agent")
-await service.create_agent()
+async with AgentService(agent_name="my_agent") as service:
+    await service.create_agent()
 
-try:
-  response = await service.arun_agent_steps(
-    "Summarize the latest release notes",
-    cancel_check=lambda: should_stop,
-    graceful_cancel=True,
-  )
-except AgentCancelled:
-  # Partial usage logs for completed model calls are already persisted.
-  response = None
+    try:
+        response = await service.arun_agent_steps(
+            "Summarize the latest release notes",
+            cancel_check=lambda: should_stop,
+            graceful_cancel=True,
+        )
+    except AgentCancelled:
+        # Partial usage logs for completed model calls are already persisted.
+        response = None
 ```
 
 ## Token Streaming
@@ -212,18 +217,16 @@ When a token or step originates from a subgraph, the callback metadata carries
 ```python
 from inference_core.services.agents_service import AgentService
 
-service = AgentService(agent_name="my_agent")
-await service.create_agent()
-
-
 def handle_token(text: str, meta: dict[str, str]) -> None:
-    print(meta.get("type"), meta.get("node"), text)
+  print(meta.get("type"), meta.get("node"), text)
 
 
-response = await service.arun_agent_steps(
+async with AgentService(agent_name="my_agent") as service:
+  await service.create_agent()
+  response = await service.arun_agent_steps(
     "Research the latest LangChain agent changes",
     on_token=handle_token,
-)
+  )
 ```
 
 ## Custom LangGraph Orchestration
@@ -288,13 +291,13 @@ Enable memory when creating an agent:
 ```python
 from inference_core.services.agents_service import AgentService
 
-service = AgentService(
-    agent_name="my_agent",
-    enable_memory=True,  # Adds memory tools + middleware
-    user_id=user_uuid,   # Required for memory namespace
-)
-await service.create_agent()
-response = service.run_agent_steps("Hello, I prefer dark mode UI")
+async with AgentService(
+  agent_name="my_agent",
+  enable_memory=True,  # Adds memory tools + middleware
+  user_id=user_uuid,   # Required for memory namespace
+) as service:
+  await service.create_agent()
+  response = await service.arun_agent_steps("Hello, I prefer dark mode UI")
 ```
 
 ### Memory Tools

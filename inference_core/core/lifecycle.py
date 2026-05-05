@@ -11,12 +11,14 @@ startup / shutdown. Consolidating this logic here avoids duplication and
 keeps `main_factory` focused on assembling the ASGI app.
 """
 
-import inspect
 import logging
 from typing import Any, Dict
 
 from inference_core.core.config import Settings
-from inference_core.core.redis_client import ensure_redis_connection, get_redis
+from inference_core.core.redis_client import (
+    close_redis_clients,
+    ensure_redis_connection,
+)
 from inference_core.database.sql.connection import (
     close_database,
     create_tables,
@@ -149,30 +151,32 @@ async def shutdown_resources(settings: Settings) -> None:
         except Exception as e:  # pragma: no cover
             logger.error(f"❌ Failed to close database connections: {e}")
 
+    await _shutdown_mcp_clients()
     await _shutdown_redis()
+
+
+async def _shutdown_mcp_clients() -> None:
+    """Close MCP clients if MCP managers were initialized.
+
+    WHY: MCP transports can be HTTP/SSE/WebSocket sessions or stdio child
+    processes.  Shutdown should release them explicitly without creating new
+    managers in deployments that never used MCP.
+    """
+    try:
+        from inference_core.agents.agent_mcp_tools import close_agent_mcp_manager
+        from inference_core.llm.mcp_tools import close_mcp_tool_manager
+
+        await close_agent_mcp_manager()
+        await close_mcp_tool_manager()
+        logger.info("✅ MCP clients closed (or no-op)")
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"⚠️ Failed to close MCP clients: {e}")
 
 
 async def _shutdown_redis() -> None:
     """Close Redis client if possible (best-effort, silent on failure)."""
     try:
-        rc = get_redis()
-        close_method = getattr(rc, "close", None)
-        if callable(close_method):
-            maybe = close_method()
-            if inspect.isawaitable(maybe):  # type: ignore[arg-type]
-                try:
-                    await maybe  # type: ignore[misc]
-                except Exception:  # pragma: no cover
-                    pass
-        # Optionally disconnect pool (redis-py 5.x async pool has disconnect())
-        pool = getattr(rc, "connection_pool", None)
-        if pool and hasattr(pool, "disconnect"):
-            try:
-                res = pool.disconnect()
-                if inspect.isawaitable(res):  # type: ignore[arg-type]
-                    await res  # type: ignore[misc]
-            except Exception:  # pragma: no cover
-                pass
+        await close_redis_clients()
         logger.info("✅ Redis client closed (or no-op)")
     except Exception:  # pragma: no cover
         # Silent by design; Redis cleanup shouldn't block shutdown

@@ -12,6 +12,12 @@ The batch processing framework now supports three providers:
 
 All providers implement the same `BaseBatchProvider` interface, providing consistent batch processing capabilities across different LLM providers.
 
+`BaseBatchProvider` instances now support explicit cleanup via `close()` and
+the context-manager protocol. Prefer
+`with registry.create_provider(...) as provider:` in scripts, admin jobs, and
+custom tasks so SDK HTTP clients are released promptly after submit, poll,
+fetch, or cancel operations.
+
 ## Configuration
 
 ### Environment Variables
@@ -40,7 +46,8 @@ from inference_core.llm.batch import registry
 print(registry.list())  # ['openai', 'gemini', 'claude']
 
 # Create a provider instance
-provider = registry.create_provider("gemini", {"api_key": "your_key"})
+with registry.create_provider("gemini", {"api_key": "your_key"}) as provider:
+    print(provider.supports_model("gemini-2.0-flash", "chat"))
 ```
 
 ## Supported Models
@@ -129,64 +136,66 @@ provider = registry.create_provider("gemini", {"api_key": "your_key"})
 ```python
 from inference_core.llm.batch import registry
 
-# Create provider
-provider = registry.create_provider("gemini", {"api_key": "your_key"})
+with registry.create_provider("gemini", {"api_key": "your_key"}) as provider:
+    # Check model support
+    if provider.supports_model("gemini-2.0-flash", "chat"):
+        print("Model supported!")
 
-# Check model support
-if provider.supports_model("gemini-2.0-flash", "chat"):
-    print("Model supported!")
-
-# Prepare batch items
-batch_items = [
-    {
-        "id": "item_1",
-        "input_payload": {
-            "messages": [{"role": "user", "content": "Explain AI"}]
+    # Prepare batch items
+    batch_items = [
+        {
+            "id": "item_1",
+            "input_payload": {
+                "messages": [{"role": "user", "content": "Explain AI"}]
+            }
+        },
+        {
+            "id": "item_2",
+            "input_payload": {
+                "content": "What is machine learning?"
+            }
         }
-    },
-    {
-        "id": "item_2",
-        "input_payload": {
-            "content": "What is machine learning?"
-        }
-    }
-]
+    ]
 
-# Prepare payloads
-prepared = provider.prepare_payloads(batch_items, "gemini-2.0-flash", "chat")
+    # Prepare payloads
+    prepared = provider.prepare_payloads(batch_items, "gemini-2.0-flash", "chat")
 
-# Submit batch
-result = provider.submit(prepared)
-print(f"Batch ID: {result.provider_batch_id}")
-print(f"Status: {result.status}")
-print(f"Items: {result.item_count}")
+    # Submit batch
+    result = provider.submit(prepared)
+    print(f"Batch ID: {result.provider_batch_id}")
+    print(f"Status: {result.status}")
+    print(f"Items: {result.item_count}")
 ```
 
 ### Polling and Results
 
 ```python
 import time
+from inference_core.llm.batch import registry
 
-# Poll status until completion
-while True:
-    status = provider.poll_status(result.provider_batch_id)
-    print(f"Status: {status.normalized_status}")
+provider_batch_id = result.provider_batch_id  # From the submission step above
 
-    if status.normalized_status in ["completed", "failed", "cancelled"]:
-        break
+with registry.create_provider("gemini", {"api_key": "your_key"}) as provider:
+    # Poll status until completion
+    while True:
+        status = provider.poll_status(provider_batch_id)
+        print(f"Status: {status.normalized_status}")
 
-    time.sleep(30)  # Wait 30 seconds
+        if status.normalized_status in ["completed", "failed", "cancelled"]:
+            break
 
-# Fetch results when completed
-if status.normalized_status == "completed":
-    results = provider.fetch_results(result.provider_batch_id)
+        time.sleep(30)  # Wait 30 seconds
 
-    for result_row in results:
-        print(f"Item {result_row.custom_id}:")
-        if result_row.is_success:
-            print(f"  Output: {result_row.output_text}")
-        else:
-            print(f"  Error: {result_row.error_message}")
+    # Fetch results when completed
+    if status.normalized_status == "completed":
+        results = provider.fetch_results(provider_batch_id)
+
+        for result_row in results:
+            print(f"Item {result_row.custom_id}:")
+            if result_row.is_success:
+                print(f"  Output: {result_row.output_text}")
+            else:
+                print(f"  Error: {result_row.error_message}")
 ```
 
 ### Provider-Specific Examples
@@ -234,6 +243,9 @@ Both providers follow consistent error handling patterns:
 - Temporary service unavailability
 - Network timeouts
 - HTTP 429, 502, 503 errors
+
+The examples below assume `provider` was opened in a surrounding
+`with registry.create_provider(...) as provider:` block.
 
 ```python
 from inference_core.llm.batch.exceptions import ProviderTransientError
@@ -422,9 +434,9 @@ batch_items = [
     for i, item in enumerate(items)
 ]
 
-provider = registry.create_provider("claude", {"api_key": "your_key"})
-prepared = provider.prepare_payloads(batch_items, "claude-3.5-sonnet", "chat")
-result = provider.submit(prepared)
+with registry.create_provider("claude", {"api_key": "your_key"}) as provider:
+    prepared = provider.prepare_payloads(batch_items, "claude-3.5-sonnet", "chat")
+    result = provider.submit(prepared)
 
 # Poll and fetch results...
 ```

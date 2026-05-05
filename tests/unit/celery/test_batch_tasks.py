@@ -55,6 +55,7 @@ class TestBatchSubmitTask:
             mock_provider.submit.return_value = MagicMock(
                 provider_batch_id="batch_123", submitted_at=datetime.now(), item_count=1
             )
+            mock_provider.__enter__.return_value = mock_provider
 
             registry = mock_get_global_registry.return_value
             registry.create_provider.return_value = mock_provider
@@ -158,6 +159,7 @@ class TestBatchFetchTask:
                     output_text="Success text",
                 )
             ]
+            mock_provider.__enter__.return_value = mock_provider
             registry = mock_get_global_registry.return_value
             registry.create_provider.return_value = mock_provider
 

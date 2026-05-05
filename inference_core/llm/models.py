@@ -18,6 +18,8 @@ from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from inference_core.core.resource_lifecycle import close_resource, close_resource_sync
+
 from .chat_fireworks import ChatFireworksReasoning
 from .config import LLMConfig, ModelConfig, ModelProvider
 from .param_policy import normalize_params
@@ -31,6 +33,7 @@ class LLMModelFactory:
     def __init__(self, config: LLMConfig):
         self.config = config
         self._model_cache: Dict[str, BaseChatModel] = {}
+        self._created_models: Dict[int, BaseChatModel] = {}
 
     def create_model(self, model_name: str, **kwargs) -> Optional[BaseChatModel]:
         """
@@ -86,6 +89,9 @@ class LLMModelFactory:
                         setattr(model, "stream_usage", True)
                 except Exception:
                     logger.debug("Failed to set streaming attributes on model instance")
+
+            if model:
+                self._remember_model(model)
 
             if model and self.config.enable_caching:
                 self._model_cache[cache_key] = model
@@ -335,10 +341,37 @@ class LLMModelFactory:
             available_models[model_name] = self.config.is_model_available(model_name)
         return available_models
 
-    def clear_cache(self):
-        """Clear the model cache"""
+    def _remember_model(self, model: BaseChatModel) -> None:
+        """Remember every created model so non-cached instances are still closed.
+
+        WHY: Some request paths disable caching or include callback-specific
+        kwargs in cache keys.  Those model instances still own provider clients
+        and must participate in explicit resource cleanup.
+        """
+        self._created_models[id(model)] = model
+
+    async def aclose(self) -> None:
+        """Close models created by this factory and clear all caches.
+
+        WHY: LangChain chat models can wrap SDK HTTP clients.  Closing the
+        factory at request/shutdown boundaries prevents those clients from
+        lingering until garbage collection.
+        """
+        await close_resource(list(self._created_models.values()), label="llm_models")
         self._model_cache.clear()
-        logger.info("Model cache cleared")
+        self._created_models.clear()
+        logger.info("Model factory resources closed")
+
+    def close(self) -> None:
+        """Synchronously close models created by this factory."""
+        close_resource_sync(list(self._created_models.values()), label="llm_models")
+        self._model_cache.clear()
+        self._created_models.clear()
+        logger.info("Model factory resources closed")
+
+    def clear_cache(self):
+        """Close cached model resources before clearing factory state."""
+        self.close()
 
     def get_agent_model_name(self, agent_name: BaseChatModel) -> Optional[str]:
         """Get the preferred model name for a specific agent"""

@@ -512,6 +512,7 @@ def poll_imap_task(
     """
     start_time = time.time()
     task_id = current_task.request.id if current_task else "unknown"
+    imap_service = None
 
     try:
         from inference_core.services.imap_service import get_imap_service
@@ -641,6 +642,12 @@ def poll_imap_task(
             raise self.retry(exc=e)
 
         raise ImapPollError(f"IMAP poll failed: {e}")
+    finally:
+        if imap_service is not None:
+            try:
+                imap_service.close_all()
+            except Exception:
+                logger.debug("Failed to close IMAP service", exc_info=True)
 
 
 @celery_app.task(
@@ -671,6 +678,7 @@ def poll_all_imap_accounts_task(
     """
     start_time = time.time()
     task_id = current_task.request.id if current_task else "unknown"
+    imap_service = None
 
     try:
         from inference_core.services.imap_service import get_imap_service
@@ -739,6 +747,12 @@ def poll_all_imap_accounts_task(
     except Exception as e:
         logger.error("Failed to poll all IMAP accounts: %s", e)
         raise
+    finally:
+        if imap_service is not None:
+            try:
+                imap_service.close_all()
+            except Exception:
+                logger.debug("Failed to close IMAP service", exc_info=True)
 
 
 def _is_imap_retryable_error(error: Exception) -> bool:

@@ -10,7 +10,7 @@ the constructor's dependencies or by testing individual methods on a pre-built i
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,6 +38,7 @@ def _make_agent_service(**overrides):
     mock_model = MagicMock()
     mock_model_factory.get_agent_model_name.return_value = "gpt-4o"
     mock_model_factory.get_model_for_agent.return_value = mock_model
+    mock_model_factory.aclose = AsyncMock()
     mock_model_factory.config.get_specific_agent_config.return_value = MagicMock(
         local_tool_providers=[],
         mcp_profile=None,
@@ -499,6 +500,17 @@ class TestContextManager:
         agent_service._exit_stack = MagicMock()
         agent_service.close()
         agent_service._exit_stack.close.assert_called_once()
+        agent_service._mock_model_factory.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_aclose_calls_exit_stack_and_model_factory(self, agent_service):
+        """aclose() awaits model factory cleanup after closing context resources."""
+        agent_service._exit_stack = MagicMock()
+
+        await agent_service.aclose()
+
+        agent_service._exit_stack.close.assert_called_once()
+        agent_service._mock_model_factory.aclose.assert_awaited_once()
 
     def test_context_manager_protocol(self, agent_service):
         """AgentService works with `with` statement."""
@@ -506,6 +518,18 @@ class TestContextManager:
         with agent_service as svc:
             assert svc is agent_service
         agent_service._exit_stack.close.assert_called_once()
+        agent_service._mock_model_factory.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_context_manager_protocol(self, agent_service):
+        """AgentService supports async context cleanup in async routes."""
+        agent_service._exit_stack = MagicMock()
+
+        async with agent_service as svc:
+            assert svc is agent_service
+
+        agent_service._exit_stack.close.assert_called_once()
+        agent_service._mock_model_factory.aclose.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

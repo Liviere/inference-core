@@ -443,7 +443,12 @@ async def cancel_batch_job(
             try:
                 # Import provider registry to get provider
                 provider = registry.create_provider(job.provider)
-                cancelled_with_provider = provider.cancel(job.provider_batch_id)
+                try:
+                    cancelled_with_provider = provider.cancel(job.provider_batch_id)
+                finally:
+                    close_method = getattr(provider, "close", None)
+                    if callable(close_method):
+                        close_method()
 
                 logger.info(
                     f"Provider cancellation for job {job_id}: {cancelled_with_provider}"

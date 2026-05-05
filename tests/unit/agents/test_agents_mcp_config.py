@@ -155,6 +155,26 @@ class TestAgentMCPToolManager:
             # Verify new client was created
             assert MockClient.called
 
+    @pytest.mark.asyncio
+    async def test_close_closes_cached_clients(self, mock_config):
+        """close() releases all cached profile clients."""
+
+        class FakeClient:
+            def __init__(self):
+                self.closed = False
+
+            async def aclose(self):
+                self.closed = True
+
+        manager = AgentMCPToolManager()
+        client = FakeClient()
+        manager._clients["test"] = client
+
+        await manager.close()
+
+        assert client.closed is True
+        assert manager._clients == {}
+
 
 class TestAgentServiceMCP:
     """Test AgentService MCP integration"""
@@ -195,13 +215,16 @@ class TestAgentServiceMCP:
             request_id="request-123",
         )
 
-        with patch(
-            "inference_core.services.agents_service.get_registered_providers",
-            return_value={"test_provider": MagicMock()},
-        ), patch(
-            "inference_core.services.agents_service.load_tools_for_agent",
-            new=AsyncMock(return_value=[]),
-        ) as mock_loader:
+        with (
+            patch(
+                "inference_core.services.agents_service.get_registered_providers",
+                return_value={"test_provider": MagicMock()},
+            ),
+            patch(
+                "inference_core.services.agents_service.load_tools_for_agent",
+                new=AsyncMock(return_value=[]),
+            ) as mock_loader,
+        ):
             await service._load_providers_tools(
                 user_context={"tenant_id": "tenant-1", "user_id": "custom-user"}
             )
@@ -232,13 +255,16 @@ class TestAgentServiceMCP:
             request_id="request-abc",
         )
 
-        with patch(
-            "inference_core.services.agents_service.get_registered_providers",
-            return_value={"test_provider": MagicMock()},
-        ), patch(
-            "inference_core.services.agents_service.load_tools_for_agent",
-            new=AsyncMock(return_value=[]),
-        ) as mock_loader:
+        with (
+            patch(
+                "inference_core.services.agents_service.get_registered_providers",
+                return_value={"test_provider": MagicMock()},
+            ),
+            patch(
+                "inference_core.services.agents_service.load_tools_for_agent",
+                new=AsyncMock(return_value=[]),
+            ) as mock_loader,
+        ):
             await service._load_providers_tools(user_context={})
 
             mock_loader.assert_awaited_once()

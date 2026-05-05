@@ -238,6 +238,28 @@ class TestMCPToolManager:
             assert pw_config["headers"] == {"Authorization": "Bearer token"}
 
     @pytest.mark.asyncio
+    async def test_close_delegates_to_client_close(self):
+        """close() releases the underlying MCP client before clearing state."""
+
+        class FakeClient:
+            def __init__(self):
+                self.closed = False
+
+            async def aclose(self):
+                self.closed = True
+
+        manager = MCPToolManager(mcp_config=MCPConfig(enabled=True))
+        client = FakeClient()
+        manager._client = client
+        manager._initialized = True
+
+        await manager.close()
+
+        assert client.closed is True
+        assert manager._client is None
+        assert manager._initialized is False
+
+    @pytest.mark.asyncio
     async def test_initialize_client_missing_command_for_stdio(self):
         """Test client initialization with stdio server missing command"""
         config = MCPConfig(

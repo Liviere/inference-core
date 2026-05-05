@@ -12,8 +12,10 @@ from celery.exceptions import Retry
 
 from inference_core.celery.tasks.email_tasks import (
     EmailTaskError,
+    ImapPollError,
     _is_retryable_error,
     encode_attachment,
+    poll_imap_task,
     send_email_async,
     send_email_task,
 )
@@ -483,3 +485,41 @@ class TestImapProcessedUidTracking:
         result = get_processed_ttl_seconds()
 
         assert result == IMAP_PROCESSED_TTL_SECONDS_DEFAULT
+
+
+class TestPollImapTaskLifecycle:
+    """Test IMAP polling resource cleanup."""
+
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_poll_imap_task_closes_service_on_success(self, mock_get_service):
+        """poll_imap_task closes the local IMAP service after a successful poll."""
+        mock_service = MagicMock()
+        mock_service.fetch_unseen_emails.return_value = []
+        mock_get_service.return_value = mock_service
+
+        result = poll_imap_task(
+            host_alias="primary",
+            folder="INBOX",
+            limit=5,
+            skip_processed=False,
+        )
+
+        assert result["status"] == "success"
+        mock_service.close_all.assert_called_once()
+
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_poll_imap_task_closes_service_on_failure(self, mock_get_service):
+        """poll_imap_task closes the local IMAP service when polling fails."""
+        mock_service = MagicMock()
+        mock_service.fetch_unseen_emails.side_effect = ValueError("bad message")
+        mock_get_service.return_value = mock_service
+
+        with pytest.raises(ImapPollError):
+            poll_imap_task(
+                host_alias="primary",
+                folder="INBOX",
+                limit=5,
+                skip_processed=False,
+            )
+
+        mock_service.close_all.assert_called_once()

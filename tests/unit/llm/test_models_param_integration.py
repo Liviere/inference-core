@@ -452,3 +452,50 @@ class TestProviderSpecificParameterHandling:
         assert "request_timeout" not in call_kwargs
         assert "frequency_penalty" not in call_kwargs
         assert "presence_penalty" not in call_kwargs
+
+
+class TestLLMModelFactoryLifecycle:
+    """Test model factory resource cleanup."""
+
+    def test_close_closes_tracked_models(self):
+        """close() releases model instances even when they were not cached."""
+
+        class FakeModel:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        mock_config = MagicMock(enable_caching=False)
+        factory = LLMModelFactory(mock_config)
+        model = FakeModel()
+        factory._remember_model(model)
+
+        factory.close()
+
+        assert model.closed is True
+        assert factory._created_models == {}
+        assert factory._model_cache == {}
+
+    @pytest.mark.asyncio
+    async def test_aclose_closes_tracked_async_models(self):
+        """aclose() awaits async model cleanup hooks."""
+
+        class FakeAsyncModel:
+            def __init__(self):
+                self.closed = False
+
+            async def aclose(self):
+                self.closed = True
+
+        mock_config = MagicMock(enable_caching=False)
+        factory = LLMModelFactory(mock_config)
+        model = FakeAsyncModel()
+        factory._remember_model(model)
+
+        await factory.aclose()
+
+        assert model.closed is True
+        assert factory._created_models == {}
+        assert factory._model_cache == {}

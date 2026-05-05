@@ -890,13 +890,42 @@ class AgentService:
             middleware.append(ct)
 
     def close(self) -> None:
-        self._exit_stack.close()
+        try:
+            self._exit_stack.close()
+        finally:
+            close_method = getattr(self.model_factory, "close", None)
+            if callable(close_method):
+                close_method()
+
+    async def aclose(self) -> None:
+        """Close resources owned by this agent run.
+
+        WHY: API routes execute agents inside async request handlers.  An async
+        close path lets LLM/provider clients expose ``aclose()`` without being
+        forced through a synchronous cleanup bridge.
+        """
+        try:
+            self._exit_stack.close()
+        finally:
+            async_close_method = getattr(self.model_factory, "aclose", None)
+            if callable(async_close_method):
+                await async_close_method()
+            else:
+                close_method = getattr(self.model_factory, "close", None)
+                if callable(close_method):
+                    close_method()
 
     def __enter__(self) -> "AgentService":
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
+
+    async def __aenter__(self) -> "AgentService":
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        await self.aclose()
 
     def _get_checkpointer(self):
         """Initialize and return a checkpointer for the agent."""

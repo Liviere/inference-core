@@ -5,6 +5,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.tools.structured import StructuredTool
 
 from inference_core.celery.async_utils import run_async_safely
+from inference_core.core.resource_lifecycle import close_resource
 from inference_core.llm.config import get_llm_config
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,11 @@ class AgentMCPToolManager:
                     f"Error getting tools from cached client for profile '{profile_name}': {e}"
                 )
                 # If cached client fails, try to recreate it
-                del self._clients[profile_name]
+                stale_client = self._clients.pop(profile_name)
+                await close_resource(
+                    stale_client,
+                    label=f"agent_mcp_client.{profile_name}",
+                )
 
         # Create new client
         client = await self._create_client_for_profile(profile_name, profile.servers)
@@ -139,6 +144,11 @@ class AgentMCPToolManager:
             return tools
         except Exception as e:
             logger.error(f"Error getting tools for profile '{profile_name}': {e}")
+            stale_client = self._clients.pop(profile_name, client)
+            await close_resource(
+                stale_client,
+                label=f"agent_mcp_client.{profile_name}",
+            )
             return []
 
     async def _create_client_for_profile(
@@ -214,6 +224,10 @@ class AgentMCPToolManager:
 
     async def close(self):
         """Close all managed clients."""
+        await close_resource(
+            list(self._clients.values()),
+            label="agent_mcp_clients",
+        )
         self._clients.clear()
 
 
@@ -226,3 +240,16 @@ def get_agent_mcp_manager() -> AgentMCPToolManager:
     if _agent_mcp_manager is None:
         _agent_mcp_manager = AgentMCPToolManager()
     return _agent_mcp_manager
+
+
+async def close_agent_mcp_manager() -> None:
+    """Close the global Agent MCP manager if it was initialized.
+
+    WHY: Application and worker shutdown should not instantiate MCP just to
+    close it, but any existing manager must release transport resources.
+    """
+    global _agent_mcp_manager
+    if _agent_mcp_manager is None:
+        return
+    await _agent_mcp_manager.close()
+    _agent_mcp_manager = None

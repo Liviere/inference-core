@@ -6,7 +6,6 @@ async `_arun` is implemented via a thread executor for parity.
 """
 
 import asyncio
-import concurrent.futures
 import logging
 import os
 from typing import Any, Dict, Literal, Optional
@@ -99,24 +98,19 @@ class InternetSearchTool(BaseTool):
         exclude_domains: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
 
-        loop = asyncio.get_running_loop()
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.max_workers
-        ) as executor:
-            return await loop.run_in_executor(
-                executor,
-                self._run,
-                query,
-                max_results,
-                topic,
-                include_raw_content,
-                time_range,
-                start_date,
-                end_date,
-                country,
-                include_domains,
-                exclude_domains,
-            )
+        return await asyncio.to_thread(
+            self._run,
+            query,
+            max_results,
+            topic,
+            include_raw_content,
+            time_range,
+            start_date,
+            end_date,
+            country,
+            include_domains,
+            exclude_domains,
+        )
 
     @staticmethod
     def _format_log(

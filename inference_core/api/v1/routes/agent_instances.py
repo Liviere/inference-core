@@ -309,7 +309,7 @@ async def run_agent_instance(
                 base_config=base_config,
             )
 
-        with agent_svc:
+        async with agent_svc:
             await agent_svc.create_agent(system_prompt=data.system_prompt)
             response = await agent_svc.arun_agent_steps(data.user_input)
 
