@@ -65,7 +65,14 @@ class TestLifecycle:
         assert statuses["vector_store"]["status"] == "healthy"
         assert statuses["vector_store"]["backend"] == "qdrant"
 
-    @patch("inference_core.core.lifecycle.get_redis")
+    @patch(
+        "inference_core.core.lifecycle.close_redis_clients",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "inference_core.core.lifecycle._shutdown_mcp_clients",
+        new_callable=AsyncMock,
+    )
     @patch("inference_core.core.lifecycle.close_database", new_callable=AsyncMock)
     @patch("inference_core.core.lifecycle.get_vector_store_service")
     @pytest.mark.asyncio
@@ -73,7 +80,8 @@ class TestLifecycle:
         self,
         mock_get_vector_store_service,
         mock_close_database,
-        mock_get_redis,
+        mock_shutdown_mcp_clients,
+        mock_close_redis_clients,
     ):
         # Production-like settings to exercise shutdown paths
         settings = Settings(environment="production", vector_backend="qdrant")
@@ -82,8 +90,6 @@ class TestLifecycle:
         calls = {
             "provider_close": 0,
             "db_close": 0,
-            "redis_close": 0,
-            "pool_disconnect": 0,
         }
 
         class Provider:
@@ -96,24 +102,12 @@ class TestLifecycle:
         async def _db_close():
             calls["db_close"] += 1
 
-        class Pool:
-            def disconnect(self):
-                calls["pool_disconnect"] += 1
-
-        class Redis:
-            def __init__(self):
-                self.connection_pool = Pool()
-
-            def close(self):
-                calls["redis_close"] += 1
-
         mock_get_vector_store_service.return_value = FakeVS()
         mock_close_database.side_effect = _db_close
-        mock_get_redis.return_value = Redis()
 
         await shutdown_resources(settings)
 
         assert calls["provider_close"] == 1
         assert calls["db_close"] == 1
-        assert calls["redis_close"] == 1
-        assert calls["pool_disconnect"] == 1
+        mock_shutdown_mcp_clients.assert_awaited_once()
+        mock_close_redis_clients.assert_awaited_once()
