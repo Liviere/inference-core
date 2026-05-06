@@ -13,8 +13,10 @@ Tavily…) when graduating beyond the demo.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import operator
 import random
 import re
 from typing import Any, List, Optional
@@ -55,21 +57,89 @@ def get_weather(city: str) -> str:
 # Tool: calculate
 # ---------------------------------------------------------------------------
 _SAFE_EXPR_RE = re.compile(r"^[\d+\-*/().\s]+$")
+_MAX_EXPRESSION_LENGTH = 128
+_MAX_ABS_RESULT = 1_000_000_000
+_ALLOWED_BINARY_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+_ALLOWED_UNARY_OPERATORS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
 
 
-def _safe_eval(expression: str) -> float:
-    """Evaluate *expression* after a strict character whitelist check.
+def _validate_expression_input(expression: str) -> None:
+    """Reject unsafe or unexpectedly expensive expressions before parsing.
 
-    WHY: ``eval`` is dangerous; the whitelist guarantees we only ever see
-    numeric literals and the four basic operators plus parentheses.
+    WHY: the demo calculator is exposed through tool calling, so it needs a
+    small, predictable input surface instead of relying on Python's runtime
+    semantics for safety.
     """
-    if not _SAFE_EXPR_RE.match(expression):
+    if len(expression) > _MAX_EXPRESSION_LENGTH:
+        raise ValueError("Expression is too long.")
+
+    if not _SAFE_EXPR_RE.fullmatch(expression):
         raise ValueError(
             f"Invalid expression: {expression!r}. "
             "Only numbers and +, -, *, /, (, ) are allowed."
         )
-    # Evaluate with empty globals/locals to prevent name resolution.
-    return eval(expression, {"__builtins__": {}}, {})  # noqa: S307
+
+
+def _evaluate_expression_node(node: ast.AST) -> float | int:
+    """Evaluate the small arithmetic subset supported by the demo tool.
+
+    WHY: explicit AST walking keeps the implementation readable while making
+    unsupported constructs fail closed instead of executing Python code.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, int | float):
+            raise ValueError("Only numeric literals are allowed.")
+        return node.value
+
+    if isinstance(node, ast.BinOp):
+        operator_fn = _ALLOWED_BINARY_OPERATORS.get(type(node.op))
+        if operator_fn is None:
+            raise ValueError("Unsupported operator. Only +, -, *, / are allowed.")
+        left = _evaluate_expression_node(node.left)
+        right = _evaluate_expression_node(node.right)
+        return operator_fn(left, right)
+
+    if isinstance(node, ast.UnaryOp):
+        operator_fn = _ALLOWED_UNARY_OPERATORS.get(type(node.op))
+        if operator_fn is None:
+            raise ValueError("Unsupported unary operator.")
+        operand = _evaluate_expression_node(node.operand)
+        return operator_fn(operand)
+
+    raise ValueError(
+        "Unsupported expression. Only numbers, parentheses, and +, -, *, / are allowed."
+    )
+
+
+def _safe_eval(expression: str) -> float:
+    """Evaluate *expression* with an explicit arithmetic-only AST walker.
+
+    WHY: the tool needs simple arithmetic for the frontend demo, but it should
+    never execute Python code or accept operators that can explode CPU or
+    memory usage.
+    """
+    _validate_expression_input(expression)
+
+    try:
+        parsed = ast.parse(expression, mode="eval")
+        result = _evaluate_expression_node(parsed.body)
+    except SyntaxError as exc:
+        raise ValueError("Invalid expression syntax.") from exc
+    except ZeroDivisionError as exc:
+        raise ValueError("Division by zero is not allowed.") from exc
+
+    if abs(result) > _MAX_ABS_RESULT:
+        raise ValueError("Expression result is too large.")
+
+    return result
 
 
 @tool
