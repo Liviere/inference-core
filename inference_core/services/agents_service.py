@@ -1,6 +1,6 @@
 import logging
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable, Literal, Optional
@@ -41,6 +41,7 @@ from inference_core.agents.tools.skill_reader import (
 from inference_core.core.config import get_settings
 from inference_core.database.sql.models.user_agent_instance import UserAgentInstance
 from inference_core.llm.config import LLMConfig, get_llm_config
+from inference_core.llm.emulation import activate_emulation_session
 from inference_core.llm.models import LLMModelFactory, get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 from inference_core.services._cancel import AgentCancelled
@@ -1755,39 +1756,43 @@ class AgentService:
             sync=True,
         )
 
-        raw_stream = self.agent.stream(
-            {"messages": [HumanMessage(content=user_input)]},
-            stream_config,
-            stream_mode=stream_modes,
-            context=context,
-            version="v2",
-        )
+        with self._emulation_session_scope():
+            raw_stream = self.agent.stream(
+                {"messages": [HumanMessage(content=user_input)]},
+                stream_config,
+                stream_mode=stream_modes,
+                context=context,
+                version="v2",
+            )
 
-        if graceful_cancel:
-            stream: Any = SyncInterruptibleStream(raw_stream, cancel_callback=cancel_cb)
-        else:
-            stream = raw_stream
-
-        try:
-            for chunk in stream:
-                self._process_stream_chunk(
-                    chunk,
-                    accumulator,
-                    on_step=on_step,
-                    on_token=on_token,
-                    on_custom=on_custom,
-                    cancel_check=cancel_check,
+            if graceful_cancel:
+                stream: Any = SyncInterruptibleStream(
+                    raw_stream,
+                    cancel_callback=cancel_cb,
                 )
-        except AgentCancelled:
-            if graceful_cancel and isinstance(stream, SyncInterruptibleStream):
-                stream.close()
-            raise
-        finally:
-            if hasattr(raw_stream, "close"):
-                try:
-                    raw_stream.close()
-                except Exception:
-                    pass
+            else:
+                stream = raw_stream
+
+            try:
+                for chunk in stream:
+                    self._process_stream_chunk(
+                        chunk,
+                        accumulator,
+                        on_step=on_step,
+                        on_token=on_token,
+                        on_custom=on_custom,
+                        cancel_check=cancel_check,
+                    )
+            except AgentCancelled:
+                if graceful_cancel and isinstance(stream, SyncInterruptibleStream):
+                    stream.close()
+                raise
+            finally:
+                if hasattr(raw_stream, "close"):
+                    try:
+                        raw_stream.close()
+                    except Exception:
+                        pass
 
         return accumulator.build_response(
             self.model_name, start_time, self._enable_cost_tracking
@@ -1852,44 +1857,60 @@ class AgentService:
             trace_mode=trace_mode,
         )
 
-        raw_stream = self.agent.astream(
-            {"messages": [HumanMessage(content=user_input)]},
-            stream_config,
-            stream_mode=stream_modes,
-            context=context,
-            version="v2",
-        )
+        with self._emulation_session_scope():
+            raw_stream = self.agent.astream(
+                {"messages": [HumanMessage(content=user_input)]},
+                stream_config,
+                stream_mode=stream_modes,
+                context=context,
+                version="v2",
+            )
 
-        if graceful_cancel:
-            stream: Any = InterruptibleStream(raw_stream, cancel_callback=cancel_cb)
-        else:
-            stream = raw_stream
-
-        try:
-            async for chunk in stream:
-                self._process_stream_chunk(
-                    chunk,
-                    accumulator,
-                    on_step=on_step,
-                    on_token=on_token,
-                    on_custom=on_custom,
-                    cancel_check=cancel_check,
+            if graceful_cancel:
+                stream: Any = InterruptibleStream(
+                    raw_stream,
+                    cancel_callback=cancel_cb,
                 )
-        except AgentCancelled:
-            if graceful_cancel and isinstance(stream, InterruptibleStream):
-                await stream.stop()
-                await stream.close()
-            raise
-        finally:
-            if hasattr(raw_stream, "aclose"):
-                try:
-                    await raw_stream.aclose()
-                except Exception:
-                    pass
+            else:
+                stream = raw_stream
+
+            try:
+                async for chunk in stream:
+                    self._process_stream_chunk(
+                        chunk,
+                        accumulator,
+                        on_step=on_step,
+                        on_token=on_token,
+                        on_custom=on_custom,
+                        cancel_check=cancel_check,
+                    )
+            except AgentCancelled:
+                if graceful_cancel and isinstance(stream, InterruptibleStream):
+                    await stream.stop()
+                    await stream.close()
+                raise
+            finally:
+                if hasattr(raw_stream, "aclose"):
+                    try:
+                        await raw_stream.aclose()
+                    except Exception:
+                        pass
 
         return accumulator.build_response(
             self.model_name, start_time, self._enable_cost_tracking
         )
+
+    def _emulation_session_scope(self):
+        """Return a run-scoped context for local emulated LLM timing.
+
+        WHY: one agent run should share a single latency plan so consecutive
+        model calls behave like one coherent mock session instead of isolated
+        constant-delay invocations.
+        """
+
+        if not get_settings().llm_emulation_enabled:
+            return nullcontext()
+        return activate_emulation_session()
 
     async def _arun_agent_steps_remote(
         self,

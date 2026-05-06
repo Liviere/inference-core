@@ -9,7 +9,10 @@ from langchain_core.messages import HumanMessage
 from inference_core.llm.config import ModelConfig, ModelProvider
 from inference_core.llm.emulation import (
     EmulatedChatModel,
+    EmulationSessionOverrides,
+    activate_emulation_session,
     build_tool_emulation_middleware,
+    create_emulated_chat_model,
 )
 from inference_core.llm.models import LLMModelFactory
 
@@ -20,6 +23,11 @@ def _emulation_settings(**overrides):
         "llm_emulation_response": "emulated response",
         "llm_emulation_profile": "deterministic",
         "llm_emulation_latency_ms": 0,
+        "llm_emulation_latency_jitter_ms": 0,
+        "llm_emulation_session_scale_min": 1.0,
+        "llm_emulation_session_scale_max": 1.0,
+        "llm_emulation_step_latency_growth": 0.0,
+        "llm_emulation_stream_first_chunk_ratio": 1.0,
         "llm_emulation_error_rate": 0.0,
         "llm_tool_emulation_mode": "off",
         "llm_tool_emulation_include": None,
@@ -49,6 +57,85 @@ async def test_emulated_chat_model_async_invoke():
 
     assert message.content == "async response"
     assert message.response_metadata["model_name"] == "unit-model"
+
+
+@patch("inference_core.core.config.get_settings")
+def test_emulated_chat_model_latency_plan_is_deterministic_per_session_seed(
+    mock_get_settings,
+):
+    mock_get_settings.return_value = _emulation_settings(
+        llm_emulation_latency_ms=1000,
+        llm_emulation_latency_jitter_ms=200,
+        llm_emulation_session_scale_min=0.75,
+        llm_emulation_session_scale_max=1.25,
+        llm_emulation_step_latency_growth=0.2,
+    )
+    model = create_emulated_chat_model("timed-model")
+
+    with patch("inference_core.llm.emulation.time.sleep") as mock_sleep:
+        with activate_emulation_session(seed=17):
+            model.invoke([HumanMessage(content="first")])
+            model.invoke([HumanMessage(content="second")])
+        first_run_delays = [call.args[0] for call in mock_sleep.call_args_list]
+
+        mock_sleep.reset_mock()
+
+        with activate_emulation_session(seed=17):
+            model.invoke([HumanMessage(content="first")])
+            model.invoke([HumanMessage(content="second")])
+        second_run_delays = [call.args[0] for call in mock_sleep.call_args_list]
+
+    assert len(first_run_delays) == 2
+    assert first_run_delays == second_run_delays
+    assert first_run_delays[0] != first_run_delays[1]
+
+
+@patch("inference_core.core.config.get_settings")
+def test_emulated_stream_spreads_latency_across_chunks(mock_get_settings):
+    mock_get_settings.return_value = _emulation_settings(
+        llm_emulation_latency_ms=900,
+        llm_emulation_stream_first_chunk_ratio=0.5,
+    )
+    model = create_emulated_chat_model("stream-model", response="hello from tests")
+
+    with patch("inference_core.llm.emulation.time.sleep") as mock_sleep:
+        with activate_emulation_session(seed=3):
+            chunks = list(model.stream([HumanMessage(content="ping")]))
+
+    sleep_durations = [call.args[0] for call in mock_sleep.call_args_list]
+
+    assert "".join(chunk.content for chunk in chunks) == "hello from tests"
+    assert sleep_durations == [0.45, 0.225, 0.225]
+
+
+def test_emulated_session_overrides_change_delay_without_rebuilding_model():
+    model = EmulatedChatModel(
+        model_name="override-model",
+        response="override response",
+        latency_ms=100,
+        latency_jitter_ms=0,
+        session_scale_min=1.0,
+        session_scale_max=1.0,
+        step_latency_growth=0.0,
+    )
+    overrides = EmulationSessionOverrides(
+        profile="performance-realistic",
+        latency_ms=2000,
+        session_scale_min=2.0,
+        session_scale_max=2.0,
+        step_latency_growth=0.5,
+    )
+
+    with patch("inference_core.llm.emulation.time.sleep") as mock_sleep:
+        with activate_emulation_session(seed=11, overrides=overrides):
+            first_message = model.invoke([HumanMessage(content="first")])
+            second_message = model.invoke([HumanMessage(content="second")])
+
+    sleep_durations = [call.args[0] for call in mock_sleep.call_args_list]
+
+    assert sleep_durations == [4.0, 6.0]
+    assert first_message.response_metadata["profile"] == "performance-realistic"
+    assert second_message.response_metadata["emulation_call_index"] == 2
 
 
 @patch("inference_core.core.config.get_settings")

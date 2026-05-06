@@ -64,7 +64,7 @@ Inference Core is a modular backend scaffold for Large Language Model–driven p
 
 **Observability** – Structured JSON logging, metrics (Prometheus), tracing & error tracking (Sentry), future dashboards (Grafana).
 
-**Testing Layers** – Unit tests (pure logic), integration tests (API/services), performance scaffolding (Locust planned), optional real‑provider tests behind flags.
+**Testing Layers** – Unit tests (pure logic), integration tests (API/services), performance tests with Locust, optional real‑provider tests behind flags.
 
 ---
 

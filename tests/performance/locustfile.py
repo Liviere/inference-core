@@ -34,6 +34,20 @@ from locust import HttpUser, between, events, task
 from locust.env import Environment
 
 AUTH_DEPENDENT_USER_CLASSES = frozenset({"AuthUserFlow", "LLMMockWorkspaceUser"})
+_LLM_EMULATION_REQUEST_HEADER_ENV_MAP = {
+    "X-Inference-Emulation-Profile": "LLM_EMULATION_PROFILE",
+    "X-Inference-Emulation-Latency-Ms": "LLM_EMULATION_LATENCY_MS",
+    "X-Inference-Emulation-Latency-Jitter-Ms": "LLM_EMULATION_LATENCY_JITTER_MS",
+    "X-Inference-Emulation-Session-Scale-Min": "LLM_EMULATION_SESSION_SCALE_MIN",
+    "X-Inference-Emulation-Session-Scale-Max": "LLM_EMULATION_SESSION_SCALE_MAX",
+    "X-Inference-Emulation-Step-Latency-Growth": (
+        "LLM_EMULATION_STEP_LATENCY_GROWTH"
+    ),
+    "X-Inference-Emulation-Stream-First-Chunk-Ratio": (
+        "LLM_EMULATION_STREAM_FIRST_CHUNK_RATIO"
+    ),
+    "X-Inference-Emulation-Error-Rate": "LLM_EMULATION_ERROR_RATE",
+}
 
 
 class BaseUser(HttpUser):
@@ -854,9 +868,11 @@ class LLMMockWorkspaceUser(BaseUser):
         }
 
         for attempt in range(2):
+            headers = self.authenticated_headers()
+            headers.update(self._emulation_run_headers())
             with self.client.post(
                 f"/api/v1/agent-instances/{self.agent_instance_id}/run",
-                headers=self.authenticated_headers(),
+                headers=headers,
                 json=payload,
                 catch_response=True,
                 name="Agent Instances - Run Emulated",
@@ -881,6 +897,21 @@ class LLMMockWorkspaceUser(BaseUser):
                 else:
                     response.failure("Missing agent run fields")
                 return
+
+    def _emulation_run_headers(self) -> Dict[str, str]:
+        """Build request headers that steer server-side emulation for perf runs.
+
+        WHY: the Locust wrapper runs in a different process than the API, so
+        perf-specific latency settings must be sent with the agent-run request
+        if the server should actually execute those slower emulated calls.
+        """
+
+        headers: Dict[str, str] = {}
+        for header_name, env_name in _LLM_EMULATION_REQUEST_HEADER_ENV_MAP.items():
+            value = os.getenv(env_name, "").strip()
+            if value:
+                headers[header_name] = value
+        return headers
 
     @task(4)
     def browse_agent_workspace(self):

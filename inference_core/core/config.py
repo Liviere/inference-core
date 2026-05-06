@@ -369,6 +369,51 @@ class Settings(BaseSettings):
         le=60000,
         description="Artificial latency in milliseconds added to emulated LLM calls.",
     )
+    llm_emulation_latency_jitter_ms: int = Field(
+        default=0,
+        ge=0,
+        le=60000,
+        description=(
+            "Maximum plus/minus jitter in milliseconds added per emulated LLM "
+            "call when a session context is active."
+        ),
+    )
+    llm_emulation_session_scale_min: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=20.0,
+        description=(
+            "Lower bound of the per-session latency multiplier applied to "
+            "emulated LLM calls."
+        ),
+    )
+    llm_emulation_session_scale_max: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=20.0,
+        description=(
+            "Upper bound of the per-session latency multiplier applied to "
+            "emulated LLM calls."
+        ),
+    )
+    llm_emulation_step_latency_growth: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "Linear growth factor applied to later emulated LLM calls within "
+            "the same session."
+        ),
+    )
+    llm_emulation_stream_first_chunk_ratio: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of total emulated stream latency spent before the first "
+            "chunk is yielded."
+        ),
+    )
     llm_emulation_error_rate: float = Field(
         default=0.0,
         ge=0.0,

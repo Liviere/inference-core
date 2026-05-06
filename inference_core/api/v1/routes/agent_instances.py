@@ -6,6 +6,7 @@ Users can create, list, update, and delete personalized agent configurations
 based on available base agent templates.
 """
 
+import json
 import logging
 import uuid as _uuid
 from datetime import timedelta
@@ -22,6 +23,10 @@ from inference_core.core.dependecies import (
     get_llm_config_service,
 )
 from inference_core.core.security import create_access_token
+from inference_core.llm.emulation import (
+    EmulationSessionOverrides,
+    activate_emulation_session,
+)
 from inference_core.schemas.user_agent_instance import (
     AgentInstanceCreate,
     AgentInstanceListResponse,
@@ -43,6 +48,80 @@ from inference_core.services.user_agent_instance_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent-instances", tags=["Agent Instances"])
+
+_EMULATION_OVERRIDE_HEADER_MAP = {
+    "x-inference-emulation-profile": ("profile", str),
+    "x-inference-emulation-latency-ms": ("latency_ms", int),
+    "x-inference-emulation-latency-jitter-ms": ("latency_jitter_ms", int),
+    "x-inference-emulation-session-scale-min": ("session_scale_min", float),
+    "x-inference-emulation-session-scale-max": ("session_scale_max", float),
+    "x-inference-emulation-step-latency-growth": (
+        "step_latency_growth",
+        float,
+    ),
+    "x-inference-emulation-stream-first-chunk-ratio": (
+        "stream_first_chunk_ratio",
+        float,
+    ),
+    "x-inference-emulation-error-rate": ("error_rate", float),
+}
+
+
+def _extract_emulation_session_inputs(
+    request: Request,
+) -> tuple[int | None, EmulationSessionOverrides | None]:
+    """Extract test-only emulation overrides from the inbound HTTP request.
+
+    WHY: performance tests run in a separate Locust process, so changing env on
+    the client side does not affect the already-running API. Passing an explicit
+    per-request emulation profile lets the server execute the intended delays
+    without requiring an API restart.
+    """
+
+    settings = get_settings()
+    if not settings.is_testing or not settings.llm_emulation_enabled:
+        return None, None
+
+    raw_seed = request.headers.get("x-inference-emulation-seed")
+    session_seed: int | None = None
+    if raw_seed:
+        try:
+            session_seed = int(raw_seed)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid x-inference-emulation-seed header: {exc}",
+            )
+
+    overrides_payload: dict[str, object] = {}
+    for header_name, (field_name, caster) in _EMULATION_OVERRIDE_HEADER_MAP.items():
+        raw_value = request.headers.get(header_name)
+        if raw_value in (None, ""):
+            continue
+        try:
+            overrides_payload[field_name] = caster(raw_value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid {header_name} header: {exc}",
+            )
+
+    if not overrides_payload:
+        return session_seed, None
+
+    try:
+        overrides = EmulationSessionOverrides(**overrides_payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid emulation overrides: {exc}",
+        )
+
+    logger.debug(
+        "Applying request-scoped emulation overrides: %s",
+        json.dumps(overrides_payload, sort_keys=True),
+    )
+    return session_seed, overrides
 
 
 # =========================================================
@@ -263,6 +342,7 @@ async def delete_agent_instance(
 async def run_agent_instance(
     instance_id: UUID,
     data: AgentInstanceRunRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user_or_public),
     db: AsyncSession = Depends(get_db),
     llm_config_service: LLMConfigService = Depends(get_llm_config_service),
@@ -290,6 +370,9 @@ async def run_agent_instance(
         )
 
     try:
+        emulation_seed, emulation_overrides = _extract_emulation_session_inputs(
+            request
+        )
         # Resolve config with admin overrides + user preferences applied.
         # Instance-specific DB overrides are then layered on top via
         # build_config_for_instance(), giving the full resolution chain:
@@ -311,7 +394,11 @@ async def run_agent_instance(
 
         async with agent_svc:
             await agent_svc.create_agent(system_prompt=data.system_prompt)
-            response = await agent_svc.arun_agent_steps(data.user_input)
+            with activate_emulation_session(
+                seed=emulation_seed,
+                overrides=emulation_overrides,
+            ):
+                response = await agent_svc.arun_agent_steps(data.user_input)
 
     except Exception as e:
         logger.exception("Error running agent instance %s: %s", instance_id, e)

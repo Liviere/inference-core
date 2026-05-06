@@ -117,6 +117,26 @@ Docker compose uses a split worker topology by default: the threads worker handl
 | `LLM_USAGE_FAIL_OPEN`       | true      | Ignore logging errors if true          |
 | `RUN_LLM_REAL_TESTS`        | 0         | Enable real provider test suite        |
 
+## LLM Emulation
+
+Controls the local no-cost chat model used by tests, performance profiles, and development overrides.
+
+| Variable                                 | Default                           | Description                                                      |
+| ---------------------------------------- | --------------------------------- | ---------------------------------------------------------------- |
+| `LLM_CONFIG_PATH`                        | null                              | Optional path to the YAML config used when emulation is enabled  |
+| `LLM_EMULATION_ENABLED`                  | false                             | Route chat model creation to the in-process emulated backend     |
+| `LLM_EMULATION_PROFILE`                  | deterministic                     | Named response profile used by the emulated model                |
+| `LLM_EMULATION_RESPONSE`                 | This is an emulated LLM response. | Assistant message returned by deterministic emulation            |
+| `LLM_EMULATION_LATENCY_MS`               | 0                                 | Base artificial latency added to emulated LLM calls              |
+| `LLM_EMULATION_LATENCY_JITTER_MS`        | 0                                 | Plus/minus jitter applied per emulated LLM call inside a session |
+| `LLM_EMULATION_SESSION_SCALE_MIN`        | 1.0                               | Lower bound of the per-session latency multiplier                |
+| `LLM_EMULATION_SESSION_SCALE_MAX`        | 1.0                               | Upper bound of the per-session latency multiplier                |
+| `LLM_EMULATION_STEP_LATENCY_GROWTH`      | 0.0                               | Linear growth factor for later calls in the same session         |
+| `LLM_EMULATION_STREAM_FIRST_CHUNK_RATIO` | 1.0                               | Share of stream latency spent before the first chunk is yielded  |
+| `LLM_EMULATION_ERROR_RATE`               | 0.0                               | Probability that an emulated call raises a test error            |
+
+The performance wrapper for `llm_mock` seeds a heavier, performance-oriented set of emulation defaults on top of these conservative settings. Override the env vars above when you want a lighter or heavier mock session.
+
 ### Public access mode notes
 
 When `LLM_API_ACCESS_MODE=public` the agent-instance endpoints

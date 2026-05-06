@@ -6,6 +6,9 @@ import asyncio
 import hashlib
 import random
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from collections.abc import Iterator, Sequence
 from typing import Any, Callable, Optional
 
@@ -22,6 +25,190 @@ from langchain_core.tools import BaseTool
 from pydantic import Field
 
 
+@dataclass
+class EmulationLatencyPlan:
+    """Concrete timing plan for one emulated model invocation.
+
+    WHY: separating latency planning from the actual sleep calls makes the
+    emulation easier to test and lets sync, async, and streaming paths share
+    one deterministic timing contract.
+    """
+
+    total_delay_ms: int
+    call_index: int
+    session_seed: int | None = None
+    session_scale: float = 1.0
+    jitter_ms: int = 0
+    pre_chunk_delays_ms: tuple[int, ...] = ()
+
+
+@dataclass
+class EmulationSessionOverrides:
+    """Per-session override values applied on top of model-level emulation settings.
+
+    WHY: performance tests and targeted run probes need to steer the latency
+    profile of one agent session without mutating cached model instances or
+    requiring a full API restart with different environment variables.
+    """
+
+    profile: str | None = None
+    latency_ms: int | None = None
+    latency_jitter_ms: int | None = None
+    session_scale_min: float | None = None
+    session_scale_max: float | None = None
+    step_latency_growth: float | None = None
+    stream_first_chunk_ratio: float | None = None
+    error_rate: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate override ranges eagerly when a session is activated.
+
+        WHY: invalid perf-test headers should fail at the request boundary
+        rather than producing surprising timing behavior deep in the model loop.
+        """
+
+        if self.latency_ms is not None and self.latency_ms < 0:
+            raise ValueError("latency_ms must be >= 0")
+        if self.latency_jitter_ms is not None and self.latency_jitter_ms < 0:
+            raise ValueError("latency_jitter_ms must be >= 0")
+        if self.session_scale_min is not None and self.session_scale_min < 0:
+            raise ValueError("session_scale_min must be >= 0")
+        if self.session_scale_max is not None and self.session_scale_max < 0:
+            raise ValueError("session_scale_max must be >= 0")
+        if self.step_latency_growth is not None and self.step_latency_growth < 0:
+            raise ValueError("step_latency_growth must be >= 0")
+        if self.stream_first_chunk_ratio is not None and not (
+            0.0 <= self.stream_first_chunk_ratio <= 1.0
+        ):
+            raise ValueError("stream_first_chunk_ratio must be between 0 and 1")
+        if self.error_rate is not None and not (0.0 <= self.error_rate <= 1.0):
+            raise ValueError("error_rate must be between 0 and 1")
+
+
+@dataclass
+class _EmulationSessionState:
+    """Per-run state shared by all emulated model calls in one agent session.
+
+    WHY: multi-step agent runs should vary their timing across sessions while
+    staying deterministic inside one run, even when the same cached model
+    instance services many invocations.
+    """
+
+    seed: int
+    rng: random.Random = field(repr=False)
+    call_index: int = 0
+    session_scale: float | None = None
+    overrides: EmulationSessionOverrides | None = None
+
+
+_ACTIVE_EMULATION_SESSION: ContextVar[_EmulationSessionState | None] = ContextVar(
+    "active_emulation_session",
+    default=None,
+)
+
+
+def _coerce_session_scale_bounds(
+    minimum: float,
+    maximum: float,
+) -> tuple[float, float]:
+    """Normalize configured session multiplier bounds.
+
+    WHY: the planner should stay resilient even if an operator swaps the min
+    and max values in env configuration.
+    """
+
+    if maximum < minimum:
+        return maximum, minimum
+    return minimum, maximum
+
+
+def _distribute_stream_delays(
+    total_delay_ms: int,
+    chunk_count: int,
+    first_chunk_ratio: float,
+) -> tuple[int, ...]:
+    """Split total stream latency into per-chunk waits.
+
+    WHY: real provider streams do not spend all latency before the first token.
+    Splitting the delay lets tests approximate time-to-first-token and the tail
+    of a streamed response separately.
+    """
+
+    if chunk_count <= 0:
+        return ()
+
+    if chunk_count == 1:
+        return (max(0, total_delay_ms),)
+
+    normalized_ratio = min(max(first_chunk_ratio, 0.0), 1.0)
+    first_chunk_delay_ms = int(round(max(0, total_delay_ms) * normalized_ratio))
+    remaining_delay_ms = max(0, total_delay_ms - first_chunk_delay_ms)
+    remaining_slots = chunk_count - 1
+    per_slot_delay_ms, extra_delay_ms = divmod(remaining_delay_ms, remaining_slots)
+
+    remaining_delays = [per_slot_delay_ms] * remaining_slots
+    for index in range(extra_delay_ms):
+        remaining_delays[index] += 1
+
+    return (first_chunk_delay_ms, *remaining_delays)
+
+
+def _sleep_sync_ms(delay_ms: int) -> None:
+    """Sleep synchronously for the requested emulated latency.
+
+    WHY: a tiny wrapper keeps tests focused on the planned milliseconds instead
+    of repeating the float conversion from milliseconds to seconds.
+    """
+
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
+
+
+async def _sleep_async_ms(delay_ms: int) -> None:
+    """Sleep asynchronously for the requested emulated latency.
+
+    WHY: the async emulation path should mirror the sync helper exactly while
+    using asyncio-friendly waiting.
+    """
+
+    if delay_ms > 0:
+        await asyncio.sleep(delay_ms / 1000.0)
+
+
+@contextmanager
+def activate_emulation_session(
+    seed: int | None = None,
+    overrides: EmulationSessionOverrides | None = None,
+) -> Iterator[_EmulationSessionState]:
+    """Activate deterministic per-run timing context for emulated models.
+
+    WHY: one agent session should be able to produce a stable sequence of
+    varied model-call latencies without mutating the cached model instance or
+    relying on global process-wide randomness.
+    """
+
+    existing_state = _ACTIVE_EMULATION_SESSION.get()
+    if existing_state is not None:
+        yield existing_state
+        return
+
+    resolved_seed = (
+        int(seed)
+        if seed is not None
+        else random.SystemRandom().randint(0, 2**31 - 1)
+    )
+    session_state = _EmulationSessionState(
+        seed=resolved_seed,
+        rng=random.Random(resolved_seed),
+        overrides=overrides,
+    )
+    token = _ACTIVE_EMULATION_SESSION.set(session_state)
+    try:
+        yield session_state
+    finally:
+        _ACTIVE_EMULATION_SESSION.reset(token)
+
+
 class EmulatedChatModel(BaseChatModel):
     """Deterministic chat model used to exercise agent flows without provider calls.
 
@@ -34,6 +221,11 @@ class EmulatedChatModel(BaseChatModel):
     response: str = "This is an emulated LLM response."
     profile: str = "deterministic"
     latency_ms: int = 0
+    latency_jitter_ms: int = 0
+    session_scale_min: float = 1.0
+    session_scale_max: float = 1.0
+    step_latency_growth: float = 0.0
+    stream_first_chunk_ratio: float = 1.0
     error_rate: float = 0.0
     bound_tools: list[Any] = Field(default_factory=list, exclude=True)
     bound_tool_choice: Optional[str] = Field(default=None, exclude=True)
@@ -48,6 +240,11 @@ class EmulatedChatModel(BaseChatModel):
             "model_name": self.model_name,
             "profile": self.profile,
             "latency_ms": self.latency_ms,
+            "latency_jitter_ms": self.latency_jitter_ms,
+            "session_scale_min": self.session_scale_min,
+            "session_scale_max": self.session_scale_max,
+            "step_latency_growth": self.step_latency_growth,
+            "stream_first_chunk_ratio": self.stream_first_chunk_ratio,
             "error_rate": self.error_rate,
         }
 
@@ -78,10 +275,33 @@ class EmulatedChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        self._maybe_sleep_sync()
+        latency_plan = self._build_latency_plan()
+        self._maybe_sleep_sync(latency_plan)
         self._maybe_raise()
-        message = self._build_message(messages)
+        message = self._build_message(messages, latency_plan=latency_plan)
         return ChatResult(generations=[ChatGeneration(message=message)])
+
+    def _get_session_overrides(self) -> EmulationSessionOverrides | None:
+        """Return active request-scoped overrides for the current session.
+
+        WHY: one helper keeps override lookup centralized across message,
+        streaming, latency, and error-planning code paths.
+        """
+
+        session_state = _ACTIVE_EMULATION_SESSION.get()
+        return session_state.overrides if session_state is not None else None
+
+    def _effective_profile(self) -> str:
+        """Return the profile name visible to observers for this invocation.
+
+        WHY: request-scoped perf overrides should appear in response metadata so
+        traces and test logs can distinguish special timing profiles.
+        """
+
+        overrides = self._get_session_overrides()
+        if overrides is not None and overrides.profile:
+            return overrides.profile
+        return self.profile
 
     async def _agenerate(
         self,
@@ -90,9 +310,10 @@ class EmulatedChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        await self._maybe_sleep_async()
+        latency_plan = self._build_latency_plan()
+        await self._maybe_sleep_async(latency_plan)
         self._maybe_raise()
-        message = self._build_message(messages)
+        message = self._build_message(messages, latency_plan=latency_plan)
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     def _stream(
@@ -102,9 +323,11 @@ class EmulatedChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        self._maybe_sleep_sync()
+        chunks = self._build_chunks(messages)
+        latency_plan = self._build_latency_plan(chunk_count=len(chunks))
         self._maybe_raise()
-        for chunk in self._build_chunks(messages):
+        for delay_ms, chunk in zip(latency_plan.pre_chunk_delays_ms, chunks):
+            _sleep_sync_ms(delay_ms)
             yield ChatGenerationChunk(message=chunk)
 
     async def _astream(
@@ -114,12 +337,19 @@ class EmulatedChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ):
-        await self._maybe_sleep_async()
+        chunks = self._build_chunks(messages)
+        latency_plan = self._build_latency_plan(chunk_count=len(chunks))
         self._maybe_raise()
-        for chunk in self._build_chunks(messages):
+        for delay_ms, chunk in zip(latency_plan.pre_chunk_delays_ms, chunks):
+            await _sleep_async_ms(delay_ms)
             yield ChatGenerationChunk(message=chunk)
 
-    def _build_message(self, messages: list[BaseMessage]) -> AIMessage:
+    def _build_message(
+        self,
+        messages: list[BaseMessage],
+        *,
+        latency_plan: EmulationLatencyPlan | None = None,
+    ) -> AIMessage:
         """Build the deterministic response with usage metadata for observability.
 
         WHY: Cost tracking and run logging should exercise the same code paths
@@ -129,14 +359,24 @@ class EmulatedChatModel(BaseChatModel):
             _estimate_tokens(str(message.content)) for message in messages
         )
         output_tokens = _estimate_tokens(self.response)
+        response_metadata = {
+            "model_name": self.model_name,
+            "provider": "emulated",
+            "profile": self._effective_profile(),
+            "finish_reason": "stop",
+        }
+        if latency_plan is not None:
+            response_metadata.update(
+                {
+                    "emulated_delay_ms": latency_plan.total_delay_ms,
+                    "emulation_call_index": latency_plan.call_index,
+                }
+            )
+            if latency_plan.session_seed is not None:
+                response_metadata["emulation_session_seed"] = latency_plan.session_seed
         return AIMessage(
             content=self.response,
-            response_metadata={
-                "model_name": self.model_name,
-                "provider": "emulated",
-                "profile": self.profile,
-                "finish_reason": "stop",
-            },
+            response_metadata=response_metadata,
             usage_metadata={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -144,7 +384,12 @@ class EmulatedChatModel(BaseChatModel):
             },
         )
 
-    def _build_chunks(self, messages: list[BaseMessage]) -> list[AIMessageChunk]:
+    def _build_chunks(
+        self,
+        messages: list[BaseMessage],
+        *,
+        latency_plan: EmulationLatencyPlan | None = None,
+    ) -> list[AIMessageChunk]:
         """Split the response into stable stream chunks.
 
         WHY: Streaming endpoints and LangGraph event streams need chunked output
@@ -157,32 +402,140 @@ class EmulatedChatModel(BaseChatModel):
         chunks: list[AIMessageChunk] = []
         for index, word in enumerate(words):
             separator = "" if index == len(words) - 1 else " "
+            response_metadata = {
+                "model_name": self.model_name,
+                "provider": "emulated",
+                "profile": self._effective_profile(),
+            }
+            if latency_plan is not None:
+                response_metadata.update(
+                    {
+                        "emulated_delay_ms": latency_plan.total_delay_ms,
+                        "emulation_call_index": latency_plan.call_index,
+                    }
+                )
+                if latency_plan.session_seed is not None:
+                    response_metadata["emulation_session_seed"] = (
+                        latency_plan.session_seed
+                    )
             chunks.append(
                 AIMessageChunk(
                     content=f"{word}{separator}",
-                    response_metadata={
-                        "model_name": self.model_name,
-                        "provider": "emulated",
-                        "profile": self.profile,
-                    },
+                    response_metadata=response_metadata,
                 )
             )
 
         chunks[-1] = chunks[-1].model_copy(update={"chunk_position": "last"})
         return chunks
 
-    def _maybe_sleep_sync(self) -> None:
-        if self.latency_ms > 0:
-            time.sleep(self.latency_ms / 1000.0)
+    def _build_latency_plan(self, *, chunk_count: int = 0) -> EmulationLatencyPlan:
+        """Plan latency for one emulated model call.
 
-    async def _maybe_sleep_async(self) -> None:
-        if self.latency_ms > 0:
-            await asyncio.sleep(self.latency_ms / 1000.0)
+        WHY: one planner keeps jitter, per-session scaling, and progressive
+        call growth consistent across invoke and stream code paths.
+        """
+
+        session_state = _ACTIVE_EMULATION_SESSION.get()
+        overrides = session_state.overrides if session_state is not None else None
+        call_index = 1
+        session_seed: int | None = None
+        session_scale = 1.0
+        jitter_ms = 0
+        latency_ms = (
+            overrides.latency_ms
+            if overrides is not None and overrides.latency_ms is not None
+            else self.latency_ms
+        )
+        latency_jitter_ms = (
+            overrides.latency_jitter_ms
+            if overrides is not None and overrides.latency_jitter_ms is not None
+            else self.latency_jitter_ms
+        )
+        session_scale_min = (
+            overrides.session_scale_min
+            if overrides is not None and overrides.session_scale_min is not None
+            else self.session_scale_min
+        )
+        session_scale_max = (
+            overrides.session_scale_max
+            if overrides is not None and overrides.session_scale_max is not None
+            else self.session_scale_max
+        )
+        step_latency_growth = (
+            overrides.step_latency_growth
+            if overrides is not None and overrides.step_latency_growth is not None
+            else self.step_latency_growth
+        )
+        stream_first_chunk_ratio = (
+            overrides.stream_first_chunk_ratio
+            if overrides is not None
+            and overrides.stream_first_chunk_ratio is not None
+            else self.stream_first_chunk_ratio
+        )
+
+        if session_state is not None:
+            call_index = session_state.call_index + 1
+            session_seed = session_state.seed
+            session_min, session_max = _coerce_session_scale_bounds(
+                session_scale_min,
+                session_scale_max,
+            )
+            if session_state.session_scale is None:
+                session_state.session_scale = session_state.rng.uniform(
+                    session_min,
+                    session_max,
+                )
+            session_scale = session_state.session_scale
+            if latency_jitter_ms > 0:
+                jitter_ms = session_state.rng.randint(
+                    -latency_jitter_ms,
+                    latency_jitter_ms,
+                )
+            session_state.call_index = call_index
+
+        scaled_base_latency_ms = max(0, latency_ms + jitter_ms)
+        growth_multiplier = 1.0 + (max(0, call_index - 1) * step_latency_growth)
+        total_delay_ms = max(
+            0,
+            int(round(scaled_base_latency_ms * session_scale * growth_multiplier)),
+        )
+        pre_chunk_delays_ms = ()
+        if chunk_count > 0:
+            pre_chunk_delays_ms = _distribute_stream_delays(
+                total_delay_ms,
+                chunk_count,
+                stream_first_chunk_ratio,
+            )
+
+        return EmulationLatencyPlan(
+            total_delay_ms=total_delay_ms,
+            call_index=call_index,
+            session_seed=session_seed,
+            session_scale=session_scale,
+            jitter_ms=jitter_ms,
+            pre_chunk_delays_ms=pre_chunk_delays_ms,
+        )
+
+    def _maybe_sleep_sync(self, latency_plan: EmulationLatencyPlan) -> None:
+        _sleep_sync_ms(latency_plan.total_delay_ms)
+
+    async def _maybe_sleep_async(self, latency_plan: EmulationLatencyPlan) -> None:
+        await _sleep_async_ms(latency_plan.total_delay_ms)
 
     def _maybe_raise(self) -> None:
-        if self.error_rate <= 0:
+        overrides = self._get_session_overrides()
+        error_rate = (
+            overrides.error_rate
+            if overrides is not None and overrides.error_rate is not None
+            else self.error_rate
+        )
+        if error_rate <= 0:
             return
-        if random.random() < self.error_rate:
+        session_state = _ACTIVE_EMULATION_SESSION.get()
+        probability_roll = (
+            session_state.rng.random() if session_state is not None else random.random()
+        )
+        if probability_roll < error_rate:
             raise RuntimeError("Emulated LLM failure requested by test profile")
 
 
@@ -202,6 +555,26 @@ def create_emulated_chat_model(model_name: str, **kwargs: Any) -> EmulatedChatMo
         response=kwargs.pop("response", settings.llm_emulation_response),
         profile=kwargs.pop("profile", settings.llm_emulation_profile),
         latency_ms=kwargs.pop("latency_ms", settings.llm_emulation_latency_ms),
+        latency_jitter_ms=kwargs.pop(
+            "latency_jitter_ms",
+            getattr(settings, "llm_emulation_latency_jitter_ms", 0),
+        ),
+        session_scale_min=kwargs.pop(
+            "session_scale_min",
+            getattr(settings, "llm_emulation_session_scale_min", 1.0),
+        ),
+        session_scale_max=kwargs.pop(
+            "session_scale_max",
+            getattr(settings, "llm_emulation_session_scale_max", 1.0),
+        ),
+        step_latency_growth=kwargs.pop(
+            "step_latency_growth",
+            getattr(settings, "llm_emulation_step_latency_growth", 0.0),
+        ),
+        stream_first_chunk_ratio=kwargs.pop(
+            "stream_first_chunk_ratio",
+            getattr(settings, "llm_emulation_stream_first_chunk_ratio", 1.0),
+        ),
         error_rate=kwargs.pop("error_rate", settings.llm_emulation_error_rate),
         callbacks=callbacks,
     )

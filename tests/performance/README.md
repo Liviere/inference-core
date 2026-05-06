@@ -73,6 +73,8 @@ ENVIRONMENT=testing poetry run alembic upgrade head
 
 Wrapper scripts in `scripts/perf_tests/run_perf_*.py` automatically load root `.env.test` when that file exists. This means they can derive the default target host from `TARGET_HOST` or, when absent, from `HOST` plus `PORT`, so local test runs usually do not need an explicit `--host` flag.
 
+The shared performance launcher also rotates report artifacts by day under `reports/performance/YYYY/MM/DD` and reuses the same suffix for HTML and CSV outputs when you run the same profile multiple times. Use `--html`, `--csv-prefix`, `--output-dir`, or `--name-suffix` when you need a custom artifact layout.
+
 When the API process starts with `ENVIRONMENT=testing`, the application now defaults to safe no-cost runtime guardrails unless you override them explicitly:
 
 ```bash
@@ -102,6 +104,17 @@ When you explicitly choose `EMBEDDING_BACKEND=local`, also start the dedicated e
 ```bash
 poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=solo --loglevel=info
 ```
+
+The `run_perf_llm_mock.py` wrapper layers a performance-oriented emulation profile on top of those guardrails by default:
+
+- `LLM_EMULATION_LATENCY_MS=3000`
+- `LLM_EMULATION_LATENCY_JITTER_MS=500`
+- `LLM_EMULATION_SESSION_SCALE_MIN=0.9`
+- `LLM_EMULATION_SESSION_SCALE_MAX=5.0`
+- `LLM_EMULATION_STEP_LATENCY_GROWTH=0.35`
+- `LLM_EMULATION_STREAM_FIRST_CHUNK_RATIO=0.25`
+
+Those values make repeated agent sessions feel more like real traffic while staying fully no-cost. Override them if you want a lighter smoke run or a heavier stress profile.
 
 `LOAD_PROFILE=llm_mock` also checks the local Locust environment for `LLM_EMULATION_ENABLED=true` and `EMBEDDING_BACKEND` set to either `fake` or `local` before it starts. If Locust targets a separately managed test server where those variables are set only on the server, set `LOCUST_ALLOW_UNSAFE_LLM_TRAFFIC=true` only after verifying that server-side no-cost configuration.
 
@@ -199,7 +212,7 @@ The embeddings worker is still only involved when the API process runs with `EMB
 
 ### Using Predefined Profiles
 
-Wrapper scripts are now the recommended entrypoint. They set `LOAD_PROFILE` for you, load root `.env.test` automatically when present, apply profile defaults, generate the standard HTML report by default, and still let you override the important Locust knobs.
+Wrapper scripts are now the recommended entrypoint. They set `LOAD_PROFILE` for you, load root `.env.test` automatically when present, apply profile defaults, generate the standard HTML report by default, and still let you override the important Locust knobs. They also use a shared launcher that prints the effective command, applies daily report rotation, and keeps HTML/CSV artifact naming aligned across runs.
 
 ```bash
 # Light load (default)
