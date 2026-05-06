@@ -50,6 +50,8 @@ The API exposes endpoints for inspecting and controlling Celery tasks:
 - GET `/api/v1/tasks/active` – lists active/scheduled/reserved tasks per worker
 - GET `/api/v1/tasks/workers/stats` – worker stats, ping, and registered tasks
 
+Task IDs in path parameters must be non-empty and cannot contain whitespace or control characters.
+
 Example checks
 
 - Health: `curl http://localhost:${PORT:-8000}/api/v1/tasks/health`

@@ -6,9 +6,9 @@ Provides endpoints for task status checking, cancellation, and monitoring.
 """
 
 import logging
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from inference_core.schemas.tasks_responses import (
     ActiveTasksResponse,
@@ -26,11 +26,21 @@ TASK_INSPECT_TIMEOUT_SECONDS = 1.0
 TASK_HEALTH_CACHE_TTL_SECONDS = 5.0
 TASK_ACTIVE_CACHE_TTL_SECONDS = 2.0
 TASK_FAILURE_CACHE_TTL_SECONDS = 30.0
+TASK_ID_PATTERN = r"^[^\s\x00-\x1F\x7F]+$"
+TaskIdPath = Annotated[
+    str,
+    Path(
+        min_length=1,
+        max_length=255,
+        pattern=TASK_ID_PATTERN,
+        description="Celery task identifier without whitespace or control characters",
+    ),
+]
 
 
 @router.get("/{task_id}/status", response_model=TaskStatusResponse)
 async def get_task_status(
-    task_id: str, task_service: TaskService = Depends(get_task_service)
+    task_id: TaskIdPath, task_service: TaskService = Depends(get_task_service)
 ):
     """
     Get the status of a specific task.
@@ -51,7 +61,7 @@ async def get_task_status(
         )
 
     except Exception as e:
-        logger.error(f"Failed to get task status for {task_id}: {str(e)}")
+        logger.error("Failed to get task status for %s: %s", task_id, e)
         raise HTTPException(
             status_code=500, detail=f"Failed to get task status: {str(e)}"
         )
@@ -59,7 +69,7 @@ async def get_task_status(
 
 @router.get("/{task_id}/result")
 async def get_task_result(
-    task_id: str,
+    task_id: TaskIdPath,
     timeout: Optional[float] = Query(default=None, description="Timeout in seconds"),
     task_service: TaskService = Depends(get_task_service),
 ):
@@ -74,7 +84,7 @@ async def get_task_result(
         return {"task_id": task_id, "result": result, "success": True}
 
     except Exception as e:
-        logger.error(f"Failed to get task result for {task_id}: {str(e)}")
+        logger.error("Failed to get task result for %s: %s", task_id, e)
         raise HTTPException(
             status_code=500, detail=f"Failed to get task result: {str(e)}"
         )
@@ -82,7 +92,7 @@ async def get_task_result(
 
 @router.delete("/{task_id}", response_model=TaskCancelResponse)
 async def cancel_task(
-    task_id: str, task_service: TaskService = Depends(get_task_service)
+    task_id: TaskIdPath, task_service: TaskService = Depends(get_task_service)
 ):
     """
     Cancel a pending or running task.
@@ -101,7 +111,7 @@ async def cancel_task(
         )
 
     except Exception as e:
-        logger.error(f"Failed to cancel task {task_id}: {str(e)}")
+        logger.error("Failed to cancel task %s: %s", task_id, e)
         raise HTTPException(status_code=500, detail=f"Failed to cancel task: {str(e)}")
 
 

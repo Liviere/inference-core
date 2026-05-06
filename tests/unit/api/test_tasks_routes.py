@@ -15,8 +15,12 @@ class FakeTaskService:
     active_calls = []
     stats_calls = []
     ping_calls = []
+    status_ids = []
+    result_ids = []
+    cancel_ids = []
 
     async def get_task_status_async(self, task_id: str):
+        self.status_ids.append(task_id)
         return {
             "status": "SUCCESS",
             "result": {"ok": True},
@@ -27,9 +31,11 @@ class FakeTaskService:
         }
 
     async def get_task_result_async(self, task_id: str, timeout=None):
+        self.result_ids.append(task_id)
         return {"value": 42}
 
     async def cancel_task_async(self, task_id: str):
+        self.cancel_ids.append(task_id)
         return True
 
     async def get_active_tasks_async(
@@ -75,6 +81,10 @@ class FakeTaskService:
 
 @pytest.mark.asyncio
 async def test_task_status_and_result_and_cancel():
+    FakeTaskService.status_ids = []
+    FakeTaskService.result_ids = []
+    FakeTaskService.cancel_ids = []
+
     # Build app with temporary DB and override TaskService
     engine = create_database_engine()
     async with engine.begin() as conn:
@@ -111,6 +121,46 @@ async def test_task_status_and_result_and_cancel():
         r = await client.delete("/api/v1/tasks/abc")
         assert r.status_code == 200
         assert r.json()["cancelled"] is True
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_task_routes_reject_control_character_ids():
+    FakeTaskService.status_ids = []
+    FakeTaskService.result_ids = []
+    FakeTaskService.cancel_ids = []
+
+    engine = create_database_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_maker = get_non_singleton_session_maker(engine=engine)
+
+    async def override_get_db():
+        async with session_maker() as session:
+            yield session
+
+    app = create_application()
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_task_service] = lambda: FakeTaskService()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        status_response = await client.get("/api/v1/tasks/bad%0Aid/status")
+        assert status_response.status_code == 422
+
+        result_response = await client.get("/api/v1/tasks/bad%0Aid/result")
+        assert result_response.status_code == 422
+
+        cancel_response = await client.delete("/api/v1/tasks/bad%0Aid")
+        assert cancel_response.status_code == 422
+
+    assert FakeTaskService.status_ids == []
+    assert FakeTaskService.result_ids == []
+    assert FakeTaskService.cancel_ids == []
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
