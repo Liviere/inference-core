@@ -71,7 +71,7 @@ ENVIRONMENT=testing poetry run alembic upgrade head
 
 4. For the no-cost LLM mock profile:
 
-Wrapper scripts in `scripts/run_perf_*.py` automatically load root `.env.test` when that file exists. This means they can derive the default target host from `TARGET_HOST` or, when absent, from `HOST` plus `PORT`, so local test runs usually do not need an explicit `--host` flag.
+Wrapper scripts in `scripts/perf_tests/run_perf_*.py` automatically load root `.env.test` when that file exists. This means they can derive the default target host from `TARGET_HOST` or, when absent, from `HOST` plus `PORT`, so local test runs usually do not need an explicit `--host` flag.
 
 When the API process starts with `ENVIRONMENT=testing`, the application now defaults to safe no-cost runtime guardrails unless you override them explicitly:
 
@@ -184,13 +184,13 @@ The embeddings worker is still only involved when the API process runs with `EMB
 2. Run the default light profile through the wrapper script:
 
    ```bash
-   poetry run python scripts/run_perf_light.py
+   poetry run python scripts/perf_tests/run_perf_light.py
    ```
 
 3. To use the Locust web UI instead of headless mode:
 
    ```bash
-   poetry run python scripts/run_perf_light.py --web-ui
+   poetry run python scripts/perf_tests/run_perf_light.py --web-ui
    ```
 
 4. Open the Locust web UI at: http://localhost:8089
@@ -203,25 +203,25 @@ Wrapper scripts are now the recommended entrypoint. They set `LOAD_PROFILE` for 
 
 ```bash
 # Light load (default)
-poetry run python scripts/run_perf_light.py
+poetry run python scripts/perf_tests/run_perf_light.py
 
 # Medium load
-poetry run python scripts/run_perf_medium.py
+poetry run python scripts/perf_tests/run_perf_medium.py
 
 # Heavy load
-poetry run python scripts/run_perf_heavy.py
+poetry run python scripts/perf_tests/run_perf_heavy.py
 
 # Spike test
-poetry run python scripts/run_perf_spike.py
+poetry run python scripts/perf_tests/run_perf_spike.py
 
 # Endurance test
-poetry run python scripts/run_perf_endurance.py
+poetry run python scripts/perf_tests/run_perf_endurance.py
 
 # No-cost LLM mock traffic with the default fake embeddings backend
-poetry run python scripts/run_perf_llm_mock.py
+poetry run python scripts/perf_tests/run_perf_llm_mock.py
 
 # Same profile with a local SentenceTransformer backend (requires embeddings worker)
-poetry run python scripts/run_perf_llm_mock.py \
+poetry run python scripts/perf_tests/run_perf_llm_mock.py \
   --embedding-backend local \
   --name-suffix local-embeddings
 ```
@@ -235,14 +235,14 @@ Common wrapper flags:
 - `--html`, `--csv-prefix`, `--output-dir`, and `--name-suffix` customize artifact paths
 - `--no-html` disables the default HTML report for one run
 - `--skip-auth-preflight` bypasses the auth startup safety check when you really need it
-- `scripts/run_perf_llm_mock.py` also supports `--embedding-backend fake|local` and `--allow-unsafe-llm-traffic`
+- `scripts/perf_tests/run_perf_llm_mock.py` also supports `--embedding-backend fake|local` and `--allow-unsafe-llm-traffic`
 
 ### Headless Mode (CI/CD)
 
 For automated testing without the web UI:
 
 ```bash
-poetry run python scripts/run_perf_light.py \
+poetry run python scripts/perf_tests/run_perf_light.py \
   --users 10 \
   --spawn-rate 2 \
   --duration 2m \
@@ -255,13 +255,13 @@ poetry run python scripts/run_perf_light.py \
 Override target host:
 
 ```bash
-poetry run python scripts/run_perf_medium.py --host http://staging.yourapi.com
+poetry run python scripts/perf_tests/run_perf_medium.py --host http://staging.yourapi.com
 ```
 
 Run with a custom report suffix so repeated runs do not overwrite each other:
 
 ```bash
-poetry run python scripts/run_perf_medium.py \
+poetry run python scripts/perf_tests/run_perf_medium.py \
   --host http://production.yourapi.com \
   --name-suffix baseline \
   --csv
@@ -387,7 +387,7 @@ Use `--name-suffix` when you want separate artifact families inside the same dat
 For detailed analysis, add `--csv` to any wrapper command or call raw Locust directly. CSV files go to the same dated directory as the HTML report and reuse the same rotation suffix for that run.
 
 ```bash
-poetry run python scripts/run_perf_light.py \
+poetry run python scripts/perf_tests/run_perf_light.py \
   --host http://localhost:8000 \
   --users 10 \
   --spawn-rate 2 \
@@ -525,7 +525,7 @@ jobs:
 
       - name: Run smoke test
         run: |
-          poetry run python scripts/run_perf_light.py \
+          poetry run python scripts/perf_tests/run_perf_light.py \
             --host http://localhost:8000 \
             --users 2 \
             --spawn-rate 1 \
