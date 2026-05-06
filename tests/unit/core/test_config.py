@@ -16,6 +16,23 @@ from inference_core.core.config import (
     ListParsingEnvSource,
     Settings,
 )
+from inference_core.core.env import get_project_dotenv_path
+
+
+class TestProjectDotenvPath:
+    """Test repository-root dotenv selection for local entrypoints."""
+
+    def test_uses_test_dotenv_when_environment_is_testing(self, monkeypatch):
+        """Test local testing mode resolves the dedicated test dotenv file."""
+        monkeypatch.setenv("ENVIRONMENT", "testing")
+
+        assert get_project_dotenv_path().name == ".env.test"
+
+    def test_uses_default_dotenv_when_environment_is_not_testing(self, monkeypatch):
+        """Test non-testing modes keep the default development dotenv file."""
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+        assert get_project_dotenv_path().name == ".env"
 
 
 class TestListParsingEnvSource:

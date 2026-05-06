@@ -11,10 +11,9 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Optional, Union
 
-from dotenv import load_dotenv
+from inference_core.core.env import load_project_dotenv
 
-load_dotenv()
-load_dotenv("../../.env", override=True)
+load_project_dotenv()
 
 from celery import Celery
 from celery.signals import (
@@ -308,8 +307,7 @@ def create_celery_app(
         post_configure: Callbacks executed after configuration allowing further tweaks.
     """
 
-    load_dotenv()
-    load_dotenv("../../.env", override=True)
+    load_project_dotenv(override=True)
 
     settings = custom_settings or get_settings()
 

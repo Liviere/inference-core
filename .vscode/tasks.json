@@ -18,6 +18,22 @@
 			"problemMatcher": []
 		},
 		{
+			"label": "Run FastAPI Server (Testing)",
+			"type": "shell",
+			"command": "ENVIRONMENT=testing poetry run python run.py",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run FastAPI Development Server (Poetry, Testing)",
+			"type": "shell",
+			"command": "set -a && . ./.env.test && set +a && ENVIRONMENT=testing poetry run uvicorn inference_core.main_factory:create_application --factory --reload --host \"${HOST:-0.0.0.0}\" --port \"${PORT:-8100}\"",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
 			"label": "Celery: Start Worker",
 			"type": "shell",
 			"command": "poetry run celery -A inference_core.celery.celery_main:celery_app worker -n worker@%h --pool=threads --exclude-queues=embeddings,mail --loglevel=info",
@@ -50,9 +66,49 @@
 			"problemMatcher": []
 		},
 		{
+			"label": "Celery: Start Worker (Testing)",
+			"type": "shell",
+			"command": "ENVIRONMENT=testing poetry run celery -A inference_core.celery.celery_main:celery_app worker -n test_worker@%h --pool=threads --exclude-queues=embeddings,mail --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Worker (Mail, Testing)",
+			"type": "shell",
+			"command": "ENVIRONMENT=testing poetry run celery -A inference_core.celery.celery_main:celery_app worker -n test_mail@%h --queues=mail --pool=threads --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Worker (Embeddings, Testing)",
+			"type": "shell",
+			"command": "ENVIRONMENT=testing poetry run celery -A inference_core.celery.celery_main:celery_app worker -n test_embeddings@%h --queues=embeddings --pool=solo --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Beat (Testing)",
+			"type": "shell",
+			"command": "ENVIRONMENT=testing poetry run celery -A inference_core.celery.celery_main:celery_app beat --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
 			"label": "Celery: Start Worker (DEBUG)",
 			"type": "shell",
 			"command": "export DEBUG_CELERY=1 && poetry run celery -A inference_core.celery.celery_main:celery_app worker -n debug@%h --loglevel=info",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Celery: Start Worker (DEBUG, Testing)",
+			"type": "shell",
+			"command": "DEBUG_CELERY=1 ENVIRONMENT=testing poetry run celery -A inference_core.celery.celery_main:celery_app worker -n debug_test@%h --loglevel=info",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
@@ -66,9 +122,25 @@
 			"problemMatcher": []
 		},
 		{
+			"label": "LangGraph: Dev Server (Testing)",
+			"type": "shell",
+			"command": "ENVIRONMENT=testing LANGGRAPH_AUTH_DISABLED=true poetry run langgraph dev --config langgraph.test.json --port 2124 --no-browser",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
 			"label": "LangGraph: Dev Server (with debugger)",
 			"type": "shell",
 			"command": "poetry run langgraph dev --no-browser --debug-port 5679",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "LangGraph: Dev Server (with debugger, Testing)",
+			"type": "shell",
+			"command": "ENVIRONMENT=testing LANGGRAPH_AUTH_DISABLED=true poetry run langgraph dev --config langgraph.test.json --port 2124 --no-browser --debug-port 5680",
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
