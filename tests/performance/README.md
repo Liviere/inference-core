@@ -1,6 +1,6 @@
 # Performance Testing Guide
 
-This directory contains comprehensive performance tests for the FastAPI Backend Template using Locust. The tests cover all major API endpoints except LLM endpoints to avoid provider costs.
+This directory contains comprehensive performance tests for the FastAPI Backend Template using Locust. Default profiles avoid provider-backed LLM traffic, while the `llm_mock` profile exercises agent, embedding, and vector workflows only against a no-cost emulated environment.
 
 ## Overview
 
@@ -11,6 +11,7 @@ The performance test suite includes:
 - **Authentication Flow Tests**: Registration, login, profile management, password changes, token refresh, logout
 - **Task System Tests**: Task health monitoring, worker statistics, active tasks
 - **Database Health Tests**: Focused database performance testing
+- **No-Cost LLM Mock Tests**: Agent instances, emulated agent runs, fake embeddings, and vector search workflows
 
 ## Prerequisites
 
@@ -48,10 +49,26 @@ Before running performance tests, ensure these services are running:
    ```
 
 2. Copy configuration files if not already done:
+
    ```bash
    cp .env.example .env
    cp llm_config.example.yaml llm_config.yaml
    ```
+
+3. For the no-cost LLM mock profile, configure the API process with explicit guardrails:
+
+   ```bash
+   LLM_EMULATION_ENABLED=true
+   EMBEDDING_BACKEND=fake
+   VECTOR_BACKEND=memory
+   LLM_API_ACCESS_MODE=user
+   AGENT_TOOL_ENVIRONMENT=strict_test
+   AGENT_REQUIRE_TEST_DOUBLES=true
+   AGENT_TOOL_DOUBLE_STRATEGY=replace
+   LLM_TOOL_EMULATION_MODE=external
+   ```
+
+   `LOAD_PROFILE=llm_mock` also checks the local Locust environment for `LLM_EMULATION_ENABLED=true` and `EMBEDDING_BACKEND=fake` before it starts. If Locust targets a separately managed test server where those variables are set only on the server, set `LOCUST_ALLOW_UNSAFE_LLM_TRAFFIC=true` only after verifying that server-side no-cost configuration.
 
 ## Load Profiles
 
@@ -97,6 +114,15 @@ The test suite includes predefined load profiles for different testing scenarios
 - **Spawn Rate**: 1 user/second
 - **Use Case**: Memory leak detection, long-term stability
 
+### LLM Mock Profile (`llm_mock`)
+
+- **Purpose**: Realistic user-workspace traffic without paid provider calls
+- **Users**: 25
+- **Duration**: 5 minutes
+- **Spawn Rate**: 2.5 users/second
+- **Use Case**: E2E/performance validation of agent instances, emulated agent runs, fake embeddings, and vector search
+- **Requires**: `LLM_EMULATION_ENABLED=true`, `EMBEDDING_BACKEND=fake`, and preferably `VECTOR_BACKEND=memory`
+
 ## Running Performance Tests
 
 ### Basic Usage
@@ -133,6 +159,16 @@ LOAD_PROFILE=spike poetry run locust -f tests/performance/locustfile.py --host h
 
 # Endurance test
 LOAD_PROFILE=endurance poetry run locust -f tests/performance/locustfile.py --host http://localhost:8000 --headless -u 50 -r 1 -t 30m --html reports/performance/endurance_load_report.html
+
+# No-cost LLM mock traffic
+LLM_EMULATION_ENABLED=true EMBEDDING_BACKEND=fake LOAD_PROFILE=llm_mock \
+  poetry run locust -f tests/performance/locustfile.py \
+  --host http://localhost:8000 \
+  --headless \
+  -u 25 \
+  -r 2.5 \
+  -t 5m \
+  --html reports/performance/llm_mock_load_report.html
 ```
 
 ### Headless Mode (CI/CD)
@@ -205,11 +241,37 @@ Tests task system monitoring:
 - `GET /api/v1/tasks/workers/stats` - Worker statistics
 - `GET /api/v1/tasks/active` - Active tasks information
 
-## Excluded Endpoints
+### LLMMockWorkspaceUser
 
-The following endpoints are explicitly excluded to avoid costs and complexity:
+Tests a realistic no-cost user session. Each simulated user registers, logs in, creates one agent instance from the configured templates, seeds a small vector collection, then repeats read/write workflows:
 
-- **All LLM endpoints**: `/api/v1/llm/*`
+- `GET /api/v1/agent-instances/templates` - Browse available agent templates
+- `POST /api/v1/agent-instances` - Create a user-owned agent instance
+- `GET /api/v1/agent-instances` and `GET /api/v1/agent-instances/{id}` - Refresh workspace state
+- `PATCH /api/v1/agent-instances/{id}` - Update harmless agent metadata
+- `POST /api/v1/agent-instances/{id}/run` - Run the agent through the emulated LLM path
+- `POST /api/v1/embeddings/generate` - Generate deterministic fake embeddings and fail if the backend is not `fake`
+- `GET /api/v1/vector/health` - Check vector readiness
+- `POST /api/v1/vector/ingest` with `async_mode=false` - Seed and update a small knowledge base without Celery ingestion
+- `POST /api/v1/vector/query` and `POST /api/v1/vector/list` - Exercise search and listing
+- `GET /api/v1/vector/collections/{collection}/stats` - Refresh collection statistics
+
+## Endpoint and Mock Readiness
+
+| Area                           | Locust status                   | No-cost readiness                                                                                                   |
+| ------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Health/auth/tasks              | Covered by existing profiles    | Safe; no paid providers involved                                                                                    |
+| Agent instances and agent runs | Covered by `llm_mock`           | Safe when `LLM_EMULATION_ENABLED=true` and tool exposure uses `strict_test` or emulated tools                       |
+| Embeddings                     | Covered by `llm_mock`           | Safe only with `EMBEDDING_BACKEND=fake`; the scenario fails responses that report another backend                   |
+| Vector store                   | Covered by `llm_mock`           | Safe with fake embeddings; `VECTOR_BACKEND=memory` is recommended for isolated load runs                            |
+| Batch jobs                     | Not included in default traffic | Full batch lifecycle still needs a fake batch provider before it is safe to load-test provider submission/execution |
+
+## Excluded or Deferred Endpoints
+
+The following endpoints are excluded or deferred to avoid costs and complexity:
+
+- **Provider-backed LLM traffic**: real model/provider calls are not included in default profiles; use `llm_mock` only with emulation enabled
+- **Full batch lifecycle**: create/submit/provider execution is deferred until a fake batch provider is implemented
 - **Task result endpoints**: `/api/v1/tasks/{task_id}/status`, `/api/v1/tasks/{task_id}/result`
 - **Task cancellation**: `DELETE /api/v1/tasks/{task_id}`
 - **Email delivery**: Password reset email sending
@@ -247,6 +309,9 @@ PERFORMANCE_THRESHOLDS = {
     "health_p95_ms": 100,      # Health endpoints should be fast
     "auth_p95_ms": 500,        # Auth operations can be slower
     "tasks_p95_ms": 200,       # Task monitoring should be responsive
+    "agent_run_p95_ms": 2500,  # Emulated agent runs exercise LangChain setup
+    "embedding_p95_ms": 300,   # Fake embeddings should be lightweight
+    "vector_p95_ms": 800,      # Vector workflows include storage/search
     "overall_failure_rate": 0.01,  # Less than 1% failure rate
 }
 ```

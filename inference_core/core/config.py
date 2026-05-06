@@ -32,6 +32,8 @@ class ListParsingEnvSource(EnvSettingsSource):
             "cors_origins",
             "cors_headers",
             "allowed_hosts",
+            "llm_tool_emulation_include",
+            "llm_tool_emulation_exclude",
         ) and isinstance(value, str):
             # Handle special case of "*" which should remain as single item
             if value.strip() == "*":
@@ -62,6 +64,8 @@ class ListParsingDotEnvSource(DotEnvSettingsSource):
             "cors_origins",
             "cors_headers",
             "allowed_hosts",
+            "llm_tool_emulation_include",
+            "llm_tool_emulation_exclude",
         ) and isinstance(value, str):
             # Handle special case of "*" which should remain as single item
             if value.strip() == "*":
@@ -275,6 +279,77 @@ class Settings(BaseSettings):
     )
 
     ###################################
+    #       LLM EMULATION             #
+    ###################################
+    llm_config_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional path to the LLM YAML config. Relative paths are resolved "
+            "from the project root. Useful for fully emulated test profiles."
+        ),
+    )
+    llm_emulation_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, chat model creation is routed to an in-process "
+            "emulated model instead of real LLM providers."
+        ),
+    )
+    llm_emulation_profile: str = Field(
+        default="deterministic",
+        description="Named response profile used by the emulated chat model.",
+    )
+    llm_emulation_response: str = Field(
+        default="This is an emulated LLM response.",
+        description="Default assistant message returned by deterministic emulation.",
+    )
+    llm_emulation_latency_ms: int = Field(
+        default=0,
+        ge=0,
+        le=60000,
+        description="Artificial latency in milliseconds added to emulated LLM calls.",
+    )
+    llm_emulation_error_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Probability that an emulated LLM call raises a test error.",
+    )
+    llm_tool_emulation_mode: Literal["off", "all", "configured", "external"] = Field(
+        default="off",
+        description=(
+            "Tool emulation policy for agent tests. 'all' emulates every tool, "
+            "'configured' uses the include list, and 'external' targets tools "
+            "marked as network/cost/side-effecting."
+        ),
+    )
+    llm_tool_emulation_include: Optional[List[str]] = Field(
+        default=None,
+        description="Optional comma-separated list of tool names to emulate.",
+    )
+    llm_tool_emulation_exclude: Optional[List[str]] = Field(
+        default=None,
+        description="Optional comma-separated list of tool names never emulated.",
+    )
+    agent_tool_environment: Literal["production", "emulated", "strict_test"] = Field(
+        default="production",
+        description=(
+            "Global agent tool exposure mode. strict_test exposes only tools "
+            "with explicit test doubles."
+        ),
+    )
+    agent_require_test_doubles: bool = Field(
+        default=False,
+        description="When true, tools without test doubles are not exposed to agents.",
+    )
+    agent_tool_double_strategy: Literal["replace", "disable", "passthrough"] = Field(
+        default="replace",
+        description=(
+            "How test doubles are applied in non-production tool environments."
+        ),
+    )
+
+    ###################################
     #        VECTOR STORE             #
     ###################################
     vector_backend: Optional[Literal["qdrant", "memory"]] = Field(
@@ -317,10 +392,10 @@ class Settings(BaseSettings):
     ###################################
     #      EMBEDDING SETTINGS         #
     ###################################
-    embedding_backend: Literal["local", "remote"] = Field(
+    embedding_backend: Literal["local", "remote", "fake"] = Field(
         default="local",
         description="Embedding backend: 'local' (Celery prefork worker) "
-        "or 'remote' (API provider via LangChain).",
+        "or 'remote' (API provider via LangChain), or 'fake' for deterministic tests.",
     )
     embedding_local_model: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",

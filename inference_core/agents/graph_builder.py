@@ -203,6 +203,7 @@ def build_agent_graph(
         agent_name,
         agent_config,
         factory,
+        tools=tools,
         memory_service=memory_service,
         reasoning_output=agent_reasoning_output,
         memory_tools_config=agent_config.memory_tools,
@@ -238,6 +239,7 @@ def _build_server_middleware(
     agent_config: Any,
     factory: Any,
     *,
+    tools: list[Any] | None = None,
     include_instance_config: bool = True,
     memory_service: Any = None,
     reasoning_output: bool = False,
@@ -331,6 +333,21 @@ def _build_server_middleware(
             active_tool_names=memory_tools_config,
         )
         middleware.append(mem_middleware)
+
+    # --- LLMToolEmulator (when no-cost tool emulation is enabled) ---
+    try:
+        from inference_core.llm.emulation import build_tool_emulation_middleware
+
+        tool_emulator = build_tool_emulation_middleware(tools or [])
+        if tool_emulator is not None:
+            middleware.append(tool_emulator)
+    except Exception as e:
+        logger.error(
+            "Failed to build LLMToolEmulator for '%s': %s",
+            agent_name,
+            e,
+            exc_info=True,
+        )
 
     # --- CostTrackingMiddleware (user_id=None → resolved from runtime) ---
     pricing_config = None
@@ -436,11 +453,32 @@ def _load_provider_tools(
 
     try:
         loop = asyncio.new_event_loop()
+        from inference_core.core.config import get_settings
+
+        settings = get_settings()
+        tool_environment = getattr(agent_config, "tool_environment", "production")
+        if settings.agent_tool_environment != "production":
+            tool_environment = settings.agent_tool_environment
+        require_test_doubles = bool(
+            getattr(agent_config, "require_test_doubles", False)
+            or settings.agent_require_test_doubles
+            or tool_environment == "strict_test"
+        )
+        tool_double_strategy = getattr(
+            agent_config,
+            "tool_double_strategy",
+            settings.agent_tool_double_strategy,
+        )
+        if settings.agent_tool_double_strategy != "replace":
+            tool_double_strategy = settings.agent_tool_double_strategy
         provider_tools = loop.run_until_complete(
             load_tools_for_agent(
                 agent_name,
                 matched,
                 allowed_tools=agent_config.allowed_tools,
+                tool_environment=tool_environment,
+                require_test_doubles=require_test_doubles,
+                tool_double_strategy=tool_double_strategy,
             )
         )
         tools.extend(provider_tools)
@@ -604,6 +642,7 @@ def _build_server_subagents(
             name,
             sub_config,
             factory,
+            tools=sub_tools,
             include_instance_config=False,
         )
 

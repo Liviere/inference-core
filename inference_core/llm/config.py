@@ -591,6 +591,35 @@ class AgentConfig(BaseModel):
     allowed_tools: Optional[List[str]] = Field(
         default=None, description="Optional allowlist of tool names"
     )
+    tool_environment: str = Field(
+        default="production",
+        description=(
+            "Tool exposure mode for this agent: 'production', 'emulated', "
+            "or 'strict_test'. strict_test exposes only tools with explicit "
+            "test doubles."
+        ),
+    )
+    require_test_doubles: bool = Field(
+        default=False,
+        description=(
+            "When True, local provider tools without an explicit test double "
+            "are not exposed to this agent."
+        ),
+    )
+    test_tool_providers: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional provider names reserved for test profiles. The first "
+            "implementation uses provider/tool-level doubles; this field is "
+            "kept as declarative configuration for profile-specific wiring."
+        ),
+    )
+    tool_double_strategy: str = Field(
+        default="replace",
+        description=(
+            "How test doubles are applied: 'replace', 'disable', or 'passthrough'."
+        ),
+    )
     tool_model_overrides: Optional[List[ToolModelOverrideConfig]] = Field(
         default=None,
         description="Model overrides triggered by specific tool calls. "
@@ -733,6 +762,12 @@ class AgentConfig(BaseModel):
     _VALID_MISSING_CAPABILITY_STRATEGIES: ClassVar[frozenset[str]] = frozenset(
         {"skip", "delegate"}
     )
+    _VALID_TOOL_ENVIRONMENTS: ClassVar[frozenset[str]] = frozenset(
+        {"production", "emulated", "strict_test"}
+    )
+    _VALID_TOOL_DOUBLE_STRATEGIES: ClassVar[frozenset[str]] = frozenset(
+        {"replace", "disable", "passthrough"}
+    )
 
     @field_validator("memory_tools")
     @classmethod
@@ -754,6 +789,26 @@ class AgentConfig(BaseModel):
             raise ValueError(
                 "on_missing_capability must be one of: "
                 f"{sorted(cls._VALID_MISSING_CAPABILITY_STRATEGIES)}"
+            )
+        return v
+
+    @field_validator("tool_environment")
+    @classmethod
+    def validate_tool_environment(cls, v: str) -> str:
+        if v not in cls._VALID_TOOL_ENVIRONMENTS:
+            raise ValueError(
+                "tool_environment must be one of: "
+                f"{sorted(cls._VALID_TOOL_ENVIRONMENTS)}"
+            )
+        return v
+
+    @field_validator("tool_double_strategy")
+    @classmethod
+    def validate_tool_double_strategy(cls, v: str) -> str:
+        if v not in cls._VALID_TOOL_DOUBLE_STRATEGIES:
+            raise ValueError(
+                "tool_double_strategy must be one of: "
+                f"{sorted(cls._VALID_TOOL_DOUBLE_STRATEGIES)}"
             )
         return v
 
@@ -888,7 +943,14 @@ class LLMConfig:
 
     def _load_config(self):
         """Load configuration from YAML file"""
-        config_path = Path(__file__).parent.parent.parent / "llm_config.yaml"
+        project_root = Path(__file__).parent.parent.parent
+        configured_path = os.getenv("LLM_CONFIG_PATH")
+        if configured_path:
+            config_path = Path(configured_path)
+            if not config_path.is_absolute():
+                config_path = project_root / config_path
+        else:
+            config_path = project_root / "llm_config.yaml"
 
         # Load YAML configuration
         try:

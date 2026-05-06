@@ -22,6 +22,7 @@ from inference_core.core.resource_lifecycle import close_resource, close_resourc
 
 from .chat_fireworks import ChatFireworksReasoning
 from .config import LLMConfig, ModelConfig, ModelProvider
+from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
 from .param_policy import normalize_params
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,16 @@ class LLMModelFactory:
 
         model_config = self.config.get_model_config(model_name)
         if not model_config:
+            if is_llm_emulation_enabled():
+                logger.info(
+                    "Model configuration not found for '%s'; using emulated model",
+                    model_name,
+                )
+                model = create_emulated_chat_model(model_name, **kwargs)
+                self._remember_model(model)
+                if self.config.enable_caching:
+                    self._model_cache[cache_key] = model
+                return model
             logger.error(f"Model configuration not found: {model_name}")
             return None
 
@@ -104,6 +115,9 @@ class LLMModelFactory:
         self, config: ModelConfig, **kwargs
     ) -> Optional[BaseChatModel]:
         """Create model instance based on provider"""
+
+        if is_llm_emulation_enabled():
+            return create_emulated_chat_model(config.name, **kwargs)
 
         # Start with config params (including extras)
         # Exclude internal fields specific to ModelConfig infrastructure

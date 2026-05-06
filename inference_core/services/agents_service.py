@@ -602,6 +602,26 @@ class AgentService:
                         exc_info=True,
                     )
 
+        # Add no-cost tool emulation only after tools are loaded, so selection
+        # can respect include/exclude lists and tool metadata.
+        try:
+            from inference_core.llm.emulation import build_tool_emulation_middleware
+
+            tool_emulator = build_tool_emulation_middleware(self.tools)
+            if tool_emulator is not None:
+                middleware.append(tool_emulator)
+                logging.debug(
+                    "Added LLMToolEmulator for agent '%s' in emulation mode",
+                    self.display_name,
+                )
+        except Exception as e:
+            logging.error(
+                "Failed to add LLMToolEmulator for agent '%s': %s",
+                self.display_name,
+                e,
+                exc_info=True,
+            )
+
         # Add ToolBasedModelSwitchMiddleware if configured in agent config
         self._add_tool_model_switch_middleware(middleware)
 
@@ -1010,6 +1030,24 @@ class AgentService:
             multimodal_support_model = getattr(
                 self.agent_config, "multimodal_support_model", None
             )
+            settings = get_settings()
+            tool_environment = getattr(
+                self.agent_config, "tool_environment", "production"
+            )
+            if settings.agent_tool_environment != "production":
+                tool_environment = settings.agent_tool_environment
+            require_test_doubles = bool(
+                getattr(self.agent_config, "require_test_doubles", False)
+                or settings.agent_require_test_doubles
+                or tool_environment == "strict_test"
+            )
+            tool_double_strategy = getattr(
+                self.agent_config,
+                "tool_double_strategy",
+                settings.agent_tool_double_strategy,
+            )
+            if settings.agent_tool_double_strategy != "replace":
+                tool_double_strategy = settings.agent_tool_double_strategy
             provider_tools = await load_tools_for_agent(
                 self.agent_name,
                 confirmed_providers,
@@ -1017,6 +1055,9 @@ class AgentService:
                 model_multimodal=model_multimodal,
                 on_missing_capability=on_missing_capability,
                 multimodal_support_model=multimodal_support_model,
+                tool_environment=tool_environment,
+                require_test_doubles=require_test_doubles,
+                tool_double_strategy=tool_double_strategy,
                 user_context=provider_context,
                 user_id=provider_context.get("user_id"),
                 session_id=provider_context.get("session_id"),

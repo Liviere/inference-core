@@ -6,6 +6,7 @@ import pytest
 
 from inference_core.services.embedding_service import (
     EmbeddingService,
+    FakeDeterministicBackend,
     LocalCeleryBackend,
     RemoteLangChainBackend,
     clear_embedding_service_cache,
@@ -223,6 +224,18 @@ class TestEmbeddingService:
         assert isinstance(service._backend, LocalCeleryBackend)
 
     @patch("inference_core.services.embedding_service.get_settings")
+    def test_creates_fake_backend(self, mock_get_settings):
+        mock_get_settings.return_value = _mock_settings(
+            embedding_backend="fake",
+            vector_dim=8,
+        )
+
+        service = EmbeddingService()
+
+        assert isinstance(service._backend, FakeDeterministicBackend)
+        assert service.get_dimension() == 8
+
+    @patch("inference_core.services.embedding_service.get_settings")
     @patch("inference_core.llm.config.get_llm_config")
     @patch("langchain_openai.OpenAIEmbeddings")
     def test_creates_remote_backend(
@@ -255,6 +268,18 @@ class TestEmbeddingService:
         mock_get_settings.return_value.embedding_backend = "invalid"
         with pytest.raises(ValueError, match="Unknown EMBEDDING_BACKEND"):
             EmbeddingService()
+
+    def test_fake_backend_is_deterministic_and_dimensioned(self):
+        settings = _mock_settings(vector_dim=12)
+        backend = FakeDeterministicBackend(settings)
+
+        first = backend.embed_texts(["hello"])[0]
+        second = backend.embed_texts(["hello"])[0]
+        other = backend.embed_texts(["world"])[0]
+
+        assert len(first) == 12
+        assert first == second
+        assert first != other
 
     def test_get_embed_fn_returns_callable(self):
         mock_backend = MagicMock()

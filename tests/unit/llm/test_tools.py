@@ -353,6 +353,21 @@ class MultimodalMockTool(MockTool):
     requires_multimodal = True
 
 
+class ToolWithInlineDouble(MockTool):
+    """Mock production tool that declares its own test double."""
+
+    def __init__(self, name: str, double_name: str | None = None):
+        super().__init__(name)
+        self.test_double = MockTool(double_name or name)
+
+
+class ProviderWithTestTools(SimpleToolProvider):
+    """Provider exposing test doubles via get_test_tools()."""
+
+    async def get_test_tools(self, task_type: str, user_context=None):
+        return [MockTool("expensive_tool")]
+
+
 class TestCapabilityFiltering:
     """Tests for capability-aware tool loading (multimodal)."""
 
@@ -406,6 +421,64 @@ class TestCapabilityFiltering:
 
         assert len(loaded) == 1
         assert loaded[0].name == "needs_vision"
+
+
+class TestToolDoubles:
+    """Tests for replacing or filtering tools in test environments."""
+
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        clear_tool_providers()
+        yield
+        clear_tool_providers()
+
+    @pytest.mark.asyncio
+    async def test_emulated_environment_uses_inline_test_double(self):
+        register_tool_provider(
+            SimpleToolProvider(
+                "p",
+                [ToolWithInlineDouble("send_email", double_name="send_email")],
+            )
+        )
+
+        loaded = await load_tools_for_task(
+            task_type="chat",
+            provider_names=["p"],
+            tool_environment="emulated",
+        )
+
+        assert len(loaded) == 1
+        assert loaded[0].name == "send_email"
+        assert loaded[0].description == "A mock tool"
+
+    @pytest.mark.asyncio
+    async def test_strict_environment_skips_tool_without_double(self):
+        register_tool_provider(SimpleToolProvider("p", [MockTool("real_web_search")]))
+
+        loaded = await load_tools_for_task(
+            task_type="chat",
+            provider_names=["p"],
+            tool_environment="strict_test",
+            require_test_doubles=True,
+        )
+
+        assert loaded == []
+
+    @pytest.mark.asyncio
+    async def test_provider_level_test_tools_replace_production_tools(self):
+        register_tool_provider(
+            ProviderWithTestTools("p", [MockTool("expensive_tool")])
+        )
+
+        loaded = await load_tools_for_task(
+            task_type="chat",
+            provider_names=["p"],
+            tool_environment="strict_test",
+            require_test_doubles=True,
+        )
+
+        assert len(loaded) == 1
+        assert loaded[0].name == "expensive_tool"
 
     @pytest.mark.asyncio
     async def test_default_kwargs_are_backward_compatible(self):

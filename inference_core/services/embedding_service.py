@@ -6,15 +6,17 @@ Unified interface for generating text embeddings with two backends:
   SentenceTransformer. The API process never loads the model.
 - **remote**: Uses LangChain embedding classes (OpenAI, Gemini, DeepInfra, Ollama)
   configured in the ``embeddings:`` section of ``llm_config.yaml``.
+- **fake**: Generates deterministic in-process vectors for no-cost tests.
 
 The backend is selected by the ``EMBEDDING_BACKEND`` environment variable
-(``local`` or ``remote``).
+(``local``, ``remote``, or ``fake``).
 
 Consumers: ``AgentService._init_embeddings()``, ``QdrantProvider``,
 ``/api/v1/embeddings/generate`` endpoint.
 """
 
 import asyncio
+import hashlib
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -273,6 +275,54 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
 
 
 # ---------------------------------------------------------------------------
+# Fake backend — deterministic no-cost embeddings
+# ---------------------------------------------------------------------------
+
+
+class FakeDeterministicBackend(BaseEmbeddingBackend):
+    """Generate stable in-process vectors for no-cost test environments.
+
+    WHY: E2E, performance, and security tests need vector and memory flows to
+    behave like production without requiring local model workers or remote
+    embedding APIs.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._dim = settings.vector_dim
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed_one(text) for text in texts]
+
+    async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
+        return self.embed_texts(texts)
+
+    def get_dimension(self) -> int:
+        return self._dim
+
+    def _embed_one(self, text: str) -> list[float]:
+        """Create a deterministic unit-length vector from text content.
+
+        WHY: Hash-derived vectors are repeatable across processes, which keeps
+        vector-store assertions stable while avoiding heavyweight dependencies.
+        """
+        values: list[float] = []
+        counter = 0
+        while len(values) < self._dim:
+            digest = hashlib.sha256(f"{counter}:{text}".encode("utf-8")).digest()
+            for offset in range(0, len(digest), 4):
+                if len(values) >= self._dim:
+                    break
+                raw = int.from_bytes(digest[offset : offset + 4], "big")
+                values.append((raw / 2**32) * 2.0 - 1.0)
+            counter += 1
+
+        norm = sum(value * value for value in values) ** 0.5
+        if norm == 0:
+            return values
+        return [value / norm for value in values]
+
+
+# ---------------------------------------------------------------------------
 # Unified service
 # ---------------------------------------------------------------------------
 
@@ -294,6 +344,8 @@ class EmbeddingService:
                 self._backend = LocalCeleryBackend(settings)
             elif settings.embedding_backend == "remote":
                 self._backend = RemoteLangChainBackend(settings)
+            elif settings.embedding_backend == "fake":
+                self._backend = FakeDeterministicBackend(settings)
             else:
                 raise ValueError(
                     f"Unknown EMBEDDING_BACKEND: {settings.embedding_backend}"
