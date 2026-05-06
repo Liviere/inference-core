@@ -55,7 +55,21 @@ Before running performance tests, ensure these services are running:
    cp llm_config.example.yaml llm_config.yaml
    ```
 
-3. For the no-cost LLM mock profile, configure the API process with explicit guardrails:
+3. Initialize the database schema before any auth-dependent profile (`light`, `medium`, `heavy`, `spike`, `endurance`, `llm_mock`):
+
+For a fresh local test database, use the bootstrap helper first:
+
+```bash
+ENVIRONMENT=testing poetry run python scripts/bootstrap_test_db.py
+```
+
+For an already initialized database that only needs pending delta migrations, use:
+
+```bash
+ENVIRONMENT=testing poetry run alembic upgrade head
+```
+
+4. For the no-cost LLM mock profile, configure the API process with explicit guardrails:
 
    ```bash
    LLM_EMULATION_ENABLED=true
@@ -75,6 +89,19 @@ poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embe
 ```
 
 `LOAD_PROFILE=llm_mock` also checks the local Locust environment for `LLM_EMULATION_ENABLED=true` and `EMBEDDING_BACKEND` set to either `fake` or `local` before it starts. If Locust targets a separately managed test server where those variables are set only on the server, set `LOCUST_ALLOW_UNSAFE_LLM_TRAFFIC=true` only after verifying that server-side no-cost configuration.
+
+Auth-dependent profiles also run a startup preflight against `/api/v1/auth/register` and `/api/v1/auth/login`. If the target is missing schema bootstrap, the `users` table, or a usable auth configuration, Locust stops immediately with an actionable error instead of spending the whole run reporting secondary `401` and `500` failures. Set `LOCUST_SKIP_AUTH_PREFLIGHT=true` only when you intentionally want to bypass that safety check.
+
+## Session Model
+
+Authenticated Locust scenarios are stateful on a per-user basis:
+
+- Each `HttpUser` instance keeps its own credentials, access token metadata, and scenario-owned resources in Python instance attributes.
+- The Locust HTTP client cookie jar carries the refresh token cookie, so login, refresh, and logout behave like a browser session rather than a stateless API script.
+- Protected flows use a shared auth helper that refreshes the access token proactively before expiry and falls back to re-login when the refresh session was revoked or expired.
+- Logout is exercised both at user shutdown and during selected tasks, so the suite covers session teardown and recovery, not only initial login.
+
+Because refresh-token revocation is backed by Redis, authenticated performance tests should be treated as incomplete when Redis is unavailable.
 
 ## Load Profiles
 
@@ -242,11 +269,12 @@ A heavier health-checking user separated out to avoid overloading the API uninte
 Tests complete authentication workflows:
 
 - User registration with unique credentials
-- Login and token acquisition
-- Profile retrieval and updates
+- Login and token acquisition with per-user session state
+- Profile retrieval and updates under a reusable authenticated session
 - Password changes
-- Token refresh operations
-- Logout and session cleanup
+- Explicit token refresh operations
+- Logout and re-login within the lifetime of the same simulated user
+- Revoked refresh-token validation after logout
 - Password reset requests
 
 ### TasksMonitoringUser
@@ -271,6 +299,8 @@ Tests a realistic no-cost user session. Each simulated user registers, logs in, 
 - `POST /api/v1/vector/ingest` with `async_mode=false` - Seed and update a small knowledge base without Celery ingestion
 - `POST /api/v1/vector/query` and `POST /api/v1/vector/list` - Exercise search and listing
 - `GET /api/v1/vector/collections/{collection}/stats` - Refresh collection statistics
+
+The shared session helper now retries one time after a `401` by refreshing or rebuilding the session, so long-running agent/vector/embedding workloads do not fail only because an access token expired mid-run.
 
 ## Endpoint and Mock Readiness
 
@@ -353,8 +383,11 @@ PERFORMANCE_THRESHOLDS = {
    ```
 
    - Ensure database is properly initialized
-   - Check if user registration is working
-   - Verify JWT configuration in .env
+
+- Run `poetry run alembic upgrade head` against the target database
+- Check if user registration is working
+- Verify JWT configuration in .env
+- Ensure Redis is running; refresh-session revocation and rotation rely on it
 
 3. **Task Endpoints Failing**
 

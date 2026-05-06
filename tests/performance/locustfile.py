@@ -17,6 +17,9 @@ import json
 import os
 import random
 import string
+import time
+import urllib.error
+import urllib.request
 from typing import Any, Dict, Optional
 
 # Handle imports for both direct execution and module import
@@ -26,8 +29,11 @@ from config import (
     get_profile,
     is_llm_mock_embedding_backend,
 )
+from jose import jwt
 from locust import HttpUser, between, events, task
 from locust.env import Environment
+
+AUTH_DEPENDENT_USER_CLASSES = frozenset({"AuthUserFlow", "LLMMockWorkspaceUser"})
 
 
 class BaseUser(HttpUser):
@@ -35,11 +41,17 @@ class BaseUser(HttpUser):
 
     abstract = True
     wait_time = between(1, 3)
+    access_token_refresh_skew_seconds = 30
+    refresh_cookie_name = os.getenv("AUTH_REFRESH_COOKIE_NAME", "refresh_token")
 
     def __init__(self, environment: Environment):
         super().__init__(environment)
+        self.access_token: Optional[str] = None
+        self.access_token_exp: Optional[int] = None
         self.auth_headers: Optional[Dict[str, str]] = None
         self.refresh_token: Optional[str] = None
+        self.refresh_token_present: bool = False
+        self.is_authenticated: bool = False
         self.user_credentials: Optional[Dict[str, str]] = None
         self.registered: bool = False
 
@@ -52,6 +64,167 @@ class BaseUser(HttpUser):
         if response.status_code >= 400:
             print(f"[{endpoint_name}] Error {response.status_code}: {response.text}")
         return response.status_code < 400
+
+    def reset_auth_state(self, clear_cookies: bool = False) -> None:
+        """Clear the simulated user's auth state.
+
+        WHY: Login, refresh, and logout all need the same cleanup semantics so
+        scenarios can recover from expired or revoked sessions predictably.
+        """
+        self.access_token = None
+        self.access_token_exp = None
+        self.auth_headers = None
+        self.is_authenticated = False
+        self.refresh_token = None
+        self.refresh_token_present = False
+        if clear_cookies:
+            self._clear_refresh_cookie()
+
+    def _clear_refresh_cookie(self) -> None:
+        """Remove the refresh cookie from the Locust client's cookie jar.
+
+        WHY: The cookie jar is the closest analogue to a browser session, so a
+        revoked session should be removed there instead of only from Python state.
+        """
+        cookies_to_clear = [
+            cookie
+            for cookie in self.client.cookies
+            if cookie.name == self.refresh_cookie_name
+        ]
+        for cookie in cookies_to_clear:
+            self.client.cookies.clear(
+                domain=cookie.domain,
+                path=cookie.path,
+                name=cookie.name,
+            )
+
+    def _get_refresh_cookie_value(self) -> Optional[str]:
+        """Read the current refresh cookie value from the client's cookie jar.
+
+        WHY: The server writes refresh tokens to an HttpOnly cookie, so Locust's
+        session cookie jar should be treated as the source of truth.
+        """
+        for cookie in self.client.cookies:
+            if cookie.name == self.refresh_cookie_name:
+                return str(cookie.value)
+        return None
+
+    def _sync_refresh_token_state(self) -> None:
+        """Mirror the cookie jar refresh token into lightweight user state.
+
+        WHY: Scenario code sometimes needs a cheap boolean about refresh-session
+        availability without duplicating cookie-jar parsing in every request path.
+        """
+        refresh_cookie = self._get_refresh_cookie_value()
+        self.refresh_token = refresh_cookie
+        self.refresh_token_present = bool(refresh_cookie)
+
+    def _extract_access_token_exp(self, access_token: str) -> Optional[int]:
+        """Decode the access token expiry without verification.
+
+        WHY: Locust only needs the ``exp`` claim to refresh proactively before a
+        protected request; verifying the JWT client-side adds no value here.
+        """
+        try:
+            claims = jwt.get_unverified_claims(access_token)
+        except Exception:
+            return None
+        exp = claims.get("exp")
+        if isinstance(exp, (int, float)):
+            return int(exp)
+        if isinstance(exp, str) and exp.isdigit():
+            return int(exp)
+        return None
+
+    def _store_access_token(self, access_token: str) -> None:
+        """Store an access token and derived session metadata.
+
+        WHY: Every successful login or refresh should update the same fields so
+        auth-dependent scenarios can rely on one shared contract.
+        """
+        self.access_token = access_token
+        self.access_token_exp = self._extract_access_token_exp(access_token)
+        self.auth_headers = {"Authorization": f"Bearer {access_token}"}
+        self.is_authenticated = True
+        self._sync_refresh_token_state()
+
+    def _access_token_is_fresh(self) -> bool:
+        """Return whether the cached access token is still usable.
+
+        WHY: Long-lived Locust users need a cheap TTL check so they can refresh
+        before the next authenticated request instead of failing with avoidable 401s.
+        """
+        if not self.access_token or not self.auth_headers:
+            return False
+        if self.access_token_exp is None:
+            return True
+        return int(time.time()) < (
+            self.access_token_exp - self.access_token_refresh_skew_seconds
+        )
+
+    def has_refresh_session(self) -> bool:
+        """Return whether the client still carries a refresh session cookie.
+
+        WHY: Refreshability depends on the cookie jar state, not only on whether
+        a previous login stored a string in a Python attribute.
+        """
+        self._sync_refresh_token_state()
+        return self.refresh_token_present
+
+    def refresh_access_token(self) -> bool:
+        """Rotate the current session into a fresh access token.
+
+        WHY: Authenticated scenarios should survive short access-token TTLs by
+        exercising the same refresh path that real browser clients use.
+        """
+        if not self.has_refresh_session():
+            return False
+
+        with self.client.post(
+            "/api/v1/auth/refresh",
+            catch_response=True,
+            name="Auth - Refresh Tokens",
+        ) as response:
+            if response.status_code != 200:
+                response.failure(f"Token refresh failed: {response.status_code}")
+                self.reset_auth_state(clear_cookies=True)
+                return False
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                response.failure("Invalid JSON in refresh response")
+                self.reset_auth_state(clear_cookies=True)
+                return False
+
+            access_token = data.get("access_token")
+            if not access_token:
+                response.failure("No access token in refresh response")
+                self.reset_auth_state(clear_cookies=True)
+                return False
+
+            self._store_access_token(access_token)
+            response.success()
+            return True
+
+    def ensure_authenticated(
+        self,
+        *,
+        force_refresh: bool = False,
+        force_login: bool = False,
+    ) -> bool:
+        """Guarantee that the user has a valid access token before a request.
+
+        WHY: Scenario code should ask for an authenticated session, not hand-roll
+        token expiry checks and recovery logic for every endpoint.
+        """
+        if force_login:
+            self.reset_auth_state(clear_cookies=True)
+            return self._login_current_user()
+        if not force_refresh and self._access_token_is_fresh():
+            return True
+        if self.refresh_access_token():
+            return True
+        return self._login_current_user()
 
     def authenticate_unique_user(self, name_prefix: str = "locust") -> bool:
         """Register and login a unique user for stateful workload simulation.
@@ -117,22 +290,22 @@ class BaseUser(HttpUser):
         ) as response:
             if response.status_code != 200:
                 response.failure(f"Login failed: {response.status_code}")
+                self.reset_auth_state()
                 return False
             try:
                 data = response.json()
             except json.JSONDecodeError:
                 response.failure("Invalid JSON in login response")
+                self.reset_auth_state()
                 return False
 
             access_token = data.get("access_token")
-            refresh_token_cookie = response.cookies.get("refresh_token")
-            if refresh_token_cookie:
-                self.refresh_token = refresh_token_cookie
             if not access_token:
                 response.failure("No access token in login response")
+                self.reset_auth_state()
                 return False
 
-            self.auth_headers = {"Authorization": f"Bearer {access_token}"}
+            self._store_access_token(access_token)
             response.success()
             return True
 
@@ -142,18 +315,16 @@ class BaseUser(HttpUser):
         WHY: Long-running Locust runs should exercise session cleanup and avoid
         leaving every simulated user with an active refresh session.
         """
-        if not self.refresh_token:
-            self.auth_headers = None
+        if not self.has_refresh_session():
+            self.reset_auth_state(clear_cookies=True)
             return True
 
         with self.client.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": self.refresh_token},
             catch_response=True,
             name="Auth - Logout",
         ) as response:
-            self.auth_headers = None
-            self.refresh_token = None
+            self.reset_auth_state(clear_cookies=True)
             if response.status_code == 200:
                 response.success()
                 return True
@@ -166,8 +337,7 @@ class BaseUser(HttpUser):
         WHY: Locust users live longer than a single request and can outlive short
         access-token TTLs in endurance profiles.
         """
-        if not self.auth_headers:
-            self._login_current_user()
+        self.ensure_authenticated()
         return self.auth_headers or {}
 
 
@@ -289,57 +459,109 @@ class AuthUserFlow(BaseUser):
 
     def on_start(self):
         """Initialize user with unique credentials and authenticate once."""
-        random_suffix = self.generate_random_string()
-        self.user_credentials = {
-            "username": f"testuser{random_suffix}",  # username must be alphanumeric per schema
-            "email": f"test_{random_suffix}@example.com",
-            "password": "SecurePass123!",
-            "first_name": "Test",
-            "last_name": "User",
-        }
-
-        # Best practice: register/login once per simulated user
-        if self._register():
-            if self._login():
-                self.registered = True
+        self.registered = self.authenticate_unique_user("testuser")
 
     def on_stop(self):
         """Logout at the end of the user's life."""
-        self._logout()
+        self.logout_current_user()
 
-    @task(10)
-    def complete_auth_flow(self):
-        """Perform complete authentication flow."""
-        # Ensure we're authenticated; avoid re-registering each iteration
-        if not self.registered or not self.auth_headers:
-            # Attempt to (re)authenticate if needed
-            if not self.registered:
-                if not self._register():
-                    return
-                self.registered = True
-            if not self._login():
-                return
+    @task(6)
+    def authenticated_profile_flow(self):
+        """Exercise normal authenticated profile operations.
 
-        # Step 3: Get profile
-        if not self._get_profile():
+        WHY: Most real sessions spend their time reading or mutating profile data
+        while relying on the shared session layer to keep auth state valid.
+        """
+        if not self._ensure_registered_session():
             return
 
-        # Step 4: Update profile
+        if not self._get_profile():
+            return
         if not self._update_profile():
             return
 
-        # Step 5: Change password (optional, 30% chance)
-        if random.random() < 0.3:
-            if not self._change_password():
-                return
+    @task(2)
+    def refresh_session_flow(self):
+        """Exercise explicit refresh-token rotation during a live session.
 
-        # Step 6: Refresh tokens (50% chance)
-        if random.random() < 0.5 and self.refresh_token:
-            if not self._refresh_tokens():
-                return
+        WHY: Short-lived access tokens need dedicated load coverage; otherwise a
+        green auth profile can still miss broken refresh semantics.
+        """
+        if not self._ensure_registered_session():
+            return
+        self.refresh_access_token()
 
-        # Step 7: Logout
-        self._logout()
+    @task(1)
+    def password_rotation_flow(self):
+        """Change the password within an authenticated session.
+
+        WHY: Password change is a stateful write that validates session handling
+        under a more realistic authenticated workflow than profile reads alone.
+        """
+        if not self._ensure_registered_session():
+            return
+        self._change_password()
+
+    @task(1)
+    def logout_and_relogin_flow(self):
+        """Exercise session teardown and recovery within a user's lifetime.
+
+        WHY: Logging out only in ``on_stop`` misses the production path where a
+        user explicitly ends a session and starts another one later.
+        """
+        if not self._ensure_registered_session():
+            return
+        if not self.logout_current_user():
+            return
+        self.ensure_authenticated(force_login=True)
+
+    @task(1)
+    def revoked_refresh_token_is_rejected(self):
+        """Verify that a logged-out refresh token cannot be reused.
+
+        WHY: The backend revokes refresh sessions in Redis, so Locust should
+        assert that the old cookie no longer works after logout.
+        """
+        if not self._ensure_registered_session():
+            return
+
+        self._sync_refresh_token_state()
+        stale_refresh_token = self.refresh_token
+        if not stale_refresh_token:
+            return
+
+        if not self.logout_current_user():
+            return
+
+        with self.client.post(
+            "/api/v1/auth/refresh",
+            cookies={self.refresh_cookie_name: stale_refresh_token},
+            catch_response=True,
+            name="Auth - Refresh Revoked",
+        ) as response:
+            if response.status_code == 401:
+                response.success()
+            else:
+                response.failure(
+                    "Expected revoked refresh token to be rejected, got "
+                    f"{response.status_code}"
+                )
+
+        self.ensure_authenticated(force_login=True)
+
+    def _ensure_registered_session(self) -> bool:
+        """Ensure this Locust user has a recoverable authenticated session.
+
+        WHY: Auth tasks need one shared entry point that can rebuild the session
+        after logout, refresh revocation, or access-token expiry.
+        """
+        if not self.user_credentials:
+            return False
+        if not self.registered:
+            self.registered = self._register()
+            if not self.registered:
+                return False
+        return self.ensure_authenticated()
 
     def _register(self) -> bool:
         """Register a new user."""
@@ -364,55 +586,30 @@ class AuthUserFlow(BaseUser):
                     catch_response=True,
                     name="Auth - Register Retry",
                 ) as retry_response:
-                    return retry_response.status_code == 201
+                    if retry_response.status_code == 201:
+                        retry_response.success()
+                        return True
+                    retry_response.failure(
+                        f"Registration retry failed: {retry_response.status_code}"
+                    )
+                    return False
             else:
                 response.failure(f"Registration failed: {response.status_code}")
                 return False
 
     def _login(self) -> bool:
         """Login with user credentials."""
-        login_data = {
-            "username": self.user_credentials["username"],
-            "password": self.user_credentials["password"],
-        }
-
-        with self.client.post(
-            "/api/v1/auth/login",
-            json=login_data,
-            catch_response=True,
-            name="Auth - Login",
-        ) as response:
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    access_token = data.get("access_token")
-
-                    # Extract refresh token from cookies instead of JSON response
-                    refresh_token_cookie = response.cookies.get("refresh_token")
-                    if refresh_token_cookie:
-                        self.refresh_token = refresh_token_cookie
-
-                    if access_token:
-                        self.auth_headers = {"Authorization": f"Bearer {access_token}"}
-                        return True
-                    else:
-                        response.failure("No access token in login response")
-                        return False
-                except json.JSONDecodeError:
-                    response.failure("Invalid JSON in login response")
-                    return False
-            else:
-                response.failure(f"Login failed: {response.status_code}")
-                return False
+        return self._login_current_user()
 
     def _get_profile(self) -> bool:
         """Get current user profile."""
-        if not self.auth_headers:
+        headers = self.authenticated_headers()
+        if not headers:
             return False
 
         with self.client.get(
             "/api/v1/auth/me",
-            headers=self.auth_headers,
+            headers=headers,
             catch_response=True,
             name="Auth - Get Profile",
         ) as response:
@@ -428,26 +625,26 @@ class AuthUserFlow(BaseUser):
                     response.failure("Invalid JSON in profile response")
                     return False
             elif response.status_code == 401:
-                # Token might be expired, try to refresh
-                if self.refresh_token and self._refresh_tokens():
+                self.reset_auth_state()
+                if self.ensure_authenticated(force_refresh=True):
                     return self._get_profile()  # Retry
-                else:
-                    response.failure("Authentication failed")
-                    return False
+                response.failure("Authentication failed")
+                return False
             else:
                 response.failure(f"Get profile failed: {response.status_code}")
                 return False
 
     def _update_profile(self) -> bool:
         """Update user profile."""
-        if not self.auth_headers:
+        headers = self.authenticated_headers()
+        if not headers:
             return False
 
         update_data = {"first_name": f"Updated_{self.generate_random_string(4)}"}
 
         with self.client.put(
             "/api/v1/auth/me",
-            headers=self.auth_headers,
+            headers=headers,
             json=update_data,
             catch_response=True,
             name="Auth - Update Profile",
@@ -455,19 +652,19 @@ class AuthUserFlow(BaseUser):
             if response.status_code == 200:
                 return True
             elif response.status_code == 401:
-                # Token might be expired, try to refresh
-                if self.refresh_token and self._refresh_tokens():
+                self.reset_auth_state()
+                if self.ensure_authenticated(force_refresh=True):
                     return self._update_profile()  # Retry
-                else:
-                    response.failure("Authentication failed")
-                    return False
+                response.failure("Authentication failed")
+                return False
             else:
                 response.failure(f"Update profile failed: {response.status_code}")
                 return False
 
     def _change_password(self) -> bool:
         """Change user password."""
-        if not self.auth_headers:
+        headers = self.authenticated_headers()
+        if not headers:
             return False
 
         new_password = f"NewSecurePass123!_{self.generate_random_string(4)}"
@@ -478,7 +675,7 @@ class AuthUserFlow(BaseUser):
 
         with self.client.post(
             "/api/v1/auth/change-password",
-            headers=self.auth_headers,
+            headers=headers,
             json=password_data,
             catch_response=True,
             name="Auth - Change Password",
@@ -487,72 +684,22 @@ class AuthUserFlow(BaseUser):
                 self.user_credentials["password"] = new_password
                 return True
             elif response.status_code == 401:
-                # Token might be expired, try to refresh
-                if self.refresh_token and self._refresh_tokens():
+                self.reset_auth_state()
+                if self.ensure_authenticated(force_refresh=True):
                     return self._change_password()  # Retry
-                else:
-                    response.failure("Authentication failed")
-                    return False
+                response.failure("Authentication failed")
+                return False
             else:
                 response.failure(f"Change password failed: {response.status_code}")
                 return False
 
     def _refresh_tokens(self) -> bool:
         """Refresh access tokens."""
-        if not self.refresh_token:
-            return False
-
-        # Set refresh token as cookie instead of JSON body
-        with self.client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": self.refresh_token},
-            catch_response=True,
-            name="Auth - Refresh Tokens",
-        ) as response:
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    access_token = data.get("access_token")
-
-                    # Extract new refresh token from cookies
-                    new_refresh_token_cookie = response.cookies.get("refresh_token")
-                    if new_refresh_token_cookie:
-                        self.refresh_token = new_refresh_token_cookie
-
-                    if access_token:
-                        self.auth_headers = {"Authorization": f"Bearer {access_token}"}
-                        return True
-                    else:
-                        response.failure("No access token in refresh response")
-                        return False
-                except json.JSONDecodeError:
-                    response.failure("Invalid JSON in refresh response")
-                    return False
-            else:
-                response.failure(f"Token refresh failed: {response.status_code}")
-                return False
+        return self.refresh_access_token()
 
     def _logout(self) -> bool:
         """Logout user."""
-        if not self.refresh_token:
-            return True  # Already logged out
-
-        # Use cookie instead of JSON body for logout
-        with self.client.post(
-            "/api/v1/auth/logout",
-            cookies={"refresh_token": self.refresh_token},
-            catch_response=True,
-            name="Auth - Logout",
-        ) as response:
-            # Clear tokens regardless of response
-            self.auth_headers = None
-            self.refresh_token = None
-
-            if response.status_code == 200:
-                return True
-            else:
-                response.failure(f"Logout failed: {response.status_code}")
-                return False
+        return self.logout_current_user()
 
     @task(1)
     def forgot_password_request(self):
@@ -642,7 +789,7 @@ class TasksMonitoringUser(BaseUser):
 class LLMMockWorkspaceUser(BaseUser):
     """Realistic no-cost user working with agents and a small knowledge base."""
 
-    weight = 12
+    weight = 0
     wait_time = between(1, 4)
 
     def __init__(self, environment: Environment):
@@ -704,25 +851,34 @@ class LLMMockWorkspaceUser(BaseUser):
             "system_prompt": "You are a concise backend engineering assistant.",
         }
 
-        with self.client.post(
-            f"/api/v1/agent-instances/{self.agent_instance_id}/run",
-            headers=self.authenticated_headers(),
-            json=payload,
-            catch_response=True,
-            name="Agent Instances - Run Emulated",
-        ) as response:
-            if response.status_code != 200:
-                response.failure(f"Agent run failed: {response.status_code}")
+        for attempt in range(2):
+            with self.client.post(
+                f"/api/v1/agent-instances/{self.agent_instance_id}/run",
+                headers=self.authenticated_headers(),
+                json=payload,
+                catch_response=True,
+                name="Agent Instances - Run Emulated",
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        continue
+                    response.failure("Agent run authentication recovery failed")
+                    return
+                if response.status_code != 200:
+                    response.failure(f"Agent run failed: {response.status_code}")
+                    return
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    response.failure("Invalid JSON in agent run response")
+                    return
+                if "result" in data and "model_name" in data:
+                    response.success()
+                else:
+                    response.failure("Missing agent run fields")
                 return
-            try:
-                data = response.json()
-            except json.JSONDecodeError:
-                response.failure("Invalid JSON in agent run response")
-                return
-            if "result" in data and "model_name" in data:
-                response.success()
-            else:
-                response.failure("Missing agent run fields")
 
     @task(4)
     def browse_agent_workspace(self):
@@ -828,32 +984,43 @@ class LLMMockWorkspaceUser(BaseUser):
                 "User opens an agent configuration panel.",
             ]
         }
-        with self.client.post(
-            "/api/v1/embeddings/generate",
-            headers=self.authenticated_headers(),
-            json=payload,
-            catch_response=True,
-            name="Embeddings - Generate",
-        ) as response:
-            if response.status_code != 200:
-                response.failure(f"Embedding generation failed: {response.status_code}")
+        for attempt in range(2):
+            with self.client.post(
+                "/api/v1/embeddings/generate",
+                headers=self.authenticated_headers(),
+                json=payload,
+                catch_response=True,
+                name="Embeddings - Generate",
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        continue
+                    response.failure("Embedding authentication recovery failed")
+                    return
+                if response.status_code != 200:
+                    response.failure(
+                        f"Embedding generation failed: {response.status_code}"
+                    )
+                    return
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    response.failure("Invalid JSON in embedding response")
+                    return
+                backend = str(data.get("backend", "")).lower()
+                if is_llm_mock_embedding_backend(backend) and data.get("count") == len(
+                    payload["texts"]
+                ):
+                    response.success()
+                else:
+                    response.failure(
+                        "Embedding backend is not one of "
+                        f"{format_llm_mock_embedding_backends()} or count does not match. "
+                        "Run llm_mock only with a safe no-cost embedding backend."
+                    )
                 return
-            try:
-                data = response.json()
-            except json.JSONDecodeError:
-                response.failure("Invalid JSON in embedding response")
-                return
-            backend = str(data.get("backend", "")).lower()
-            if is_llm_mock_embedding_backend(backend) and data.get("count") == len(
-                payload["texts"]
-            ):
-                response.success()
-            else:
-                response.failure(
-                    "Embedding backend is not one of "
-                    f"{format_llm_mock_embedding_backends()} or count does not match. "
-                    "Run llm_mock only with a safe no-cost embedding backend."
-                )
 
     @task(1)
     def update_agent_settings(self):
@@ -985,16 +1152,26 @@ class LLMMockWorkspaceUser(BaseUser):
         success_statuses: set[int] | None = None,
     ) -> Optional[Dict[str, Any]]:
         success_statuses = success_statuses or {200}
-        with self.client.request(
-            method,
-            path,
-            headers=headers,
-            catch_response=True,
-            name=name,
-        ) as response:
-            return self._parse_json_response(
-                response, name, expected_fields, success_statuses
-            )
+        for attempt in range(2):
+            with self.client.request(
+                method,
+                path,
+                headers=headers,
+                catch_response=True,
+                name=name,
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        headers = self.authenticated_headers()
+                        continue
+                    response.failure(f"{name} authentication recovery failed")
+                    return None
+                return self._parse_json_response(
+                    response, name, expected_fields, success_statuses
+                )
+        return None
 
     def _post_json(
         self,
@@ -1007,16 +1184,26 @@ class LLMMockWorkspaceUser(BaseUser):
         success_statuses: set[int] | None = None,
     ) -> Optional[Dict[str, Any]]:
         success_statuses = success_statuses or {200}
-        with self.client.post(
-            path,
-            headers=headers,
-            json=payload,
-            catch_response=True,
-            name=name,
-        ) as response:
-            return self._parse_json_response(
-                response, name, expected_fields, success_statuses
-            )
+        for attempt in range(2):
+            with self.client.post(
+                path,
+                headers=headers,
+                json=payload,
+                catch_response=True,
+                name=name,
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        headers = self.authenticated_headers()
+                        continue
+                    response.failure(f"{name} authentication recovery failed")
+                    return None
+                return self._parse_json_response(
+                    response, name, expected_fields, success_statuses
+                )
+        return None
 
     def _patch_json(
         self,
@@ -1027,14 +1214,24 @@ class LLMMockWorkspaceUser(BaseUser):
         headers: Optional[Dict[str, str]] = None,
         expected_fields: tuple[str, ...] = (),
     ) -> Optional[Dict[str, Any]]:
-        with self.client.patch(
-            path,
-            headers=headers,
-            json=payload,
-            catch_response=True,
-            name=name,
-        ) as response:
-            return self._parse_json_response(response, name, expected_fields, {200})
+        for attempt in range(2):
+            with self.client.patch(
+                path,
+                headers=headers,
+                json=payload,
+                catch_response=True,
+                name=name,
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        headers = self.authenticated_headers()
+                        continue
+                    response.failure(f"{name} authentication recovery failed")
+                    return None
+                return self._parse_json_response(response, name, expected_fields, {200})
+        return None
 
     def _parse_json_response(
         self,
@@ -1059,6 +1256,21 @@ class LLMMockWorkspaceUser(BaseUser):
         return data
 
 
+def _all_selectable_user_classes() -> tuple[type[HttpUser], ...]:
+    """Return every Locust user class controlled by load profiles.
+
+    WHY: Locust auto-discovers top-level ``HttpUser`` subclasses, so profile
+    selection must actively disable classes that are not part of the current run.
+    """
+    return (
+        HealthCheckUser,
+        HealthCheckFullUser,
+        AuthUserFlow,
+        TasksMonitoringUser,
+        LLMMockWorkspaceUser,
+    )
+
+
 # Configure user weights from profile
 def get_user_classes():
     """Get user classes with weights from current profile."""
@@ -1069,7 +1281,7 @@ def get_user_classes():
         if class_name == "HealthCheckUser":
             HealthCheckUser.weight = weight
             classes.append(HealthCheckUser)
-        if class_name == "HealthCheckFullUser":
+        elif class_name == "HealthCheckFullUser":
             HealthCheckFullUser.weight = weight
             classes.append(HealthCheckFullUser)
         elif class_name == "AuthUserFlow":
@@ -1082,7 +1294,131 @@ def get_user_classes():
             TasksMonitoringUser.weight = weight
             classes.append(TasksMonitoringUser)
 
+    active_class_names = {user_class.__name__ for user_class in classes}
+    for user_class in _all_selectable_user_classes():
+        user_class.abstract = user_class.__name__ not in active_class_names
+
     return classes
+
+
+def _env_flag_enabled(name: str) -> bool:
+    """Return whether an environment flag is explicitly enabled.
+
+    WHY: Locust startup checks need a shared parser for opt-out flags so the
+    preflight behaviour stays predictable across CI and local runs.
+    """
+    return os.getenv(name, "false").lower() in {"1", "true", "yes", "on"}
+
+
+def _profile_has_auth_workloads(profile) -> bool:
+    """Return whether the active profile includes auth-dependent users.
+
+    WHY: Pure health-check profiles should stay cheap and not create test users,
+    while auth-based profiles should fail fast if the target is not ready.
+    """
+    return any(
+        class_name in AUTH_DEPENDENT_USER_CLASSES and weight > 0
+        for class_name, weight in profile.weight_config.items()
+    )
+
+
+def _target_host(environment) -> str:
+    """Resolve the effective host used by Locust for startup checks.
+
+    WHY: Locust can receive the host from CLI, environment variables, or web UI;
+    the preflight must interrogate the same target that workers will exercise.
+    """
+    return str(environment.host or get_host_url()).rstrip("/")
+
+
+def _post_json_preflight(url: str, payload: Dict[str, str]) -> tuple[int, str]:
+    """Send a small JSON POST request for startup validation.
+
+    WHY: Register/login readiness needs a synchronous check before spawning many
+    users, but that check should remain independent from Locust user instances.
+    """
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, response.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="ignore")
+
+
+def _validate_auth_preflight(environment, profile) -> None:
+    """Fail fast when auth-based workloads target an unprepared environment.
+
+    WHY: Without this check Locust spends the whole run reporting secondary 401s
+    and 500s when the real issue is a missing migration or a broken auth setup.
+    """
+    if not _profile_has_auth_workloads(profile) or _env_flag_enabled(
+        "LOCUST_SKIP_AUTH_PREFLIGHT"
+    ):
+        return
+
+    host = _target_host(environment)
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    username = f"locustpreflight{suffix}"
+    password = "SecurePass123!"
+
+    register_status, register_body = _post_json_preflight(
+        f"{host}/api/v1/auth/register",
+        {
+            "username": username,
+            "email": f"{username}@example.com",
+            "password": password,
+            "first_name": "Locust",
+            "last_name": "Preflight",
+        },
+    )
+    if register_status != 201:
+        detail = register_body.strip() or "no response body"
+        raise RuntimeError(
+            "Auth preflight failed on register with HTTP "
+            f"{register_status}. The target environment is not ready for "
+            "auth-dependent Locust scenarios. Common causes: missing database "
+            "migrations, missing `users` table, or broken auth dependencies. "
+            "For a fresh local test database, run "
+            "`ENVIRONMENT=testing poetry run python scripts/bootstrap_test_db.py`; "
+            "for an existing migrated database, use `poetry run alembic upgrade head`, "
+            f"then retry. Response: {detail}"
+        )
+
+    login_status, login_body = _post_json_preflight(
+        f"{host}/api/v1/auth/login",
+        {"username": username, "password": password},
+    )
+    if login_status != 200:
+        detail = login_body.strip() or "no response body"
+        raise RuntimeError(
+            "Auth preflight failed on login with HTTP "
+            f"{login_status}. Registration succeeded but interactive auth is not "
+            "usable for Locust. Check auth settings such as active/verified-user "
+            f"requirements and Redis/session configuration. Response: {detail}"
+        )
+
+
+def _abort_test_start(environment, message: str) -> None:
+    """Stop the Locust run immediately with a clear startup failure reason.
+
+    WHY: Event handler exceptions are only logged by Locust, so an explicit abort
+    is needed to prevent user spawning after a failed environment preflight.
+    """
+    print(f"\n❌ {message}")
+    environment.process_exit_code = 1
+    if environment.runner is not None:
+        environment.runner.quit()
+    raise SystemExit(message)
+
+
+# Bind the active classes at import time so Locust does not auto-discover every
+# top-level HttpUser subclass and accidentally run profiles outside the selected one.
+user_classes = get_user_classes()
 
 
 # Event handlers for enhanced reporting
@@ -1090,14 +1426,19 @@ def get_user_classes():
 def on_test_start(environment, **kwargs):
     """Log test start with configuration."""
     profile = get_profile()
-    if profile.name == "llm_mock":
-        _validate_llm_mock_guard()
+    target_host = _target_host(environment)
+    try:
+        if profile.name == "llm_mock":
+            _validate_llm_mock_guard()
+        _validate_auth_preflight(environment, profile)
+    except RuntimeError as exc:
+        _abort_test_start(environment, str(exc))
     print(f"\n🚀 Starting performance test with profile: {profile.name}")
     print(f"📋 Description: {profile.description}")
     print(f"👥 Users: {profile.users}")
     print(f"⚡ Spawn rate: {profile.spawn_rate}/s")
     print(f"⏱️  Duration: {profile.run_time}")
-    print(f"🎯 Target: {get_host_url()}")
+    print(f"🎯 Target: {target_host}")
     print(f"📊 Weights: {profile.weight_config}")
     print("-" * 50)
 
@@ -1151,6 +1492,4 @@ def on_test_stop(environment, **kwargs):
 # This allows Locust to automatically discover user classes
 # when the file is run directly
 if __name__ == "__main__":
-    # Set user classes dynamically based on profile
-    user_classes = get_user_classes()
     print(f"Loaded user classes: {[cls.__name__ for cls in user_classes]}")

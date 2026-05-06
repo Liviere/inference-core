@@ -105,6 +105,15 @@ Diagnostics: `GET /api/v1/health/`
 
 Agent Server Studio: http://localhost:2024 (when `langgraph dev` is running)
 
+### VS Code Tasks for Testing
+
+The workspace includes test-oriented VS Code tasks in [`.vscode/tasks.json`](.vscode/tasks.json) that set `ENVIRONMENT=testing` and load the root [`.env.test`](.env.test) file.
+
+- `Run FastAPI Server (Testing)` starts the main API entrypoint with the test environment.
+- `Run FastAPI Development Server (Poetry, Testing)` starts the reloadable Uvicorn variant on the test port from `.env.test`.
+- `Celery: Start Worker (Testing)`, `Celery: Start Worker (Mail, Testing)`, `Celery: Start Worker (Embeddings, Testing)`, and `Celery: Start Beat (Testing)` use the test Redis and database settings.
+- `LangGraph: Dev Server (Testing)` runs `langgraph dev --config langgraph.test.json` on the dedicated test port and keeps the default `langgraph.json` untouched.
+
 Docker Deployment: For containerized deployment (SQLite/MySQL/Postgres) and compose examples, see [`docker/README.md`](docker/README.md).
 
 ---

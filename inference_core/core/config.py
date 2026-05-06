@@ -11,6 +11,8 @@ from pydantic_settings.sources import (
     PydanticBaseSettingsSource,
 )
 
+from inference_core.core.env import get_project_dotenv_path
+
 ###################################
 #            Classess             #
 ###################################
@@ -711,7 +713,7 @@ class Settings(BaseSettings):
         return self.vector_backend is not None
 
     model_config = SettingsConfigDict(
-        env_file=".env.test" if os.getenv("ENVIRONMENT") == "testing" else ".env",
+        env_file=str(get_project_dotenv_path()),
         case_sensitive=False,
         extra="ignore",
     )
@@ -729,10 +731,12 @@ class Settings(BaseSettings):
         Customize settings sources to use our custom list parsing for environment variables
         """
 
+        dotenv_path = str(get_project_dotenv_path())
+
         if os.getenv("ENVIRONMENT") == "testing":
             return (
                 init_settings,
-                ListParsingDotEnvSource(settings_cls, env_file=".env.test"),
+                ListParsingDotEnvSource(settings_cls, env_file=dotenv_path),
                 ListParsingEnvSource(settings_cls),
                 file_secret_settings,
             )
@@ -740,7 +744,7 @@ class Settings(BaseSettings):
         return (
             init_settings,
             ListParsingEnvSource(settings_cls),
-            ListParsingDotEnvSource(settings_cls),
+            ListParsingDotEnvSource(settings_cls, env_file=dotenv_path),
             file_secret_settings,
         )
 
