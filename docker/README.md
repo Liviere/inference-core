@@ -109,7 +109,7 @@ The repository includes a helper compose file to run the Playwright MCP server i
 
 - File: `docker/docker-compose.playwright-mcp.headful.yml`
 - Browser: Chromium in headed mode (no `--headless`), `--no-sandbox` for running inside the container
-- Stability: `tmpfs: /dev/shm` mounted and a separate volume for the browser cache
+- Stability: read-only root filesystem with `tmpfs` mounts for `/dev/shm` and `/tmp`, plus a separate volume for the browser cache
 
 Host requirements (Linux):
 
@@ -141,6 +141,7 @@ Notes:
    - Sets `isolated: false` and a `userDataDir` to persist the browser profile.
    - Enables `saveSession: true` to keep artifacts/state.
    - Headful compose variants mount this file and pass `--config=/app/playwright-mcp.config.json`.
+   - Those variants also run with a read-only root filesystem and larger tmpfs allocations so browser writes stay inside mounted storage.
 
 Timeouts configuration via environment variables
 

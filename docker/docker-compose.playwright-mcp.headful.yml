@@ -41,11 +41,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Headed Chromium needs write access + larger shared memory
-    read_only: false
+    # Keep the root filesystem read-only; browser state writes go only to mounts/tmpfs.
+    read_only: true
     tmpfs:
-      - /dev/shm:rw
-      - /tmp:rw
+      - /dev/shm:size=2g,rw
+      - /tmp:size=512m,rw
     profiles:
       - headful
 
