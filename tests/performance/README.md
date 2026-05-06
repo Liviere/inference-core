@@ -71,6 +71,8 @@ ENVIRONMENT=testing poetry run alembic upgrade head
 
 4. For the no-cost LLM mock profile:
 
+Wrapper scripts in `scripts/run_perf_*.py` automatically load root `.env.test` when that file exists. This means they can derive the default target host from `TARGET_HOST` or, when absent, from `HOST` plus `PORT`, so local test runs usually do not need an explicit `--host` flag.
+
 When the API process starts with `ENVIRONMENT=testing`, the application now defaults to safe no-cost runtime guardrails unless you override them explicitly:
 
 ```bash
@@ -179,71 +181,73 @@ The embeddings worker is still only involved when the API process runs with `EMB
 
 1. Start all required services (see Prerequisites above)
 
-2. Run with default light profile:
+2. Run the default light profile through the wrapper script:
 
    ```bash
-   cd tests/performance
-   poetry run locust -f locustfile.py --host http://localhost:8000
+   poetry run python scripts/run_perf_light.py
    ```
 
-3. Open the Locust web UI at: http://localhost:8089
+3. To use the Locust web UI instead of headless mode:
 
-4. Configure users and spawn rate in the web UI, or use predefined profiles
+   ```bash
+   poetry run python scripts/run_perf_light.py --web-ui
+   ```
+
+4. Open the Locust web UI at: http://localhost:8089
+
+5. Configure users and spawn rate in the web UI, or use predefined profiles
 
 ### Using Predefined Profiles
 
-Run with specific load profiles using environment variables (note: explicit -u/-r/-t override profile defaults):
+Wrapper scripts are now the recommended entrypoint. They set `LOAD_PROFILE` for you, load root `.env.test` automatically when present, apply profile defaults, generate the standard HTML report by default, and still let you override the important Locust knobs.
 
 ```bash
 # Light load (default)
-LOAD_PROFILE=light poetry run locust -f tests/performance/locustfile.py --host http://localhost:8000 --headless -u 10 -r 1 -t 1m --html reports/performance/light_load_report.html
+poetry run python scripts/run_perf_light.py
 
 # Medium load
-LOAD_PROFILE=medium poetry run locust -f tests/performance/locustfile.py --host http://localhost:8000 --headless -u 20 -r 2 -t 5m --html reports/performance/medium_load_report.html
+poetry run python scripts/run_perf_medium.py
 
 # Heavy load
-LOAD_PROFILE=heavy poetry run locust -f tests/performance/locustfile.py --host http://localhost:8000 --headless -u 50 -r 5 -t 10m --html reports/performance/heavy_load_report.html
+poetry run python scripts/run_perf_heavy.py
 
 # Spike test
-LOAD_PROFILE=spike poetry run locust -f tests/performance/locustfile.py --host http://localhost:8000 --headless -u 100 -r 10 -t 3m --html reports/performance/spike_load_report.html
+poetry run python scripts/run_perf_spike.py
 
 # Endurance test
-LOAD_PROFILE=endurance poetry run locust -f tests/performance/locustfile.py --host http://localhost:8000 --headless -u 50 -r 1 -t 30m --html reports/performance/endurance_load_report.html
+poetry run python scripts/run_perf_endurance.py
 
-# No-cost LLM mock traffic
-LLM_EMULATION_ENABLED=true EMBEDDING_BACKEND=fake LOAD_PROFILE=llm_mock \
-  poetry run locust -f tests/performance/locustfile.py \
-  --host http://localhost:8000 \
-  --headless \
-  -u 25 \
-  -r 2.5 \
-  -t 5m \
-  --html reports/performance/llm_mock_load_report.html
+# No-cost LLM mock traffic with the default fake embeddings backend
+poetry run python scripts/run_perf_llm_mock.py
 
 # Same profile with a local SentenceTransformer backend (requires embeddings worker)
-LLM_EMULATION_ENABLED=true EMBEDDING_BACKEND=local LOAD_PROFILE=llm_mock \
-  poetry run locust -f tests/performance/locustfile.py \
-  --host http://localhost:8000 \
-  --headless \
-  -u 25 \
-  -r 2.5 \
-  -t 5m \
-  --html reports/performance/llm_mock_local_embeddings_load_report.html
+poetry run python scripts/run_perf_llm_mock.py \
+  --embedding-backend local \
+  --name-suffix local-embeddings
 ```
+
+Common wrapper flags:
+
+- `--users`, `--spawn-rate`, `--duration` override the profile defaults
+- `--host` still overrides the target explicitly when you want to bypass the value loaded from `.env.test`
+- `--web-ui` switches from headless mode to the Locust UI
+- `--csv` adds the standard Locust CSV outputs next to the HTML report
+- `--html`, `--csv-prefix`, `--output-dir`, and `--name-suffix` customize artifact paths
+- `--no-html` disables the default HTML report for one run
+- `--skip-auth-preflight` bypasses the auth startup safety check when you really need it
+- `scripts/run_perf_llm_mock.py` also supports `--embedding-backend fake|local` and `--allow-unsafe-llm-traffic`
 
 ### Headless Mode (CI/CD)
 
 For automated testing without the web UI:
 
 ```bash
-poetry run locust -f locustfile.py \
-  --host http://localhost:8000 \
-  --headless \
+poetry run python scripts/run_perf_light.py \
   --users 10 \
   --spawn-rate 2 \
-  --run-time 2m \
+  --duration 2m \
   --html reports/performance/ci_report.html \
-  --csv reports/performance/ci_results
+  --csv
 ```
 
 ### Custom Configuration
@@ -251,15 +255,42 @@ poetry run locust -f locustfile.py \
 Override target host:
 
 ```bash
-poetry run locust -f locustfile.py --host http://staging.yourapi.com
+poetry run python scripts/run_perf_medium.py --host http://staging.yourapi.com
 ```
 
-Set custom profile with environment variables:
+Run with a custom report suffix so repeated runs do not overwrite each other:
 
 ```bash
-TARGET_HOST=http://production.yourapi.com \
-LOAD_PROFILE=medium \
-poetry run locust -f locustfile.py --headless -u 20 -r 2 -t 5m
+poetry run python scripts/run_perf_medium.py \
+  --host http://production.yourapi.com \
+  --name-suffix baseline \
+  --csv
+```
+
+### Advanced: Raw Locust Commands
+
+Use raw Locust commands only when you need debugging flags or an execution shape not covered by the wrappers. The wrappers are thin orchestration around the same `tests/performance/locustfile.py` entrypoint.
+
+```bash
+# Equivalent manual light profile run
+LOAD_PROFILE=light poetry run locust \
+  -f tests/performance/locustfile.py \
+  --host http://localhost:8100 \
+  --headless \
+  --users 10 \
+  --spawn-rate 1 \
+  --run-time 1m \
+  --html reports/performance/light_load_report.html
+
+# Equivalent manual llm_mock run with local embeddings
+LLM_EMULATION_ENABLED=true EMBEDDING_BACKEND=local LOAD_PROFILE=llm_mock \
+  poetry run locust -f tests/performance/locustfile.py \
+  --host http://localhost:8100 \
+  --headless \
+  --users 25 \
+  --spawn-rate 2.5 \
+  --run-time 5m \
+  --html reports/performance/llm_mock_local_embeddings_load_report.html
 ```
 
 ## Test Scenarios
@@ -313,7 +344,8 @@ Tests a realistic no-cost user session. Each simulated user registers, logs in, 
 - `POST /api/v1/agent-instances/{id}/run` - Run the agent through the emulated LLM path
 - `POST /api/v1/embeddings/generate` - Generate embeddings and fail if the backend is neither `fake` nor `local`
 - `GET /api/v1/vector/health` - Check vector readiness
-- `POST /api/v1/vector/ingest` with `async_mode=false` - Seed and update a small knowledge base without Celery ingestion
+- `POST /api/v1/vector/ingest` with `async_mode=true` - Push seed/update ingestion through Celery-backed task execution
+- `GET /api/v1/tasks/{task_id}/status` and `GET /api/v1/tasks/{task_id}/result` - Poll task completion for vector ingestion
 - `POST /api/v1/vector/query` and `POST /api/v1/vector/list` - Exercise search and listing
 - `GET /api/v1/vector/collections/{collection}/stats` - Refresh collection statistics
 
@@ -335,7 +367,6 @@ The following endpoints are excluded or deferred to avoid costs and complexity:
 
 - **Provider-backed LLM traffic**: real model/provider calls are not included in default profiles; use `llm_mock` only with emulation enabled
 - **Full batch lifecycle**: create/submit/provider execution is deferred until a fake batch provider is implemented
-- **Task result endpoints**: `/api/v1/tasks/{task_id}/status`, `/api/v1/tasks/{task_id}/result`
 - **Task cancellation**: `DELETE /api/v1/tasks/{task_id}`
 - **Email delivery**: Password reset email sending
 
@@ -343,25 +374,33 @@ The following endpoints are excluded or deferred to avoid costs and complexity:
 
 ### HTML Reports
 
-Reports are generated in `reports/performance/` with naming pattern:
+Wrapper scripts generate an HTML report by default in a dated directory under `reports/performance/YYYY/MM/DD/`.
 
-- `{profile_name}_load_report.html`
+- First run of a given profile on that day: `{profile_name}_load_report.html`
+- Next run of the same profile on that day: `{profile_name}_load_report_02.html`
+- Further runs continue rotating as `_03`, `_04`, and so on
 
-Example: `light_load_report.html`, `heavy_load_report.html`
+Use `--name-suffix` when you want separate artifact families inside the same dated directory, for example `llm_mock_local-embeddings_load_report.html`. Pass `--no-html` when you intentionally want to skip HTML generation.
 
 ### CSV Data
 
-For detailed analysis, generate CSV files:
+For detailed analysis, add `--csv` to any wrapper command or call raw Locust directly. CSV files go to the same dated directory as the HTML report and reuse the same rotation suffix for that run.
 
 ```bash
-poetry run locust -f locustfile.py --host http://localhost:8000 --headless -u 10 -r 2 -t 2m --csv reports/performance/detailed_results
+poetry run python scripts/run_perf_light.py \
+  --host http://localhost:8000 \
+  --users 10 \
+  --spawn-rate 2 \
+  --duration 2m \
+  --csv \
+  --name-suffix detailed
 ```
 
 This creates:
 
-- `detailed_results_stats.csv` - Request statistics
-- `detailed_results_stats_history.csv` - Timeline data
-- `detailed_results_failures.csv` - Failure details
+- `light_detailed_results_stats.csv` - Request statistics
+- `light_detailed_results_stats_history.csv` - Timeline data
+- `light_detailed_results_failures.csv` - Failure details
 
 ## Performance Thresholds
 
@@ -486,13 +525,11 @@ jobs:
 
       - name: Run smoke test
         run: |
-          cd tests/performance
-          LOAD_PROFILE=light poetry run locust -f locustfile.py \
+          poetry run python scripts/run_perf_light.py \
             --host http://localhost:8000 \
-            --headless \
             --users 2 \
             --spawn-rate 1 \
-            --run-time 30s \
+            --duration 30s \
             --html reports/performance/ci_smoke_report.html
 
       - name: Upload report

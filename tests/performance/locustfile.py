@@ -1548,11 +1548,46 @@ user_classes = get_user_classes()
 
 
 # Event handlers for enhanced reporting
+def _get_effective_option(
+    environment: Environment,
+    *option_names: str,
+    default: Any = None,
+) -> Any:
+    """Read effective Locust runtime options from the parsed environment state.
+
+    WHY: startup and shutdown logs should describe the actual Locust run after
+    CLI overrides, not only the static profile defaults selected by LOAD_PROFILE.
+    """
+
+    parsed_options = getattr(environment, "parsed_options", None)
+    for option_name in option_names:
+        value = getattr(parsed_options, option_name, None)
+        if value not in (None, ""):
+            return value
+    return default
+
+
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
     """Log test start with configuration."""
     profile = get_profile()
     target_host = _target_host(environment)
+    effective_users = _get_effective_option(
+        environment,
+        "num_users",
+        "users",
+        default=profile.users,
+    )
+    effective_spawn_rate = _get_effective_option(
+        environment,
+        "spawn_rate",
+        default=profile.spawn_rate,
+    )
+    effective_duration = _get_effective_option(
+        environment,
+        "run_time",
+        default=profile.run_time,
+    )
     try:
         if profile.name == "llm_mock":
             _validate_llm_mock_guard()
@@ -1561,9 +1596,9 @@ def on_test_start(environment, **kwargs):
         _abort_test_start(environment, str(exc))
     print(f"\n🚀 Starting performance test with profile: {profile.name}")
     print(f"📋 Description: {profile.description}")
-    print(f"👥 Users: {profile.users}")
-    print(f"⚡ Spawn rate: {profile.spawn_rate}/s")
-    print(f"⏱️  Duration: {profile.run_time}")
+    print(f"👥 Users: {effective_users}")
+    print(f"⚡ Spawn rate: {effective_spawn_rate}/s")
+    print(f"⏱️  Duration: {effective_duration}")
     print(f"🎯 Target: {target_host}")
     print(f"📊 Weights: {profile.weight_config}")
     print("-" * 50)
@@ -1608,10 +1643,16 @@ def _validate_llm_mock_guard() -> None:
 def on_test_stop(environment, **kwargs):
     """Log test completion."""
     profile = get_profile()
-    print(f"\n✅ Performance test completed: {profile.name}")
-    print(
-        f"📈 Report available at: reports/performance/{profile.name}_load_report.html"
+    html_report_path = _get_effective_option(
+        environment,
+        "html_file",
+        default=None,
     )
+    print(f"\n✅ Performance test completed: {profile.name}")
+    if html_report_path:
+        print(f"📈 Report available at: {html_report_path}")
+    else:
+        print("📈 HTML report: disabled")
     print("-" * 50)
 
 

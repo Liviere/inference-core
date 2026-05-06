@@ -6,6 +6,7 @@ ranging from light smoke tests to heavy stress testing.
 """
 
 import os
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from typing import Any, Dict, Type
 
@@ -162,13 +163,32 @@ def get_profile(profile_name: str = None) -> LoadProfile:
 
 
 def get_host_url() -> str:
-    """
-    Get the target host URL for testing.
+    """Return the default target host for performance traffic.
 
-    Returns:
-        Base URL for the API server
+    WHY: wrapper scripts and raw Locust runs should both resolve the same test
+    host from the environment. Supporting `TARGET_HOST` first and then deriving
+    from `HOST` plus `PORT` keeps `.env.test` sufficient for local test runs.
     """
-    return os.getenv("TARGET_HOST", "http://localhost:8000")
+
+    explicit_target = os.getenv("TARGET_HOST", "").strip()
+    if explicit_target:
+        return explicit_target
+
+    host = os.getenv("HOST", "localhost").strip() or "localhost"
+    if host in {"0.0.0.0", "::", "[::]"}:
+        host = "localhost"
+
+    port = os.getenv("PORT", "8000").strip() or "8000"
+    scheme = os.getenv("TARGET_SCHEME", "http").strip() or "http"
+
+    if "://" in host:
+        parsed = urlsplit(host)
+        resolved_scheme = parsed.scheme or scheme
+        resolved_host = parsed.hostname or "localhost"
+        resolved_port = parsed.port or int(port)
+        return f"{resolved_scheme}://{resolved_host}:{resolved_port}"
+
+    return f"{scheme}://{host}:{port}"
 
 
 def get_report_path(profile_name: str = None) -> str:
