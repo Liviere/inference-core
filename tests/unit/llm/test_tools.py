@@ -466,9 +466,7 @@ class TestToolDoubles:
 
     @pytest.mark.asyncio
     async def test_provider_level_test_tools_replace_production_tools(self):
-        register_tool_provider(
-            ProviderWithTestTools("p", [MockTool("expensive_tool")])
-        )
+        register_tool_provider(ProviderWithTestTools("p", [MockTool("expensive_tool")]))
 
         loaded = await load_tools_for_task(
             task_type="chat",

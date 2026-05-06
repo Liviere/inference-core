@@ -6,17 +6,26 @@ This module contains comprehensive performance tests covering:
 - Authentication flows
 - Task monitoring endpoints
 - Database health checks
+- No-cost LLM mock workflows with agent instances, embeddings, and vector search
 
-Excludes LLM endpoints to avoid API costs.
+LLM-heavy workflows are available only through the ``llm_mock`` profile and
+must be run against an environment configured with LLM emulation and fake or
+local no-cost embeddings.
 """
 
 import json
+import os
 import random
 import string
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 # Handle imports for both direct execution and module import
-from config import get_host_url, get_profile
+from config import (
+    format_llm_mock_embedding_backends,
+    get_host_url,
+    get_profile,
+    is_llm_mock_embedding_backend,
+)
 from locust import HttpUser, between, events, task
 from locust.env import Environment
 
@@ -43,6 +52,123 @@ class BaseUser(HttpUser):
         if response.status_code >= 400:
             print(f"[{endpoint_name}] Error {response.status_code}: {response.text}")
         return response.status_code < 400
+
+    def authenticate_unique_user(self, name_prefix: str = "locust") -> bool:
+        """Register and login a unique user for stateful workload simulation.
+
+        WHY: Agent instances, preferences, and vector collections are user-owned
+        resources. A realistic Locust user needs stable credentials for the
+        lifetime of the simulated browser session.
+        """
+        random_suffix = self.generate_random_string(12)
+        self.user_credentials = {
+            "username": f"{name_prefix}{random_suffix}",
+            "email": f"{name_prefix}_{random_suffix}@example.com",
+            "password": "SecurePass123!",
+            "first_name": "Load",
+            "last_name": "Tester",
+        }
+
+        if not self._register_current_user():
+            return False
+        self.registered = self._login_current_user()
+        return self.registered
+
+    def _register_current_user(self) -> bool:
+        """Create the current credentials once for this Locust user.
+
+        WHY: Keeping registration in the base class lets realistic user flows
+        share authentication setup without inheriting unrelated task weights.
+        """
+        if not self.user_credentials:
+            return False
+
+        with self.client.post(
+            "/api/v1/auth/register",
+            json=self.user_credentials,
+            catch_response=True,
+            name="Auth - Register",
+        ) as response:
+            if response.status_code == 201:
+                response.success()
+                return True
+            response.failure(f"Registration failed: {response.status_code}")
+            return False
+
+    def _login_current_user(self) -> bool:
+        """Login the current credentials and store JWT/cookie state.
+
+        WHY: Most realistic workloads need an Authorization header while refresh
+        and logout depend on the refresh cookie returned by the API.
+        """
+        if not self.user_credentials:
+            return False
+
+        login_data = {
+            "username": self.user_credentials["username"],
+            "password": self.user_credentials["password"],
+        }
+
+        with self.client.post(
+            "/api/v1/auth/login",
+            json=login_data,
+            catch_response=True,
+            name="Auth - Login",
+        ) as response:
+            if response.status_code != 200:
+                response.failure(f"Login failed: {response.status_code}")
+                return False
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                response.failure("Invalid JSON in login response")
+                return False
+
+            access_token = data.get("access_token")
+            refresh_token_cookie = response.cookies.get("refresh_token")
+            if refresh_token_cookie:
+                self.refresh_token = refresh_token_cookie
+            if not access_token:
+                response.failure("No access token in login response")
+                return False
+
+            self.auth_headers = {"Authorization": f"Bearer {access_token}"}
+            response.success()
+            return True
+
+    def logout_current_user(self) -> bool:
+        """Logout the simulated user if a refresh token is available.
+
+        WHY: Long-running Locust runs should exercise session cleanup and avoid
+        leaving every simulated user with an active refresh session.
+        """
+        if not self.refresh_token:
+            self.auth_headers = None
+            return True
+
+        with self.client.post(
+            "/api/v1/auth/logout",
+            cookies={"refresh_token": self.refresh_token},
+            catch_response=True,
+            name="Auth - Logout",
+        ) as response:
+            self.auth_headers = None
+            self.refresh_token = None
+            if response.status_code == 200:
+                response.success()
+                return True
+            response.failure(f"Logout failed: {response.status_code}")
+            return False
+
+    def authenticated_headers(self) -> Dict[str, str]:
+        """Return Authorization headers, re-authenticating if needed.
+
+        WHY: Locust users live longer than a single request and can outlive short
+        access-token TTLs in endurance profiles.
+        """
+        if not self.auth_headers:
+            self._login_current_user()
+        return self.auth_headers or {}
 
 
 class HealthCheckUser(BaseUser):
@@ -260,7 +386,7 @@ class AuthUserFlow(BaseUser):
                 try:
                     data = response.json()
                     access_token = data.get("access_token")
-                    
+
                     # Extract refresh token from cookies instead of JSON response
                     refresh_token_cookie = response.cookies.get("refresh_token")
                     if refresh_token_cookie:
@@ -387,7 +513,7 @@ class AuthUserFlow(BaseUser):
                 try:
                     data = response.json()
                     access_token = data.get("access_token")
-                    
+
                     # Extract new refresh token from cookies
                     new_refresh_token_cookie = response.cookies.get("refresh_token")
                     if new_refresh_token_cookie:
@@ -513,6 +639,426 @@ class TasksMonitoringUser(BaseUser):
                     response.failure("Invalid JSON response")
 
 
+class LLMMockWorkspaceUser(BaseUser):
+    """Realistic no-cost user working with agents and a small knowledge base."""
+
+    weight = 12
+    wait_time = between(1, 4)
+
+    def __init__(self, environment: Environment):
+        super().__init__(environment)
+        self.template_name: Optional[str] = None
+        self.template_primary_model: Optional[str] = None
+        self.agent_instance_id: Optional[str] = None
+        self.agent_instance_name: Optional[str] = None
+        self.vector_collection: Optional[str] = None
+        self.vector_available: bool = False
+
+    def on_start(self):
+        """Create the user session and seed resources used by later tasks.
+
+        WHY: Real user traffic usually reuses an agent and a knowledge base
+        across many interactions instead of recreating them on every request.
+        """
+        if not self.authenticate_unique_user("llmuser"):
+            return
+
+        suffix = self.generate_random_string(10)
+        self.vector_collection = f"locust_{suffix}"
+        self.agent_instance_name = f"locust-agent-{suffix}"
+
+        self._load_agent_template()
+        self._create_agent_instance()
+        self._seed_vector_collection()
+
+    def on_stop(self):
+        """Clean up resources owned by this simulated user where practical.
+
+        WHY: Performance runs create many short-lived users; soft-deleting agent
+        instances and logging out keeps the test database closer to normal usage.
+        """
+        if self.agent_instance_id:
+            self.client.delete(
+                f"/api/v1/agent-instances/{self.agent_instance_id}",
+                headers=self.authenticated_headers(),
+                name="Agent Instances - Delete",
+            )
+        self.logout_current_user()
+
+    @task(6)
+    def chat_with_agent(self):
+        """Run the user's configured agent instance with varied inputs."""
+        if not self._ensure_agent_instance():
+            return
+
+        prompt = random.choice(
+            [
+                "Summarize what changed in my project today.",
+                "Draft a short implementation checklist for a backend feature.",
+                "Explain the tradeoffs of using fake embeddings in tests.",
+                "Suggest the next validation step for an API change.",
+            ]
+        )
+        payload = {
+            "user_input": prompt,
+            "system_prompt": "You are a concise backend engineering assistant.",
+        }
+
+        with self.client.post(
+            f"/api/v1/agent-instances/{self.agent_instance_id}/run",
+            headers=self.authenticated_headers(),
+            json=payload,
+            catch_response=True,
+            name="Agent Instances - Run Emulated",
+        ) as response:
+            if response.status_code != 200:
+                response.failure(f"Agent run failed: {response.status_code}")
+                return
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                response.failure("Invalid JSON in agent run response")
+                return
+            if "result" in data and "model_name" in data:
+                response.success()
+            else:
+                response.failure("Missing agent run fields")
+
+    @task(4)
+    def browse_agent_workspace(self):
+        """Read templates, own instances, and current instance metadata."""
+        headers = self.authenticated_headers()
+        self._get_json(
+            "GET",
+            "/api/v1/agent-instances/templates",
+            name="Agent Instances - Templates",
+            headers=headers,
+            expected_fields=("templates", "available_models"),
+        )
+        self._get_json(
+            "GET",
+            "/api/v1/agent-instances",
+            name="Agent Instances - List",
+            headers=headers,
+            expected_fields=("instances", "total"),
+        )
+        if self.agent_instance_id:
+            self._get_json(
+                "GET",
+                f"/api/v1/agent-instances/{self.agent_instance_id}",
+                name="Agent Instances - Detail",
+                headers=headers,
+                expected_fields=("id", "instance_name", "base_agent_name"),
+            )
+
+    @task(3)
+    def query_knowledge_base(self):
+        """Search and list the user's test knowledge base collection."""
+        if not self.vector_available or not self.vector_collection:
+            return
+
+        query_payload = {
+            "query": random.choice(
+                [
+                    "agent emulation",
+                    "performance test checklist",
+                    "vector search smoke test",
+                    "security scan preparation",
+                ]
+            ),
+            "k": 3,
+            "collection": self.vector_collection,
+        }
+        self._post_json(
+            "/api/v1/vector/query",
+            query_payload,
+            name="Vector - Query",
+            headers=self.authenticated_headers(),
+            expected_fields=("documents", "count", "collection"),
+        )
+
+        list_payload = {
+            "collection": self.vector_collection,
+            "limit": 10,
+            "offset": 0,
+            "filters": {"source": "locust"},
+        }
+        self._post_json(
+            "/api/v1/vector/list",
+            list_payload,
+            name="Vector - List",
+            headers=self.authenticated_headers(),
+            expected_fields=("documents", "count", "collection"),
+        )
+
+    @task(2)
+    def add_small_knowledge_update(self):
+        """Ingest a small synchronous document batch into the user's collection."""
+        if not self.vector_available or not self.vector_collection:
+            return
+
+        marker = self.generate_random_string(6)
+        payload = {
+            "texts": [
+                f"Locust knowledge update {marker}: agent runs are emulated.",
+                f"Locust knowledge update {marker}: embeddings are deterministic.",
+            ],
+            "metadatas": [
+                {"source": "locust", "marker": marker, "kind": "agent"},
+                {"source": "locust", "marker": marker, "kind": "embedding"},
+            ],
+            "collection": self.vector_collection,
+            "async_mode": False,
+        }
+        self._post_json(
+            "/api/v1/vector/ingest",
+            payload,
+            name="Vector - Ingest Sync",
+            headers=self.authenticated_headers(),
+            expected_fields=("task_id", "collection", "estimated_count"),
+        )
+
+    @task(2)
+    def generate_embeddings(self):
+        """Exercise the public embedding endpoint under a safe test backend."""
+        payload = {
+            "texts": [
+                "User asks the agent to summarize a document.",
+                "User searches their small project knowledge base.",
+                "User opens an agent configuration panel.",
+            ]
+        }
+        with self.client.post(
+            "/api/v1/embeddings/generate",
+            headers=self.authenticated_headers(),
+            json=payload,
+            catch_response=True,
+            name="Embeddings - Generate",
+        ) as response:
+            if response.status_code != 200:
+                response.failure(f"Embedding generation failed: {response.status_code}")
+                return
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                response.failure("Invalid JSON in embedding response")
+                return
+            backend = str(data.get("backend", "")).lower()
+            if is_llm_mock_embedding_backend(backend) and data.get("count") == len(
+                payload["texts"]
+            ):
+                response.success()
+            else:
+                response.failure(
+                    "Embedding backend is not one of "
+                    f"{format_llm_mock_embedding_backends()} or count does not match. "
+                    "Run llm_mock only with a safe no-cost embedding backend."
+                )
+
+    @task(1)
+    def update_agent_settings(self):
+        """Patch non-costly metadata on the user's agent instance."""
+        if not self.agent_instance_id:
+            return
+
+        payload = {
+            "display_name": f"Locust Agent {self.generate_random_string(4)}",
+            "system_prompt_append": "Keep answers concise and test-friendly.",
+        }
+        self._patch_json(
+            f"/api/v1/agent-instances/{self.agent_instance_id}",
+            payload,
+            name="Agent Instances - Patch",
+            headers=self.authenticated_headers(),
+            expected_fields=("id", "display_name"),
+        )
+
+    @task(1)
+    def vector_collection_stats(self):
+        """Read collection stats to mimic dashboard refresh behaviour."""
+        if not self.vector_available or not self.vector_collection:
+            return
+        self._get_json(
+            "GET",
+            f"/api/v1/vector/collections/{self.vector_collection}/stats",
+            name="Vector - Collection Stats",
+            headers=self.authenticated_headers(),
+            expected_fields=("name", "count", "dimension"),
+        )
+
+    def _load_agent_template(self) -> bool:
+        data = self._get_json(
+            "GET",
+            "/api/v1/agent-instances/templates",
+            name="Agent Instances - Templates",
+            headers=self.authenticated_headers(),
+            expected_fields=("templates", "available_models"),
+        )
+        if not data or not data.get("templates"):
+            return False
+        template = data["templates"][0]
+        self.template_name = template.get("agent_name")
+        self.template_primary_model = template.get("primary_model")
+        return bool(self.template_name)
+
+    def _create_agent_instance(self) -> bool:
+        if not self.template_name or not self.agent_instance_name:
+            return False
+
+        payload = {
+            "instance_name": self.agent_instance_name,
+            "display_name": "Locust Workspace Agent",
+            "base_agent_name": self.template_name,
+            "description": "Agent instance created by the llm_mock Locust profile.",
+            "system_prompt_append": "Prefer short answers suitable for load tests.",
+        }
+        data = self._post_json(
+            "/api/v1/agent-instances",
+            payload,
+            name="Agent Instances - Create",
+            headers=self.authenticated_headers(),
+            expected_fields=("id", "instance_name", "base_agent_name"),
+            success_statuses={201},
+        )
+        if not data:
+            return False
+        self.agent_instance_id = data.get("id")
+        return bool(self.agent_instance_id)
+
+    def _ensure_agent_instance(self) -> bool:
+        if self.agent_instance_id:
+            return True
+        if not self.template_name and not self._load_agent_template():
+            return False
+        return self._create_agent_instance()
+
+    def _seed_vector_collection(self) -> bool:
+        if not self.vector_collection:
+            return False
+
+        health = self._get_json(
+            "GET",
+            "/api/v1/vector/health",
+            name="Vector - Health",
+            headers=self.authenticated_headers(),
+            expected_fields=("status",),
+            success_statuses={200, 503},
+        )
+        if not health or health.get("status") not in {"healthy", "ok"}:
+            self.vector_available = False
+            return False
+
+        payload = {
+            "texts": [
+                "The backend uses emulated chat models for no-cost tests.",
+                "Fake embeddings make vector search deterministic during load tests.",
+                "Agent instances let users customize prompts and model settings.",
+                "Locust should exercise realistic read and write API workflows.",
+            ],
+            "metadatas": [
+                {"source": "locust", "kind": "llm"},
+                {"source": "locust", "kind": "embedding"},
+                {"source": "locust", "kind": "agent"},
+                {"source": "locust", "kind": "performance"},
+            ],
+            "collection": self.vector_collection,
+            "async_mode": False,
+        }
+        data = self._post_json(
+            "/api/v1/vector/ingest",
+            payload,
+            name="Vector - Seed Sync",
+            headers=self.authenticated_headers(),
+            expected_fields=("task_id", "collection", "estimated_count"),
+        )
+        self.vector_available = bool(data)
+        return self.vector_available
+
+    def _get_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        name: str,
+        headers: Optional[Dict[str, str]] = None,
+        expected_fields: tuple[str, ...] = (),
+        success_statuses: set[int] | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        success_statuses = success_statuses or {200}
+        with self.client.request(
+            method,
+            path,
+            headers=headers,
+            catch_response=True,
+            name=name,
+        ) as response:
+            return self._parse_json_response(
+                response, name, expected_fields, success_statuses
+            )
+
+    def _post_json(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        *,
+        name: str,
+        headers: Optional[Dict[str, str]] = None,
+        expected_fields: tuple[str, ...] = (),
+        success_statuses: set[int] | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        success_statuses = success_statuses or {200}
+        with self.client.post(
+            path,
+            headers=headers,
+            json=payload,
+            catch_response=True,
+            name=name,
+        ) as response:
+            return self._parse_json_response(
+                response, name, expected_fields, success_statuses
+            )
+
+    def _patch_json(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        *,
+        name: str,
+        headers: Optional[Dict[str, str]] = None,
+        expected_fields: tuple[str, ...] = (),
+    ) -> Optional[Dict[str, Any]]:
+        with self.client.patch(
+            path,
+            headers=headers,
+            json=payload,
+            catch_response=True,
+            name=name,
+        ) as response:
+            return self._parse_json_response(response, name, expected_fields, {200})
+
+    def _parse_json_response(
+        self,
+        response,
+        name: str,
+        expected_fields: tuple[str, ...],
+        success_statuses: set[int],
+    ) -> Optional[Dict[str, Any]]:
+        if response.status_code not in success_statuses:
+            response.failure(f"{name} failed: {response.status_code}")
+            return None
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            response.failure(f"{name} returned invalid JSON")
+            return None
+        missing = [field for field in expected_fields if field not in data]
+        if missing:
+            response.failure(f"{name} missing fields: {missing}")
+            return None
+        response.success()
+        return data
+
+
 # Configure user weights from profile
 def get_user_classes():
     """Get user classes with weights from current profile."""
@@ -529,6 +1075,9 @@ def get_user_classes():
         elif class_name == "AuthUserFlow":
             AuthUserFlow.weight = weight
             classes.append(AuthUserFlow)
+        elif class_name == "LLMMockWorkspaceUser":
+            LLMMockWorkspaceUser.weight = weight
+            classes.append(LLMMockWorkspaceUser)
         elif class_name == "TasksMonitoringUser":
             TasksMonitoringUser.weight = weight
             classes.append(TasksMonitoringUser)
@@ -541,6 +1090,8 @@ def get_user_classes():
 def on_test_start(environment, **kwargs):
     """Log test start with configuration."""
     profile = get_profile()
+    if profile.name == "llm_mock":
+        _validate_llm_mock_guard()
     print(f"\n🚀 Starting performance test with profile: {profile.name}")
     print(f"📋 Description: {profile.description}")
     print(f"👥 Users: {profile.users}")
@@ -549,6 +1100,41 @@ def on_test_start(environment, **kwargs):
     print(f"🎯 Target: {get_host_url()}")
     print(f"📊 Weights: {profile.weight_config}")
     print("-" * 50)
+
+
+def _validate_llm_mock_guard() -> None:
+    """Fail fast when local no-cost guardrails are not explicitly enabled.
+
+    WHY: The ``llm_mock`` profile intentionally exercises agent and embedding
+    endpoints. Requiring explicit emulation variables prevents accidental runs
+    against paid providers when Locust and the API share the same environment.
+    """
+    if os.getenv("LOCUST_ALLOW_UNSAFE_LLM_TRAFFIC", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+
+    missing = []
+    if os.getenv("LLM_EMULATION_ENABLED", "").lower() != "true":
+        missing.append("LLM_EMULATION_ENABLED=true")
+
+    embedding_backend = os.getenv("EMBEDDING_BACKEND", "")
+    if not is_llm_mock_embedding_backend(embedding_backend):
+        missing.append(
+            "EMBEDDING_BACKEND in {" + format_llm_mock_embedding_backends() + "}"
+        )
+
+    if missing:
+        raise RuntimeError(
+            "LOAD_PROFILE=llm_mock requires local no-cost guardrails: "
+            + ", ".join(missing)
+            + ". Set them for the API/Locust environment, or set "
+            "LOCUST_ALLOW_UNSAFE_LLM_TRAFFIC=true only when you intentionally "
+            "target a separately guarded test server."
+        )
 
 
 @events.test_stop.add_listener

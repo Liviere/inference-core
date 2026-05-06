@@ -90,9 +90,7 @@ def test_model_factory_emulates_unknown_model_name(mock_get_settings):
 
 @patch("inference_core.core.config.get_settings")
 def test_tool_emulator_uses_emulated_model(mock_get_settings):
-    mock_get_settings.return_value = _emulation_settings(
-        llm_tool_emulation_mode="all"
-    )
+    mock_get_settings.return_value = _emulation_settings(llm_tool_emulation_mode="all")
 
     middleware = build_tool_emulation_middleware([])
 

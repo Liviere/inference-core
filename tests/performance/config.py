@@ -9,6 +9,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Type
 
+LLM_MOCK_ALLOWED_EMBEDDING_BACKENDS = ("fake", "local")
+
 
 @dataclass
 class LoadProfile:
@@ -89,7 +91,51 @@ LOAD_PROFILES = {
             "TasksMonitoringUser": 1,
         },
     ),
+    "llm_mock": LoadProfile(
+        name="llm_mock",
+        description=(
+            "No-cost user-workspace traffic with emulated LLM calls, fake "
+            "or local embeddings, agent instance runs, and vector search workflows"
+        ),
+        users=25,
+        spawn_rate=2.5,
+        run_time="5m",
+        weight_config={
+            "HealthCheckUser": 3,
+            "HealthCheckFullUser": 1,
+            "AuthUserFlow": 2,
+            "LLMMockWorkspaceUser": 12,
+            "TasksMonitoringUser": 1,
+        },
+    ),
 }
+
+
+def get_llm_mock_allowed_embedding_backends() -> tuple[str, ...]:
+    """Return safe embedding backends for the ``llm_mock`` Locust profile.
+
+    WHY: keeping the allowlist in config prevents the Locust guard, runtime
+    response checks, and operator documentation from drifting apart.
+    """
+    return LLM_MOCK_ALLOWED_EMBEDDING_BACKENDS
+
+
+def is_llm_mock_embedding_backend(backend: str | None) -> bool:
+    """Return whether *backend* is safe for ``llm_mock`` embedding traffic.
+
+    WHY: the profile must reject paid remote providers while still allowing
+    deterministic doubles and a local SentenceTransformer worker setup.
+    """
+    return (backend or "").strip().lower() in LLM_MOCK_ALLOWED_EMBEDDING_BACKENDS
+
+
+def format_llm_mock_embedding_backends() -> str:
+    """Format the allowed embedding backends for user-facing messages.
+
+    WHY: one formatter keeps guard failures and runtime errors aligned with the
+    same policy instead of duplicating a comma-separated list in several files.
+    """
+    return ", ".join(get_llm_mock_allowed_embedding_backends())
 
 
 def get_profile(profile_name: str = None) -> LoadProfile:
@@ -146,6 +192,9 @@ PERFORMANCE_THRESHOLDS = {
     "health_p95_ms": 100,  # Health endpoints should be fast
     "auth_p95_ms": 500,  # Auth operations can be slower due to password hashing
     "tasks_p95_ms": 200,  # Task monitoring should be responsive
+    "agent_run_p95_ms": 2500,  # Emulated agent runs still exercise LangChain setup
+    "embedding_p95_ms": 2000,  # No-cost embeddings can include Celery + local inference
+    "vector_p95_ms": 800,  # Vector workflows include storage and similarity search
     "overall_failure_rate": 0.01,  # Less than 1% failure rate
 }
 
