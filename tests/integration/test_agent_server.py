@@ -107,14 +107,20 @@ class TestAgentServerHealth:
         assert resp.status_code == 200
 
     async def test_list_assistants(self):
-        """The server should expose at least the agents defined in langgraph.json."""
+        """Materialized assistants should be discoverable via assistants.search()."""
         client = get_agent_server_client()
+
+        created = await client.assistants.create(graph_id="default_agent")
         assistants = await client.assistants.search()
 
         graph_ids = {a["graph_id"] for a in assistants}
+        assistant_ids = {a["assistant_id"] for a in assistants}
+
+        assert created["graph_id"] == "default_agent"
         assert (
             "default_agent" in graph_ids
         ), f"default_agent not found in deployed graphs: {graph_ids}"
+        assert created["assistant_id"] in assistant_ids
 
 
 class TestRemoteRun:

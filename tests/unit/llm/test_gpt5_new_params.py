@@ -14,6 +14,14 @@ def factory():
     return LLMModelFactory(mock_config)
 
 
+@pytest.fixture(autouse=True)
+def _disable_llm_emulation(monkeypatch):
+    monkeypatch.setattr(
+        "inference_core.llm.models.is_llm_emulation_enabled",
+        lambda: False,
+    )
+
+
 @patch("inference_core.llm.models.normalize_params")
 @patch("inference_core.llm.models.ChatOpenAI")
 def test_gpt5_reasoning_params_pass_through(mock_chat_openai, mock_normalize, factory):

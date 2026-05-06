@@ -15,6 +15,7 @@ from inference_core.core.config import (
     ListParsingDotEnvSource,
     ListParsingEnvSource,
     Settings,
+    get_settings_pure_defaults,
 )
 from inference_core.core.env import get_project_dotenv_path
 
@@ -110,11 +111,9 @@ class TestSettings:
     """Test Settings class and its validation logic"""
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_default_settings(self, monkeypatch, tmp_path):
+    def test_default_settings(self):
         """Test default settings are valid"""
-        # Ensure no project .env is discovered by moving to a temp dir
-        monkeypatch.chdir(tmp_path)
-        settings = Settings(_env_file=None)
+        settings = get_settings_pure_defaults()
         assert settings.app_name == "Backend Template API"
         assert settings.environment == "development"
         assert settings.debug is True

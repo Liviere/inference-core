@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from inference_core.llm.config import ModelConfig, ModelProvider
 from inference_core.llm.emulation import (
@@ -57,6 +57,57 @@ async def test_emulated_chat_model_async_invoke():
 
     assert message.content == "async response"
     assert message.response_metadata["model_name"] == "unit-model"
+
+
+def test_emulated_chat_model_respects_system_prompt_override_marker():
+    model = EmulatedChatModel(model_name="unit-model", response="fallback response")
+
+    message = model.invoke(
+        [
+            SystemMessage(
+                content=(
+                    "You are a test responder. Regardless of the user's message, "
+                    "reply with exactly this single token and nothing else: MARKER-123"
+                )
+            ),
+            HumanMessage(content="Say hi"),
+        ]
+    )
+
+    assert message.content == "MARKER-123"
+
+
+def test_emulated_chat_model_appends_suffix_rule_from_system_prompt():
+    model = EmulatedChatModel(model_name="unit-model", response="fallback response")
+
+    message = model.invoke(
+        [
+            SystemMessage(
+                content=(
+                    "ADDITIONAL STRICT RULE: end every reply with the literal token "
+                    "SUFFIX-321"
+                )
+            ),
+            HumanMessage(content="Reply with a short greeting."),
+        ]
+    )
+
+    assert "SUFFIX-321" in message.content
+
+
+def test_emulated_chat_model_recalls_number_from_prior_user_message():
+    model = EmulatedChatModel(model_name="unit-model", response="fallback response")
+
+    message = model.invoke(
+        [
+            HumanMessage(
+                content="Remember this number: 42. Just confirm you noted it."
+            ),
+            HumanMessage(content="What number did I ask you to remember?"),
+        ]
+    )
+
+    assert "42" in message.content
 
 
 @patch("inference_core.core.config.get_settings")

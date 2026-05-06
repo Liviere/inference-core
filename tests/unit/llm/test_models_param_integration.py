@@ -12,6 +12,14 @@ from inference_core.llm.config import ModelConfig, ModelProvider
 from inference_core.llm.models import LLMModelFactory
 
 
+@pytest.fixture(autouse=True)
+def _disable_llm_emulation(monkeypatch):
+    monkeypatch.setattr(
+        "inference_core.llm.models.is_llm_emulation_enabled",
+        lambda: False,
+    )
+
+
 class TestLLMModelFactoryParameterNormalization:
     """Test LLMModelFactory integration with parameter policy"""
 

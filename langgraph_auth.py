@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Any
 
 from langgraph_sdk import Auth
@@ -33,6 +34,11 @@ from langgraph_sdk import Auth
 logger = logging.getLogger(__name__)
 
 auth = Auth()
+
+
+# Stable UUID for the synthetic local-dev identity used when auth is disabled.
+# WHY: downstream middleware and persistence paths assume UUID-shaped user ids.
+DEV_USER_ID = str(uuid.UUID("00000000-0000-0000-0000-000000000002"))
 
 
 # --------------------------------------------------------------------------
@@ -89,7 +95,7 @@ async def authenticate(headers: dict[bytes, bytes]) -> Auth.types.MinimalUserDic
             "Unset LANGGRAPH_AUTH_DISABLED in production."
         )
         return {
-            "identity": "dev-user",
+            "identity": DEV_USER_ID,
             "is_authenticated": True,
             "permissions": ["dev"],
         }

@@ -419,13 +419,13 @@ These are injected into the MCP CLI command by the Docker compose files (see `do
 
 Controls remote agent execution via the LangGraph Platform. When enabled, agents with `execution_mode: 'remote'` in `llm_config.yaml` delegate runs to the Agent Server instead of executing locally.
 
-| Variable                  | Default | Description                                                                                                                                                  |
-| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `AGENT_SERVER_ENABLED`    | false   | Master switch — when True, remote-mode agents delegate to Agent Server                                                                                       |
-| `AGENT_SERVER_URL`        | (none)  | Base URL (`http://localhost:2024` for `langgraph dev`, `:8123` for `langgraph up`); also returned by the run-bundle endpoint for direct frontend connections |
-| `AGENT_SERVER_API_KEY`    | (none)  | API key for authenticating with the Agent Server                                                                                                             |
-| `AGENT_SERVER_TIMEOUT`    | 300     | HTTP timeout in seconds for Agent Server requests (10–3600)                                                                                                  |
-| `LANGGRAPH_AUTH_DISABLED` | false   | Local-dev escape hatch for `langgraph dev` without a bearer token; must stay false/unset outside development                                                 |
+| Variable                  | Default | Description                                                                                                                                                      |
+| ------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_SERVER_ENABLED`    | false   | Master switch — when True, remote-mode agents delegate to Agent Server                                                                                           |
+| `AGENT_SERVER_URL`        | (none)  | Base URL (`http://localhost:2024` for `langgraph dev`, `:8123` for `langgraph up`); also returned by the run-bundle endpoint for direct frontend connections     |
+| `AGENT_SERVER_API_KEY`    | (none)  | API key for authenticating with the Agent Server                                                                                                                 |
+| `AGENT_SERVER_TIMEOUT`    | 300     | HTTP timeout in seconds for Agent Server requests (10–3600)                                                                                                      |
+| `LANGGRAPH_AUTH_DISABLED` | false   | Local-dev escape hatch for `langgraph dev` without a bearer token; returns a stable UUID-shaped synthetic identity and must stay false/unset outside development |
 
 Development workflow:
 
@@ -447,7 +447,9 @@ The repository's `langgraph.example.json` demonstrates the required setup:
 Operational notes:
 
 - Use `LANGGRAPH_AUTH_DISABLED=true` only for local `langgraph dev` sessions
-  where Studio or a developer tool is connecting without a token.
+  where Studio or a developer tool is connecting without a token. The
+  resulting identity is a stable UUID so downstream middleware and persisted
+  records keep their expected shape.
 - Keep `LANGGRAPH_AUTH_DISABLED` unset or `false` in every deployed
   environment.
 - Update `langgraph.json` / `langgraph.example.json` CORS allow-lists when the

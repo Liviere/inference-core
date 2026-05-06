@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import random
+import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -193,9 +194,7 @@ def activate_emulation_session(
         return
 
     resolved_seed = (
-        int(seed)
-        if seed is not None
-        else random.SystemRandom().randint(0, 2**31 - 1)
+        int(seed) if seed is not None else random.SystemRandom().randint(0, 2**31 - 1)
     )
     session_state = _EmulationSessionState(
         seed=resolved_seed,
@@ -355,10 +354,11 @@ class EmulatedChatModel(BaseChatModel):
         WHY: Cost tracking and run logging should exercise the same code paths
         in test environments, even though the calculated provider cost is zero.
         """
+        response_text = self._render_response(messages)
         input_tokens = sum(
             _estimate_tokens(str(message.content)) for message in messages
         )
-        output_tokens = _estimate_tokens(self.response)
+        output_tokens = _estimate_tokens(response_text)
         response_metadata = {
             "model_name": self.model_name,
             "provider": "emulated",
@@ -375,7 +375,7 @@ class EmulatedChatModel(BaseChatModel):
             if latency_plan.session_seed is not None:
                 response_metadata["emulation_session_seed"] = latency_plan.session_seed
         return AIMessage(
-            content=self.response,
+            content=response_text,
             response_metadata=response_metadata,
             usage_metadata={
                 "input_tokens": input_tokens,
@@ -395,7 +395,8 @@ class EmulatedChatModel(BaseChatModel):
         WHY: Streaming endpoints and LangGraph event streams need chunked output
         during tests, but deterministic chunking keeps assertions predictable.
         """
-        words = self.response.split()
+        response_text = self._render_response(messages)
+        words = response_text.split()
         if not words:
             words = [""]
 
@@ -427,6 +428,134 @@ class EmulatedChatModel(BaseChatModel):
 
         chunks[-1] = chunks[-1].model_copy(update={"chunk_position": "last"})
         return chunks
+
+    def _render_response(self, messages: list[BaseMessage]) -> str:
+        """Return the synthetic response text for one invocation.
+
+        WHY: integration tests for the Agent Server need a small amount of
+        prompt-following and conversational continuity even in no-cost mode.
+        Keeping these rules local to the emulated model preserves the zero-cost
+        guarantee without pretending to be a general-purpose LLM.
+        """
+
+        system_text = "\n".join(
+            self._message_text(message)
+            for message in messages
+            if getattr(message, "type", "") == "system"
+        )
+        latest_user_text = self._latest_human_text(messages)
+
+        override_match = re.search(
+            r"reply with exactly this single token and nothing else:\s*([A-Za-z0-9_-]+)",
+            system_text,
+            flags=re.IGNORECASE,
+        )
+        if override_match:
+            return override_match.group(1)
+
+        response_text = self._rule_based_user_reply(messages, latest_user_text)
+
+        append_match = re.search(
+            r"end every reply with the literal token\s+([A-Za-z0-9_-]+)",
+            system_text,
+            flags=re.IGNORECASE,
+        )
+        if append_match:
+            suffix = append_match.group(1)
+            if suffix not in response_text:
+                response_text = f"{response_text} {suffix}".strip()
+
+        return response_text
+
+    def _rule_based_user_reply(
+        self,
+        messages: list[BaseMessage],
+        latest_user_text: str,
+    ) -> str:
+        """Handle the narrow scripted prompts used by contract tests.
+
+        WHY: Agent Server tests intentionally send rigid instructions such as
+        ``Say exactly: ...`` and simple memory recalls. Recognizing only these
+        patterns keeps the emulator predictable while making those contracts
+        meaningful in testing mode.
+        """
+
+        exact_reply_match = re.search(
+            r"(?:say exactly|reply with one word)\s*:\s*(.+)",
+            latest_user_text,
+            flags=re.IGNORECASE,
+        )
+        if exact_reply_match:
+            return exact_reply_match.group(1).strip().strip(". ")
+
+        if re.search(
+            r"what number did i ask you to remember\??",
+            latest_user_text,
+            flags=re.IGNORECASE,
+        ):
+            remembered_number = self._remembered_number(messages)
+            if remembered_number is not None:
+                return f"You asked me to remember {remembered_number}."
+
+        return self.response
+
+    def _remembered_number(self, messages: list[BaseMessage]) -> str | None:
+        """Return the last explicitly remembered number from user history.
+
+        WHY: thread-persistence tests only need one narrow form of continuity:
+        the ability to echo back a number the user asked the agent to remember.
+        """
+
+        for message in reversed(messages[:-1]):
+            if getattr(message, "type", "") != "human":
+                continue
+            remembered_match = re.search(
+                r"remember this number:\s*([-+]?\d+(?:\.\d+)?)",
+                self._message_text(message),
+                flags=re.IGNORECASE,
+            )
+            if remembered_match:
+                return remembered_match.group(1)
+        return None
+
+    def _latest_human_text(self, messages: list[BaseMessage]) -> str:
+        """Return the newest human message as plain text.
+
+        WHY: rule-based reply selection should anchor on the current user turn,
+        not on earlier prompts that may still be present in the thread history.
+        """
+
+        for message in reversed(messages):
+            if getattr(message, "type", "") == "human":
+                return self._message_text(message)
+        return ""
+
+    def _message_text(self, message: BaseMessage) -> str:
+        """Flatten message content into plain text for rule-based matching.
+
+        WHY: LangGraph may hand the emulator either raw strings or structured
+        content blocks. The scripted testing rules only need a stable text view.
+        """
+
+        content = getattr(message, "content", "") or ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    text = (
+                        block.get("text")
+                        or block.get("thinking")
+                        or block.get("reasoning")
+                        or ""
+                    )
+                    if text:
+                        parts.append(str(text))
+                else:
+                    parts.append(str(block))
+            return " ".join(part.strip() for part in parts if part).strip()
+        return str(content)
 
     def _build_latency_plan(self, *, chunk_count: int = 0) -> EmulationLatencyPlan:
         """Plan latency for one emulated model call.
@@ -468,8 +597,7 @@ class EmulatedChatModel(BaseChatModel):
         )
         stream_first_chunk_ratio = (
             overrides.stream_first_chunk_ratio
-            if overrides is not None
-            and overrides.stream_first_chunk_ratio is not None
+            if overrides is not None and overrides.stream_first_chunk_ratio is not None
             else self.stream_first_chunk_ratio
         )
 
