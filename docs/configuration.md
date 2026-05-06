@@ -17,6 +17,17 @@ Environment variables grouped by functional domain.
 | `HOST`            | 0.0.0.0                                                    | Bind host                                                 |
 | `PORT`            | 8000                                                       | Bind port                                                 |
 
+When `ENVIRONMENT=testing`, the API applies safe no-cost defaults only for settings that are not already defined in the shell or active dotenv file:
+
+- `LLM_EMULATION_ENABLED=true`
+- `LLM_TOOL_EMULATION_MODE=external`
+- `AGENT_TOOL_ENVIRONMENT=strict_test`
+- `AGENT_REQUIRE_TEST_DOUBLES=true`
+- `AGENT_TOOL_DOUBLE_STRATEGY=replace`
+- `EMBEDDING_BACKEND=fake`
+
+Explicit environment variables or dotenv entries still win, so you can opt back into local embeddings or other explicit test setups when needed.
+
 ## HTTP / CORS / Hosts
 
 | Variable        | Default                   | Description                                 |
@@ -139,11 +150,11 @@ identity.
 
 Controls how embeddings are generated for vector operations, agent memory, and the embeddings API endpoint.
 
-| Variable                  | Default                                  | Description                                                      |
-| ------------------------- | ---------------------------------------- | ---------------------------------------------------------------- |
-| `EMBEDDING_BACKEND`       | `local`                                  | Embedding backend: `local` or `remote`                           |
-| `EMBEDDING_LOCAL_MODEL`   | `sentence-transformers/all-MiniLM-L6-v2` | SentenceTransformer model used by the dedicated embedding worker |
-| `EMBEDDING_LOCAL_TIMEOUT` | `60`                                     | Timeout in seconds while waiting for the Celery embedding task   |
+| Variable                  | Default                                  | Description                                                                        |
+| ------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `EMBEDDING_BACKEND`       | `local`                                  | Embedding backend: `local` or `remote`; falls back to `fake` in testing when unset |
+| `EMBEDDING_LOCAL_MODEL`   | `sentence-transformers/all-MiniLM-L6-v2` | SentenceTransformer model used by the dedicated embedding worker                   |
+| `EMBEDDING_LOCAL_TIMEOUT` | `60`                                     | Timeout in seconds while waiting for the Celery embedding task                     |
 
 Backend behavior:
 

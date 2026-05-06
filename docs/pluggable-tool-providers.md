@@ -279,9 +279,13 @@ clear_tool_providers()  # Resets the registry
 
 ## Best Practices
 
-### 1. Register Providers at Startup
+### 1. Prefer Registering Providers at Startup
 
-Always register tool providers during application initialization, not on-demand:
+Register tool providers during application initialization whenever possible.
+Local `AgentService` runs now have a fallback that can populate the registry
+from `llm_config.yaml` when none of an agent's configured providers are
+registered yet, but startup registration keeps boot-time failures explicit and
+avoids on-demand surprises:
 
 ```python
 # Good: Register at startup

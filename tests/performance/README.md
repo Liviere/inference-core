@@ -69,20 +69,33 @@ For an already initialized database that only needs pending delta migrations, us
 ENVIRONMENT=testing poetry run alembic upgrade head
 ```
 
-4. For the no-cost LLM mock profile, configure the API process with explicit guardrails:
+4. For the no-cost LLM mock profile:
 
-   ```bash
-   LLM_EMULATION_ENABLED=true
-   EMBEDDING_BACKEND=fake  # or local
-   VECTOR_BACKEND=memory
-   LLM_API_ACCESS_MODE=user
-   AGENT_TOOL_ENVIRONMENT=strict_test
-   AGENT_REQUIRE_TEST_DOUBLES=true
-   AGENT_TOOL_DOUBLE_STRATEGY=replace
-   LLM_TOOL_EMULATION_MODE=external
-   ```
+When the API process starts with `ENVIRONMENT=testing`, the application now defaults to safe no-cost runtime guardrails unless you override them explicitly:
 
-When `EMBEDDING_BACKEND=local`, also start the dedicated embeddings worker so `/api/v1/embeddings/generate` and vector ingestion can resolve SentenceTransformer requests:
+```bash
+LLM_EMULATION_ENABLED=true
+EMBEDDING_BACKEND=fake
+AGENT_TOOL_ENVIRONMENT=strict_test
+AGENT_REQUIRE_TEST_DOUBLES=true
+AGENT_TOOL_DOUBLE_STRATEGY=replace
+LLM_TOOL_EMULATION_MODE=external
+```
+
+If you run the API outside `ENVIRONMENT=testing`, set the guardrails explicitly:
+
+```bash
+LLM_EMULATION_ENABLED=true
+EMBEDDING_BACKEND=fake  # or local
+VECTOR_BACKEND=memory
+LLM_API_ACCESS_MODE=user
+AGENT_TOOL_ENVIRONMENT=strict_test
+AGENT_REQUIRE_TEST_DOUBLES=true
+AGENT_TOOL_DOUBLE_STRATEGY=replace
+LLM_TOOL_EMULATION_MODE=external
+```
+
+When you explicitly choose `EMBEDDING_BACKEND=local`, also start the dedicated embeddings worker so `/api/v1/embeddings/generate` and vector ingestion can resolve SentenceTransformer requests:
 
 ```bash
 poetry run celery -A inference_core.celery.celery_main:celery_app worker -n embeddings@%h --queues=embeddings --pool=solo --loglevel=info
@@ -153,8 +166,12 @@ The test suite includes predefined load profiles for different testing scenarios
 - **Users**: 25
 - **Duration**: 5 minutes
 - **Spawn Rate**: 2.5 users/second
-- **Use Case**: E2E/performance validation of agent instances, emulated agent runs, fake or local embeddings, and vector search
+- **Use Case**: E2E/performance validation of agent instances, emulated agent runs, fake or local embeddings, vector search, and Celery-backed vector ingestion
 - **Requires**: `LLM_EMULATION_ENABLED=true`, `EMBEDDING_BACKEND=fake|local`, and preferably `VECTOR_BACKEND=memory`
+
+`llm_mock` now submits vector ingestion through `/api/v1/vector/ingest` with `async_mode=true` and polls `/api/v1/tasks/{task_id}/status` plus `/api/v1/tasks/{task_id}/result` until the Celery worker completes the job. This means the main worker should now show `vector.ingest_documents` activity during the profile run.
+
+The embeddings worker is still only involved when the API process runs with `EMBEDDING_BACKEND=local`. With the default testing-safe `EMBEDDING_BACKEND=fake`, `/api/v1/embeddings/generate` stays in-process by design, so you should expect activity on the main worker but not on the dedicated `embeddings` worker.
 
 ## Running Performance Tests
 

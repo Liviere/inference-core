@@ -108,8 +108,10 @@ subagents, and remote LangGraph Agent Server graphs.
 
 Local providers come from the global registry in `inference_core.llm.tools`.
 For Agent Server graphs, `agent_graphs.py` registers entries declared under
-`tool_providers:` in `llm_config.yaml`; embedding applications can also call
-`register_tool_provider()` during startup for local `AgentService` usage.
+`tool_providers:` in `llm_config.yaml`. Local `AgentService` runs still work
+best when embedding applications register providers during startup, but the
+service now has a fallback that can populate the registry from `llm_config.yaml`
+when none of an agent's configured `local_tool_providers` are registered yet.
 
 Inference Core ships built-in provider classes for weather/search, demo
 tool-calling, and email workflows. Browser tooling is exposed through MCP

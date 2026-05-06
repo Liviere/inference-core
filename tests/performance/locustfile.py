@@ -791,6 +791,8 @@ class LLMMockWorkspaceUser(BaseUser):
 
     weight = 0
     wait_time = between(1, 4)
+    task_poll_interval_seconds = 0.25
+    task_poll_timeout_seconds = 10.0
 
     def __init__(self, environment: Environment):
         super().__init__(environment)
@@ -949,7 +951,11 @@ class LLMMockWorkspaceUser(BaseUser):
 
     @task(2)
     def add_small_knowledge_update(self):
-        """Ingest a small synchronous document batch into the user's collection."""
+        """Submit a small vector update through Celery and wait for completion.
+
+        WHY: the `llm_mock` profile should exercise the real background-ingest
+        path instead of only the in-process synchronous fallback.
+        """
         if not self.vector_available or not self.vector_collection:
             return
 
@@ -964,14 +970,13 @@ class LLMMockWorkspaceUser(BaseUser):
                 {"source": "locust", "marker": marker, "kind": "embedding"},
             ],
             "collection": self.vector_collection,
-            "async_mode": False,
+            "async_mode": True,
         }
-        self._post_json(
-            "/api/v1/vector/ingest",
+        self._submit_vector_ingest_task(
             payload,
-            name="Vector - Ingest Sync",
-            headers=self.authenticated_headers(),
-            expected_fields=("task_id", "collection", "estimated_count"),
+            submit_name="Vector - Ingest Async",
+            status_name="Tasks - Vector Ingest Status",
+            result_name="Tasks - Vector Ingest Result",
         )
 
     @task(2)
@@ -1100,6 +1105,12 @@ class LLMMockWorkspaceUser(BaseUser):
         return self._create_agent_instance()
 
     def _seed_vector_collection(self) -> bool:
+        """Create the initial collection contents via the background worker.
+
+        WHY: initial workspace setup should use the same task queue path that
+        later incremental updates use, otherwise the profile under-represents
+        the production-like background processing flow.
+        """
         if not self.vector_collection:
             return False
 
@@ -1129,17 +1140,132 @@ class LLMMockWorkspaceUser(BaseUser):
                 {"source": "locust", "kind": "performance"},
             ],
             "collection": self.vector_collection,
-            "async_mode": False,
+            "async_mode": True,
         }
+        self.vector_available = self._submit_vector_ingest_task(
+            payload,
+            submit_name="Vector - Seed Async",
+            status_name="Tasks - Vector Seed Status",
+            result_name="Tasks - Vector Seed Result",
+        )
+        return self.vector_available
+
+    def _submit_vector_ingest_task(
+        self,
+        payload: Dict[str, Any],
+        *,
+        submit_name: str,
+        status_name: str,
+        result_name: str,
+    ) -> bool:
+        """Submit a vector-ingest Celery task and verify its completion.
+
+        WHY: `llm_mock` is intended to cover real background queue traffic, so
+        vector ingestion should be acknowledged only after the worker reports a
+        successful result through the task-management API.
+        """
         data = self._post_json(
             "/api/v1/vector/ingest",
             payload,
-            name="Vector - Seed Sync",
+            name=submit_name,
             headers=self.authenticated_headers(),
             expected_fields=("task_id", "collection", "estimated_count"),
         )
-        self.vector_available = bool(data)
-        return self.vector_available
+        if not data:
+            return False
+
+        task_id = str(data.get("task_id") or "")
+        collection = str(data.get("collection") or payload.get("collection") or "")
+        if not task_id or task_id == "synchronous":
+            return False
+
+        return self._await_task_success(
+            task_id,
+            status_name=status_name,
+            result_name=result_name,
+            expected_result_fields=("collection", "count", "document_ids"),
+            expected_count=len(payload.get("texts", [])),
+            expected_collection=collection,
+        )
+
+    def _await_task_success(
+        self,
+        task_id: str,
+        *,
+        status_name: str,
+        result_name: str,
+        expected_result_fields: tuple[str, ...] = (),
+        expected_count: Optional[int] = None,
+        expected_collection: Optional[str] = None,
+    ) -> bool:
+        """Poll a submitted Celery task until success and validate the result.
+
+        WHY: queue-backed load should prove that a worker really executed the
+        task instead of only verifying that the API accepted the submission.
+        """
+        deadline = time.monotonic() + self.task_poll_timeout_seconds
+        while True:
+            if time.monotonic() >= deadline:
+                with self.client.get(
+                    f"/api/v1/tasks/{task_id}/status",
+                    headers=self.authenticated_headers(),
+                    catch_response=True,
+                    name=status_name,
+                ) as response:
+                    response.failure(
+                        f"{status_name} timed out waiting for task {task_id}"
+                    )
+                return False
+
+            status_data = self._get_json(
+                "GET",
+                f"/api/v1/tasks/{task_id}/status",
+                name=status_name,
+                headers=self.authenticated_headers(),
+                expected_fields=("task_id", "status"),
+            )
+            if not status_data:
+                return False
+
+            task_status = str(status_data.get("status", "")).upper()
+            if status_data.get("failed") or task_status in {"FAILURE", "REVOKED"}:
+                print(
+                    f"[{status_name}] Task {task_id} failed with status {task_status}: "
+                    f"{status_data.get('info') or status_data.get('traceback')}"
+                )
+                return False
+
+            if status_data.get("successful") or task_status == "SUCCESS":
+                break
+
+            time.sleep(self.task_poll_interval_seconds)
+
+        result_data = self._get_json(
+            "GET",
+            f"/api/v1/tasks/{task_id}/result",
+            name=result_name,
+            headers=self.authenticated_headers(),
+            expected_fields=("task_id", "result", "success"),
+        )
+        if not result_data or not result_data.get("success"):
+            return False
+
+        result = result_data.get("result") or {}
+        missing = [field for field in expected_result_fields if field not in result]
+        if missing:
+            print(f"[{result_name}] Missing task result fields: {missing}")
+            return False
+        if expected_count is not None and result.get("count") != expected_count:
+            print(
+                f"[{result_name}] Expected count {expected_count}, got {result.get('count')}"
+            )
+            return False
+        if expected_collection and result.get("collection") != expected_collection:
+            print(
+                f"[{result_name}] Expected collection {expected_collection}, got {result.get('collection')}"
+            )
+            return False
+        return True
 
     def _get_json(
         self,

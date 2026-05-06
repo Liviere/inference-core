@@ -2,6 +2,7 @@ import os
 from functools import lru_cache
 from typing import Any, List, Literal, Optional
 
+from dotenv import dotenv_values
 from pydantic import Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,32 @@ from inference_core.core.env import get_project_dotenv_path
 ###################################
 #            Classess             #
 ###################################
+
+
+@lru_cache(maxsize=4)
+def _configured_dotenv_keys(dotenv_path: str) -> frozenset[str]:
+    """Return the setting keys explicitly defined in the selected dotenv file.
+
+    WHY: testing-safe defaults must respect both shell-provided environment
+    variables and values declared in `.env` / `.env.test`, otherwise the app
+    would silently override operator intent.
+    """
+
+    values = dotenv_values(dotenv_path)
+    return frozenset(key for key in values if key)
+
+
+def _setting_is_explicitly_configured(env_name: str) -> bool:
+    """Return whether a setting was provided by env vars or the active dotenv.
+
+    WHY: `ENVIRONMENT=testing` should enable no-cost defaults only when the
+    caller did not already choose a concrete runtime behavior.
+    """
+
+    if env_name in os.environ:
+        return True
+    dotenv_path = str(get_project_dotenv_path())
+    return env_name in _configured_dotenv_keys(dotenv_path)
 
 
 class ListParsingEnvSource(EnvSettingsSource):
@@ -209,6 +236,37 @@ class Settings(BaseSettings):
                 f"{self.database_service}://{self.database_user}:{self.database_password}"
                 f"@{self.database_host}:{self.database_port}/{self.database_name}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def apply_testing_safe_defaults(self) -> "Settings":
+        """Apply no-cost runtime defaults for testing when not configured.
+
+        WHY: starting the API with only `ENVIRONMENT=testing` should not try to
+        instantiate provider-backed chat models or real network tools. Explicit
+        env or dotenv values must still win so operators can opt back into local
+        embeddings or provider-backed paths when needed.
+        """
+
+        if not self.is_testing:
+            return self
+
+        testing_defaults = {
+            "LLM_EMULATION_ENABLED": ("llm_emulation_enabled", True),
+            "LLM_TOOL_EMULATION_MODE": ("llm_tool_emulation_mode", "external"),
+            "AGENT_TOOL_ENVIRONMENT": ("agent_tool_environment", "strict_test"),
+            "AGENT_REQUIRE_TEST_DOUBLES": ("agent_require_test_doubles", True),
+            "AGENT_TOOL_DOUBLE_STRATEGY": (
+                "agent_tool_double_strategy",
+                "replace",
+            ),
+            "EMBEDDING_BACKEND": ("embedding_backend", "fake"),
+        }
+
+        for env_name, (field_name, value) in testing_defaults.items():
+            if not _setting_is_explicitly_configured(env_name):
+                setattr(self, field_name, value)
+
         return self
 
     ###################################

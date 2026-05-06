@@ -999,13 +999,37 @@ class AgentService:
         self,
         user_context: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Load tools from registered providers for the agent."""
+        """Load tools from registered providers for the agent.
+
+        WHY: the local FastAPI execution path does not automatically bootstrap
+        the provider registry like the Agent Server graph builder does. Lazily
+        registering providers from ``llm_config.yaml`` keeps local agent runs
+        aligned with the same declarative configuration instead of silently
+        dropping every ``local_tool_providers`` entry.
+        """
         # Collect tools from local providers if configured
         configured_providers = self.agent_config.local_tool_providers or []
         if not configured_providers:
             return
 
         registered_providers = get_registered_providers()
+        if not any(name in registered_providers for name in configured_providers):
+            try:
+                from inference_core.agents.graph_registry import (
+                    register_providers_from_config,
+                )
+
+                registered_names = register_providers_from_config(
+                    self.model_factory.config
+                )
+                if registered_names:
+                    registered_providers = get_registered_providers()
+            except Exception:
+                logging.exception(
+                    "Failed to register tool providers from llm_config.yaml for agent '%s'",
+                    self.display_name,
+                )
+
         confirmed_providers = []
         for registered_provider_name in registered_providers.keys():
             if registered_provider_name in configured_providers:
