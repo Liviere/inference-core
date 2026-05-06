@@ -18,6 +18,7 @@ Central index of project documentation
 | Frontend Sample Chat               | React + Vite UI for direct Agent Server chat | `../frontend/sample-chat/README.md`  |
 | Agent Memory                       | Long-term memory for agents                  | `agents.md#agent-memory`             |
 | Vector Store Guide                 | Semantic search & ingestion                  | `vector-store.md`                    |
+| Performance Testing Guide          | Locust profiles, wrappers, and load runs     | `../tests/performance/README.md`     |
 | Provider Extensions (OpenAI batch) | Provider specific behavior                   | `providers/openai-batch-provider.md` |
 | Docker Test Environments           | Isolated test setup                          | `testing-docker.md`                  |
 | Database Migrations (Alembic)      | Schema management & history                  | `database-migrations.md`             |

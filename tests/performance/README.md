@@ -12,6 +12,7 @@ The performance test suite includes:
 - **Task System Tests**: Task health monitoring, worker statistics, active tasks
 - **Database Health Tests**: Focused database performance testing
 - **No-Cost LLM Mock Tests**: Agent instances, emulated agent runs, fake or local embeddings, and vector search workflows
+- **Direct Agent Server Tests**: FastAPI login + run-bundle bootstrap followed by direct Agent Server thread runs
 
 ## Prerequisites
 
@@ -188,6 +189,19 @@ The test suite includes predefined load profiles for different testing scenarios
 
 The embeddings worker is still only involved when the API process runs with `EMBEDDING_BACKEND=local`. With the default testing-safe `EMBEDDING_BACKEND=fake`, `/api/v1/embeddings/generate` stays in-process by design, so you should expect activity on the main worker but not on the dedicated `embeddings` worker.
 
+### Direct Agent Server Profile (`agent_server_direct`)
+
+- **Purpose**: Measure the direct LangGraph Agent Server runtime path while still reusing FastAPI for auth and per-instance configuration
+- **Users**: 20
+- **Duration**: 5 minutes
+- **Spawn Rate**: 2 users/second
+- **Use Case**: Direct performance validation of Agent Server thread runs that are bootstrapped through `GET /api/v1/agent-instances/{id}/run-bundle`
+- **Requires**: FastAPI, LangGraph Agent Server, and an agent template that is exposed by the Agent Server graph registry
+
+`agent_server_direct` authenticates each Locust user against FastAPI, creates one user-owned agent instance, fetches the run-bundle, creates an Agent Server thread through `POST /threads`, and then executes direct turns via `POST /threads/{thread_id}/runs/wait`. This means the `--host` flag still points at FastAPI, but the actual chat runtime is exercised on the Agent Server URL returned by the run-bundle.
+
+The first implementation slice intentionally uses `/runs/wait` instead of SSE streaming. That keeps the runtime path direct-to-Agent-Server while avoiding a custom event-stream parser in the first iteration. If you need frontend-like first-token and full-stream metrics, add a follow-up scenario that targets `POST /threads/{thread_id}/runs/stream`.
+
 ## Running Performance Tests
 
 ### Basic Usage
@@ -237,6 +251,9 @@ poetry run python scripts/perf_tests/run_perf_llm_mock.py
 poetry run python scripts/perf_tests/run_perf_llm_mock.py \
   --embedding-backend local \
   --name-suffix local-embeddings
+
+# Direct Agent Server thread runs (FastAPI bootstrap + Agent Server runtime)
+poetry run python scripts/perf_tests/run_perf_agent_server_direct.py
 ```
 
 Common wrapper flags:

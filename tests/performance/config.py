@@ -109,6 +109,23 @@ LOAD_PROFILES = {
             "TasksMonitoringUser": 1,
         },
     ),
+    "agent_server_direct": LoadProfile(
+        name="agent_server_direct",
+        description=(
+            "Authenticated user traffic that bootstraps through FastAPI "
+            "run-bundle and executes direct Agent Server thread runs"
+        ),
+        users=20,
+        spawn_rate=2.0,
+        run_time="5m",
+        weight_config={
+            "HealthCheckUser": 2,
+            "HealthCheckFullUser": 1,
+            "AuthUserFlow": 2,
+            "AgentServerDirectUser": 10,
+            "TasksMonitoringUser": 1,
+        },
+    ),
 }
 
 

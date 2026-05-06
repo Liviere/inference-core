@@ -20,6 +20,7 @@ import string
 import time
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Dict, Optional
 
 # Handle imports for both direct execution and module import
@@ -32,17 +33,18 @@ from config import (
 from jose import jwt
 from locust import HttpUser, between, events, task
 from locust.env import Environment
+import requests
 
-AUTH_DEPENDENT_USER_CLASSES = frozenset({"AuthUserFlow", "LLMMockWorkspaceUser"})
+AUTH_DEPENDENT_USER_CLASSES = frozenset(
+    {"AuthUserFlow", "LLMMockWorkspaceUser", "AgentServerDirectUser"}
+)
 _LLM_EMULATION_REQUEST_HEADER_ENV_MAP = {
     "X-Inference-Emulation-Profile": "LLM_EMULATION_PROFILE",
     "X-Inference-Emulation-Latency-Ms": "LLM_EMULATION_LATENCY_MS",
     "X-Inference-Emulation-Latency-Jitter-Ms": "LLM_EMULATION_LATENCY_JITTER_MS",
     "X-Inference-Emulation-Session-Scale-Min": "LLM_EMULATION_SESSION_SCALE_MIN",
     "X-Inference-Emulation-Session-Scale-Max": "LLM_EMULATION_SESSION_SCALE_MAX",
-    "X-Inference-Emulation-Step-Latency-Growth": (
-        "LLM_EMULATION_STEP_LATENCY_GROWTH"
-    ),
+    "X-Inference-Emulation-Step-Latency-Growth": ("LLM_EMULATION_STEP_LATENCY_GROWTH"),
     "X-Inference-Emulation-Stream-First-Chunk-Ratio": (
         "LLM_EMULATION_STREAM_FIRST_CHUNK_RATIO"
     ),
@@ -353,6 +355,199 @@ class BaseUser(HttpUser):
         """
         self.ensure_authenticated()
         return self.auth_headers or {}
+
+
+class AgentWorkspaceUser(BaseUser):
+    """Authenticated performance user that owns one agent instance.
+
+    WHY: both the in-process ``llm_mock`` path and the direct Agent Server
+    path need the same bootstrap flow: create a stable user, resolve a base
+    template, and keep one agent instance alive across many chat turns.
+    """
+
+    abstract = True
+
+    def __init__(self, environment: Environment):
+        super().__init__(environment)
+        self.template_name: Optional[str] = None
+        self.template_primary_model: Optional[str] = None
+        self.agent_instance_id: Optional[str] = None
+        self.agent_instance_name: Optional[str] = None
+
+    def cleanup_agent_instance(self) -> None:
+        """Delete the scenario-owned agent instance when the user stops.
+
+        WHY: performance runs create many ephemeral users; cleaning up their
+        agent instances keeps the test database closer to a normal steady state.
+        """
+
+        if not self.agent_instance_id:
+            return
+        self.client.delete(
+            f"/api/v1/agent-instances/{self.agent_instance_id}",
+            headers=self.authenticated_headers(),
+            name="Agent Instances - Delete",
+        )
+
+    def _load_agent_template(self) -> bool:
+        data = self._get_json(
+            "GET",
+            "/api/v1/agent-instances/templates",
+            name="Agent Instances - Templates",
+            headers=self.authenticated_headers(),
+            expected_fields=("templates", "available_models"),
+        )
+        if not data or not data.get("templates"):
+            return False
+        template = data["templates"][0]
+        self.template_name = template.get("agent_name")
+        self.template_primary_model = template.get("primary_model")
+        return bool(self.template_name)
+
+    def _create_agent_instance(self) -> bool:
+        if not self.template_name or not self.agent_instance_name:
+            return False
+
+        payload = {
+            "instance_name": self.agent_instance_name,
+            "display_name": "Locust Workspace Agent",
+            "base_agent_name": self.template_name,
+            "description": "Agent instance created by a performance test profile.",
+            "system_prompt_append": "Prefer short answers suitable for load tests.",
+        }
+        data = self._post_json(
+            "/api/v1/agent-instances",
+            payload,
+            name="Agent Instances - Create",
+            headers=self.authenticated_headers(),
+            expected_fields=("id", "instance_name", "base_agent_name"),
+            success_statuses={201},
+        )
+        if not data:
+            return False
+        self.agent_instance_id = data.get("id")
+        return bool(self.agent_instance_id)
+
+    def _ensure_agent_instance(self) -> bool:
+        if self.agent_instance_id:
+            return True
+        if not self.template_name and not self._load_agent_template():
+            return False
+        return self._create_agent_instance()
+
+    def _get_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        name: str,
+        headers: Optional[Dict[str, str]] = None,
+        expected_fields: tuple[str, ...] = (),
+        success_statuses: set[int] | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        success_statuses = success_statuses or {200}
+        for attempt in range(2):
+            with self.client.request(
+                method,
+                path,
+                headers=headers,
+                catch_response=True,
+                name=name,
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        headers = self.authenticated_headers()
+                        continue
+                    response.failure(f"{name} authentication recovery failed")
+                    return None
+                return self._parse_json_response(
+                    response, name, expected_fields, success_statuses
+                )
+        return None
+
+    def _post_json(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        *,
+        name: str,
+        headers: Optional[Dict[str, str]] = None,
+        expected_fields: tuple[str, ...] = (),
+        success_statuses: set[int] | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        success_statuses = success_statuses or {200}
+        for attempt in range(2):
+            with self.client.post(
+                path,
+                headers=headers,
+                json=payload,
+                catch_response=True,
+                name=name,
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        headers = self.authenticated_headers()
+                        continue
+                    response.failure(f"{name} authentication recovery failed")
+                    return None
+                return self._parse_json_response(
+                    response, name, expected_fields, success_statuses
+                )
+        return None
+
+    def _patch_json(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        *,
+        name: str,
+        headers: Optional[Dict[str, str]] = None,
+        expected_fields: tuple[str, ...] = (),
+    ) -> Optional[Dict[str, Any]]:
+        for attempt in range(2):
+            with self.client.patch(
+                path,
+                headers=headers,
+                json=payload,
+                catch_response=True,
+                name=name,
+            ) as response:
+                if response.status_code == 401 and attempt == 0:
+                    response.success()
+                    self.reset_auth_state()
+                    if self.ensure_authenticated(force_refresh=True):
+                        headers = self.authenticated_headers()
+                        continue
+                    response.failure(f"{name} authentication recovery failed")
+                    return None
+                return self._parse_json_response(response, name, expected_fields, {200})
+        return None
+
+    def _parse_json_response(
+        self,
+        response,
+        name: str,
+        expected_fields: tuple[str, ...],
+        success_statuses: set[int],
+    ) -> Optional[Dict[str, Any]]:
+        if response.status_code not in success_statuses:
+            response.failure(f"{name} failed: {response.status_code}")
+            return None
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            response.failure(f"{name} returned invalid JSON")
+            return None
+        missing = [field for field in expected_fields if field not in data]
+        if missing:
+            response.failure(f"{name} missing fields: {missing}")
+            return None
+        response.success()
+        return data
 
 
 class HealthCheckUser(BaseUser):
@@ -1413,6 +1608,318 @@ class LLMMockWorkspaceUser(BaseUser):
         return data
 
 
+class AgentServerDirectUser(AgentWorkspaceUser):
+    """Direct Agent Server workload bootstrapped through FastAPI run-bundle.
+
+    WHY: this scenario measures the runtime path closest to the sample chat
+    frontend: FastAPI handles auth and per-instance configuration once, while
+    actual chat turns execute against the LangGraph Agent Server.
+    """
+
+    weight = 0
+    wait_time = between(2, 6)
+    agent_server_timeout_seconds = 120
+
+    def __init__(self, environment: Environment):
+        super().__init__(environment)
+        self.agent_server_url: Optional[str] = None
+        self.agent_server_assistant_id: Optional[str] = None
+        self.agent_server_access_token: Optional[str] = None
+        self.agent_server_thread_id: Optional[str] = None
+        self.agent_server_session_id: Optional[str] = None
+        self.agent_server_config: Dict[str, Any] = {}
+        self.agent_server_http = requests.Session()
+
+    def on_start(self):
+        """Bootstrap one user-owned instance and its Agent Server bundle.
+
+        WHY: realistic chat traffic should reuse the same agent instance and
+        thread metadata across many turns instead of recreating them per call.
+        """
+
+        if not self.authenticate_unique_user("agentserver"):
+            return
+
+        suffix = self.generate_random_string(10)
+        self.agent_instance_name = f"locust-agent-server-{suffix}"
+        self.agent_server_session_id = f"locust-agent-server-{suffix}"
+
+        if not self._ensure_agent_instance():
+            return
+
+        self._refresh_run_bundle()
+
+    def on_stop(self):
+        """Tear down the owned instance and HTTP session where practical.
+
+        WHY: the direct Agent Server profile still provisions FastAPI-side user
+        resources, so cleanup should mirror the existing authenticated flows.
+        """
+
+        self.cleanup_agent_instance()
+        self.agent_server_http.close()
+        self.logout_current_user()
+
+    @task(8)
+    def run_agent_server_turn(self):
+        """Execute one direct thread run on the Agent Server.
+
+        WHY: the profile's core purpose is to measure the Agent Server runtime
+        path, not the in-process FastAPI ``/run`` endpoint.
+        """
+
+        if not self._ensure_agent_server_ready():
+            return
+
+        prompt = random.choice(
+            [
+                "Summarize the deployment risk of a backend config change.",
+                "Draft a short checklist for validating an agent release.",
+                "Explain why thread-based continuation matters for agent tests.",
+                "List two likely causes of a flaky integration test.",
+            ]
+        )
+        self._run_agent_server_wait(prompt)
+
+    @task(1)
+    def refresh_agent_server_bundle(self):
+        """Refresh the FastAPI handshake bundle for the current instance.
+
+        WHY: frontend-like traffic occasionally rehydrates runtime metadata and
+        token state without recreating the underlying agent instance.
+        """
+
+        if not self.agent_instance_id:
+            return
+        self._refresh_run_bundle()
+
+    @task(1)
+    def start_fresh_agent_server_thread(self):
+        """Rotate to a new Agent Server thread for a fresh conversation.
+
+        WHY: real chat usage mixes continued conversations with brand-new
+        threads, so the profile should exercise both create and reuse flows.
+        """
+
+        self.agent_server_thread_id = None
+        self._ensure_agent_server_thread(force_new=True)
+
+    def _ensure_agent_server_ready(self) -> bool:
+        """Ensure the user has bundle metadata and a live Agent Server thread.
+
+        WHY: direct Agent Server calls need configuration from FastAPI first,
+        and thread-backed runs should preserve continuation semantics.
+        """
+
+        if not self._ensure_agent_instance():
+            return False
+        if not self.agent_server_url or not self.agent_server_assistant_id:
+            if not self._refresh_run_bundle():
+                return False
+        return self._ensure_agent_server_thread()
+
+    def _refresh_run_bundle(self) -> bool:
+        """Fetch the current FastAPI handshake payload for direct Agent Server use.
+
+        WHY: ``run-bundle`` is the stable contract that provides assistant id,
+        Agent Server URL, bearer token, and runtime configurable overrides.
+        """
+
+        if not self.agent_instance_id:
+            return False
+
+        query = ""
+        if self.agent_server_session_id:
+            query = f"?session_id={self.agent_server_session_id}"
+        data = self._get_json(
+            "GET",
+            f"/api/v1/agent-instances/{self.agent_instance_id}/run-bundle{query}",
+            name="Agent Server - Run Bundle",
+            headers=self.authenticated_headers(),
+            expected_fields=(
+                "assistant_id",
+                "agent_server_url",
+                "config",
+                "instance_id",
+                "is_remote",
+            ),
+        )
+        if not data:
+            return False
+
+        config = data.get("config") or {}
+        if not isinstance(config, dict):
+            print("[Agent Server - Run Bundle] Invalid config payload")
+            return False
+
+        bundle_token = data.get("access_token") or self.access_token
+        self.agent_server_url = str(data.get("agent_server_url") or "").rstrip("/")
+        self.agent_server_assistant_id = str(data.get("assistant_id") or "")
+        self.agent_server_config = config
+        self.agent_server_access_token = str(bundle_token) if bundle_token else None
+        return bool(self.agent_server_url and self.agent_server_assistant_id)
+
+    def _ensure_agent_server_thread(self, *, force_new: bool = False) -> bool:
+        """Create a new Agent Server thread when the user needs one.
+
+        WHY: the sample-chat flow is thread-based, so direct performance tests
+        need an explicit thread lifecycle instead of stateless runs.
+        """
+
+        if self.agent_server_thread_id and not force_new:
+            return True
+        if not self.agent_server_url:
+            return False
+
+        payload = {
+            "metadata": {
+                "source": "locust",
+                "profile": "agent_server_direct",
+                "instance_id": self.agent_instance_id,
+            },
+            "if_exists": "raise",
+        }
+        thread_data = self._agent_server_post_json(
+            path="/threads",
+            payload=payload,
+            metric_name="Agent Server - Create Thread",
+            expected_fields=("thread_id",),
+        )
+        if not thread_data:
+            return False
+
+        self.agent_server_thread_id = str(thread_data.get("thread_id") or "")
+        return bool(self.agent_server_thread_id)
+
+    def _run_agent_server_wait(self, prompt: str) -> bool:
+        """Execute one direct ``/runs/wait`` turn against the Agent Server.
+
+        WHY: the first implementation slice should validate the direct runtime
+        path end-to-end before layering in SSE-specific metrics and parsing.
+        """
+
+        if (
+            not self.agent_server_url
+            or not self.agent_server_assistant_id
+            or not self.agent_server_thread_id
+        ):
+            return False
+
+        self.ensure_authenticated()
+        if self.access_token:
+            self.agent_server_access_token = self.access_token
+
+        payload = {
+            "assistant_id": self.agent_server_assistant_id,
+            "input": {"messages": [{"role": "user", "content": prompt}]},
+            "config": self.agent_server_config,
+            "metadata": {
+                "source": "locust",
+                "profile": "agent_server_direct",
+                "instance_id": self.agent_instance_id,
+                "instance_name": self.agent_instance_name,
+            },
+            "if_not_exists": "create",
+        }
+        data = self._agent_server_post_json(
+            path=f"/threads/{self.agent_server_thread_id}/runs/wait",
+            payload=payload,
+            metric_name="Agent Server - Run Wait",
+            timeout=self.agent_server_timeout_seconds,
+        )
+        if not data:
+            return False
+
+        if not isinstance(data, dict) or not data:
+            print("[Agent Server - Run Wait] Empty or invalid run payload")
+            return False
+        return True
+
+    def _agent_server_post_json(
+        self,
+        *,
+        path: str,
+        payload: Dict[str, Any],
+        metric_name: str,
+        expected_fields: tuple[str, ...] = (),
+        success_statuses: set[int] | None = None,
+        timeout: int | float | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Send a JSON request to the Agent Server and report it to Locust.
+
+        WHY: direct Agent Server traffic bypasses ``self.client``, so the
+        profile must emit custom Locust request metrics for those calls.
+        """
+
+        if not self.agent_server_url:
+            return None
+
+        success_statuses = success_statuses or {200}
+        target_url = f"{self.agent_server_url}{path}"
+        headers = self._agent_server_headers()
+        data: Optional[Dict[str, Any]] = None
+
+        with self.environment.events.request.measure("POST", metric_name) as meta:
+            response = self.agent_server_http.post(
+                target_url,
+                headers=headers,
+                json=payload,
+                timeout=timeout or self.agent_server_timeout_seconds,
+            )
+            meta["response_length"] = len(response.content or b"")
+
+            if response.status_code == 404 and "/runs/wait" in path:
+                self.agent_server_thread_id = None
+
+            if response.status_code not in success_statuses:
+                detail = response.text[:300].strip() or "no response body"
+                meta["exception"] = RuntimeError(
+                    f"{metric_name} failed: {response.status_code} ({detail})"
+                )
+            else:
+                try:
+                    parsed_data = response.json()
+                except json.JSONDecodeError as exc:
+                    meta["exception"] = RuntimeError(
+                        f"{metric_name} returned invalid JSON: {exc}"
+                    )
+                else:
+                    if not isinstance(parsed_data, dict):
+                        meta["exception"] = RuntimeError(
+                            f"{metric_name} returned a non-object JSON payload"
+                        )
+                    else:
+                        data = parsed_data
+
+        exception = meta.get("exception")
+        if exception is not None:
+            print(f"[{metric_name}] {exception}")
+            return None
+
+        if data is None:
+            print(f"[{metric_name}] Empty Agent Server response")
+            return None
+
+        missing = [field for field in expected_fields if field not in data]
+        if missing:
+            print(f"[{metric_name}] Missing fields: {missing}")
+            return None
+        return data
+
+    def _agent_server_headers(self) -> Dict[str, str]:
+        """Build headers for direct Agent Server calls.
+
+        WHY: direct thread runs must reuse the same JWT identity that FastAPI
+        established for the simulated user via login and run-bundle.
+        """
+
+        headers = {"Content-Type": "application/json"}
+        token = self.agent_server_access_token or self.access_token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+
 def _all_selectable_user_classes() -> tuple[type[HttpUser], ...]:
     """Return every Locust user class controlled by load profiles.
 
@@ -1425,6 +1932,7 @@ def _all_selectable_user_classes() -> tuple[type[HttpUser], ...]:
         AuthUserFlow,
         TasksMonitoringUser,
         LLMMockWorkspaceUser,
+        AgentServerDirectUser,
     )
 
 
@@ -1447,6 +1955,9 @@ def get_user_classes():
         elif class_name == "LLMMockWorkspaceUser":
             LLMMockWorkspaceUser.weight = weight
             classes.append(LLMMockWorkspaceUser)
+        elif class_name == "AgentServerDirectUser":
+            AgentServerDirectUser.weight = weight
+            classes.append(AgentServerDirectUser)
         elif class_name == "TasksMonitoringUser":
             TasksMonitoringUser.weight = weight
             classes.append(TasksMonitoringUser)
@@ -1505,6 +2016,13 @@ def _post_json_preflight(url: str, payload: Dict[str, str]) -> tuple[int, str]:
             return response.status, response.read().decode("utf-8", errors="ignore")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="ignore")
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        raise RuntimeError(
+            "Auth preflight could not reach the target backend at "
+            f"{url}. Start FastAPI on the expected host/port before running "
+            f"Locust. Connection detail: {reason}"
+        ) from exc
 
 
 def _validate_auth_preflight(environment, profile) -> None:
