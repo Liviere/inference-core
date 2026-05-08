@@ -123,6 +123,37 @@ class TestTaskService:
 
     @patch("inference_core.services.task_service.AsyncResult")
     @patch("inference_core.services.task_service.celery_app")
+    def test_get_task_status_normalizes_exception_payloads(
+        self, mock_celery_app, mock_async_result_class
+    ):
+        """Exception objects in result/info are serialized to dicts."""
+        mock_result = MagicMock()
+        mock_result.status = "FAILURE"
+        mock_result.result = AttributeError("missing agent")
+        mock_result.info = AttributeError("missing agent")
+        mock_result.traceback = "Traceback details..."
+        mock_result.ready.return_value = True
+        mock_result.successful.return_value = False
+        mock_result.failed.return_value = True
+
+        mock_async_result_class.return_value = mock_result
+
+        service = TaskService()
+        status = service.get_task_status("failed-task-id")
+
+        assert status["result"] == {
+            "error": "missing agent",
+            "type": "AttributeError",
+            "args": ["missing agent"],
+        }
+        assert status["info"] == {
+            "error": "missing agent",
+            "type": "AttributeError",
+            "args": ["missing agent"],
+        }
+
+    @patch("inference_core.services.task_service.AsyncResult")
+    @patch("inference_core.services.task_service.celery_app")
     def test_get_task_result(self, mock_celery_app, mock_async_result_class):
         """Test get_task_result retrieves task result"""
         mock_result = MagicMock()

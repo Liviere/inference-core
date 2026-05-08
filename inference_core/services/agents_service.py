@@ -38,6 +38,7 @@ from inference_core.agents.tools.skill_reader import (
     add_skill_reader_tool,
     create_skills_middleware,
 )
+from inference_core.celery.async_utils import run_async_safely
 from inference_core.core.config import get_settings
 from inference_core.database.sql.models.user_agent_instance import UserAgentInstance
 from inference_core.llm.config import LLMConfig, get_llm_config
@@ -339,6 +340,7 @@ class AgentService:
         # by ``_load_providers_tools`` and consumed by
         # ``_add_tool_model_switch_middleware``.
         self._delegated_multimodal_tools: list[str] = []
+        self.agent = None
 
     @property
     def display_name(self) -> str:
@@ -1740,6 +1742,8 @@ class AgentService:
                 f"the sync run_agent_steps() does not support remote delegation."
             )
 
+        self._ensure_local_agent_initialized_sync()
+
         from inference_core.services.stream_utils import SyncInterruptibleStream
 
         start_time = datetime.now(UTC)
@@ -1842,6 +1846,8 @@ class AgentService:
             )
 
         # --- Local execution path ---
+        await self._ensure_local_agent_initialized_async()
+
         from inference_core.services.stream_utils import InterruptibleStream
 
         start_time = datetime.now(UTC)
@@ -1899,6 +1905,20 @@ class AgentService:
         return accumulator.build_response(
             self.model_name, start_time, self._enable_cost_tracking
         )
+
+    def _ensure_local_agent_initialized_sync(self) -> None:
+        """Ensure the local in-process agent graph exists before sync execution."""
+
+        if self.agent is not None:
+            return
+        run_async_safely(self.create_agent())
+
+    async def _ensure_local_agent_initialized_async(self) -> None:
+        """Ensure the local in-process agent graph exists before async execution."""
+
+        if self.agent is not None:
+            return
+        await self.create_agent()
 
     def _emulation_session_scope(self):
         """Return a run-scoped context for local emulated LLM timing.

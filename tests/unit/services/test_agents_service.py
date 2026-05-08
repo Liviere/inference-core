@@ -7,6 +7,7 @@ Heavy constructor side-effects (model loading, embeddings) are bypassed by mocki
 the constructor's dependencies or by testing individual methods on a pre-built instance.
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -397,6 +398,62 @@ class TestBuildStreamConfigSyncMode:
 
 class TestRunAgentSteps:
     """Verify agent execution pipeline and response construction."""
+
+    def test_lazy_initializes_agent_for_sync_run(self, agent_service):
+        """run_agent_steps creates the local agent graph on first use."""
+        mock_agent = MagicMock()
+        ai_msg = MagicMock()
+        ai_msg.content = "Hello!"
+        mock_agent.stream.return_value = [
+            {"type": "updates", "data": {"agent": {"messages": [ai_msg]}}, "ns": []},
+        ]
+
+        async def fake_create_agent(*args, **kwargs):
+            agent_service.agent = mock_agent
+            return mock_agent
+
+        agent_service.agent = None
+        agent_service.create_agent = AsyncMock(side_effect=fake_create_agent)
+
+        with patch(
+            "inference_core.services.agents_service.run_async_safely",
+            side_effect=lambda coro: asyncio.run(coro),
+        ) as mock_run_async_safely:
+            response = agent_service.run_agent_steps("Hi")
+
+        mock_run_async_safely.assert_called_once()
+        agent_service.create_agent.assert_awaited_once()
+        assert isinstance(response, AgentResponse)
+        assert response.result["messages"] == [ai_msg]
+
+    @pytest.mark.asyncio
+    async def test_lazy_initializes_agent_for_async_run(self, agent_service):
+        """arun_agent_steps creates the local agent graph on first use."""
+        mock_agent = MagicMock()
+        ai_msg = MagicMock()
+        ai_msg.content = "Hello!"
+
+        async def fake_stream(*args, **kwargs):
+            yield {
+                "type": "updates",
+                "data": {"agent": {"messages": [ai_msg]}},
+                "ns": [],
+            }
+
+        mock_agent.astream.return_value = fake_stream()
+
+        async def fake_create_agent(*args, **kwargs):
+            agent_service.agent = mock_agent
+            return mock_agent
+
+        agent_service.agent = None
+        agent_service.create_agent = AsyncMock(side_effect=fake_create_agent)
+
+        response = await agent_service.arun_agent_steps("Hi")
+
+        agent_service.create_agent.assert_awaited_once()
+        assert isinstance(response, AgentResponse)
+        assert response.result["messages"] == [ai_msg]
 
     def test_returns_agent_response(self, agent_service):
         """run_agent_steps returns AgentResponse with result, steps, metadata."""

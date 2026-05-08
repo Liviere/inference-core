@@ -51,8 +51,12 @@ class TaskService:
         return {
             "task_id": task_id,
             "status": task_result.status,
-            "result": task_result.result if task_result.ready() else None,
-            "info": task_result.info,
+            "result": (
+                _normalize_task_payload(task_result.result)
+                if task_result.ready()
+                else None
+            ),
+            "info": _normalize_task_payload(task_result.info),
             "traceback": task_result.traceback,
             "successful": task_result.successful() if task_result.ready() else None,
             "failed": task_result.failed() if task_result.ready() else None,
@@ -336,3 +340,19 @@ task_service = TaskService()
 def get_task_service() -> TaskService:
     """Get the global task service instance"""
     return task_service
+
+
+def _normalize_task_payload(value: Any) -> Dict[str, Any] | None:
+    """Normalize Celery result/info values to the dict-based API contract."""
+
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, BaseException):
+        return {
+            "error": str(value),
+            "type": type(value).__name__,
+            "args": list(value.args),
+        }
+    return {"value": str(value), "type": type(value).__name__}
