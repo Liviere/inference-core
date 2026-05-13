@@ -25,11 +25,20 @@ When creating or updating an instance, the following fields are available:
 | `display_name` | Human-readable name shown in the UI. |
 | `base_agent_name` | The name of the base agent from `agents_config.yaml` to inherit from. |
 | `primary_model` | (Optional) Override the LLM model used by this agent. Must be in the allowed models list. |
-| `system_prompt_override` | (Optional) Completely replace the base agent's system prompt. |
-| `system_prompt_append` | (Optional) Append text to the end of the base agent's system prompt. |
+| `system_prompt_override` | (Optional) Completely replace the base agent's system prompt. A consuming application may configure a runtime max length, but core defaults to no limit. |
+| `system_prompt_append` | (Optional) Append text to the end of the base agent's system prompt. A consuming application may configure a runtime max length, but core defaults to no limit. |
 | `skills` | (Optional) List of private skill definitions with `name`, `description`, and `content`. |
 | `config_overrides` | (Optional) JSON object for advanced overrides (e.g., `temperature`, `max_tokens`, `allowed_tools`, `fallback`). |
 | `is_default` | (Boolean) If true, this becomes the user's default agent. Any previous default is unset. |
+
+If a consuming application configures prompt-length limits, the same limits are enforced across `POST /api/v1/agent-instances`, `PATCH /api/v1/agent-instances/{id}`, direct `UserAgentInstanceService` calls, and any builder/deploy flow built on top of those schemas and services. Frontends can read the current runtime values from `GET /api/v1/config/resolved` under `agent_prompt_limits`; `null` means the core runtime is currently unbounded for that field.
+
+`inference_core` can also derive global defaults from environment variables without any runtime configuration call:
+
+- `INFERENCE_CORE_AGENT_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH`
+- `INFERENCE_CORE_AGENT_SYSTEM_PROMPT_APPEND_MAX_LENGTH`
+
+Unset or empty values keep the corresponding field unbounded.
 
 `config_overrides.fallback` is the canonical list of fallback model names.
 The API also accepts `config_overrides.fallback_models` as a compatibility alias

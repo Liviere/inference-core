@@ -51,6 +51,8 @@ curl -X POST http://localhost:8000/api/v1/agent-instances \
 
 Use `system_prompt_override` when the instance should replace the base prompt entirely, and `system_prompt_append` when it should extend the template prompt.
 
+Prompt-length limits for `system_prompt_override` and `system_prompt_append` are optional configuration in `inference_core`. They can be set either by runtime code or globally via `INFERENCE_CORE_AGENT_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH` and `INFERENCE_CORE_AGENT_SYSTEM_PROMPT_APPEND_MAX_LENGTH`. The current effective values can be exposed to clients through `GET /api/v1/config/resolved` under `agent_prompt_limits`; `null` means no limit is currently enforced.
+
 ## Removed Legacy Behavior
 
 The following prompt mechanisms are no longer supported:

@@ -36,6 +36,10 @@ Registered users can manage their preferences via `/api/v1/config/preferences`.
 - **View Effective Config**: `GET /api/v1/config/resolved`
 - **Available Options**: `GET /api/v1/config/available-options` (Shows what you are allowed to change, matching available models, tasks, and agents).
 
+The resolved config response also includes `agent_prompt_limits`, which exposes
+the current runtime length caps for `system_prompt_override` and
+`system_prompt_append`. A `null` value means that field is currently unbounded.
+
 ### For Administrators
 
 Admins manage the system-wide overrides and the user allowlist via `/api/v1/config/admin`.

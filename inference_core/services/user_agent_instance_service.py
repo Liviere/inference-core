@@ -17,6 +17,7 @@ from inference_core.agents.middleware.model_fallback import (
     canonicalize_fallback_overrides,
 )
 from inference_core.database.sql.models.user_agent_instance import UserAgentInstance
+from inference_core.schemas.agent_prompt_limits import validate_agent_prompt_lengths
 from inference_core.services.llm_config_service import LLMConfigService
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,11 @@ class UserAgentInstanceService:
 
         If is_default=True, clears any existing default for the user.
         """
+        validate_agent_prompt_lengths(
+            system_prompt_override=system_prompt_override,
+            system_prompt_append=system_prompt_append,
+        )
+
         # Get resolved config for validation
         resolved = await self.llm_config_service.get_resolved_config(user_id)
 
@@ -249,6 +255,11 @@ class UserAgentInstanceService:
 
         Validates model names and manages default flag.
         """
+        validate_agent_prompt_lengths(
+            system_prompt_override=updates.get("system_prompt_override"),
+            system_prompt_append=updates.get("system_prompt_append"),
+        )
+
         # We need to eager load subagents if we are going to update them
         query = (
             select(UserAgentInstance)

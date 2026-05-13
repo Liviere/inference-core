@@ -9,7 +9,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+from inference_core.schemas.agent_prompt_limits import (
+    validate_agent_prompt_length,
+)
 
 _SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _MAX_USER_SKILLS = 20
@@ -107,12 +111,10 @@ class AgentInstanceCreate(BaseModel):
     )
     system_prompt_override: Optional[str] = Field(
         None,
-        max_length=5000,
         description="Full system prompt override (replaces base prompt)",
     )
     system_prompt_append: Optional[str] = Field(
         None,
-        max_length=2000,
         description="Text appended to base system prompt",
     )
     config_overrides: Optional[Dict[str, Any]] = Field(
@@ -163,6 +165,16 @@ class AgentInstanceCreate(BaseModel):
             )
         return v
 
+    @field_validator("system_prompt_override", "system_prompt_append")
+    @classmethod
+    def validate_prompt_lengths(
+        cls, value: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        """Validate prompt fields against optional runtime-configured limits."""
+
+        validate_agent_prompt_length(info.field_name, value)
+        return value
+
 
 class AgentInstanceUpdate(BaseModel):
     """Schema for updating an existing agent instance."""
@@ -170,8 +182,8 @@ class AgentInstanceUpdate(BaseModel):
     display_name: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = Field(None, max_length=1000)
     primary_model: Optional[str] = Field(None, max_length=100)
-    system_prompt_override: Optional[str] = Field(None, max_length=5000)
-    system_prompt_append: Optional[str] = Field(None, max_length=2000)
+    system_prompt_override: Optional[str] = None
+    system_prompt_append: Optional[str] = None
     config_overrides: Optional[Dict[str, Any]] = None
     skills: Optional[List[Dict[str, str]]] = None
     is_default: Optional[bool] = None
@@ -186,6 +198,16 @@ class AgentInstanceUpdate(BaseModel):
     ) -> Optional[List[Dict[str, str]]]:
         """Validate that each skill entry is safe to expose as a SKILL.md file."""
         return _validate_skill_entries(v)
+
+    @field_validator("system_prompt_override", "system_prompt_append")
+    @classmethod
+    def validate_prompt_lengths(
+        cls, value: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        """Validate prompt fields against optional runtime-configured limits."""
+
+        validate_agent_prompt_length(info.field_name, value)
+        return value
 
 
 # ============================================================

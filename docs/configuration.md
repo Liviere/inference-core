@@ -153,6 +153,20 @@ echoing a caller JWT, the backend mints a short-lived access token for the
 seeded public user so the Agent Server still receives an authenticated
 identity.
 
+## Agent Instance Prompt Limits
+
+Controls optional shared validation limits for user-supplied agent prompt
+fields. These limits apply to `POST /api/v1/agent-instances`,
+`PATCH /api/v1/agent-instances/{id}`, and are exposed through
+`GET /api/v1/config/resolved` under `agent_prompt_limits` so frontends can align
+their validation. `null`, unset, or empty values mean the corresponding field is
+unbounded.
+
+| Variable                                                 | Default | Description                                         |
+| -------------------------------------------------------- | ------- | --------------------------------------------------- |
+| `INFERENCE_CORE_AGENT_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH` | (none)  | Max characters allowed for `system_prompt_override` |
+| `INFERENCE_CORE_AGENT_SYSTEM_PROMPT_APPEND_MAX_LENGTH`   | (none)  | Max characters allowed for `system_prompt_append`   |
+
 ## Vector Store
 
 | Variable                       | Default                                | Description                             |

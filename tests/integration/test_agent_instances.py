@@ -5,10 +5,29 @@ import pytest
 from sqlalchemy import select
 
 from inference_core.database.sql.models.user import User
+from inference_core.schemas.agent_prompt_limits import (
+    configure_agent_prompt_limits,
+)
+
+TEST_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH = 40
+TEST_SYSTEM_PROMPT_APPEND_MAX_LENGTH = 20
 
 # Constant test UUIDs
 TEST_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 OTHER_USER_ID = uuid.UUID("87654321-4321-8765-4321-876543218765")
+
+
+@pytest.fixture(autouse=True)
+def reset_agent_prompt_limits():
+    configure_agent_prompt_limits(
+        system_prompt_override=None,
+        system_prompt_append=None,
+    )
+    yield
+    configure_agent_prompt_limits(
+        system_prompt_override=None,
+        system_prompt_append=None,
+    )
 
 
 @pytest.fixture
@@ -272,6 +291,105 @@ async def test_agent_instance_validation(async_test_client_factory):
         }
         resp2 = await client.post("/api/v1/agent-instances", json=payload2)
         assert resp2.status_code == 422  # Pydantic validation error
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_agent_instance_prompt_limits_apply_when_configured(
+    async_test_client_factory,
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from inference_core.core.dependecies import get_current_user_or_public, get_db
+    from inference_core.database.sql.connection import (
+        Base,
+        create_database_engine,
+        get_non_singleton_session_maker,
+    )
+    from inference_core.main_factory import create_application
+
+    engine = create_database_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_maker = get_non_singleton_session_maker(engine=engine)
+
+    async with session_maker() as session:
+        user = User(
+            id=TEST_USER_ID,
+            email="test@example.com",
+            username="test",
+            hashed_password="x",
+        )
+        session.add(user)
+        await session.commit()
+
+    async def override_get_db():
+        async with session_maker() as s:
+            yield s
+
+    async def override_user():
+        return {"id": str(TEST_USER_ID)}
+
+    configure_agent_prompt_limits(
+        system_prompt_override=TEST_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH,
+        system_prompt_append=TEST_SYSTEM_PROMPT_APPEND_MAX_LENGTH,
+    )
+
+    app = create_application()
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user_or_public] = override_user
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        templates_response = await client.get("/api/v1/agent-instances/templates")
+        base_agent = templates_response.json()["templates"][0]["agent_name"]
+
+        create_payload = {
+            "instance_name": "limit-aware-agent",
+            "display_name": "Limit Aware Agent",
+            "base_agent_name": base_agent,
+            "system_prompt_override": "O" * TEST_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH,
+            "system_prompt_append": "A" * TEST_SYSTEM_PROMPT_APPEND_MAX_LENGTH,
+        }
+        create_response = await client.post(
+            "/api/v1/agent-instances", json=create_payload
+        )
+        assert create_response.status_code == 201
+        instance_id = create_response.json()["id"]
+
+        create_over_limit_response = await client.post(
+            "/api/v1/agent-instances",
+            json={
+                **create_payload,
+                "instance_name": "limit-aware-agent-too-long",
+                "system_prompt_append": "A"
+                * (TEST_SYSTEM_PROMPT_APPEND_MAX_LENGTH + 1),
+            },
+        )
+        assert create_over_limit_response.status_code == 422
+
+        update_response = await client.patch(
+            f"/api/v1/agent-instances/{instance_id}",
+            json={
+                "system_prompt_override": "O" * TEST_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH,
+                "system_prompt_append": "A" * TEST_SYSTEM_PROMPT_APPEND_MAX_LENGTH,
+            },
+        )
+        assert update_response.status_code == 200
+
+        update_over_limit_response = await client.patch(
+            f"/api/v1/agent-instances/{instance_id}",
+            json={
+                "system_prompt_override": "O"
+                * (TEST_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH + 1),
+            },
+        )
+        assert update_over_limit_response.status_code == 422
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

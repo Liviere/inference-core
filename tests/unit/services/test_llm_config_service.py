@@ -9,7 +9,18 @@ from inference_core.database.sql.models import (
     LLMConfigOverride,
     UserLLMPreference,
 )
+from inference_core.schemas.agent_prompt_limits import (
+    clear_agent_prompt_limits_runtime_override,
+    configure_agent_prompt_limits,
+)
 from inference_core.services.llm_config_service import LLMConfigService
+
+
+@pytest.fixture(autouse=True)
+def reset_agent_prompt_limits():
+    clear_agent_prompt_limits_runtime_override()
+    yield
+    clear_agent_prompt_limits_runtime_override()
 
 
 @pytest.fixture
@@ -121,13 +132,19 @@ class TestLLMConfigService:
         }
 
         # Mock methods
-        with patch.object(
-            config_service, "_load_admin_overrides_dict", return_value=admin_overrides
-        ), patch.object(
-            config_service, "_load_user_preferences_dict", return_value=user_prefs
-        ), patch(
-            "inference_core.services.llm_config_service.get_llm_config"
-        ) as mock_get_config:
+        with (
+            patch.object(
+                config_service,
+                "_load_admin_overrides_dict",
+                return_value=admin_overrides,
+            ),
+            patch.object(
+                config_service, "_load_user_preferences_dict", return_value=user_prefs
+            ),
+            patch(
+                "inference_core.services.llm_config_service.get_llm_config"
+            ) as mock_get_config,
+        ):
 
             # Setup mock config
             mock_config_instance = MagicMock()
@@ -147,3 +164,80 @@ class TestLLMConfigService:
 
             assert resolved.defaults["temperature"] == 0.9
             assert resolved.sources["defaults.temperature"] == "user"
+            assert resolved.agent_prompt_limits.system_prompt_override is None
+            assert resolved.agent_prompt_limits.system_prompt_append is None
+
+    @pytest.mark.asyncio
+    async def test_get_resolved_config_exposes_optional_prompt_limits(
+        self, config_service
+    ):
+        user_id = uuid4()
+        configure_agent_prompt_limits(
+            system_prompt_override=120,
+            system_prompt_append=80,
+        )
+
+        with (
+            patch.object(
+                config_service,
+                "_load_admin_overrides_dict",
+                return_value={"global": {}, "model": {}, "task": {}, "agent": {}},
+            ),
+            patch.object(
+                config_service,
+                "_load_user_preferences_dict",
+                return_value={"model_params": {}, "default_model": {}},
+            ),
+            patch(
+                "inference_core.services.llm_config_service.get_llm_config"
+            ) as mock_get_config,
+        ):
+            mock_config_instance = MagicMock()
+            mock_config_instance.models = {"gpt-4": MagicMock()}
+            mock_config_instance.task_configs = {}
+            mock_config_instance.agent_configs = {}
+            mock_config_instance.is_model_available.return_value = True
+            mock_get_config.return_value = mock_config_instance
+
+            resolved = await config_service.get_resolved_config(user_id)
+
+            assert resolved.agent_prompt_limits.system_prompt_override == 120
+            assert resolved.agent_prompt_limits.system_prompt_append == 80
+
+    @pytest.mark.asyncio
+    async def test_get_resolved_config_reads_prompt_limits_from_env(
+        self, config_service, monkeypatch
+    ):
+        user_id = uuid4()
+        monkeypatch.setenv(
+            "INFERENCE_CORE_AGENT_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH", "140"
+        )
+        monkeypatch.setenv("INFERENCE_CORE_AGENT_SYSTEM_PROMPT_APPEND_MAX_LENGTH", "90")
+        clear_agent_prompt_limits_runtime_override()
+
+        with (
+            patch.object(
+                config_service,
+                "_load_admin_overrides_dict",
+                return_value={"global": {}, "model": {}, "task": {}, "agent": {}},
+            ),
+            patch.object(
+                config_service,
+                "_load_user_preferences_dict",
+                return_value={"model_params": {}, "default_model": {}},
+            ),
+            patch(
+                "inference_core.services.llm_config_service.get_llm_config"
+            ) as mock_get_config,
+        ):
+            mock_config_instance = MagicMock()
+            mock_config_instance.models = {"gpt-4": MagicMock()}
+            mock_config_instance.task_configs = {}
+            mock_config_instance.agent_configs = {}
+            mock_config_instance.is_model_available.return_value = True
+            mock_get_config.return_value = mock_config_instance
+
+            resolved = await config_service.get_resolved_config(user_id)
+
+            assert resolved.agent_prompt_limits.system_prompt_override == 140
+            assert resolved.agent_prompt_limits.system_prompt_append == 90

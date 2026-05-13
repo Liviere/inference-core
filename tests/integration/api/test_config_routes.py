@@ -5,6 +5,20 @@ from inference_core.core.dependecies import (
     get_current_active_user,
     get_current_superuser,
 )
+from inference_core.schemas.agent_prompt_limits import configure_agent_prompt_limits
+
+
+@pytest.fixture(autouse=True)
+def reset_agent_prompt_limits():
+    configure_agent_prompt_limits(
+        system_prompt_override=None,
+        system_prompt_append=None,
+    )
+    yield
+    configure_agent_prompt_limits(
+        system_prompt_override=None,
+        system_prompt_append=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -68,6 +82,10 @@ class TestConfigRoutes:
         data = response.json()
         assert "defaults" in data
         assert "agents" in data
+        assert data["agent_prompt_limits"] == {
+            "system_prompt_override": None,
+            "system_prompt_append": None,
+        }
 
     async def test_access_without_auth(self, async_test_client: AsyncClient):
         """Test that config endpoints require authentication."""

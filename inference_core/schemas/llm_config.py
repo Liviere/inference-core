@@ -12,6 +12,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from inference_core.schemas.agent_prompt_limits import (
+    get_agent_prompt_limits,
+)
+
 # ============================================================
 # Enums (mirror DB enums for API validation)
 # ============================================================
@@ -319,6 +323,27 @@ class ResolvedAgentConfig(BaseModel):
     description: Optional[str] = None
 
 
+class AgentPromptLimitsResponse(BaseModel):
+    """Shared length limits for user-configurable agent prompt fields."""
+
+    system_prompt_override: Optional[int] = Field(
+        default=None,
+        description="Maximum number of characters allowed for system_prompt_override; null means unbounded",
+    )
+    system_prompt_append: Optional[int] = Field(
+        default=None,
+        description="Maximum number of characters allowed for system_prompt_append; null means unbounded",
+    )
+
+
+def _default_agent_prompt_limits() -> AgentPromptLimitsResponse:
+    configured_limits = get_agent_prompt_limits()
+    return AgentPromptLimitsResponse(
+        system_prompt_override=configured_limits.system_prompt_override,
+        system_prompt_append=configured_limits.system_prompt_append,
+    )
+
+
 class ResolvedConfigResponse(BaseModel):
     """
     Full resolved configuration for a user.
@@ -343,6 +368,11 @@ class ResolvedConfigResponse(BaseModel):
     agents: Dict[str, ResolvedAgentConfig] = Field(
         default_factory=dict,
         description="Resolved agent configurations",
+    )
+
+    agent_prompt_limits: AgentPromptLimitsResponse = Field(
+        default_factory=_default_agent_prompt_limits,
+        description="Shared limits for user-configurable agent prompt fields",
     )
 
     # User's effective default settings
