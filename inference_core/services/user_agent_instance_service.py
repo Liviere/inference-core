@@ -423,6 +423,27 @@ class UserAgentInstanceService:
             return None
 
         normalized = canonicalize_fallback_overrides(config_overrides)
+
+        # Validate response_format: must be a non-empty JSON Schema dict.
+        # WHY: keep DB overrides aligned with AgentConfig.validate_response_format
+        # so invalid schemas are rejected at the API boundary, not at agent build.
+        if "response_format" in normalized:
+            rf = normalized["response_format"]
+            if rf is not None:
+                if not isinstance(rf, dict) or not rf:
+                    raise ValueError(
+                        "config_overrides.response_format must be a non-empty "
+                        "JSON Schema dict or null"
+                    )
+                if not any(
+                    key in rf for key in ("type", "$ref", "oneOf", "anyOf", "allOf")
+                ):
+                    raise ValueError(
+                        "config_overrides.response_format must look like a JSON "
+                        "Schema: expected at least one of 'type', '$ref', "
+                        "'oneOf', 'anyOf', or 'allOf' at the top level"
+                    )
+
         if "fallback" not in normalized:
             return normalized
 

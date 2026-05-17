@@ -586,6 +586,76 @@ agents:
   #   remote_graph_id: 'my_graph'          # Graph ID on Agent Server (defaults to agent name)
   #   local_tool_providers: []             # Tools are loaded on the server side
 
+  # Example: Agent returning a validated structured response alongside messages.
+  # response_format is a JSON Schema dict forwarded to LangChain's create_agent.
+  # The captured object is exposed via AgentResponse.structured_response.
+  # Strategy (provider-native vs tool-calling) is auto-selected per model.
+  # structured_extractor:
+  #   primary: 'gpt-5-mini'
+  #   description: 'Extracts contact info as structured JSON'
+  #   response_format:
+  #     type: object
+  #     description: 'Contact information for a person'
+  #     properties:
+  #       name: { type: string, description: 'Full name' }
+  #       email: { type: string, description: 'Email address' }
+  #       phone: { type: string, description: 'Phone number' }
+  #     required: ['name', 'email']
+
+  # Example: Weather agent that returns structured forecast data.
+  # Pairs with WeatherToolsProvider (weather_agent_tools) and check_weather tool.
+  # The raw OpenWeatherMap payload is normalised by the model into the schema below.
+  # weather_agent:
+  #   primary: 'gpt-5-mini'
+  #   description: 'Agent specialized in providing weather information'
+  #   execution_mode: 'remote'
+  #   allowed_tools: ['check_weather']
+  #   local_tool_providers: ['weather_agent_tools']
+  #   response_format:
+  #     type: object
+  #     description: Weather forecast for a requested location
+  #     properties:
+  #       city:
+  #         type: string
+  #         description: Resolved city name
+  #       country:
+  #         type: string
+  #         description: Country name
+  #       current_temperature_c:
+  #         type: number
+  #         description: Current temperature in Celsius
+  #       feels_like_c:
+  #         type: number
+  #         description: Feels-like temperature in Celsius
+  #       humidity_percent:
+  #         type: integer
+  #         description: Current relative humidity (0–100)
+  #       weather_description:
+  #         type: string
+  #         description: Short human-readable weather description (e.g. "light rain")
+  #       wind_speed_ms:
+  #         type: number
+  #         description: Wind speed in metres per second
+  #       forecast:
+  #         type: array
+  #         description: Next forecast periods (up to 5 entries)
+  #         items:
+  #           type: object
+  #           properties:
+  #             datetime:
+  #               type: string
+  #               description: ISO 8601 forecast timestamp
+  #             temperature_c:
+  #               type: number
+  #             weather_description:
+  #               type: string
+  #           required: [datetime, temperature_c, weather_description]
+  #     required:
+  #       - city
+  #       - country
+  #       - current_temperature_c
+  #       - weather_description
+
 # =============================================================================
 # EMBEDDING PROVIDERS (only used when EMBEDDING_BACKEND=remote)
 # =============================================================================

@@ -221,6 +221,7 @@ def build_agent_graph(
         tools=tools,
         middleware=middleware or None,
         system_prompt=effective_prompt,
+        response_format=agent_config.response_format,
     )
 
     logger.info(
@@ -676,6 +677,7 @@ def _build_server_subagents(
                 sub_config.system_prompt or sub_config.description or f"You are {name}."
             ),
             name=name,
+            response_format=sub_config.response_format,
         )
 
         specs.append(

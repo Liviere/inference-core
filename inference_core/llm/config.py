@@ -751,6 +751,22 @@ class AgentConfig(BaseModel):
         ),
     )
 
+    # --- Structured output ---
+    # JSON Schema dict forwarded to LangChain ``create_agent(response_format=...)``.
+    # WHY: enables agents to return validated structured data alongside the
+    # message history. Strategy (ProviderStrategy / ToolStrategy) is selected
+    # automatically by LangChain based on the model's profile capabilities.
+    response_format: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema dict describing the structured response "
+            "expected from the agent. When set, LangChain's ``create_agent`` "
+            "captures the model's structured output and exposes it via the "
+            "``structured_response`` state key. Strategy is auto-selected "
+            "(provider-native when supported, tool-calling otherwise)."
+        ),
+    )
+
     _VALID_MEMORY_TOOL_NAMES: ClassVar[frozenset[str]] = frozenset(
         {
             "save_memory_store",
@@ -809,6 +825,33 @@ class AgentConfig(BaseModel):
             raise ValueError(
                 "tool_double_strategy must be one of: "
                 f"{sorted(cls._VALID_TOOL_DOUBLE_STRATEGIES)}"
+            )
+        return v
+
+    @field_validator("response_format")
+    @classmethod
+    def validate_response_format(
+        cls, v: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Light JSON-Schema shape check.
+
+        WHY: catch obvious YAML/DB authoring mistakes early. We deliberately
+        avoid running a full JSON Schema validator here — LangChain and the
+        provider will perform the strict validation when the agent runs.
+        """
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            raise ValueError("response_format must be a JSON Schema dict or null")
+        if not v:
+            raise ValueError("response_format must be a non-empty JSON Schema dict")
+        has_marker = any(
+            key in v for key in ("type", "$ref", "oneOf", "anyOf", "allOf")
+        )
+        if not has_marker:
+            raise ValueError(
+                "response_format must look like a JSON Schema: expected at least "
+                "one of 'type', '$ref', 'oneOf', 'anyOf', or 'allOf' at the top level"
             )
         return v
 

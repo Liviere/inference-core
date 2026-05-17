@@ -3,7 +3,7 @@ import uuid
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Dict, Literal, Optional
 
 from deepagents import CompiledSubAgent, SubAgent
 from deepagents.backends import StateBackend, StoreBackend
@@ -72,6 +72,10 @@ class AgentResponse(BaseModel):
     steps: list[dict[str, Any]]
     metadata: AgentMetadata
     cost_metrics: Optional[AgentCostMetrics] = None
+    # Validated structured payload returned by LangChain when the agent is
+    # configured with ``response_format``. None when no schema is configured
+    # or when the model did not emit a structured response for this run.
+    structured_response: Optional[Any] = None
 
 
 # Cost-tracking field names emitted by CostTrackingMiddleware in state updates.
@@ -102,6 +106,10 @@ class _RunAccumulator:
     steps: list[dict[str, Any]] = field(default_factory=list)
     accumulated_state: dict[str, Any] = field(default_factory=dict)
     all_messages: list[Any] = field(default_factory=list)
+    # Latest structured payload emitted by LangChain's create_agent when
+    # ``response_format`` is configured. Captured from ``updates`` chunks so
+    # both local streaming and Agent Server v2 stream paths populate it.
+    structured_response: Any = None
 
     def process_updates_chunk(
         self,
@@ -125,6 +133,9 @@ class _RunAccumulator:
 
                 if "messages" in data:
                     self.all_messages.extend(data["messages"])
+
+                if "structured_response" in data:
+                    self.structured_response = data["structured_response"]
 
             elif step_name == "__interrupt__":
                 self.all_messages.append({"__interrupt__": data})
@@ -170,6 +181,7 @@ class _RunAccumulator:
             steps=self.steps,
             metadata=metadata,
             cost_metrics=cost_metrics,
+            structured_response=self.structured_response,
         )
 
 
@@ -431,6 +443,18 @@ class AgentService:
         # None means all tools → instructions on; empty list → instructions off
         return resolved_tools is None or len(resolved_tools) > 0
 
+    def _resolve_response_format(self) -> Optional[Dict[str, Any]]:
+        """Return the JSON Schema dict configured for this agent, or None.
+
+        WHY: structured output is opt-in per agent (YAML or user instance
+        override).  Centralising the lookup keeps create_agent() lean and gives
+        DeepAgentService a single hook to override without re-resolving the
+        whole AgentConfig.
+        """
+        if self.agent_config is None:
+            return None
+        return self.agent_config.response_format
+
     async def create_agent(
         self, system_prompt: Optional[str] = None, **kwargs
     ) -> Callable:
@@ -488,6 +512,13 @@ class AgentService:
             kwargs.setdefault("store", store)
 
         # Create the agent
+        # Resolve structured-output schema from AgentConfig.  Pass via kwargs
+        # only when present and not already provided by the caller so explicit
+        # overrides via **kwargs continue to win.
+        response_format = self._resolve_response_format()
+        if response_format is not None and "response_format" not in kwargs:
+            kwargs["response_format"] = response_format
+
         self.agent = create_agent(
             self.model,
             tools=self.tools,
@@ -2007,6 +2038,8 @@ class AgentService:
             # For non-streaming, populate accumulator from the final result
             if isinstance(result, dict) and "messages" in result:
                 accumulator.all_messages.extend(result["messages"])
+            if isinstance(result, dict) and "structured_response" in result:
+                accumulator.structured_response = result["structured_response"]
 
         agent_metadata = AgentMetadata(
             model_name=self.model_name,
@@ -2020,6 +2053,7 @@ class AgentService:
             steps=accumulator.steps,
             metadata=agent_metadata,
             cost_metrics=None,
+            structured_response=accumulator.structured_response,
         )
 
     @staticmethod
@@ -2077,6 +2111,7 @@ class AgentService:
             "memory_tools",
             "memory_session_context_enabled",
             "memory_tool_instructions_enabled",
+            "response_format",
         )
         # Keys from config_overrides that map to ModelConfig / ModelParams fields
         _MODEL_LEVEL_KEYS = (
@@ -2375,6 +2410,12 @@ class DeepAgentService(AgentService):
         self._ensure_cost_tracking_last(middleware)
 
         # 7. Create the agent via standard create_agent
+        # Resolve structured-output schema (inherited from AgentService helper).
+        # Forward via kwargs only when set and not explicitly overridden by caller.
+        response_format = self._resolve_response_format()
+        if response_format is not None and "response_format" not in kwargs:
+            kwargs["response_format"] = response_format
+
         self.agent = create_agent(
             self.model,
             tools=self.tools,
