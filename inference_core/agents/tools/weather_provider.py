@@ -17,9 +17,11 @@ from urllib.parse import quote
 
 import requests
 from langchain_core.tools import tool
+from pydantic import ValidationError
 
 from inference_core.agents.tools.search_engine import InternetSearchTool
 from inference_core.llm.tools import ToolProvider, register_tool_provider
+from inference_core.schemas.weather import OpenWeatherForecastResponse
 
 logger = logging.getLogger(__name__)
 
@@ -43,28 +45,19 @@ _NOMINATIM_HEADERS = {
 
 
 @tool
-def check_weather(country: str, city: str) -> str:
+def check_weather(country: str, city: str) -> OpenWeatherForecastResponse | dict | str:
     """Check the current weather forecast for a given city.
 
     Geocodes the location via Nominatim (OpenStreetMap), then fetches a
     5-day / 3-hour forecast from OpenWeatherMap.
 
-    Parameters
-    ----------
-    country : str
-        Country name (e.g., "Poland").
-    city : str
-        City name (e.g., "Warsaw").
-
-    Returns
-    -------
-    str
-        JSON-encoded forecast data on success, or a JSON-encoded error dict
-        like ``{"error": "..."}`` when geocoding or the API call fails.
+    Args:
+        country (str): The country where the city is located.
+        city (str): The city to check the weather for.
     """
     if not _OPEN_WEATHER_API_KEY:
         logger.error("OPEN_WEATHER_API_KEY is not set — cannot fetch weather.")
-        return json.dumps({"error": "Weather service is not configured."})
+        return {"error": "Weather service is not configured."}
 
     # Step 1: Resolve city name to lat/lon via Nominatim.
     geo_url = (
@@ -77,10 +70,10 @@ def check_weather(country: str, city: str) -> str:
         geo_data = geo_response.json()
     except Exception as exc:
         logger.warning("Nominatim geocoding failed for %s, %s: %s", city, country, exc)
-        return json.dumps({"error": f"Geocoding failed: {exc}"})
+        return {"error": f"Geocoding failed: {exc}"}
 
     if not geo_data:
-        return json.dumps({"error": f"Location not found: {city}, {country}"})
+        return {"error": f"Location not found: {city}, {country}"}
 
     lat = geo_data[0]["lat"]
     lon = geo_data[0]["lon"]
@@ -93,12 +86,22 @@ def check_weather(country: str, city: str) -> str:
     try:
         weather_response = requests.get(weather_url, timeout=10)
         weather_response.raise_for_status()
-        return json.dumps(weather_response.json())
+        weather_data = weather_response.json()
+        validated_response = OpenWeatherForecastResponse.model_validate(weather_data)
+        return validated_response
+    except ValidationError as exc:
+        logger.warning(
+            "OpenWeatherMap returned an unexpected payload for %s, %s: %s",
+            city,
+            country,
+            exc,
+        )
+        return "Weather API returned an unexpected payload."
     except Exception as exc:
         logger.warning(
             "OpenWeatherMap request failed for %s, %s: %s", city, country, exc
         )
-        return json.dumps({"error": f"Weather API failed: {exc}"})
+        return {"error": f"Weather API failed: {exc}"}
 
 
 # ---------------------------------------------------------------------------
