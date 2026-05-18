@@ -171,6 +171,16 @@ class UserAgentInstanceService:
                 f"Available agents: {available}"
             )
 
+        # Reject internal-only agents (Agent Builder stage agents, etc.).
+        # WHY: ``user_selectable=False`` means the agent is reserved for system
+        # orchestration and must never back a ``UserAgentInstance`` even though
+        # it appears in the resolved config registry.
+        base_agent_config = resolved.agents[base_agent_name]
+        if not getattr(base_agent_config, "user_selectable", True):
+            raise ValueError(
+                f"Base agent '{base_agent_name}' is not available for user " "instances"
+            )
+
         # Validate primary model if provided
         if primary_model and primary_model not in resolved.available_models:
             available = resolved.available_models
@@ -287,6 +297,25 @@ class UserAgentInstanceService:
                     f"Available models: {available}"
                 )
 
+        # Validate base_agent_name if being updated (mirrors create_instance):
+        # ensure the new base exists and is user-selectable. Without this guard
+        # callers could swap a valid instance over to an internal-only agent
+        # (e.g. an Agent Builder stage agent) via PATCH.
+        if "base_agent_name" in updates and updates["base_agent_name"] is not None:
+            resolved = await self.llm_config_service.get_resolved_config(user_id)
+            new_base = updates["base_agent_name"]
+            if new_base not in resolved.agents:
+                available = list(resolved.agents.keys())
+                raise ValueError(
+                    f"Base agent '{new_base}' not found. "
+                    f"Available agents: {available}"
+                )
+            new_base_config = resolved.agents[new_base]
+            if not getattr(new_base_config, "user_selectable", True):
+                raise ValueError(
+                    f"Base agent '{new_base}' is not available for user " "instances"
+                )
+
         if "config_overrides" in updates and updates["config_overrides"] is not None:
             resolved = await self.llm_config_service.get_resolved_config(user_id)
             updates["config_overrides"] = self._normalize_and_validate_config_overrides(
@@ -375,6 +404,10 @@ class UserAgentInstanceService:
         resolved = await self.llm_config_service.get_resolved_config(None)
         templates = []
         for agent_name, agent_config in resolved.agents.items():
+            # Skip internal-only agents so the user-facing template list never
+            # exposes Agent Builder stage agents or other system agents.
+            if not getattr(agent_config, "user_selectable", True):
+                continue
             templates.append(
                 {
                     "agent_name": agent_name,

@@ -321,6 +321,7 @@ class ResolvedAgentConfig(BaseModel):
     skills: Optional[List[str]] = None
     subagents: Optional[List[str]] = None
     description: Optional[str] = None
+    user_selectable: bool = True
 
 
 class AgentPromptLimitsResponse(BaseModel):

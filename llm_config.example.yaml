@@ -577,6 +577,12 @@ agents:
     subagents: ['browser_readonly_worker', 'email_reader_worker']
     reasoning_output: true
 
+  internal_process_agent:
+    primary: 'gpt-5-mini'
+    description: 'Agent for internal processes, not exposed to users'
+    reasoning_output: true
+    user_selectable: false
+
   # Example: Agent running on remote LangGraph Agent Server
   # Requires AGENT_SERVER_ENABLED=True and AGENT_SERVER_URL in .env
   # remote_agent:

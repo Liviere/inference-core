@@ -605,6 +605,7 @@ class LLMConfigService:
                 skills=skills,
                 subagents=subagents,
                 description=agent_config.description,
+                user_selectable=agent_config.user_selectable,
             )
 
         # Build defaults dict

@@ -14,6 +14,7 @@ Key features:
 - **Runtime Model Fallbacks**: Users can override the template fallback chain used when the primary model call fails.
 - **Default Instance**: Users can mark one instance as their default for new interactions.
 - **Isolation**: Instances are private to the user who created them.
+- **Template Visibility**: Only agents marked `user_selectable: true` in `llm_config.yaml` appear in the template list and can be used as `base_agent_name`.
 
 ## Configuration Options
 
@@ -23,7 +24,7 @@ When creating or updating an instance, the following fields are available:
 |Args | |
 | `instance_name` | Unique slug-like identifier (e.g., `my-coding-assistant`). Must be unique per user. |
 | `display_name` | Human-readable name shown in the UI. |
-| `base_agent_name` | The name of the base agent from `agents_config.yaml` to inherit from. |
+| `base_agent_name` | The name of the base agent from `agents_config.yaml` to inherit from. The selected agent must be user-selectable. |
 | `primary_model` | (Optional) Override the LLM model used by this agent. Must be in the allowed models list. |
 | `system_prompt_override` | (Optional) Completely replace the base agent's system prompt. A consuming application may configure a runtime max length, but core defaults to no limit. |
 | `system_prompt_append` | (Optional) Append text to the end of the base agent's system prompt. A consuming application may configure a runtime max length, but core defaults to no limit. |

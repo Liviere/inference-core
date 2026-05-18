@@ -230,6 +230,7 @@ class AgentService:
         memory_tools: Optional[list[str]] = None,
         memory_session_context_enabled: Optional[bool] = None,
         memory_tool_instructions_enabled: Optional[bool] = None,
+        response_format_override: Optional[Any] = None,
     ):
         """Initialize the AgentService.
 
@@ -272,6 +273,14 @@ class AgentService:
             memory_tool_instructions_enabled: Override for memory tool instructions
                 in the system prompt.  When None, inherits from
                 AgentConfig.memory_tool_instructions_enabled or default behaviour.
+            response_format_override: Optional per-call structured-output schema.
+                Forwarded as-is to LangChain ``create_agent(response_format=...)``
+                when set, taking precedence over ``AgentConfig.response_format``.
+                Accepts a Pydantic model class, dataclass, TypedDict, JSON Schema
+                dict, ``ToolStrategy``, or ``ProviderStrategy``. Use this to keep
+                the schema as a Python type (so LangChain can return a validated
+                Pydantic instance via ``structured_response``) instead of going
+                through a YAML JSON-Schema round-trip.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -346,6 +355,12 @@ class AgentService:
         self._memory_tool_instructions_enabled_override = (
             memory_tool_instructions_enabled
         )
+
+        # Per-call structured-output schema override (None = use AgentConfig.response_format).
+        # Forwarded as-is to ``create_agent(response_format=...)`` so callers
+        # can pass Pydantic models / dataclasses / TypedDicts and benefit from
+        # native LangChain validation into the ``structured_response`` state key.
+        self._response_format_override = response_format_override
 
         # Tools whose invocation must be delegated to ``multimodal_support_model``
         # because the primary model does not support multimodal inputs. Populated
@@ -443,14 +458,22 @@ class AgentService:
         # None means all tools → instructions on; empty list → instructions off
         return resolved_tools is None or len(resolved_tools) > 0
 
-    def _resolve_response_format(self) -> Optional[Dict[str, Any]]:
-        """Return the JSON Schema dict configured for this agent, or None.
+    def _resolve_response_format(self) -> Optional[Any]:
+        """Return the structured-output schema configured for this agent, or None.
 
-        WHY: structured output is opt-in per agent (YAML or user instance
-        override).  Centralising the lookup keeps create_agent() lean and gives
+        WHY: structured output is opt-in per agent. Resolution order:
+        1. ``response_format_override`` passed to the constructor (per-call) -
+           accepts any value supported by ``create_agent`` (Pydantic class,
+           dataclass, TypedDict, JSON Schema dict, ``ToolStrategy``,
+           ``ProviderStrategy``).
+        2. ``AgentConfig.response_format`` from YAML / DB override (JSON Schema
+           dict).
+        Centralising the lookup keeps create_agent() lean and gives
         DeepAgentService a single hook to override without re-resolving the
         whole AgentConfig.
         """
+        if self._response_format_override is not None:
+            return self._response_format_override
         if self.agent_config is None:
             return None
         return self.agent_config.response_format

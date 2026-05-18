@@ -29,6 +29,7 @@
 - **`agents`**: assignments for named agents (agent-specific model choices)
   - short mapping `agent_models` (primary) and full `agent_configs` (type `AgentConfig`).
   - `AgentConfig` is the dedicated Pydantic model used to represent agent-specific settings.
+  - `user_selectable: false` marks an agent as internal-only; the runtime keeps it in the resolved registry, but user-facing template lists and instance creation/update validation will reject it.
   - `reasoning_output: true` enables reasoning output for that agent and forwards the model's `reasoning_config` into the instantiated provider kwargs.
   - `on_missing_capability` controls what happens when a tool requires a capability the primary model lacks. `skip` filters the tool out; `delegate` keeps it exposed so runtime middleware can swap to a support model for that tool call.
   - `multimodal_support_model` names the model used for delegated multimodal tool calls. It must resolve to an entry in `models:` and should declare `multimodal: true`.

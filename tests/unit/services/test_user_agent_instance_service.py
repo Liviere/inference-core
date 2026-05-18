@@ -159,3 +159,77 @@ async def test_update_instance_rejects_prompt_override_above_shared_limit() -> N
             instance_id=None,
             system_prompt_override="b" * (TEST_SYSTEM_PROMPT_OVERRIDE_MAX_LENGTH + 1),
         )
+
+
+# ---------- user_selectable enforcement ----------
+
+
+class _StubLLMConfigService:
+    """Minimal stub exposing only ``get_resolved_config``."""
+
+    def __init__(self, resolved):
+        self._resolved = resolved
+
+    async def get_resolved_config(self, user_id):  # noqa: D401 - test stub
+        return self._resolved
+
+
+def _make_resolved_config(agents):
+    """Build a SimpleNamespace mirroring ResolvedConfig fields used here."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        agents=agents,
+        available_models=["model-a"],
+    )
+
+
+def _make_agent_config(*, user_selectable: bool):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        primary_model="model-a",
+        fallback_models=[],
+        description="stub",
+        allowed_tools=[],
+        mcp_profile=None,
+        local_tool_providers=[],
+        skills=[],
+        subagents=[],
+        user_selectable=user_selectable,
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_instance_rejects_internal_only_base_agent() -> None:
+    resolved = _make_resolved_config(
+        {"agent_builder_intent": _make_agent_config(user_selectable=False)}
+    )
+    service = UserAgentInstanceService(
+        db=None, llm_config_service=_StubLLMConfigService(resolved)
+    )
+
+    with pytest.raises(ValueError, match="not available for user instances"):
+        await service.create_instance(
+            user_id=None,
+            instance_name="x",
+            display_name="X",
+            base_agent_name="agent_builder_intent",
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_templates_filters_internal_only_agents() -> None:
+    resolved = _make_resolved_config(
+        {
+            "assistant_agent": _make_agent_config(user_selectable=True),
+            "agent_builder_intent": _make_agent_config(user_selectable=False),
+        }
+    )
+    service = UserAgentInstanceService(
+        db=None, llm_config_service=_StubLLMConfigService(resolved)
+    )
+
+    templates = await service.list_templates()
+    names = [t["agent_name"] for t in templates]
+    assert names == ["assistant_agent"]

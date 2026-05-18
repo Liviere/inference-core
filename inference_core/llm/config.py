@@ -767,6 +767,21 @@ class AgentConfig(BaseModel):
         ),
     )
 
+    # --- Visibility / access control ---
+    # Controls whether end users can pick this agent as the ``base_agent_name``
+    # for their own ``UserAgentInstance``. Internal-only agents (e.g. hidden
+    # Agent Builder stage agents) should set this to False so the templates
+    # endpoint and ``create_instance`` validation reject them.
+    user_selectable: bool = Field(
+        default=True,
+        description=(
+            "Whether end users may pick this agent as the base for a "
+            "``UserAgentInstance``. Set to False for internal-only agents "
+            "(e.g. Agent Builder stage agents) that should never appear in "
+            "the template list or be accepted by ``create_instance``."
+        ),
+    )
+
     _VALID_MEMORY_TOOL_NAMES: ClassVar[frozenset[str]] = frozenset(
         {
             "save_memory_store",
