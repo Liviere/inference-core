@@ -41,6 +41,11 @@ def _make_config(
             "requires_api_key": True,
             "api_key_env": "OPENAI_API_KEY",
         },
+        "xai": {
+            "name": "xai",
+            "requires_api_key": True,
+            "api_key_env": "XAI_API_KEY",
+        },
         "ollama": {"name": "ollama", "requires_api_key": False},
         "custom_openai_compatible": {
             "name": "custom_openai_compatible",
@@ -72,6 +77,13 @@ def _make_config(
             api_key=None,
             max_tokens=2048,
             temperature=0.5,
+        ),
+        "grok-4": ModelConfig(
+            name="grok-4",
+            provider=ModelProvider.XAI,
+            api_key="xai-key-123",
+            max_tokens=8192,
+            temperature=0.7,
         ),
         "local-llama": ModelConfig(
             name="local-llama",
@@ -116,6 +128,17 @@ class TestIsModelAvailable:
         """OpenAI model without API key is not available."""
         cfg = _make_config()
         assert cfg.is_model_available("gpt-5-mini") is False
+
+    def test_xai_with_valid_key(self):
+        """xAI model with API key is available."""
+        cfg = _make_config()
+        assert cfg.is_model_available("grok-4") is True
+
+    def test_xai_without_key(self):
+        """xAI model without API key is not available."""
+        cfg = _make_config()
+        cfg.models["grok-4"].api_key = None
+        assert cfg.is_model_available("grok-4") is False
 
     def test_ollama_with_base_url(self):
         """Ollama model with base_url is available."""

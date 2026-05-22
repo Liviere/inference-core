@@ -16,6 +16,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
+from langchain_xai import ChatXAI
 from pydantic import SecretStr
 
 from inference_core.core.resource_lifecycle import close_resource, close_resource_sync
@@ -179,6 +180,9 @@ class LLMModelFactory:
         if config.provider == ModelProvider.OPENAI:
             return self._create_openai_model(config, model_params)
 
+        elif config.provider == ModelProvider.XAI:
+            return self._create_xai_model(config, model_params)
+
         elif config.provider in [ModelProvider.CUSTOM_OPENAI_COMPATIBLE]:
             return self._create_openai_compatible_model(config, model_params)
 
@@ -253,6 +257,33 @@ class LLMModelFactory:
             )
         except Exception as e:
             logger.error(f"Failed to create OpenAI-compatible model: {str(e)}")
+            return None
+
+    def _create_xai_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatXAI]:
+        """Create xAI Grok model via the dedicated LangChain integration.
+
+        WHY: ChatXAI exposes xAI-native token usage, tool calling, and future
+        provider extensions more reliably than routing Grok through a generic
+        OpenAI-compatible wrapper.
+        """
+        if not config.api_key:
+            logger.error("xAI API key (XAI_API_KEY) not provided")
+            return None
+
+        try:
+            api_key = SecretStr(config.api_key)
+            if config.base_url:
+                return ChatXAI(
+                    model=config.name,
+                    api_key=api_key,
+                    xai_api_base=config.base_url,
+                    **params,
+                )
+            return ChatXAI(model=config.name, api_key=api_key, **params)
+        except Exception as e:
+            logger.error(f"Failed to create xAI model: {str(e)}")
             return None
 
     def _create_gemini_model(

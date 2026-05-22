@@ -25,6 +25,7 @@ class ModelProvider(str, Enum):
     """Supported LLM providers"""
 
     OPENAI = "openai"
+    XAI = "xai"
     CUSTOM_OPENAI_COMPATIBLE = "custom_openai_compatible"
     DEEPINFRA = "deepinfra"
     FIREWORKS = "fireworks"
@@ -1484,7 +1485,7 @@ class LLMConfig:
             return False
         provider_config = self.get_provider_config(config.provider)
 
-        # For OpenAI and DeepInfra models, check if API key is available
+        # Providers with API-key gating are available only when the key is present.
         if provider_config.requires_api_key:
             return bool(config.api_key and config.api_key.strip())
 

@@ -5,7 +5,7 @@ This package now contains shared LLM infrastructure, not a standalone completion
 ## Components
 
 - `config.py`: loads and validates `llm_config.yaml` providers, models, agents, batch settings, MCP profiles, and usage logging config.
-- `models.py`: creates provider-specific chat model instances for AgentService, batch, embeddings, and vector workflows.
+- `models.py`: creates provider-specific chat model instances for AgentService, batch, embeddings, and vector workflows, including dedicated adapters such as `ChatXAI` for Grok.
 - `param_policy.py`: normalizes provider/model parameters and blocks deprecated parameters for models that no longer accept them.
 - `tools.py`: registry for local LangChain-compatible tool providers used by AgentService.
 - `mcp_tools.py`: MCP integration helpers used by configured agents.
@@ -75,3 +75,7 @@ accounts/fireworks/models/kimi-k2p5:
     reasoning_effort: 'medium'
     reasoning_history: 'preserved'
 ```
+
+## xAI Grok Provider
+
+xAI Grok models use `langchain-xai`'s `ChatXAI` adapter instead of the generic OpenAI-compatible wrapper. The xAI parameter policy keeps the standard chat parameters and normalizes `request_timeout` to `timeout`, which matches ChatXAI's constructor surface.

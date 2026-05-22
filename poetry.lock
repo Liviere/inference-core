@@ -3747,6 +3747,24 @@ files = [
 langchain-core = ">=1.2.31,<2.0.0"
 
 [[package]]
+name = "langchain-xai"
+version = "1.2.2"
+description = "An integration package connecting xAI and LangChain"
+optional = false
+python-versions = "<4.0.0,>=3.10.0"
+groups = ["main"]
+files = [
+    {file = "langchain_xai-1.2.2-py3-none-any.whl", hash = "sha256:f7bab093d2256efa2079a1d2df32cd3a6432118f3e6d0beca110111d0f2a8ec7"},
+    {file = "langchain_xai-1.2.2.tar.gz", hash = "sha256:5d88d31ae078b211eb341d238cc6518818b8e8816efdfc4d98e5e14767629639"},
+]
+
+[package.dependencies]
+aiohttp = ">=3.9.1,<4.0.0"
+langchain-core = ">=1.2.7,<2.0.0"
+langchain-openai = ">=1.1.7,<2.0.0"
+requests = ">=2.0.0,<3.0.0"
+
+[[package]]
 name = "langgraph"
 version = "1.1.9"
 description = "Building stateful, multi-actor applications with LLMs"
@@ -9073,4 +9091,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.14,<3.15"
-content-hash = "3c88759b8001394e6219bf4a66a05b8bbc25a168b8ee21d24e6f9cedc2fe1fe8"
+content-hash = "ede0c79e7b929c912aa2da3acc45e2989a378b61265b0cd57a580401aa0a8b91"

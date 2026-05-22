@@ -10,6 +10,13 @@ providers:
     requires_api_key: true
     openai_compatible: true
 
+  xai:
+    name: 'xAI'
+    api_key_env: 'XAI_API_KEY'
+    base_url: 'https://api.x.ai/v1'
+    requires_api_key: true
+    openai_compatible: false
+
   gemini:
     name: 'Google Gemini'
     api_key_env: 'GOOGLE_API_KEY'
@@ -92,6 +99,10 @@ models:
     max_tokens: 8192
     temperature: 0.7
     multimodal: true
+    reasoning_config:
+      reasoning:
+        effort: "high"
+        summary: "auto"
     # Pricing (sourced from OpenAI pricing page)
     # Pricing is per 1M tokens (cost_per_1m).
     pricing:
@@ -163,6 +174,22 @@ models:
         cached_input: cache_read_tokens
       rounding:
         decimals: 6
+
+  # xAI Grok Models
+  grok-4.3-latest:
+    provider: 'xai'
+    display_name: 'Grok 4'
+    description: 'Latest Grok model for complex chat and tool-using tasks'
+    max_tokens: 8192
+    temperature: 0.7
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 1.25 # $1.25 per 1M tokens
+      output:
+        cost_per_1m: 2.5 # $2.50 per 1M tokens
+    reasoning_config:
+      reasoning_effort: 'high'
 
   # Gemini Models
   gemini-2.5-flash: # Fast multimodal

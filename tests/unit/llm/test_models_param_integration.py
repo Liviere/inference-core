@@ -91,6 +91,59 @@ class TestLLMModelFactoryParameterNormalization:
         assert result == mock_model
 
     @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatXAI")
+    def test_xai_model_uses_normalized_params(self, mock_chat_xai, mock_normalize):
+        """Test xAI model creation uses normalized parameters"""
+        config = ModelConfig(
+            name="grok-4",
+            provider=ModelProvider.XAI,
+            api_key="test-key",
+            base_url="https://api.x.ai/v1",
+            temperature=0.4,
+            max_tokens=256,
+        )
+
+        normalized_params = {
+            "temperature": 0.4,
+            "max_tokens": 256,
+            "top_p": 1.0,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+            "timeout": 60,
+        }
+        mock_normalize.return_value = normalized_params
+
+        mock_model = MagicMock()
+        mock_chat_xai.return_value = mock_model
+
+        result = self.factory._create_model_instance(config)
+
+        expected_raw_params = {
+            "temperature": 0.4,
+            "max_tokens": 256,
+            "top_p": 1.0,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+            "request_timeout": 60,
+            "verbosity": None,
+            "reasoning_effort": None,
+        }
+        mock_normalize.assert_called_once_with(
+            ModelProvider.XAI, expected_raw_params, model_name=config.name
+        )
+
+        call_args = mock_chat_xai.call_args
+        assert call_args.kwargs["model"] == "grok-4"
+        assert call_args.kwargs["api_key"].get_secret_value() == "test-key"
+        assert call_args.kwargs["xai_api_base"] == "https://api.x.ai/v1"
+
+        for key, value in normalized_params.items():
+            assert call_args.kwargs[key] == value
+
+        assert "request_timeout" not in call_args.kwargs
+        assert result == mock_model
+
+    @patch("inference_core.llm.models.normalize_params")
     @patch("inference_core.llm.models.ChatDeepInfra")
     def test_deepinfra_model_uses_normalized_params(
         self, mock_chat_deepinfra, mock_normalize

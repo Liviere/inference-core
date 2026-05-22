@@ -42,6 +42,7 @@ class TestPoliciesDefinition:
         """Test that all ModelProvider enum values have policies defined"""
         expected_providers = {
             ModelProvider.OPENAI,
+            ModelProvider.XAI,
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
             ModelProvider.DEEPINFRA,
             ModelProvider.FIREWORKS,
@@ -67,6 +68,24 @@ class TestPoliciesDefinition:
         # Dynamic patch may add 'logit_bias'; ensure base subset and if present it's acceptable
         assert expected_base.issubset(policy.allowed)
         assert policy.renamed == {}
+        assert policy.dropped == set()
+
+    def test_xai_policy(self):
+        """Test xAI provider policy"""
+        policy = POLICIES[ModelProvider.XAI]
+
+        expected_allowed = {
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "timeout",
+        }
+        expected_renamed = {"request_timeout": "timeout"}
+
+        assert policy.allowed == expected_allowed
+        assert policy.renamed == expected_renamed
         assert policy.dropped == set()
 
     def test_custom_openai_policy(self):
@@ -125,17 +144,16 @@ class TestPoliciesDefinition:
 
     def test_claude_policy(self):
         """Test Claude provider policy"""
+        policy = POLICIES[ModelProvider.CLAUDE]
+        # Base allowed; dynamic patch may add 'metadata' and 'system'. Accept superset.
+        expected_allowed = {"temperature", "max_tokens", "top_p", "timeout"}
+        expected_renamed = {"request_timeout": "timeout"}
+        expected_dropped = {"frequency_penalty", "presence_penalty"}
 
-    policy = POLICIES[ModelProvider.CLAUDE]
-    # Base allowed; dynamic patch may add 'metadata' and 'system'. Accept superset.
-    expected_allowed = {"temperature", "max_tokens", "top_p", "timeout"}
-    expected_renamed = {"request_timeout": "timeout"}
-    expected_dropped = {"frequency_penalty", "presence_penalty"}
-
-    # Ensure base required params present
-    assert expected_allowed.issubset(policy.allowed)
-    assert policy.renamed == expected_renamed
-    assert policy.dropped == expected_dropped
+        # Ensure base required params present
+        assert expected_allowed.issubset(policy.allowed)
+        assert policy.renamed == expected_renamed
+        assert policy.dropped == expected_dropped
 
 
 class TestNormalizeParams:
@@ -159,6 +177,34 @@ class TestNormalizeParams:
         # No debug/warning logs should be called for passthrough
         mock_logger.debug.assert_not_called()
         mock_logger.warning.assert_not_called()
+
+    @patch("inference_core.llm.param_policy.logger")
+    def test_xai_params_normalized(self, mock_logger):
+        """Test xAI parameters are correctly normalized"""
+        raw_params = {
+            "temperature": 0.7,
+            "max_tokens": 100,
+            "top_p": 0.9,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.2,
+            "request_timeout": 30,
+        }
+
+        result = normalize_params(ModelProvider.XAI, raw_params)
+
+        expected = {
+            "temperature": 0.7,
+            "max_tokens": 100,
+            "top_p": 0.9,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.2,
+            "timeout": 30,
+        }
+
+        assert result == expected
+        mock_logger.debug.assert_any_call(
+            "Parameter renamed for ModelProvider.XAI: request_timeout -> timeout"
+        )
 
     @patch("inference_core.llm.param_policy.logger")
     def test_gemini_params_normalized(self, mock_logger):
@@ -310,6 +356,7 @@ class TestGetSupportedProviders:
 
         expected = {
             ModelProvider.OPENAI,
+            ModelProvider.XAI,
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
             ModelProvider.DEEPINFRA,
             ModelProvider.FIREWORKS,
