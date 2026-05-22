@@ -88,12 +88,9 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
             "temperature",
             "max_tokens",
             "top_p",
-            "frequency_penalty",
-            "presence_penalty",
-            "timeout",
         },
         renamed={"request_timeout": "timeout"},
-        dropped=set(),
+        dropped={"frequency_penalty", "presence_penalty"},
         passthrough_prefixes=set(),
     ),
     ModelProvider.CUSTOM_OPENAI_COMPATIBLE: ProviderParamPolicy(
