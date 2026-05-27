@@ -10,10 +10,12 @@ the constructor's dependencies or by testing individual methods on a pre-built i
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from inference_core.services.agents_service import (
     AgentCostMetrics,
@@ -82,6 +84,13 @@ def _make_agent_service(**overrides):
             return_value=MagicMock(
                 database_url="sqlite+aiosqlite:///test.db",
                 agent_memory_enabled=False,
+                llm_emulation_enabled=False,
+                agent_snapshot_capture_enabled=False,
+                agent_snapshot_replay_enabled=False,
+                agent_snapshot_replay_match_mode="exact_or_semantic",
+                agent_snapshot_replay_min_score=0.92,
+                agent_snapshot_storage_path="playground/agent_run_snapshots_test",
+                vector_dim=8,
             ),
         ),
     ):
@@ -398,6 +407,85 @@ class TestBuildStreamConfigSyncMode:
 
 class TestRunAgentSteps:
     """Verify agent execution pipeline and response construction."""
+
+    def test_captures_snapshot_when_enabled(self, agent_service, tmp_path):
+        """A live local run persists a replayable snapshot when enabled."""
+        mock_agent = MagicMock()
+        ai_msg = AIMessage(content="Hello from snapshot")
+        mock_agent.stream.return_value = [
+            {"type": "updates", "data": {"agent": {"messages": [ai_msg]}}, "ns": []},
+        ]
+        agent_service.agent = mock_agent
+
+        with patch(
+            "inference_core.services.agents_service.get_settings",
+            return_value=MagicMock(
+                llm_emulation_enabled=False,
+                agent_snapshot_capture_enabled=True,
+                agent_snapshot_replay_enabled=False,
+                agent_snapshot_replay_match_mode="exact_or_semantic",
+                agent_snapshot_replay_min_score=0.92,
+                agent_snapshot_storage_path=str(tmp_path),
+                vector_dim=8,
+            ),
+        ):
+            response = agent_service.run_agent_steps("Hello")
+
+        snapshot_files = list(Path(tmp_path).glob("*.json"))
+        assert isinstance(response, AgentResponse)
+        assert len(snapshot_files) == 1
+        snapshot_payload = snapshot_files[0].read_text(encoding="utf-8")
+        assert '"user_input": "Hello"' in snapshot_payload
+        assert '"agent_name": "test_agent"' in snapshot_payload
+
+    def test_replays_snapshot_without_live_stream(self, agent_service, tmp_path):
+        """When replay is enabled and an exact snapshot exists, no live invoke runs."""
+        recording_agent = MagicMock()
+        ai_msg = AIMessage(content="Recorded answer")
+        recording_agent.stream.return_value = [
+            {"type": "updates", "data": {"agent": {"messages": [ai_msg]}}, "ns": []},
+        ]
+        agent_service.agent = recording_agent
+
+        capture_settings = MagicMock(
+            llm_emulation_enabled=False,
+            agent_snapshot_capture_enabled=True,
+            agent_snapshot_replay_enabled=False,
+            agent_snapshot_replay_match_mode="exact_or_semantic",
+            agent_snapshot_replay_min_score=0.92,
+            agent_snapshot_storage_path=str(tmp_path),
+            vector_dim=8,
+        )
+        with patch(
+            "inference_core.services.agents_service.get_settings",
+            return_value=capture_settings,
+        ):
+            agent_service.run_agent_steps("Hello replay")
+
+        replay_agent = MagicMock()
+        replay_agent.stream.side_effect = AssertionError(
+            "live stream should not run during replay"
+        )
+        replay_service = _make_agent_service()
+        replay_service.agent = replay_agent
+
+        with patch(
+            "inference_core.services.agents_service.get_settings",
+            return_value=MagicMock(
+                llm_emulation_enabled=False,
+                agent_snapshot_capture_enabled=False,
+                agent_snapshot_replay_enabled=True,
+                agent_snapshot_replay_match_mode="exact_or_semantic",
+                agent_snapshot_replay_min_score=0.92,
+                agent_snapshot_storage_path=str(tmp_path),
+                vector_dim=8,
+            ),
+        ):
+            response = replay_service.run_agent_steps("Hello replay")
+
+        replay_agent.stream.assert_not_called()
+        assert response.metadata.model_name == "gpt-4o"
+        assert response.result["messages"][0]["content"] == "Recorded answer"
 
     def test_lazy_initializes_agent_for_sync_run(self, agent_service):
         """run_agent_steps creates the local agent graph on first use."""

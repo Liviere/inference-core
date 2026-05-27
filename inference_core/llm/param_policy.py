@@ -84,11 +84,7 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
         passthrough_prefixes=set(),
     ),
     ModelProvider.XAI: ProviderParamPolicy(
-        allowed={
-            "temperature",
-            "max_tokens",
-            "top_p",
-        },
+        allowed={"temperature", "max_tokens", "top_p", "timeout", "reasoning_effort"},
         renamed={"request_timeout": "timeout"},
         dropped={"frequency_penalty", "presence_penalty"},
         passthrough_prefixes=set(),

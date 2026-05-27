@@ -47,6 +47,19 @@ from inference_core.llm.models import LLMModelFactory, get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agent_memory_service import AgentMemoryStoreService
+from inference_core.services.agent_snapshot_service import (
+    AgentRunSnapshot,
+    AgentSnapshotMatcher,
+    AgentSnapshotResolvedConfig,
+    AgentSnapshotTokenSegment,
+    AgentSnapshotTraceEvent,
+    AgentSnapshotInput,
+    build_snapshot_fingerprint,
+    build_snapshot_query_text,
+    get_agent_snapshot_store,
+    rebuild_agent_response,
+    serialize_snapshot_value,
+)
 
 
 class AgentMetadata(BaseModel):
@@ -367,6 +380,8 @@ class AgentService:
         # by ``_load_providers_tools`` and consumed by
         # ``_add_tool_model_switch_middleware``.
         self._delegated_multimodal_tools: list[str] = []
+        self._resolved_middleware: list[Any] = []
+        self._resolved_response_format: Any = None
         self.agent = None
 
     @property
@@ -541,6 +556,8 @@ class AgentService:
         response_format = self._resolve_response_format()
         if response_format is not None and "response_format" not in kwargs:
             kwargs["response_format"] = response_format
+        self._resolved_middleware = middleware
+        self._resolved_response_format = response_format
 
         self.agent = create_agent(
             self.model,
@@ -1710,8 +1727,18 @@ class AgentService:
         * ``node`` – the LangGraph node name that produced the token
         * ``agent_name`` – agent name if available (for sub-agent disambiguation)
         """
+        for text, meta in AgentService._extract_message_segments(token, metadata):
+            on_token(text, meta)
+
+    @staticmethod
+    def _extract_message_segments(
+        token: Any,
+        metadata: dict[str, Any],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Return normalized text segments extracted from one message chunk."""
+
         if not isinstance(token, AIMessageChunk):
-            return
+            return []
 
         node = metadata.get("langgraph_node", "")
 
@@ -1719,12 +1746,13 @@ class AgentService:
         # PromptInjectionGuardMiddleware, CostTrackingMiddleware) — only
         # the main agent / model tokens should reach the UI.
         if "Middleware" in node:
-            return
+            return []
         agent_name = metadata.get("lc_agent_name")
 
         base_meta: dict[str, Any] = {"node": node}
         if agent_name:
             base_meta["agent_name"] = agent_name
+        segments: list[tuple[str, dict[str, Any]]] = []
 
         # Prefer content_blocks (normalised across providers) when available.
         content_blocks = getattr(token, "content_blocks", None)
@@ -1732,9 +1760,14 @@ class AgentService:
             for block in content_blocks:
                 btype = block.get("type", "")
                 if btype == "text" and block.get("text"):
-                    on_token(block["text"], {**base_meta, "type": "text"})
+                    segments.append((block["text"], {**base_meta, "type": "text"}))
                 elif btype == "reasoning" and block.get("reasoning"):
-                    on_token(block["reasoning"], {**base_meta, "type": "reasoning"})
+                    segments.append(
+                        (
+                            block["reasoning"],
+                            {**base_meta, "type": "reasoning"},
+                        )
+                    )
                 # elif btype == "tool_call_chunk":
                 elif "tool_call" in btype:
                     # Emit the tool name as a reasoning token so the
@@ -1743,15 +1776,223 @@ class AgentService:
                     # into the chat bubble as visible text.
                     name = block.get("name")
                     if name:
-                        on_token(
-                            f"calling `{name}`\n",
-                            {**base_meta, "type": "reasoning"},
+                        segments.append(
+                            (
+                                f"calling `{name}`\n",
+                                {**base_meta, "type": "reasoning"},
+                            )
                         )
-            return
+            return segments
 
         # Fallback: plain string content (older providers / simple models).
         if token.content and isinstance(token.content, str):
-            on_token(token.content, {**base_meta, "type": "text"})
+            segments.append((token.content, {**base_meta, "type": "text"}))
+        return segments
+
+    def _snapshot_capture_enabled(self) -> bool:
+        return bool(getattr(get_settings(), "agent_snapshot_capture_enabled", False))
+
+    def _snapshot_replay_enabled(self) -> bool:
+        return bool(getattr(get_settings(), "agent_snapshot_replay_enabled", False))
+
+    def _build_snapshot_resolved_config(self) -> AgentSnapshotResolvedConfig:
+        tools_summary = []
+        for tool in self.tools:
+            tools_summary.append(
+                {
+                    "name": getattr(tool, "name", type(tool).__name__),
+                    "description": getattr(tool, "description", ""),
+                    "requires_multimodal": bool(
+                        getattr(tool, "requires_multimodal", False)
+                    ),
+                    "requires_network": bool(getattr(tool, "requires_network", False)),
+                    "external_side_effects": bool(
+                        getattr(tool, "external_side_effects", False)
+                    ),
+                }
+            )
+
+        middleware_summary = []
+        for middleware in self._resolved_middleware or self._middleware:
+            middleware_summary.append({"type": type(middleware).__name__})
+
+        instance_context = None
+        if self.instance_context is not None:
+            instance_context = serialize_snapshot_value(
+                {
+                    "instance_id": self.instance_context.instance_id,
+                    "instance_name": self.instance_context.instance_name,
+                    "base_agent_name": self.instance_context.base_agent_name,
+                    "subagent_configs": self.instance_context.subagent_configs,
+                }
+            )
+
+        execution_mode = "local"
+        if self.agent_config is not None:
+            resolved_execution_mode = getattr(self.agent_config, "execution_mode", None)
+            if isinstance(resolved_execution_mode, str) and resolved_execution_mode:
+                execution_mode = resolved_execution_mode
+
+        return AgentSnapshotResolvedConfig(
+            agent_name=self.agent_name or "default_agent",
+            model_name=self.model_name,
+            execution_mode=execution_mode,
+            system_prompt=self._enhanced_system_prompt,
+            response_format=serialize_snapshot_value(self._resolved_response_format),
+            tools=tools_summary,
+            middleware=middleware_summary,
+            instance_context=instance_context,
+        )
+
+    def _record_snapshot_trace_event(
+        self,
+        chunk: dict[str, Any],
+        trace_events: list[AgentSnapshotTraceEvent],
+    ) -> None:
+        if not self._snapshot_capture_enabled():
+            return
+
+        event_type = chunk.get("type")
+        namespace = list(chunk.get("ns", []))
+        if event_type == "updates":
+            trace_events.append(
+                AgentSnapshotTraceEvent(
+                    event_type="updates",
+                    payload=serialize_snapshot_value(chunk.get("data", {})),
+                    namespace=namespace,
+                )
+            )
+            return
+
+        if event_type == "custom":
+            trace_events.append(
+                AgentSnapshotTraceEvent(
+                    event_type="custom",
+                    payload=serialize_snapshot_value(chunk.get("data")),
+                    namespace=namespace,
+                )
+            )
+            return
+
+        if event_type == "messages":
+            token, metadata = chunk.get("data", (None, {}))
+            segments = [
+                AgentSnapshotTokenSegment(
+                    text=text,
+                    metadata=serialize_snapshot_value(meta),
+                )
+                for text, meta in self._extract_message_segments(token, metadata or {})
+            ]
+            if segments:
+                trace_events.append(
+                    AgentSnapshotTraceEvent(
+                        event_type="messages",
+                        segments=segments,
+                        namespace=namespace,
+                    )
+                )
+
+    def _save_agent_run_snapshot(
+        self,
+        *,
+        user_input: str,
+        context: Any,
+        configurable: dict[str, Any],
+        trace_events: list[AgentSnapshotTraceEvent],
+        response: AgentResponse,
+    ) -> None:
+        settings = get_settings()
+        if not self._snapshot_capture_enabled() or self._is_remote:
+            return
+
+        resolved_config = self._build_snapshot_resolved_config()
+        snapshot = AgentRunSnapshot(
+            snapshot_id=str(uuid.uuid4()),
+            created_at=datetime.now(UTC),
+            resolved_config=resolved_config,
+            input=AgentSnapshotInput(
+                user_input=user_input,
+                context=serialize_snapshot_value(context),
+                configurable=serialize_snapshot_value(configurable) or {},
+                fingerprint=build_snapshot_fingerprint(
+                    agent_name=resolved_config.agent_name,
+                    model_name=resolved_config.model_name,
+                    system_prompt=resolved_config.system_prompt,
+                    response_format=resolved_config.response_format,
+                    user_input=user_input,
+                    context=context,
+                ),
+                query_text=build_snapshot_query_text(user_input, context),
+            ),
+            trace_events=trace_events,
+            response=serialize_snapshot_value(response.model_dump(mode="python")),
+        )
+        try:
+            get_agent_snapshot_store(settings).save_snapshot(snapshot)
+        except Exception:
+            logging.exception(
+                "Failed to persist agent snapshot for '%s'",
+                self.display_name,
+            )
+
+    def _maybe_replay_snapshot(
+        self,
+        *,
+        user_input: str,
+        context: Any,
+        on_step: Callable[[str, Any], None] | None,
+        on_token: Callable[[str, dict[str, Any]], None] | None,
+        on_custom: Callable[[Any], None] | None,
+    ) -> AgentResponse | None:
+        if not self._snapshot_replay_enabled() or self._is_remote:
+            return None
+
+        settings = get_settings()
+        resolved_config = self._build_snapshot_resolved_config()
+        matcher = AgentSnapshotMatcher(
+            get_agent_snapshot_store(settings),
+            settings=settings,
+        )
+        match = matcher.find_best_match(
+            agent_name=resolved_config.agent_name,
+            model_name=resolved_config.model_name,
+            system_prompt=resolved_config.system_prompt,
+            response_format=resolved_config.response_format,
+            user_input=user_input,
+            context=context,
+            match_mode=getattr(
+                settings,
+                "agent_snapshot_replay_match_mode",
+                "exact_or_semantic",
+            ),
+            min_score=float(getattr(settings, "agent_snapshot_replay_min_score", 0.92)),
+        )
+        if match is None:
+            return None
+
+        for event in match.snapshot.trace_events:
+            if event.event_type == "updates" and isinstance(event.payload, dict):
+                for step_name, data in event.payload.items():
+                    if on_step:
+                        try:
+                            on_step(step_name, data)
+                        except Exception:
+                            pass
+            elif event.event_type == "messages" and on_token is not None:
+                for segment in event.segments:
+                    try:
+                        on_token(segment.text, segment.metadata)
+                    except Exception:
+                        pass
+            elif event.event_type == "custom" and on_custom is not None:
+                try:
+                    on_custom(event.payload)
+                except Exception:
+                    pass
+
+        return AgentResponse.model_validate(
+            rebuild_agent_response(match.snapshot.response)
+        )
 
     def run_agent_steps(
         self,
@@ -1802,6 +2043,7 @@ class AgentService:
 
         start_time = datetime.now(UTC)
         accumulator = _RunAccumulator()
+        trace_events: list[AgentSnapshotTraceEvent] = []
 
         configurable = self._make_configurable()
         stream_config, cancel_cb, stream_modes = self._build_stream_config(
@@ -1813,6 +2055,16 @@ class AgentService:
             trace_mode=trace_mode,
             sync=True,
         )
+
+        replay_response = self._maybe_replay_snapshot(
+            user_input=user_input,
+            context=context,
+            on_step=on_step,
+            on_token=on_token,
+            on_custom=on_custom,
+        )
+        if replay_response is not None:
+            return replay_response
 
         with self._emulation_session_scope():
             raw_stream = self.agent.stream(
@@ -1833,6 +2085,7 @@ class AgentService:
 
             try:
                 for chunk in stream:
+                    self._record_snapshot_trace_event(chunk, trace_events)
                     self._process_stream_chunk(
                         chunk,
                         accumulator,
@@ -1852,9 +2105,17 @@ class AgentService:
                     except Exception:
                         pass
 
-        return accumulator.build_response(
+        response = accumulator.build_response(
             self.model_name, start_time, self._enable_cost_tracking
         )
+        self._save_agent_run_snapshot(
+            user_input=user_input,
+            context=context,
+            configurable=configurable,
+            trace_events=trace_events,
+            response=response,
+        )
+        return response
 
     async def arun_agent_steps(
         self,
@@ -1906,6 +2167,7 @@ class AgentService:
 
         start_time = datetime.now(UTC)
         accumulator = _RunAccumulator()
+        trace_events: list[AgentSnapshotTraceEvent] = []
 
         configurable = self._make_configurable()
         stream_config, cancel_cb, stream_modes = self._build_stream_config(
@@ -1916,6 +2178,16 @@ class AgentService:
             parent_runnable_config=parent_runnable_config,
             trace_mode=trace_mode,
         )
+
+        replay_response = self._maybe_replay_snapshot(
+            user_input=user_input,
+            context=context,
+            on_step=on_step,
+            on_token=on_token,
+            on_custom=on_custom,
+        )
+        if replay_response is not None:
+            return replay_response
 
         with self._emulation_session_scope():
             raw_stream = self.agent.astream(
@@ -1936,6 +2208,7 @@ class AgentService:
 
             try:
                 async for chunk in stream:
+                    self._record_snapshot_trace_event(chunk, trace_events)
                     self._process_stream_chunk(
                         chunk,
                         accumulator,
@@ -1956,9 +2229,17 @@ class AgentService:
                     except Exception:
                         pass
 
-        return accumulator.build_response(
+        response = accumulator.build_response(
             self.model_name, start_time, self._enable_cost_tracking
         )
+        self._save_agent_run_snapshot(
+            user_input=user_input,
+            context=context,
+            configurable=configurable,
+            trace_events=trace_events,
+            response=response,
+        )
+        return response
 
     def _ensure_local_agent_initialized_sync(self) -> None:
         """Ensure the local in-process agent graph exists before sync execution."""

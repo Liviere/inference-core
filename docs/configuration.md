@@ -137,6 +137,26 @@ Controls the local no-cost chat model used by tests, performance profiles, and d
 
 The performance wrapper for `llm_mock` seeds a heavier, performance-oriented set of emulation defaults on top of these conservative settings. Override the env vars above when you want a lighter or heavier mock session.
 
+## Agent Snapshot Replay
+
+Controls the optional capture-and-replay subsystem for local `AgentService` runs. This is separate from the synthetic emulated chat model: capture stores real local runs, while replay can return a previously captured trace instead of invoking the live graph.
+
+| Variable                           | Default                   | Description                                                    |
+| ---------------------------------- | ------------------------- | -------------------------------------------------------------- |
+| `AGENT_SNAPSHOT_CAPTURE_ENABLED`   | false                     | Persist replayable snapshots for local agent runs              |
+| `AGENT_SNAPSHOT_REPLAY_ENABLED`    | false                     | Attempt snapshot replay before local live execution            |
+| `AGENT_SNAPSHOT_STORAGE_PATH`      | debug/agent_run_snapshots | Filesystem path for snapshot JSON files                        |
+| `AGENT_SNAPSHOT_REPLAY_MATCH_MODE` | exact_or_semantic         | Matching strategy: `exact`, `semantic`, or `exact_or_semantic` |
+| `AGENT_SNAPSHOT_REPLAY_MIN_SCORE`  | 0.92                      | Minimum cosine similarity accepted for semantic replay         |
+
+Snapshot replay currently applies only to local in-process agent execution. Remote Agent Server runs still execute normally and are not replayed from this subsystem.
+
+Semantic replay now uses the configured `EmbeddingService` backend rather than the deterministic fake embedding helper.
+
+- `EMBEDDING_BACKEND=local` enables semantic replay through the dedicated embeddings worker.
+- `EMBEDDING_BACKEND=remote` enables semantic replay through the provider configured in `llm_config.yaml`.
+- `EMBEDDING_BACKEND=fake` disables semantic fallback, so replay behaves as exact-only even if `AGENT_SNAPSHOT_REPLAY_MATCH_MODE` includes `semantic`.
+
 ### Public access mode notes
 
 When `LLM_API_ACCESS_MODE=public` the agent-instance endpoints

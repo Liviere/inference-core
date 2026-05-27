@@ -453,6 +453,47 @@ class Settings(BaseSettings):
             "How test doubles are applied in non-production tool environments."
         ),
     )
+    agent_snapshot_capture_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, local AgentService runs persist replayable snapshots "
+            "containing resolved config, streamed events, and final output."
+        ),
+    )
+    agent_snapshot_replay_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, local AgentService runs try to replay a previously "
+            "captured snapshot before executing the live graph."
+        ),
+    )
+    agent_snapshot_storage_path: str = Field(
+        default="debug/agent_run_snapshots",
+        description=(
+            "Filesystem path used to store captured agent snapshots. Relative "
+            "paths are resolved from the project root."
+        ),
+    )
+    agent_snapshot_replay_match_mode: Literal[
+        "exact", "exact_or_semantic", "semantic"
+    ] = Field(
+        default="exact_or_semantic",
+        description=(
+            "Snapshot replay matching strategy. exact requires a fingerprint "
+            "match, semantic requires EmbeddingService-backed similarity with "
+            "a real embedding backend, and exact_or_semantic tries exact "
+            "before semantic fallback."
+        ),
+    )
+    agent_snapshot_replay_min_score: float = Field(
+        default=0.92,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cosine similarity required for semantic snapshot replay "
+            "when EMBEDDING_BACKEND is local or remote."
+        ),
+    )
 
     ###################################
     #        VECTOR STORE             #
