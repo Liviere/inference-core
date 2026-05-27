@@ -78,15 +78,15 @@ class TestPoliciesDefinition:
             "temperature",
             "max_tokens",
             "top_p",
-            "frequency_penalty",
-            "presence_penalty",
             "timeout",
+            "reasoning_effort",
         }
         expected_renamed = {"request_timeout": "timeout"}
+        expected_dropped = {"frequency_penalty", "presence_penalty"}
 
         assert policy.allowed == expected_allowed
         assert policy.renamed == expected_renamed
-        assert policy.dropped == set()
+        assert policy.dropped == expected_dropped
 
     def test_custom_openai_policy(self):
         """Test custom OpenAI-compatible provider policy"""
@@ -196,8 +196,6 @@ class TestNormalizeParams:
             "temperature": 0.7,
             "max_tokens": 100,
             "top_p": 0.9,
-            "frequency_penalty": 0.1,
-            "presence_penalty": 0.2,
             "timeout": 30,
         }
 
