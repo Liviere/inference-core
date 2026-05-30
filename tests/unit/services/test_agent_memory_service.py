@@ -119,9 +119,9 @@ class TestMemoryTypeDescription:
 
     def test_descriptions_exist_for_all_types(self):
         for mt in MemoryType:
-            assert hasattr(MemoryTypeDescription, mt.name), (
-                f"Missing description for {mt.name}"
-            )
+            assert hasattr(
+                MemoryTypeDescription, mt.name
+            ), f"Missing description for {mt.name}"
 
 
 # ============================================================================
@@ -315,9 +315,7 @@ class TestMemoryStoreDocument:
 
     def test_updated_at_iso(self):
         dt = datetime(2025, 6, 1, tzinfo=timezone.utc)
-        doc = MemoryStoreDocument(
-            id="1", value={}, metadata={}, updated_at=dt
-        )
+        doc = MemoryStoreDocument(id="1", value={}, metadata={}, updated_at=dt)
         assert doc.updated_at_iso == dt.isoformat()
 
 
@@ -476,9 +474,7 @@ class TestRecallMemories:
 
     @pytest.mark.asyncio
     async def test_searches_single_category(self, service, mock_store):
-        await service.recall_memories(
-            user_id="u1", query="test", category="semantic"
-        )
+        await service.recall_memories(user_id="u1", query="test", category="semantic")
         assert mock_store.search.call_count == 1
 
     @pytest.mark.asyncio
@@ -608,9 +604,7 @@ class TestDeleteUserMemories:
 class TestBucketMemoriesByTime:
     """_bucket_memories_by_time groups into 5 temporal buckets and deduplicates."""
 
-    def _make_doc(
-        self, content: str, days_ago: int = 0
-    ) -> MemoryStoreDocument:
+    def _make_doc(self, content: str, days_ago: int = 0) -> MemoryStoreDocument:
         dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
         return MemoryStoreDocument(
             id=str(uuid.uuid4()),
@@ -721,3 +715,98 @@ class TestGetMemoryDate:
     def test_none_returns_none(self, service):
         doc = MemoryStoreDocument(id="1", value={}, metadata={})
         assert service._get_memory_date(doc) is None
+
+
+# ============================================================================
+# Standalone purge / count helpers (InMemoryStore-backed)
+# ============================================================================
+
+
+class TestPurgeAndCountUserMemories:
+    """Cover purge_user_memories / count_user_memories on a real store.
+
+    Uses a real InMemoryStore seeded across all CoALA namespaces, including
+    per-agent episodic/procedural sub-namespaces, to lock in correct
+    namespace-aware deletion and user isolation.
+    """
+
+    @pytest.fixture
+    def store(self):
+        from langgraph.store.memory import InMemoryStore
+
+        s = InMemoryStore()
+        # user u1 across all categories (episodic/procedural are per-agent)
+        s.put(("u1", "semantic"), "s1", {"content": "fact", "memory_type": "facts"})
+        s.put(
+            ("u1", "semantic"), "s2", {"content": "pref", "memory_type": "preferences"}
+        )
+        s.put(
+            ("u1", "episodic", "assistant"),
+            "e1",
+            {"content": "session", "memory_type": "interaction"},
+        )
+        s.put(
+            ("u1", "procedural", "assistant"),
+            "p1",
+            {"content": "rule", "memory_type": "skill"},
+        )
+        # a different user must remain untouched
+        s.put(("u2", "semantic"), "o1", {"content": "other", "memory_type": "facts"})
+        return s
+
+    def test_count_all_categories(self, store):
+        from inference_core.services.agent_memory_service import count_user_memories
+
+        counts = count_user_memories(store, "u1")
+        assert counts == {
+            "semantic": 2,
+            "episodic": 1,
+            "procedural": 1,
+            "total": 4,
+        }
+
+    def test_purge_single_category_only(self, store):
+        from inference_core.services.agent_memory_service import (
+            count_user_memories,
+            purge_user_memories,
+        )
+
+        deleted = purge_user_memories(store, "u1", "semantic")
+        assert deleted == 2
+        counts = count_user_memories(store, "u1")
+        assert counts == {"semantic": 0, "episodic": 1, "procedural": 1, "total": 2}
+
+    def test_purge_per_agent_namespace(self, store):
+        """Episodic items live under (user, 'episodic', agent_name)."""
+        from inference_core.services.agent_memory_service import (
+            count_user_memories,
+            purge_user_memories,
+        )
+
+        assert purge_user_memories(store, "u1", "episodic") == 1
+        assert count_user_memories(store, "u1")["episodic"] == 0
+
+    def test_purge_all(self, store):
+        from inference_core.services.agent_memory_service import (
+            count_user_memories,
+            purge_user_memories,
+        )
+
+        deleted = purge_user_memories(store, "u1")
+        assert deleted == 4
+        assert count_user_memories(store, "u1")["total"] == 0
+
+    def test_other_user_untouched(self, store):
+        from inference_core.services.agent_memory_service import (
+            count_user_memories,
+            purge_user_memories,
+        )
+
+        purge_user_memories(store, "u1")
+        assert count_user_memories(store, "u2")["total"] == 1
+
+    def test_invalid_category_raises(self, store):
+        from inference_core.services.agent_memory_service import purge_user_memories
+
+        with pytest.raises(ValueError):
+            purge_user_memories(store, "u1", "not-a-category")

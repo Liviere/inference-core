@@ -18,10 +18,11 @@ Source: CoALA whitepaper – arxiv:2309.02427
 import logging
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from inference_core.services.agents_service import AgentService
@@ -1046,6 +1047,182 @@ class AgentMemoryStoreService:
         return "\n".join(sections) if len(sections) > 1 else ""
 
 
+# =============================================================================
+# Standalone purge / count helpers (user-facing memory management)
+# =============================================================================
+
+# Batch size for store listing, and a runaway guard for the purge loop in case a
+# delete silently fails and the same items keep being returned.
+_PURGE_BATCH_SIZE = 100
+_MAX_PURGE_BATCHES = 1000
+
+
+def _store_search(
+    store: Any,
+    prefix: Tuple[str, ...],
+    *,
+    limit: int,
+    offset: int = 0,
+) -> List[Any]:
+    """Namespace-prefix listing that tolerates differing store search signatures.
+
+    Uses ``query=None`` so this is a plain listing (no vector search) and works
+    even when the store was opened without an embedding index.
+    """
+    try:
+        return store.search(prefix, query=None, limit=limit, offset=offset) or []
+    except TypeError:
+        # Older/alternate signature without keyword query support.
+        return store.search(prefix, limit=limit, offset=offset) or []
+
+
+def purge_user_memories(
+    store: Any,
+    user_id: str,
+    category: Optional[str] = None,
+) -> int:
+    """Delete a user's long-term memories from *store*.
+
+    Deletes by each item's OWN namespace (not the search prefix), so per-agent
+    episodic/procedural entries stored under ``(user_id, category, agent_name)``
+    are removed correctly.
+
+    Args:
+        store: A LangGraph BaseStore-compatible instance.
+        user_id: Owner of the memories.
+        category: One of the CoALA categories (semantic/episodic/procedural).
+            When ``None``, every category is purged.
+
+    Returns:
+        Number of memory items deleted.
+    """
+    uid = str(user_id)
+    if category is not None:
+        category = validate_memory_category(category)
+        prefix: Tuple[str, ...] = (uid, category)
+    else:
+        prefix = (uid,)
+
+    if not hasattr(store, "delete"):
+        logger.warning("Store does not support delete; cannot purge memories")
+        return 0
+
+    deleted = 0
+    for _ in range(_MAX_PURGE_BATCHES):
+        items = _store_search(store, prefix, limit=_PURGE_BATCH_SIZE)
+        if not items:
+            break
+        progressed = False
+        for item in items:
+            namespace = getattr(item, "namespace", None) or prefix
+            key = getattr(item, "key", getattr(item, "id", None))
+            if key is None:
+                continue
+            try:
+                store.delete(tuple(namespace), key)
+                deleted += 1
+                progressed = True
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("Failed to delete memory %s/%s: %s", namespace, key, exc)
+        if not progressed:
+            # Nothing could be deleted this round — avoid an infinite loop.
+            break
+
+    logger.info(
+        "Purged %d memories for user=%s, category=%s",
+        deleted,
+        uid,
+        category or "all",
+    )
+    return deleted
+
+
+def count_user_memories(store: Any, user_id: str) -> Dict[str, int]:
+    """Count a user's stored memories per CoALA category.
+
+    Returns a dict with ``semantic``, ``episodic``, ``procedural`` and ``total``.
+    """
+    uid = str(user_id)
+    counts: Dict[str, int] = {c: 0 for c in MEMORY_CATEGORIES}
+
+    for category in MEMORY_CATEGORIES:
+        prefix = (uid, category)
+        offset = 0
+        while True:
+            items = _store_search(store, prefix, limit=_PURGE_BATCH_SIZE, offset=offset)
+            counts[category] += len(items)
+            if len(items) < _PURGE_BATCH_SIZE:
+                break
+            offset += _PURGE_BATCH_SIZE
+
+    counts["total"] = sum(counts[c] for c in MEMORY_CATEGORIES)
+    return counts
+
+
+@contextmanager
+def open_memory_store() -> Iterator[Any]:
+    """Open the process-configured LangGraph memory store for one-off operations.
+
+    Builds a sync store from ``settings.database_url`` (mapping async drivers to
+    their sync counterparts) WITHOUT an embedding index — list and delete
+    operations need no vectors.  Unknown dialects yield a fresh in-memory store
+    (nothing is persisted there, so counts/purges are no-ops).
+
+    Mirrors the store construction in
+    ``inference_core.agents.graph_builder._init_memory_store``.
+    """
+    from inference_core.core.config import get_settings
+
+    settings = get_settings()
+    url = settings.database_url
+    for async_drv, sync_drv in (
+        ("+aiosqlite", ""),
+        ("+asyncpg", ""),
+        ("+aiomysql", ""),
+    ):
+        if async_drv in url:
+            url = url.replace(async_drv, sync_drv)
+            break
+
+    if "sqlite" in url:
+        from langgraph.store.sqlite import SqliteStore
+
+        with SqliteStore.from_conn_string(url) as store:
+            if hasattr(store, "setup") and callable(store.setup):
+                store.setup()
+            yield store
+    elif "postgresql" in url:
+        from langgraph.store.postgres import PostgresStore
+
+        with PostgresStore.from_conn_string(url) as store:
+            if hasattr(store, "setup") and callable(store.setup):
+                store.setup()
+            yield store
+    else:
+        from langgraph.store.memory import InMemoryStore
+
+        logger.warning(
+            "Unknown DB dialect for memory store (%s); using ephemeral InMemoryStore",
+            url,
+        )
+        yield InMemoryStore()
+
+
+def purge_user_long_term_memory(
+    user_id: str,
+    category: Optional[str] = None,
+) -> int:
+    """Open the configured store and delete the user's memories. Returns count."""
+    with open_memory_store() as store:
+        return purge_user_memories(store, user_id, category)
+
+
+def count_user_long_term_memory(user_id: str) -> Dict[str, int]:
+    """Open the configured store and count the user's memories per category."""
+    with open_memory_store() as store:
+        return count_user_memories(store, user_id)
+
+
 __all__ = [
     "AgentMemoryStoreService",
     "MemoryCategory",
@@ -1064,4 +1241,9 @@ __all__ = [
     "get_types_for_category",
     "get_memory_type_literal",
     "get_memory_category_literal",
+    "purge_user_memories",
+    "count_user_memories",
+    "open_memory_store",
+    "purge_user_long_term_memory",
+    "count_user_long_term_memory",
 ]
