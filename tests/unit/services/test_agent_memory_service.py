@@ -810,3 +810,123 @@ class TestPurgeAndCountUserMemories:
 
         with pytest.raises(ValueError):
             purge_user_memories(store, "u1", "not-a-category")
+
+
+class TestListAndDeleteMemoryEntries:
+    """Cover list_user_memories + entry-level delete helpers on a real store."""
+
+    @pytest.fixture
+    def store(self):
+        from langgraph.store.memory import InMemoryStore
+
+        s = InMemoryStore()
+        s.put(
+            ("u1", "semantic"),
+            "s1",
+            {
+                "content": "Lives in Warsaw",
+                "memory_type": "facts",
+                "topic": "location",
+                "created_at": "2026-01-01T10:00:00+00:00",
+            },
+        )
+        s.put(
+            ("u1", "semantic"),
+            "s2",
+            {
+                "content": "Prefers bullet points",
+                "memory_type": "preferences",
+                "created_at": "2026-02-01T10:00:00+00:00",
+            },
+        )
+        s.put(
+            ("u1", "episodic", "assistant"),
+            "e1",
+            {
+                "content": "Discussed Q1 goals",
+                "memory_type": "interaction",
+                "created_at": "2026-03-01T10:00:00+00:00",
+            },
+        )
+        s.put(("u2", "semantic"), "o1", {"content": "other", "memory_type": "facts"})
+        return s
+
+    def test_list_all_sorted_desc(self, store):
+        from inference_core.services.agent_memory_service import list_user_memories
+
+        items, total = list_user_memories(store, "u1")
+        assert total == 3
+        # newest first by created_at
+        assert [i["key"] for i in items] == ["e1", "s2", "s1"]
+        # category/agent derived from namespace
+        assert items[0]["memory_category"] == "episodic"
+        assert items[0]["agent_name"] == "assistant"
+
+    def test_list_filter_by_category(self, store):
+        from inference_core.services.agent_memory_service import list_user_memories
+
+        items, total = list_user_memories(store, "u1", category="semantic")
+        assert total == 2
+        assert {i["key"] for i in items} == {"s1", "s2"}
+
+    def test_list_filter_by_type(self, store):
+        from inference_core.services.agent_memory_service import list_user_memories
+
+        items, total = list_user_memories(store, "u1", memory_type="preferences")
+        assert total == 1
+        assert items[0]["key"] == "s2"
+
+    def test_list_search_substring(self, store):
+        from inference_core.services.agent_memory_service import list_user_memories
+
+        items, total = list_user_memories(store, "u1", search="WARSAW")
+        assert total == 1
+        assert items[0]["key"] == "s1"
+
+    def test_list_pagination(self, store):
+        from inference_core.services.agent_memory_service import list_user_memories
+
+        items, total = list_user_memories(store, "u1", limit=1, offset=1)
+        assert total == 3
+        assert [i["key"] for i in items] == ["s2"]
+
+    def test_delete_entry_ownership_guard(self, store):
+        from inference_core.services.agent_memory_service import (
+            delete_user_memory_entry,
+            list_user_memories,
+        )
+
+        # Refuse deleting another user's item even if namespace is supplied.
+        assert delete_user_memory_entry(store, "u1", ["u2", "semantic"], "o1") is False
+        assert list_user_memories(store, "u2")[1] == 1
+
+    def test_delete_entry_owned(self, store):
+        from inference_core.services.agent_memory_service import (
+            delete_user_memory_entry,
+            list_user_memories,
+        )
+
+        assert (
+            delete_user_memory_entry(store, "u1", ["u1", "episodic", "assistant"], "e1")
+            is True
+        )
+        assert list_user_memories(store, "u1")[1] == 2
+
+    def test_bulk_delete_counts_only_deleted(self, store):
+        from inference_core.services.agent_memory_service import (
+            delete_user_memory_entries,
+            list_user_memories,
+        )
+
+        deleted = delete_user_memory_entries(
+            store,
+            "u1",
+            [
+                (["u1", "semantic"], "s1"),
+                (["u2", "semantic"], "o1"),  # not owned -> skipped
+                (["u1", "semantic"], "s2"),
+            ],
+        )
+        assert deleted == 2
+        assert list_user_memories(store, "u1")[1] == 1
+        assert list_user_memories(store, "u2")[1] == 1

@@ -1159,6 +1159,144 @@ def count_user_memories(store: Any, user_id: str) -> Dict[str, int]:
     return counts
 
 
+def _memory_item_to_dict(item: Any) -> Dict[str, Any]:
+    """Flatten a store SearchItem into a serializable memory record.
+
+    The CoALA category and agent are derived from the namespace tuple
+    (`(user_id, category[, agent_name])`), falling back to the stored value.
+    """
+    namespace = list(getattr(item, "namespace", ()) or ())
+    value = getattr(item, "value", {}) or {}
+    key = getattr(item, "key", getattr(item, "id", ""))
+
+    category = namespace[1] if len(namespace) > 1 else value.get("memory_category")
+    agent_name = namespace[2] if len(namespace) > 2 else value.get("agent_name")
+
+    def _iso(dt: Any) -> Optional[str]:
+        if dt is None:
+            return None
+        if hasattr(dt, "isoformat"):
+            return dt.isoformat()
+        if isinstance(dt, str):
+            return dt
+        return None
+
+    created_at = _iso(getattr(item, "created_at", None)) or value.get("created_at")
+    updated_at = _iso(getattr(item, "updated_at", None))
+
+    return {
+        "namespace": namespace,
+        "key": key,
+        "content": value.get("content", ""),
+        "memory_type": value.get("memory_type"),
+        "memory_category": category,
+        "topic": value.get("topic"),
+        "agent_name": agent_name,
+        "session_id": value.get("session_id"),
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+def list_user_memories(
+    store: Any,
+    user_id: str,
+    *,
+    category: Optional[str] = None,
+    memory_type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """List a user's stored memories with filtering, sorting and pagination.
+
+    Loads every item under the namespace prefix (`(user_id,)` or
+    `(user_id, category)`), filters by ``memory_type`` and a case-insensitive
+    substring on content/topic, sorts newest-first, and slices for pagination.
+    Returns ``(page_items, total)`` where ``total`` is the filtered count.
+    Memory volume per user is small, so in-Python filtering/sort is acceptable.
+    """
+    uid = str(user_id)
+    if category is not None:
+        category = validate_memory_category(category)
+        prefix: Tuple[str, ...] = (uid, category)
+    else:
+        prefix = (uid,)
+
+    raw: List[Any] = []
+    search_offset = 0
+    while True:
+        batch = _store_search(
+            store, prefix, limit=_PURGE_BATCH_SIZE, offset=search_offset
+        )
+        if not batch:
+            break
+        raw.extend(batch)
+        if len(batch) < _PURGE_BATCH_SIZE:
+            break
+        search_offset += _PURGE_BATCH_SIZE
+
+    items = [_memory_item_to_dict(it) for it in raw]
+
+    if memory_type:
+        items = [d for d in items if d.get("memory_type") == memory_type]
+
+    if search:
+        needle = search.strip().lower()
+        if needle:
+            items = [
+                d
+                for d in items
+                if needle in (d.get("content") or "").lower()
+                or needle in (d.get("topic") or "").lower()
+            ]
+
+    # ISO-8601 UTC strings sort chronologically as plain strings.
+    items.sort(key=lambda d: d.get("created_at") or "", reverse=True)
+
+    total = len(items)
+    if offset:
+        items = items[offset:]
+    if limit is not None:
+        items = items[:limit]
+    return items, total
+
+
+def delete_user_memory_entry(
+    store: Any,
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+) -> bool:
+    """Delete a single memory item, guarding that it belongs to ``user_id``."""
+    ns = tuple(namespace)
+    if not ns or str(ns[0]) != str(user_id):
+        logger.warning("Refusing to delete memory outside user's namespace: %s", ns)
+        return False
+    if not hasattr(store, "delete"):
+        logger.warning("Store does not support delete; cannot delete memory")
+        return False
+    try:
+        store.delete(ns, key)
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to delete memory %s/%s: %s", ns, key, exc)
+        return False
+
+
+def delete_user_memory_entries(
+    store: Any,
+    user_id: str,
+    entries: Sequence[Tuple[Sequence[str], str]],
+) -> int:
+    """Delete multiple memory items; returns the number actually deleted."""
+    deleted = 0
+    for namespace, key in entries:
+        if delete_user_memory_entry(store, user_id, namespace, key):
+            deleted += 1
+    return deleted
+
+
 @contextmanager
 def open_memory_store() -> Iterator[Any]:
     """Open the process-configured LangGraph memory store for one-off operations.
@@ -1223,6 +1361,47 @@ def count_user_long_term_memory(user_id: str) -> Dict[str, int]:
         return count_user_memories(store, user_id)
 
 
+def list_user_long_term_memory(
+    user_id: str,
+    *,
+    category: Optional[str] = None,
+    memory_type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Open the configured store and list the user's memories. Returns (items, total)."""
+    with open_memory_store() as store:
+        return list_user_memories(
+            store,
+            user_id,
+            category=category,
+            memory_type=memory_type,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+
+
+def delete_user_long_term_memory_entry(
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+) -> bool:
+    """Open the configured store and delete one memory item for the user."""
+    with open_memory_store() as store:
+        return delete_user_memory_entry(store, user_id, namespace, key)
+
+
+def delete_user_long_term_memory_entries(
+    user_id: str,
+    entries: Sequence[Tuple[Sequence[str], str]],
+) -> int:
+    """Open the configured store and delete several memory items for the user."""
+    with open_memory_store() as store:
+        return delete_user_memory_entries(store, user_id, entries)
+
+
 __all__ = [
     "AgentMemoryStoreService",
     "MemoryCategory",
@@ -1243,7 +1422,13 @@ __all__ = [
     "get_memory_category_literal",
     "purge_user_memories",
     "count_user_memories",
+    "list_user_memories",
+    "delete_user_memory_entry",
+    "delete_user_memory_entries",
     "open_memory_store",
     "purge_user_long_term_memory",
     "count_user_long_term_memory",
+    "list_user_long_term_memory",
+    "delete_user_long_term_memory_entry",
+    "delete_user_long_term_memory_entries",
 ]

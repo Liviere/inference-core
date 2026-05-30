@@ -195,6 +195,39 @@ docs = await service.recall_memories(
 )
 ```
 
+### Memory Inspection and Cleanup
+
+Use the store-level helpers when you need an admin or maintenance workflow that
+lists persisted memories and removes selected entries without going through an
+agent run.
+
+```python
+from inference_core.services.agent_memory_service import (
+    delete_user_long_term_memory_entries,
+    list_user_long_term_memory,
+)
+
+items, total = list_user_long_term_memory(
+    "user-123",
+    category="semantic",
+    memory_type="preferences",
+    search="bullet",
+    limit=20,
+    offset=0,
+)
+
+deleted = delete_user_long_term_memory_entries(
+    "user-123",
+    [(item["namespace"], item["key"]) for item in items[:2]],
+)
+```
+
+`list_user_long_term_memory()` returns serializable dictionaries that include
+the memory namespace, key, category, agent name, content, topic, and
+timestamps. Deletion helpers enforce that the namespace belongs to the target
+user before removing an item, so bulk cleanup can safely skip entries from
+other users.
+
 ## Migration from Flat Namespace
 
 If you have existing memories in the legacy `(user_id, "memories")` namespace, run the migration script:
