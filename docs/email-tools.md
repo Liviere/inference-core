@@ -12,6 +12,20 @@ The email tools integrate with the existing email configuration system and provi
 - **SummarizeEmailTool** - Summarize and classify emails using LLM
 - **ListEmailAccountsTool** - List available email accounts
 
+## IMAP Folder Management & Email Mutation
+
+The `ImapService` supports folder-aware operations with RFC 6154 special-use folder resolution and RFC 6851 MOVE:
+
+- **Folder listing with attributes** — `list_folders_with_attributes()` returns folder names alongside their IMAP attributes (e.g. `\\Trash`, `\\Junk`), decoded from IMAP modified UTF-7.
+- **Special folder resolution** — `resolve_special_folder()` maps logical roles (`TRASH`, `JUNK`, `ARCHIVE`, `SENT`, `DRAFTS`, `ALL`) to concrete server folder names using RFC 6154 attributes first, then name-based fallbacks (Gmail, Outlook, Dovecot).
+- **Flag management** — `set_flags()` adds or removes IMAP flags (`\\Seen`, `\\Deleted`, `\\Flagged`, etc.) via UID STORE.
+- **Move email** — `move_email()` uses RFC 6851 `UID MOVE` when the server advertises it, falling back to `COPY` + `\\Deleted` + `EXPUNGE`.
+- **Delete email** — `delete_email()` either moves to the Trash folder (default) or permanently expunges (`permanent=True`).
+- **Archive email** — `archive_email()` moves to _All Mail_ on Gmail accounts and to _Archive_ on other providers.
+- **Mark as spam** — `mark_as_spam()` moves to the server's Junk/Spam folder.
+
+All folder names are handled in IMAP modified UTF-7 encoding, supporting international characters and spaces.
+
 ## Configuration
 
 ### Update `email_config.yaml`

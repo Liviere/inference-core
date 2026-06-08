@@ -10,6 +10,7 @@ Production-grade IMAP email reading service with support for:
 This service complements EmailService (SMTP) for bidirectional email operations.
 """
 
+import base64
 import email
 import imaplib
 import logging
@@ -19,6 +20,7 @@ from datetime import datetime
 from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import parseaddr, parsedate_to_datetime
+from enum import Enum as PyEnum
 from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel
@@ -83,6 +85,157 @@ class EmailMessage(BaseModel):
     attachment_names: List[str] = []
     folder: str = "INBOX"
     is_read: bool = False
+
+
+class SpecialFolder(str, PyEnum):
+    """Logical (provider-agnostic) mailbox roles.
+
+    Used to resolve the concrete folder name on a given server via
+    RFC 6154 ``SPECIAL-USE`` attributes with name-based fallbacks.
+    """
+
+    TRASH = "trash"
+    JUNK = "junk"
+    ARCHIVE = "archive"
+    SENT = "sent"
+    DRAFTS = "drafts"
+    ALL = "all"
+
+
+class FolderInfo(BaseModel):
+    """A mailbox folder with its (lower-cased, ``\\``-stripped) IMAP attributes."""
+
+    name: str
+    attributes: List[str] = []
+
+
+# RFC 6154 SPECIAL-USE attribute (without the leading backslash) per role.
+_SPECIAL_USE_ATTR: Dict[SpecialFolder, str] = {
+    SpecialFolder.TRASH: "trash",
+    SpecialFolder.JUNK: "junk",
+    SpecialFolder.ARCHIVE: "archive",
+    SpecialFolder.SENT: "sent",
+    SpecialFolder.DRAFTS: "drafts",
+    SpecialFolder.ALL: "all",
+}
+
+# Case-insensitive name fallbacks (ordered by likelihood) covering Gmail,
+# Outlook/Office365, Dovecot/cPanel (``INBOX.``-prefixed) and generic IMAP.
+_SPECIAL_NAME_FALLBACKS: Dict[SpecialFolder, List[str]] = {
+    SpecialFolder.TRASH: [
+        "Trash",
+        "Deleted",
+        "Deleted Items",
+        "Deleted Messages",
+        "[Gmail]/Trash",
+        "[Google Mail]/Trash",
+        "INBOX.Trash",
+    ],
+    SpecialFolder.JUNK: [
+        "Junk",
+        "Spam",
+        "Junk E-mail",
+        "Junk Email",
+        "Bulk Mail",
+        "[Gmail]/Spam",
+        "[Google Mail]/Spam",
+        "INBOX.Junk",
+        "INBOX.Spam",
+    ],
+    SpecialFolder.ARCHIVE: [
+        "Archive",
+        "Archives",
+        "[Gmail]/All Mail",
+        "[Google Mail]/All Mail",
+        "INBOX.Archive",
+    ],
+    SpecialFolder.SENT: [
+        "Sent",
+        "Sent Items",
+        "Sent Mail",
+        "[Gmail]/Sent Mail",
+        "[Google Mail]/Sent Mail",
+        "INBOX.Sent",
+    ],
+    SpecialFolder.DRAFTS: [
+        "Drafts",
+        "[Gmail]/Drafts",
+        "[Google Mail]/Drafts",
+        "INBOX.Drafts",
+    ],
+    SpecialFolder.ALL: [
+        "[Gmail]/All Mail",
+        "[Google Mail]/All Mail",
+        "All Mail",
+        "Archive",
+    ],
+}
+
+
+def _modified_b64encode(text: str) -> str:
+    """Encode a unicode run as IMAP modified BASE64 (UTF-16BE, ``/``→``,``)."""
+    raw = base64.b64encode(text.encode("utf-16-be")).decode("ascii")
+    return raw.rstrip("=").replace("/", ",")
+
+
+def _modified_b64decode(chunk: str) -> str:
+    """Decode an IMAP modified-BASE64 run back to unicode."""
+    data = chunk.replace(",", "/")
+    data += "=" * ((-len(data)) % 4)
+    return base64.b64decode(data).decode("utf-16-be")
+
+
+def imap_utf7_encode(name: str) -> str:
+    """Encode a folder name to IMAP modified UTF-7 (RFC 3501 §5.1.3)."""
+    out: List[str] = []
+    buf: List[str] = []
+
+    def _flush() -> None:
+        if buf:
+            out.append("&" + _modified_b64encode("".join(buf)) + "-")
+            buf.clear()
+
+    for ch in name:
+        if 0x20 <= ord(ch) <= 0x7E:
+            _flush()
+            out.append("&-" if ch == "&" else ch)
+        else:
+            buf.append(ch)
+    _flush()
+    return "".join(out)
+
+
+def imap_utf7_decode(name: str) -> str:
+    """Decode an IMAP modified-UTF-7 folder name to unicode."""
+    out: List[str] = []
+    i, n = 0, len(name)
+    while i < n:
+        ch = name[i]
+        if ch == "&":
+            end = name.find("-", i)
+            if end == -1:
+                out.append(name[i:])
+                break
+            chunk = name[i + 1 : end]
+            out.append("&" if chunk == "" else _modified_b64decode(chunk))
+            i = end + 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _quote_mailbox(name: str) -> str:
+    """Modified-UTF-7 encode and double-quote a mailbox name for IMAP commands."""
+    encoded = imap_utf7_encode(name)
+    escaped = encoded.replace("\\", "\\\\").replace('"', '\\"')
+    return '"' + escaped + '"'
+
+
+# Parses a single IMAP LIST response line: ``(\attrs) "sep" name``.
+_LIST_LINE_RE = re.compile(
+    rb'^\((?P<attrs>[^)]*)\)\s+(?P<sep>"[^"]*"|NIL)\s+(?P<name>.*)$'
+)
 
 
 @dataclass
@@ -446,7 +599,7 @@ class ImapService:
         if date_str:
             try:
                 date = parsedate_to_datetime(date_str)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         # Parse body
@@ -572,7 +725,7 @@ class ImapService:
             charset = part.get_content_charset() or "utf-8"
             try:
                 return payload.decode(charset, errors="replace")
-            except (LookupError, UnicodeDecodeError):
+            except LookupError, UnicodeDecodeError:
                 # Fallback to utf-8 if specified charset fails
                 return payload.decode("utf-8", errors="replace")
         except Exception as e:
@@ -591,13 +744,17 @@ class ImapService:
             return value
 
     def list_folders(self, host_alias: Optional[str] = None) -> List[str]:
-        """List available mailbox folders.
+        """List available mailbox folder names (modified-UTF-7 decoded)."""
+        return [f.name for f in self.list_folders_with_attributes(host_alias)]
 
-        Args:
-            host_alias: Host alias (uses default if None)
+    def list_folders_with_attributes(
+        self, host_alias: Optional[str] = None
+    ) -> List[FolderInfo]:
+        """List folders with their IMAP attributes (incl. RFC 6154 special-use).
 
-        Returns:
-            List of folder names
+        Attributes are returned lower-cased and without the leading backslash
+        (e.g. ``\\Trash`` -> ``trash``). Folder names are decoded from IMAP
+        modified UTF-7.
         """
         conn = self._get_connection(host_alias)
         conn.connect()
@@ -606,20 +763,223 @@ class ImapService:
         if typ != "OK":
             return []
 
-        folders = []
+        folders: List[FolderInfo] = []
         for item in data:
-            if isinstance(item, bytes):
-                # Parse folder name from IMAP LIST response
-                # Format: '(\\HasNoChildren) "/" "FolderName"'
-                try:
-                    decoded = item.decode("utf-8")
-                    parts = decoded.rsplit('"', 2)
-                    if len(parts) >= 2:
-                        folders.append(parts[-2])
-                except Exception:
+            if not isinstance(item, (bytes, bytearray)):
+                # Some servers return tuples for literal folder names.
+                if isinstance(item, tuple) and item and isinstance(item[0], bytes):
+                    item = item[0]
+                else:
                     continue
+            match = _LIST_LINE_RE.match(bytes(item))
+            if not match:
+                continue
+            try:
+                attrs_raw = match.group("attrs").decode("ascii", "ignore")
+                attributes = [
+                    a.lstrip("\\").lower() for a in attrs_raw.split() if a.strip()
+                ]
+                name_raw = match.group("name").decode("ascii", "ignore").strip()
+                if name_raw.startswith('"') and name_raw.endswith('"'):
+                    name_raw = name_raw[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+                name = imap_utf7_decode(name_raw)
+                folders.append(FolderInfo(name=name, attributes=attributes))
+            except Exception:
+                continue
 
         return folders
+
+    def resolve_special_folder(
+        self,
+        special: SpecialFolder,
+        host_alias: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve a logical folder role to a concrete server folder name.
+
+        Resolution order:
+          1. RFC 6154 ``SPECIAL-USE`` attribute advertised by the server.
+          2. Case-insensitive match against well-known provider/IMAP names.
+
+        Returns ``None`` if no suitable folder can be found.
+        """
+        folders = self.list_folders_with_attributes(host_alias)
+        if not folders:
+            return None
+
+        # 1. Special-use attribute (most reliable, provider-independent).
+        wanted_attr = _SPECIAL_USE_ATTR.get(special)
+        if wanted_attr:
+            for f in folders:
+                if wanted_attr in f.attributes:
+                    return f.name
+
+        # 2. Name-based fallback against the actual folder list.
+        by_lower = {f.name.lower(): f.name for f in folders}
+        for candidate in _SPECIAL_NAME_FALLBACKS.get(special, []):
+            actual = by_lower.get(candidate.lower())
+            if actual:
+                return actual
+
+        return None
+
+    @staticmethod
+    def _supports_move(conn: "ImapConnection") -> bool:
+        """Whether the server advertises the RFC 6851 ``MOVE`` capability."""
+        try:
+            caps = conn._connection.capabilities  # tuple of str, upper-cased
+            return "MOVE" in caps
+        except Exception:
+            return False
+
+    def _select_folder(self, conn: "ImapConnection", folder: str) -> None:
+        """Select a folder with proper quoting/encoding (supports spaces/UTF-7)."""
+        conn.connect()
+        typ, data = conn._connection.select(_quote_mailbox(folder))
+        if typ != "OK":
+            raise ImapReadError(
+                f"Failed to select folder: {data}", conn.host_alias, folder
+            )
+        conn._current_folder = folder
+
+    def set_flags(
+        self,
+        uid: str,
+        folder: str,
+        flags: List[str],
+        add: bool = True,
+        host_alias: Optional[str] = None,
+        expunge: bool = False,
+    ) -> bool:
+        """Add or remove IMAP flags on a message (UID STORE)."""
+        conn = self._get_connection(host_alias)
+        self._select_folder(conn, folder)
+        op = "+FLAGS" if add else "-FLAGS"
+        conn._connection.uid("STORE", uid.encode(), op, "(" + " ".join(flags) + ")")
+        if expunge:
+            conn._connection.expunge()
+        return True
+
+    def move_email(
+        self,
+        uid: str,
+        source_folder: str,
+        dest_folder: str,
+        host_alias: Optional[str] = None,
+    ) -> bool:
+        """Move a message between folders.
+
+        Uses RFC 6851 ``UID MOVE`` when supported, otherwise falls back to
+        ``COPY`` + ``\\Deleted`` + ``EXPUNGE``.
+        """
+        conn = self._get_connection(host_alias)
+        self._select_folder(conn, source_folder)
+        quoted_dest = _quote_mailbox(dest_folder)
+
+        if self._supports_move(conn):
+            typ, data = conn._connection.uid("MOVE", uid.encode(), quoted_dest)
+            if typ != "OK":
+                raise ImapReadError(
+                    f"MOVE failed: {data}", conn.host_alias, dest_folder
+                )
+            return True
+
+        # Fallback: COPY then flag-delete + expunge in the source folder.
+        typ, data = conn._connection.uid("COPY", uid.encode(), quoted_dest)
+        if typ != "OK":
+            raise ImapReadError(f"COPY failed: {data}", conn.host_alias, dest_folder)
+        conn._connection.uid("STORE", uid.encode(), "+FLAGS", "(\\Deleted)")
+        conn._connection.expunge()
+        return True
+
+    def delete_email(
+        self,
+        uid: str,
+        folder: str,
+        permanent: bool = False,
+        host_alias: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> bool:
+        """Delete a message.
+
+        ``permanent=True`` flags ``\\Deleted`` and expunges (unrecoverable).
+        Otherwise the message is moved to the server's Trash folder.
+        """
+        if permanent:
+            return self.set_flags(
+                uid,
+                folder,
+                ["\\Deleted"],
+                add=True,
+                host_alias=host_alias,
+                expunge=True,
+            )
+
+        trash = self.resolve_special_folder(
+            SpecialFolder.TRASH, host_alias, provider=provider
+        )
+        if not trash:
+            raise ImapReadError(
+                "Could not locate a Trash folder on this account",
+                host_alias or "",
+                folder,
+            )
+        if trash.lower() == folder.lower():
+            return True  # already in Trash
+        return self.move_email(uid, folder, trash, host_alias=host_alias)
+
+    def archive_email(
+        self,
+        uid: str,
+        folder: str,
+        host_alias: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> bool:
+        """Archive a message.
+
+        Gmail has no ``\\Archive`` folder; archiving means moving out of the
+        Inbox into *All Mail* (``\\All``). Other providers use ``\\Archive``.
+        """
+        is_gmail = (provider or "").lower() in {"google", "gmail"}
+        target = None
+        if is_gmail:
+            target = self.resolve_special_folder(
+                SpecialFolder.ALL, host_alias, provider=provider
+            )
+        if not target:
+            target = self.resolve_special_folder(
+                SpecialFolder.ARCHIVE, host_alias, provider=provider
+            )
+        if not target:
+            raise ImapReadError(
+                "Could not locate an Archive/All Mail folder on this account",
+                host_alias or "",
+                folder,
+            )
+        if target.lower() == folder.lower():
+            return True
+        return self.move_email(uid, folder, target, host_alias=host_alias)
+
+    def mark_as_spam(
+        self,
+        uid: str,
+        folder: str,
+        host_alias: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> bool:
+        """Move a message to the server's Junk/Spam folder."""
+        junk = self.resolve_special_folder(
+            SpecialFolder.JUNK, host_alias, provider=provider
+        )
+        if not junk:
+            raise ImapReadError(
+                "Could not locate a Junk/Spam folder on this account",
+                host_alias or "",
+                folder,
+            )
+        if junk.lower() == folder.lower():
+            return True
+        return self.move_email(uid, folder, junk, host_alias=host_alias)
 
     def get_folder_stats(
         self, host_alias: Optional[str] = None, folder: Optional[str] = None
