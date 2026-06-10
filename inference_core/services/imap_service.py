@@ -552,6 +552,75 @@ class ImapService:
         except Exception as e:
             raise ImapReadError(str(e), alias, folder or "INBOX", e)
 
+    def get_folder_uid_status(
+        self,
+        host_alias: Optional[str] = None,
+        folder: Optional[str] = None,
+    ) -> tuple[int, int]:
+        """Return ``(uidnext, uidvalidity)`` for a folder without fetching bodies.
+
+        ``UIDNEXT`` is the UID that will be assigned to the next message, so it
+        serves as a high-watermark: any existing message has ``uid < uidnext``.
+        ``UIDVALIDITY`` lets callers detect server-side UID resets.
+
+        Args:
+            host_alias: Host alias (uses default if None)
+            folder: Folder to inspect (uses default_folder if None)
+
+        Returns:
+            Tuple of (uidnext, uidvalidity).
+        """
+        conn = self._get_connection(host_alias)
+        alias = host_alias or self.config.email.default_host
+        folder_name = folder or conn.imap_config.default_folder
+
+        try:
+            # SELECT exposes UIDNEXT / UIDVALIDITY as untagged responses.
+            conn.select_folder(folder)
+            uidnext = self._read_int_response(conn, "UIDNEXT")
+            uidvalidity = self._read_int_response(conn, "UIDVALIDITY")
+
+            # Fallback to STATUS if SELECT did not surface the values.
+            if uidnext is None or uidvalidity is None:
+                typ, data = conn._connection.status(
+                    folder_name, "(UIDNEXT UIDVALIDITY)"
+                )
+                if typ == "OK" and data and data[0]:
+                    text = data[0].decode() if isinstance(data[0], bytes) else data[0]
+                    next_match = re.search(r"UIDNEXT\s+(\d+)", text)
+                    valid_match = re.search(r"UIDVALIDITY\s+(\d+)", text)
+                    if next_match:
+                        uidnext = int(next_match.group(1))
+                    if valid_match:
+                        uidvalidity = int(valid_match.group(1))
+
+            if uidnext is None or uidvalidity is None:
+                raise ImapReadError(
+                    "UIDNEXT/UIDVALIDITY unavailable", alias, folder_name
+                )
+
+            return uidnext, uidvalidity
+
+        except ImapReadError:
+            raise
+        except Exception as e:
+            raise ImapReadError(str(e), alias, folder_name, e)
+
+    @staticmethod
+    def _read_int_response(conn: ImapConnection, key: str) -> Optional[int]:
+        """Read an integer untagged IMAP response value (e.g. UIDNEXT)."""
+        try:
+            typ, data = conn._connection.response(key)
+        except Exception:
+            return None
+        if typ != key or not data or data[0] is None:
+            return None
+        value = data[0]
+        if isinstance(value, bytes):
+            value = value.decode()
+        match = re.search(r"\d+", str(value))
+        return int(match.group(0)) if match else None
+
     def _fetch_message(
         self, conn: ImapConnection, uid: bytes, folder: str
     ) -> Optional[EmailMessage]:
