@@ -49,6 +49,7 @@ from .cost_tracking import (
 from .instance_config import InstanceConfigMiddleware
 from .memory import MemoryMiddleware, MemoryState, create_memory_middleware
 from .model_fallback import (
+    CancelAwareModelFallbackMiddleware,
     build_model_fallback_middleware,
     canonicalize_fallback_overrides,
     fallback_models_from_mapping,
@@ -78,6 +79,7 @@ __all__ = [
     "MemoryState",
     "create_memory_middleware",
     # Model fallback
+    "CancelAwareModelFallbackMiddleware",
     "build_model_fallback_middleware",
     "canonicalize_fallback_overrides",
     "fallback_models_from_mapping",

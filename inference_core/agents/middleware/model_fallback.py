@@ -8,15 +8,112 @@ project's ``LLMModelFactory``.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from langchain.agents.middleware import ModelFallbackMiddleware
+from langgraph.errors import GraphInterrupt
+
+from inference_core.services._cancel import AgentCancelled
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_KEYS = ("fallback", "fallback_models")
 _MISSING = object()
+
+
+class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
+    """``ModelFallbackMiddleware`` that never swallows cancellation/interrupts.
+
+    WHY: The stock middleware catches bare ``Exception`` around every model
+    attempt.  ``GraphInterrupt`` (raised by the stream cancel callback inside
+    the LLM call, and by HITL flows) and ``AgentCancelled`` (raised by
+    ``CostTrackingMiddleware``'s pre-model cancel check, which runs *inside*
+    this wrapper because cost tracking is forced innermost) are both
+    ``Exception`` subclasses — so a user cancellation was treated as a model
+    failure and every configured fallback model was invoked in turn, each
+    billing the full input prompt before being cancelled again.
+
+    This subclass re-raises ``GraphInterrupt`` and ``AgentCancelled``
+    immediately (primary and fallback attempts alike) and additionally
+    checks ``cancel_check`` before starting each fallback attempt, so no
+    new paid model call begins after cancellation was requested.
+
+    ``cancel_check`` is populated by ``AgentService.set_cancel_check``,
+    which assigns the callback to every middleware exposing the attribute.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.cancel_check: Callable[[], bool] | None = None
+
+    def _raise_if_cancelled(self) -> None:
+        """Raise ``AgentCancelled`` when the cancel callback reports True.
+
+        Best-effort: errors from the check itself are ignored so a broken
+        callback can never break fallback handling.
+        """
+        if not self.cancel_check:
+            return
+        try:
+            if self.cancel_check():
+                raise AgentCancelled("Agent execution cancelled by user")
+        except AgentCancelled:
+            raise
+        except Exception:
+            pass
+
+    def wrap_model_call(
+        self,
+        request: Any,
+        handler: Callable[[Any], Any],
+    ) -> Any:
+        """Try fallback models in sequence, propagating cancellation."""
+        last_exception: Exception
+        try:
+            return handler(request)
+        except (GraphInterrupt, AgentCancelled):
+            raise
+        except Exception as e:
+            last_exception = e
+
+        for fallback_model in self.models:
+            self._raise_if_cancelled()
+            try:
+                return handler(request.override(model=fallback_model))
+            except (GraphInterrupt, AgentCancelled):
+                raise
+            except Exception as e:
+                last_exception = e
+                continue
+
+        raise last_exception
+
+    async def awrap_model_call(
+        self,
+        request: Any,
+        handler: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        """Async version of :meth:`wrap_model_call`."""
+        last_exception: Exception
+        try:
+            return await handler(request)
+        except (GraphInterrupt, AgentCancelled):
+            raise
+        except Exception as e:
+            last_exception = e
+
+        for fallback_model in self.models:
+            self._raise_if_cancelled()
+            try:
+                return await handler(request.override(model=fallback_model))
+            except (GraphInterrupt, AgentCancelled):
+                raise
+            except Exception as e:
+                last_exception = e
+                continue
+
+        raise last_exception
 
 
 def fallback_models_from_mapping(
@@ -141,7 +238,7 @@ def build_model_fallback_middleware(
         return None
 
     try:
-        return ModelFallbackMiddleware(
+        return CancelAwareModelFallbackMiddleware(
             fallback_model_objects[0],
             *fallback_model_objects[1:],
         )

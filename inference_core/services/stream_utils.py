@@ -99,7 +99,10 @@ class StreamCancelCallback(AsyncCallbackHandler):
         if self._cancel:
             raise GraphInterrupt(())
 
-    # No-op overrides — prevent ``NotImplementedError`` noise from the
+    # Raising at model-call start aborts a follow-up LLM call (after a tool,
+    # or a fallback attempt) *before* the provider HTTP request is sent —
+    # avoiding the full input-prompt cost and the time-to-first-token wait.
+    # These overrides also prevent ``NotImplementedError`` noise from the
     # inherited ``AsyncCallbackHandler`` default implementations.
     async def on_chat_model_start(
         self,
@@ -107,12 +110,14 @@ class StreamCancelCallback(AsyncCallbackHandler):
         messages: list[list[BaseMessage]],
         **kwargs: Any,
     ) -> None:
-        pass
+        if self._cancel:
+            raise GraphInterrupt(())
 
     async def on_llm_start(
         self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any
     ) -> None:
-        pass
+        if self._cancel:
+            raise GraphInterrupt(())
 
 
 class SyncStreamCancelCallback(BaseCallbackHandler):
@@ -153,18 +158,22 @@ class SyncStreamCancelCallback(BaseCallbackHandler):
         if self._cancel:
             raise GraphInterrupt(())
 
+    # Raising at model-call start aborts a follow-up LLM call (after a tool,
+    # or a fallback attempt) *before* the provider HTTP request is sent.
     def on_chat_model_start(
         self,
         serialized: dict[str, Any],
         messages: list[list[BaseMessage]],
         **kwargs: Any,
     ) -> None:
-        pass
+        if self._cancel:
+            raise GraphInterrupt(())
 
     def on_llm_start(
         self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any
     ) -> None:
-        pass
+        if self._cancel:
+            raise GraphInterrupt(())
 
 
 class InterruptibleStream:

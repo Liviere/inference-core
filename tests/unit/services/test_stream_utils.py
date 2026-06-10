@@ -199,25 +199,49 @@ class TestSyncStreamCancelCallback:
         cb.cancel()
         assert cb.is_cancelled
 
-    def test_on_chat_model_start_is_noop(self):
+    def test_on_chat_model_start_passes_when_not_cancelled(self):
         cb = SyncStreamCancelCallback()
         cb.on_chat_model_start({}, [[]])  # should not raise
 
-    def test_on_llm_start_is_noop(self):
+    def test_on_llm_start_passes_when_not_cancelled(self):
         cb = SyncStreamCancelCallback()
         cb.on_llm_start({}, [])  # should not raise
 
+    def test_on_chat_model_start_raises_when_cancelled(self):
+        cb = SyncStreamCancelCallback()
+        cb.cancel()
+        with pytest.raises(GraphInterrupt):
+            cb.on_chat_model_start({}, [[]])
 
-class TestStreamCancelCallbackNoops:
-    """Verify the async cancel callback has no-op startup hooks."""
+    def test_on_llm_start_raises_when_cancelled(self):
+        cb = SyncStreamCancelCallback()
+        cb.cancel()
+        with pytest.raises(GraphInterrupt):
+            cb.on_llm_start({}, [])
 
-    async def test_on_chat_model_start_is_noop(self):
+
+class TestStreamCancelCallbackStartupHooks:
+    """Verify the async cancel callback aborts model calls at startup."""
+
+    async def test_on_chat_model_start_passes_when_not_cancelled(self):
         cb = StreamCancelCallback()
         await cb.on_chat_model_start({}, [[]])  # should not raise
 
-    async def test_on_llm_start_is_noop(self):
+    async def test_on_llm_start_passes_when_not_cancelled(self):
         cb = StreamCancelCallback()
         await cb.on_llm_start({}, [])  # should not raise
+
+    async def test_on_chat_model_start_raises_when_cancelled(self):
+        cb = StreamCancelCallback()
+        cb.cancel()
+        with pytest.raises(GraphInterrupt):
+            await cb.on_chat_model_start({}, [[]])
+
+    async def test_on_llm_start_raises_when_cancelled(self):
+        cb = StreamCancelCallback()
+        cb.cancel()
+        with pytest.raises(GraphInterrupt):
+            await cb.on_llm_start({}, [])
 
 
 # ---------------------------------------------------------------------------
