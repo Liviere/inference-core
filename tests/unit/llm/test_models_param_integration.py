@@ -144,7 +144,7 @@ class TestLLMModelFactoryParameterNormalization:
         assert result == mock_model
 
     @patch("inference_core.llm.models.normalize_params")
-    @patch("inference_core.llm.models.ChatDeepInfra")
+    @patch("inference_core.llm.models.ChatDeepInfraReasoning")
     def test_deepinfra_model_uses_normalized_params(
         self, mock_chat_deepinfra, mock_normalize
     ):
@@ -477,7 +477,7 @@ class TestProviderSpecificParameterHandling:
         assert "presence_penalty" not in call_kwargs
         assert "request_timeout" not in call_kwargs
 
-    @patch("inference_core.llm.models.ChatDeepInfra")
+    @patch("inference_core.llm.models.ChatDeepInfraReasoning")
     @patch("inference_core.llm.models.normalize_params")
     def test_deepinfra_no_manual_parameter_filtering(
         self, mock_normalize, mock_chat_deepinfra

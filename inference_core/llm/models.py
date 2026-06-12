@@ -11,7 +11,6 @@ from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
 from langchain_anthropic import ChatAnthropic
-from langchain_community.chat_models.deepinfra import ChatDeepInfra
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
@@ -21,6 +20,7 @@ from pydantic import SecretStr
 
 from inference_core.core.resource_lifecycle import close_resource, close_resource_sync
 
+from .chat_deepinfra import ChatDeepInfraReasoning
 from .chat_fireworks import ChatFireworksReasoning
 from .config import LLMConfig, ModelConfig, ModelProvider
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
@@ -324,18 +324,19 @@ class LLMModelFactory:
 
     def _create_deepinfra_model(
         self, config: ModelConfig, params: Dict[str, Any]
-    ) -> Optional[ChatDeepInfra]:
+    ) -> Optional[ChatDeepInfraReasoning]:
         """Create DeepInfra model instance via the dedicated LangChain integration.
 
-        Uses ChatDeepInfra from langchain_community instead of the generic
-        OpenAI-compatible wrapper, giving access to DeepInfra-specific features
-        like native tool calling and proper token tracking.
+        Uses ``ChatDeepInfraReasoning`` — a drop-in subclass of the
+        ``langchain_community`` ``ChatDeepInfra`` that fixes streaming tool-call
+        parsing (the upstream adapter loses tool-call arguments when streaming)
+        and forwards ``reasoning_effort``.
         """
         if not config.api_key:
             logger.error("DeepInfra API token (DEEPINFRA_API_TOKEN) not provided")
             return None
         try:
-            return ChatDeepInfra(
+            return ChatDeepInfraReasoning(
                 model=config.name,
                 deepinfra_api_token=config.api_key,
                 **params,

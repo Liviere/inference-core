@@ -98,6 +98,16 @@ In short: agent configuration is loaded and validated in `config.py`; model sele
 - `inference_core/agents/middleware/tool_call_limits.py` — shared tool-call limit builder and prompt policy generator.
 - `inference_core/services/llm_service.py` — configuration integration with LLM runtime.
 - `inference_core/llm/models.py` — model instantiation.
+- `inference_core/llm/chat_deepinfra.py` — `ChatDeepInfraReasoning`, a drop-in
+  replacement for the upstream `ChatDeepInfra` that fixes streaming tool-call
+  parsing (the upstream adapter loses tool-call arguments when streaming) and
+  forwards `reasoning_effort` from `reasoning_config` in the YAML. Also
+  extracts inline ` thinking…  response` reasoning blocks from model content
+  into `additional_kwargs["reasoning_content"]` for proper UI rendering.
+- `inference_core/llm/think_tags.py` — `ThinkTagStreamRouter`, an incremental
+  state machine that splits streamed token content into reasoning and visible
+  text across chunk boundaries, used by `ChatDeepInfraReasoning` on the
+  streaming path.
 - `inference_core/llm/param_policy.py` — parameter policies and override mechanism.
 - `inference_core/celery/config.py` — `batch` usage for Celery beat schedule.
 - `llm_config.yaml` — current repository configuration (edit carefully in production).

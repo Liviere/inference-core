@@ -73,6 +73,25 @@ Key concepts:
 - **Tool-Call Limits** – per-agent policies that cap tool usage per run or
   across a whole conversation thread.
 
+## Repeated Tool-Error Guard
+
+`RepeatedToolErrorGuardMiddleware` is a provider-agnostic safety net that
+detects when the model issues the **same** tool call with the **same** (often
+empty or malformed) arguments and gets the **same** validation error back
+repeatedly — burning the entire tool-call run limit without making progress.
+
+It is applied automatically to every agent (both local and remote Agent Server
+graphs). When the same erroring tool-call signature appears 3 times in a row
+(default threshold), the middleware short-circuits the agent loop with an
+explanatory message instead of letting the model retry the identical call yet
+again.
+
+The guard is intentionally fail-soft: any unexpected error in the scan is
+swallowed and the loop proceeds normally (the existing tool-call limit remains
+the backstop).
+
+Source: `inference_core/agents/middleware/repeated_tool_error_guard.py`
+
 ## Tool-Call Limits
 
 Agents can opt into `ToolCallLimitMiddleware` directly from `llm_config.yaml`:
