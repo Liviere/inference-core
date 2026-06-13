@@ -17,6 +17,7 @@ Source: CoALA whitepaper – arxiv:2309.02427
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -45,6 +46,12 @@ from inference_core.agents.middleware._runtime_context import (
 )
 from inference_core.agents.middleware._runtime_context import (
     get_memory_tool_instructions_enabled as _ctx_get_memory_tool_instructions_enabled,
+)
+from inference_core.agents.middleware._runtime_context import (
+    get_request_id as _ctx_get_request_id,
+)
+from inference_core.agents.middleware._runtime_context import (
+    get_session_id as _ctx_get_session_id,
 )
 from inference_core.agents.middleware._runtime_context import (
     get_user_id as _ctx_get_user_id,
@@ -120,6 +127,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         postrun_analysis_model: Optional[str] = None,
         tool_instructions_enabled: Optional[bool] = None,
         active_tool_names: Optional[List[str]] = None,
+        memory_model: Optional[str] = None,
+        memory_model_override: Optional[str] = None,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ):
         """Initialize the memory middleware.
 
@@ -151,6 +162,18 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             active_tool_names: Names of memory tools exposed to the model.
                 Used to generate scoped instructions that only describe tools
                 the model can actually call.  ``None`` = all four tools.
+            memory_model: Dedicated model name for memory-handling LLM
+                mechanisms (currently post-run analysis), independent of the
+                model that runs the main session.  When ``None``, resolved from
+                ``settings.agent_memory_model``.  See ``_resolve_memory_model_name``.
+            memory_model_override: Reserved extension point for a future
+                per-user memory-model choice.  Takes precedence over every other
+                source when set.  Unused today.
+            session_id: Session ID used to attribute memory-handling LLM cost
+                (the ``LLMRequestLog`` row) to the triggering session.  Falls
+                back to the per-request context var when ``None``.
+            request_id: Correlation ID (e.g. Celery task ID) for the memory
+                usage log.  Falls back to the per-request context var when ``None``.
         """
         self.memory_service = memory_service
         self.user_id = user_id
@@ -160,6 +183,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self.postrun_analysis_model = postrun_analysis_model
         self.tool_instructions_enabled = tool_instructions_enabled
         self.active_tool_names = active_tool_names
+        self.memory_model = memory_model
+        self.memory_model_override = memory_model_override
+        self.session_id = session_id
+        self.request_id = request_id
         # Set in wrap_model_call / awrap_model_call; used by after_agent.
         self._captured_model: Optional[Any] = None
         self.include_memory_types = include_memory_types or [
@@ -570,30 +597,168 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     # Post-run analysis helpers
     # -------------------------------------------------------------------------
 
-    def _get_analysis_model(self) -> Optional[Any]:
-        """Return the model instance to use for post-run extraction.
+    def _resolve_memory_model_name(self) -> Optional[str]:
+        """Resolve the dedicated memory-handling model name (single decision point).
 
-        Priority:
-        1. ``postrun_analysis_model`` (override by name) → ``init_chat_model(name)``
-        2. ``_captured_model`` (last model seen in ``wrap_model_call``) → agent's own model
+        Precedence (first non-empty wins):
+            1. ``memory_model_override`` — reserved for a future per-user choice.
+            2. ``postrun_analysis_model`` — existing finer-grained override.
+            3. ``memory_model`` — dedicated model passed at construction.
+            4. ``settings.agent_memory_model`` — global default.
 
-        Returns ``None`` when neither is available; the caller should skip analysis
-        and log a warning rather than failing.
+        Returns ``None`` to signal "use the agent's own captured model" (only
+        happens when no dedicated model is configured anywhere).
         """
+        # 1. Future per-user override extension point.
+        if self.memory_model_override:
+            return self.memory_model_override
+        # 2. Existing finer-grained post-run override.
         if self.postrun_analysis_model:
-            try:
-                from langchain.chat_models import init_chat_model
+            return self.postrun_analysis_model
+        # 3. Dedicated memory model (constructor arg).
+        if self.memory_model:
+            return self.memory_model
+        # 4. Global default from settings.
+        try:
+            from inference_core.core.config import get_settings
 
-                return init_chat_model(self.postrun_analysis_model)
+            return get_settings().agent_memory_model
+        except Exception:
+            return None
+
+    def _get_analysis_model(self) -> tuple[Optional[Any], Optional[str]]:
+        """Return ``(model_instance, model_name)`` for post-run extraction.
+
+        Instantiates the dedicated memory model via the global model factory so
+        the provider and params declared in ``llm_config.yaml`` are applied
+        (mirrors how ``SummarizationMiddleware`` resolves its model).  Falls back
+        to the agent's own captured model only when the configured memory model
+        cannot be created — in that case ``model_name`` is ``None`` and the
+        caller derives it from the response metadata for billing.
+
+        Returns ``(None, None)`` when no model is available at all; the caller
+        skips analysis and logs a warning rather than failing.
+        """
+        model_name = self._resolve_memory_model_name()
+        if model_name:
+            try:
+                from inference_core.llm.models import get_model_factory
+
+                model = get_model_factory().create_model(model_name)
+                if model is not None:
+                    return model, model_name
+                logger.warning(
+                    "Memory model %r could not be created; "
+                    "falling back to the agent's own model.",
+                    model_name,
+                )
             except Exception as e:
                 logger.warning(
-                    "Failed to init postrun_analysis_model '%s', "
-                    "falling back to captured model: %s",
-                    self.postrun_analysis_model,
+                    "Failed to init memory model %r, "
+                    "falling back to the captured model: %s",
+                    model_name,
                     e,
                 )
-                return self._captured_model
-        return self._captured_model
+        # Emergency fallback: agent's own model (name derived from response).
+        return self._captured_model, None
+
+    # -------------------------------------------------------------------------
+    # Memory-call billing
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _accumulate_response_usage(response: Any, acc: Dict[str, int]) -> None:
+        """Accumulate token usage from a model response into ``acc`` (in place)."""
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if not (usage_metadata and isinstance(usage_metadata, dict)):
+            return
+        try:
+            from inference_core.agents.middleware.cost_tracking import (
+                CostTrackingMiddleware,
+            )
+
+            fragment, _extra = CostTrackingMiddleware._extract_usage_fragment(
+                usage_metadata
+            )
+        except Exception:
+            return
+        for key, value in fragment.items():
+            if isinstance(value, (int, float)):
+                acc[key] = acc.get(key, 0) + int(value)
+
+    async def _bill_memory_usage(
+        self,
+        user_id: str,
+        model_name: Optional[str],
+        usage: Dict[str, int],
+        iterations: int,
+    ) -> None:
+        """Persist an ``LLMRequestLog`` for the post-run memory analysis call(s).
+
+        Writes a cost-tracked usage row tagged ``task_type="agent_memory"`` with
+        the triggering session's ``session_id`` / ``user_id`` / ``request_id``.
+        The app billing layer (``CreditBillingMiddleware`` reconciliation) then
+        charges the session for this memory-handling LLM work.
+
+        Fail-soft: any error is logged and swallowed — billing must never break
+        memory analysis.
+        """
+        if not usage or not (
+            usage.get("total_tokens")
+            or usage.get("input_tokens")
+            or usage.get("output_tokens")
+        ):
+            return
+
+        try:
+            from inference_core.llm.config import get_llm_config
+            from inference_core.llm.usage_logging import UsageSession
+
+            resolved_name = model_name or "unknown"
+
+            provider: Optional[str] = None
+            pricing_config = None
+            try:
+                model_cfg = get_llm_config().models.get(resolved_name)
+                if model_cfg:
+                    pricing_config = model_cfg.pricing
+                    provider = model_cfg.provider
+            except Exception as e:
+                logger.debug(
+                    "Memory billing: could not load pricing for %s: %s",
+                    resolved_name,
+                    e,
+                )
+
+            try:
+                uid = uuid.UUID(str(user_id))
+            except ValueError, TypeError:
+                uid = None
+
+            session = UsageSession(
+                task_type="agent_memory",
+                request_mode="sync",
+                model_name=resolved_name,
+                provider=provider or "unknown",
+                pricing_config=pricing_config,
+                user_id=uid,
+                session_id=self.session_id or _ctx_get_session_id(),
+                request_id=self.request_id or _ctx_get_request_id(),
+            )
+            await session.finalize(
+                success=True,
+                error=None,
+                final_usage=usage,
+                streamed=False,
+                partial=False,
+                details={"memory_postrun": True, "iterations": iterations},
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to bill memory analysis usage (fail-open): %s",
+                e,
+                exc_info=True,
+            )
 
     # System prompt: role definition + prompt-injection guard.
     # Injected as the "system" role message so it cannot be overridden by transcript content.
@@ -700,6 +865,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self,
         state: MemoryState,
         model: Any,
+        model_name: Optional[str],
         user_id: str,
         already_saved: bool,
     ) -> int:
@@ -777,6 +943,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         ]
         saved_count = 0
 
+        # Usage accumulation for billing the memory-handling LLM call(s).
+        billed_usage: Dict[str, int] = {}
+        resolved_model_name = model_name
+        iterations = 0
+
         for loop_idx in range(4):  # cap prevents runaway loops
             try:
                 response = await bound_model.ainvoke(messages_ctx)
@@ -785,6 +956,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                     "Post-run tool-call analysis: model invocation failed: %s", e
                 )
                 break
+
+            iterations += 1
+            # Accumulate token usage so the session is billed for memory work.
+            self._accumulate_response_usage(response, billed_usage)
+            if resolved_model_name is None:
+                response_metadata = getattr(response, "response_metadata", None) or {}
+                resolved_model_name = response_metadata.get("model_name")
 
             tool_calls = getattr(response, "tool_calls", []) or []
             if not tool_calls:
@@ -830,6 +1008,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
             messages_ctx.extend(tool_results)
 
+        # Bill the memory-handling LLM call(s) to the triggering session, even
+        # when nothing was persisted (the model still consumed tokens).
+        await self._bill_memory_usage(
+            user_id, resolved_model_name, billed_usage, iterations
+        )
+
         return saved_count
 
     # -------------------------------------------------------------------------
@@ -870,7 +1054,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             )
             return None
 
-        model = self._get_analysis_model()
+        model, model_name = self._get_analysis_model()
         if model is None:
             logger.warning(
                 "Post-run analysis skipped — no model available "
@@ -883,7 +1067,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         try:
             saved_count = run_async_safely(
-                self._analyse_via_tool_call(state, model, resolved_uid, already_saved),
+                self._analyse_via_tool_call(
+                    state, model, model_name, resolved_uid, already_saved
+                ),
                 timeout=15.0,
             )
             if not saved_count:
@@ -925,7 +1111,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         if len(messages) < 2:
             return None
 
-        model = self._get_analysis_model()
+        model, model_name = self._get_analysis_model()
         if model is None:
             logger.warning("Post-run analysis (async) skipped — no model available")
             return None
@@ -935,7 +1121,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         try:
             saved_count = await self._analyse_via_tool_call(
-                state, model, resolved_uid, already_saved
+                state, model, model_name, resolved_uid, already_saved
             )
             if not saved_count:
                 return None
@@ -997,6 +1183,9 @@ def create_memory_middleware(
     include_categories: Optional[List[str]] = None,
     postrun_analysis: bool = True,
     postrun_analysis_model: Optional[str] = None,
+    memory_model: Optional[str] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> MemoryMiddleware:
     """
     Factory function to create MemoryMiddleware instance (CoALA-aware).
@@ -1010,8 +1199,12 @@ def create_memory_middleware(
         include_memory_types: Memory types to include (uses canonical MemoryType values)
         include_categories: CoALA categories to recall (defaults to all three)
         postrun_analysis: Enable best-effort post-session analysis in after_agent
-        postrun_analysis_model: Optional model name override for the extraction LLM call.
-            When None, reuses the agent's own model (captured from wrap_model_call).
+        postrun_analysis_model: Optional finer-grained override for the extraction
+            LLM call.  Takes precedence over ``memory_model`` when set.
+        memory_model: Dedicated memory-handling model name.  When None, resolved
+            from ``settings.agent_memory_model``.
+        session_id: Session ID used to attribute memory-handling LLM cost.
+        request_id: Correlation ID for the memory usage log.
 
     Returns:
         Configured MemoryMiddleware instance
@@ -1025,6 +1218,9 @@ def create_memory_middleware(
         include_categories=include_categories,
         postrun_analysis=postrun_analysis,
         postrun_analysis_model=postrun_analysis_model,
+        memory_model=memory_model,
+        session_id=session_id,
+        request_id=request_id,
     )
 
 

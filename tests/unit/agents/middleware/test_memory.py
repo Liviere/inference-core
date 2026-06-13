@@ -621,16 +621,30 @@ def _make_ai(content: str):
 
 
 class TestGetAnalysisModel:
-    """Verify model selection priority for post-run extraction."""
+    """Verify model selection for post-run extraction.
 
-    def test_returns_none_when_both_absent(self, middleware):
-        """When neither _captured_model nor postrun_analysis_model is set → None."""
-        assert middleware._get_analysis_model() is None
+    ``_get_analysis_model`` returns a ``(model_instance, model_name)`` tuple.
+    The name is resolved via ``_resolve_memory_model_name`` (dedicated memory
+    model, defaulting to ``settings.agent_memory_model``) and the instance is
+    built through the global model factory.  The agent's own captured model is
+    only an emergency fallback used when the configured model cannot be created.
+    """
 
-    def test_returns_captured_model(self, middleware):
-        mock_model = MagicMock()
-        middleware._captured_model = mock_model
-        assert middleware._get_analysis_model() is mock_model
+    def test_returns_dedicated_memory_model(self, middleware):
+        """Default path resolves the configured memory model and instantiates it."""
+        from inference_core.core.config import get_settings
+
+        model, name = middleware._get_analysis_model()
+        assert model is not None
+        assert name == get_settings().agent_memory_model
+
+    def test_falls_back_to_captured_when_creation_fails(self, middleware):
+        """Captured model is the emergency fallback when the factory returns None."""
+        captured = MagicMock()
+        middleware._captured_model = captured
+        with patch("inference_core.llm.models.get_model_factory") as mock_factory:
+            mock_factory.return_value.create_model.return_value = None
+            assert middleware._get_analysis_model() == (captured, None)
 
     def test_postrun_analysis_model_name_stored(self, mock_memory_service):
         mw = MemoryMiddleware(
@@ -640,12 +654,11 @@ class TestGetAnalysisModel:
         )
         assert mw.postrun_analysis_model == "gpt-4.1-mini"
 
-    def test_falls_back_to_captured_when_no_override(self, mock_memory_service):
-        """Without postrun_analysis_model set, returns _captured_model."""
+    def test_returns_none_when_no_model_anywhere(self, mock_memory_service):
+        """(None, None) when no name resolves and no captured model exists."""
         mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
-        fallback = MagicMock()
-        mw._captured_model = fallback
-        assert mw._get_analysis_model() is fallback
+        with patch.object(mw, "_resolve_memory_model_name", return_value=None):
+            assert mw._get_analysis_model() == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +672,7 @@ class TestAnalyseViaToolCall:
     async def test_returns_zero_for_empty_messages(self, middleware):
         state = MemoryState(messages=[])
         result = await middleware._analyse_via_tool_call(
-            state, MagicMock(), "u1", False
+            state, MagicMock(), None, "u1", False
         )
         assert result == 0
 
@@ -669,7 +682,9 @@ class TestAnalyseViaToolCall:
         mock_response.tool_calls = []
         model = MagicMock()
         model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         assert result == 0
 
     async def test_calls_arun_for_save_memory_store_tool_call(
@@ -690,7 +705,9 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=[mock_response, done_response]
         )
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         assert result == 1
         mock_memory_service.save_memory.assert_awaited_once()
 
@@ -712,7 +729,9 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=[mock_response, done_response]
         )
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         assert result == 2
         assert mock_memory_service.save_memory.await_count == 2
 
@@ -724,7 +743,9 @@ class TestAnalyseViaToolCall:
         mock_response.tool_calls = [tc]
         model = MagicMock()
         model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         assert result == 0
 
     async def test_continues_even_when_save_memory_raises(
@@ -760,7 +781,9 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=[mock_response, done_response]
         )
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         # _arun swallows internally — both calls complete, save_memory called twice
         assert result == 2
         assert call_count == 2
@@ -771,7 +794,9 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=RuntimeError("model error")
         )
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         assert result == 0
 
     async def test_forwards_already_saved_flag_in_prompt(self, middleware):
@@ -787,7 +812,9 @@ class TestAnalyseViaToolCall:
 
         model = MagicMock()
         model.bind_tools.return_value.ainvoke = capture
-        await middleware._analyse_via_tool_call(state, model, "u1", already_saved=True)
+        await middleware._analyse_via_tool_call(
+            state, model, None, "u1", already_saved=True
+        )
         # messages[0] is system, messages[1] is user task prompt
         user_msg = next(m for m in captured_messages if m["role"] == "user")
         assert "already saved" in user_msg["content"].lower()
@@ -805,7 +832,7 @@ class TestAnalyseViaToolCall:
 
         model = MagicMock()
         model.bind_tools.return_value.ainvoke = capture
-        await middleware._analyse_via_tool_call(state, model, "u1", False)
+        await middleware._analyse_via_tool_call(state, model, None, "u1", False)
         assert captured_messages[0]["role"] == "system"
         assert "CRITICAL SECURITY" in captured_messages[0]["content"]
         assert "memory management" in captured_messages[0]["content"].lower()
@@ -842,7 +869,9 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=[mock_response, done_response]
         )
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         assert result == 1
         mock_memory_service.save_memory.assert_awaited_once()
 
@@ -876,7 +905,9 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=[mock_recall_response, done_response]
         )
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         # recall is executed but not counted
         assert result == 0
 
@@ -916,7 +947,9 @@ class TestAnalyseViaToolCall:
         model.bind_tools.return_value.ainvoke = AsyncMock(
             side_effect=[recall_response, save_response, done_response]
         )
-        result = await middleware._analyse_via_tool_call(state, model, "u1", False)
+        result = await middleware._analyse_via_tool_call(
+            state, model, None, "u1", False
+        )
         assert result == 1
         mock_memory_service.save_memory.assert_awaited_once()
 
@@ -927,7 +960,7 @@ class TestAnalyseViaToolCall:
         mock_response.tool_calls = []
         model = MagicMock()
         model.bind_tools.return_value.ainvoke = AsyncMock(return_value=mock_response)
-        await middleware._analyse_via_tool_call(state, model, "u1", False)
+        await middleware._analyse_via_tool_call(state, model, None, "u1", False)
         tools_passed = model.bind_tools.call_args[0][0]
         tool_names = [t.name for t in tools_passed]
         assert "save_memory_store" in tool_names
@@ -1082,7 +1115,7 @@ class TestAfterAgent:
 
     def test_skips_when_no_model_available(self, middleware):
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
-        with patch.object(middleware, "_get_analysis_model", return_value=None):
+        with patch.object(middleware, "_get_analysis_model", return_value=(None, None)):
             assert middleware.after_agent(state, MagicMock()) is None
 
     def test_returns_none_when_analyse_returns_zero(self, middleware):
@@ -1151,7 +1184,7 @@ class TestAAfterAgent:
     async def test_skips_when_no_model_available(self, mock_memory_service):
         mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
         state = MemoryState(messages=[_make_human("hi"), _make_ai("hello")])
-        with patch.object(mw, "_get_analysis_model", return_value=None):
+        with patch.object(mw, "_get_analysis_model", return_value=(None, None)):
             assert await mw.aafter_agent(state, MagicMock()) is None
 
     async def test_returns_none_when_analyse_returns_zero(self, mock_memory_service):
@@ -1194,7 +1227,7 @@ class TestAAfterAgent:
         state = MemoryState(messages=[_make_human("msg"), ai_msg])
         captured_already_saved: list[bool] = []
 
-        async def capture(st, model, uid, already_saved):
+        async def capture(st, model, model_name, uid, already_saved):
             captured_already_saved.append(already_saved)
             return 0
 

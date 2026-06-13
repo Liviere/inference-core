@@ -229,14 +229,15 @@ embeddings:
 
 Long-term memory for LangChain v1 agents. Requires `VECTOR_BACKEND` to be configured.
 
-| Variable                                | Default      | Description                                                          |
-| --------------------------------------- | ------------ | -------------------------------------------------------------------- |
-| `AGENT_MEMORY_ENABLED`                  | false        | Enable long-term memory for agents                                   |
-| `AGENT_MEMORY_COLLECTION`               | agent_memory | Collection name for memory storage (separate from RAG)               |
-| `AGENT_MEMORY_MAX_RESULTS`              | 5            | Max memories to retrieve during recall                               |
-| `AGENT_MEMORY_AUTO_RECALL`              | true         | Auto-recall relevant memories in middleware before_agent             |
-| `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED` | true         | Run best-effort post-run tool-call analysis after each agent session |
-| `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`   | (none)       | Optional override model for post-run memory tool-calling             |
+| Variable                                | Default                       | Description                                                                                                                                                      |
+| --------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_MEMORY_ENABLED`                  | false                         | Enable long-term memory for agents                                                                                                                               |
+| `AGENT_MEMORY_COLLECTION`               | agent_memory                  | Collection name for memory storage (separate from RAG)                                                                                                           |
+| `AGENT_MEMORY_MAX_RESULTS`              | 5                             | Max memories to retrieve during recall                                                                                                                           |
+| `AGENT_MEMORY_AUTO_RECALL`              | true                          | Auto-recall relevant memories in middleware before_agent                                                                                                         |
+| `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED` | true                          | Run best-effort post-run tool-call analysis after each agent session                                                                                             |
+| `AGENT_MEMORY_MODEL`                    | gemini-3.1-flash-lite-preview | Dedicated model for all memory-handling LLM mechanisms (post-run analysis). Independent of the session model. Set to empty to fall back to the agent's own model |
+| `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`   | (none)                        | Finer-grained override for post-run extraction only. Takes precedence over `AGENT_MEMORY_MODEL` when set                                                         |
 
 Per-agent memory behavior can also be tuned in `llm_config.yaml` inside each `agents:` entry:
 

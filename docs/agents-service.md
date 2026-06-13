@@ -354,12 +354,26 @@ injects them as context. This happens transparently without agent tool calls.
 
 When `AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED=true` (default), the same
 `MemoryMiddleware` performs a best-effort extraction pass after the run ends.
-It uses the agent's model by default, or `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL`
-when set, to ask the model to inspect semantically similar memories first and
-then call `save_memory_store`, `update_memory_store`, or
-`recall_memories_store` as needed. The middleware executes those tool calls and
-can save multiple memories in one pass when the conversation contains several
-durable facts, preferences, or corrections.
+It uses a dedicated memory model resolved via the following precedence:
+
+1. `AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL` (finer-grained override)
+2. `AGENT_MEMORY_MODEL` (dedicated memory model, default: `gemini-3.1-flash-lite-preview`)
+3. The agent's own session model (emergency fallback)
+
+The model is instantiated through the global model factory so provider and
+parameters from `llm_config.yaml` are applied. The middleware asks the model to
+inspect semantically similar memories first and then call `save_memory_store`,
+`update_memory_store`, or `recall_memories_store` as needed. It executes those
+tool calls and can save multiple memories in one pass when the conversation
+contains several durable facts, preferences, or corrections.
+
+### Memory LLM Cost Attribution
+
+Memory-handling LLM calls (post-run analysis) are billed to the triggering
+session via `LLMRequestLog` rows tagged `task_type="agent_memory"`. The
+`session_id` and `request_id` from the parent agent run are forwarded so the
+billing layer (`CreditBillingMiddleware`) can charge the session for memory
+work. This is fail-soft: any billing error is logged and swallowed.
 
 The post-run analysis runs with a dedicated system prompt so the transcript and
 prefetched memories are treated as data, not instructions. This is the main

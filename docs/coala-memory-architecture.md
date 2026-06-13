@@ -116,7 +116,12 @@ AGENT_MEMORY_AGENT_SCOPE_ENABLED=true
 # Best-effort session summarization after each agent run
 AGENT_MEMORY_POSTRUN_ANALYSIS_ENABLED=true
 
-# Optional cheaper model for post-run extraction
+# Dedicated model for all memory-handling LLM mechanisms (post-run analysis).
+# Independent of the session model. Set to empty to fall back to the agent's own model.
+AGENT_MEMORY_MODEL=gemini-3.1-flash-lite-preview
+
+# Finer-grained override for post-run extraction only.
+# Takes precedence over AGENT_MEMORY_MODEL when set.
 AGENT_MEMORY_POSTRUN_ANALYSIS_MODEL=gpt-5-nano
 ```
 

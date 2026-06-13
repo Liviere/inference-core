@@ -598,13 +598,22 @@ class Settings(BaseSettings):
             "session-level memories that the agent may not have explicitly saved."
         ),
     )
+    agent_memory_model: Optional[str] = Field(
+        default="gemini-3.1-flash-lite-preview",
+        description=(
+            "Dedicated model used for all memory-handling LLM mechanisms "
+            "(currently post-run analysis), independent of the model that runs "
+            "the main session. This is the single source of truth for the memory "
+            "model. Set to None to fall back to the agent's own model. "
+            "In the future this default can be overridden per-user."
+        ),
+    )
     agent_memory_postrun_analysis_model: Optional[str] = Field(
         default=None,
         description=(
-            "Optional model name for the post-run extraction LLM call. "
-            "When None (default), the middleware reuses the agent's own model "
-            "(captured from wrap_model_call). Set to a cheaper model "
-            "(e.g. 'gpt-4.1-mini') to keep extraction costs low."
+            "Optional finer-grained override for the post-run extraction LLM "
+            "call only. When set, it takes precedence over 'agent_memory_model'. "
+            "When None (default), 'agent_memory_model' is used."
         ),
     )
 

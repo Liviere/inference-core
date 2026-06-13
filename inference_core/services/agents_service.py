@@ -655,6 +655,14 @@ class AgentService:
                             self._memory_postrun_model
                             or settings.agent_memory_postrun_analysis_model
                         ),
+                        # Dedicated memory model (independent of the session
+                        # model).  This is the single place a future per-user
+                        # choice would read a user preference instead of the
+                        # global default.
+                        memory_model=settings.agent_memory_model,
+                        # Attribute memory-handling LLM cost to this session.
+                        session_id=self._session_id,
+                        request_id=self._request_id,
                     )
                     # Insert before CostTracking (which sits at the end)
                     # so memory context enrichment runs in before_model first.
