@@ -2,7 +2,7 @@
 
 Covers:
   - ``AgentConfig.response_format`` validator (accept/reject shapes).
-  - ``_RunAccumulator`` captures ``structured_response`` from updates chunks.
+  - ``RunAccumulator`` captures ``structured_response`` from updates chunks.
   - ``UserAgentInstanceService._normalize_and_validate_config_overrides``
     validates ``config_overrides.response_format``.
   - ``AgentService.build_config_for_instance`` forwards ``response_format``
@@ -16,7 +16,7 @@ import pytest
 from inference_core.llm.config import AgentConfig
 from inference_core.services.agents_service import (
     AgentService,
-    _RunAccumulator,
+    RunAccumulator,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,13 +74,13 @@ class TestAgentConfigResponseFormat:
 
 
 # ---------------------------------------------------------------------------
-# _RunAccumulator.process_updates_chunk captures structured_response
+# RunAccumulator.process_updates_chunk captures structured_response
 # ---------------------------------------------------------------------------
 
 
 class TestAccumulatorStructuredResponse:
     def test_captures_structured_response_from_updates(self):
-        acc = _RunAccumulator()
+        acc = RunAccumulator()
         payload = {"name": "Ada", "email": "ada@example.com"}
         acc.process_updates_chunk(
             {"final": {"structured_response": payload, "messages": []}},
@@ -89,7 +89,7 @@ class TestAccumulatorStructuredResponse:
         assert acc.structured_response == payload
 
     def test_keeps_latest_when_multiple_chunks(self):
-        acc = _RunAccumulator()
+        acc = RunAccumulator()
         acc.process_updates_chunk(
             {"step1": {"structured_response": {"v": 1}}}, on_step=None
         )
@@ -99,14 +99,14 @@ class TestAccumulatorStructuredResponse:
         assert acc.structured_response == {"v": 2}
 
     def test_remains_none_when_no_structured_response(self):
-        acc = _RunAccumulator()
+        acc = RunAccumulator()
         acc.process_updates_chunk({"step": {"messages": [MagicMock()]}}, on_step=None)
         assert acc.structured_response is None
 
     def test_build_response_propagates_structured_response(self):
         from datetime import UTC, datetime
 
-        acc = _RunAccumulator()
+        acc = RunAccumulator()
         acc.structured_response = {"answer": 42}
         resp = acc.build_response(
             model_name="gpt-5-mini",

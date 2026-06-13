@@ -106,7 +106,7 @@ _TRACE_MODES = frozenset({"separate", "nested", "nested-only"})
 
 
 @dataclass
-class _RunAccumulator:
+class RunAccumulator:
     """Mutable state accumulated during an agent streaming run.
 
     WHY: Both sync and async execution paths accumulate identical data
@@ -1679,7 +1679,7 @@ class AgentService:
     def _process_stream_chunk(
         self,
         chunk: dict[str, Any],
-        accumulator: "_RunAccumulator",
+        accumulator: "RunAccumulator",
         *,
         on_step: Callable[[str, Any], None] | None,
         on_token: Callable[[str, dict[str, Any]], None] | None,
@@ -2042,7 +2042,7 @@ class AgentService:
         from inference_core.services.stream_utils import SyncInterruptibleStream
 
         start_time = datetime.now(UTC)
-        accumulator = _RunAccumulator()
+        accumulator = RunAccumulator()
         trace_events: list[AgentSnapshotTraceEvent] = []
 
         configurable = self._make_configurable()
@@ -2166,7 +2166,7 @@ class AgentService:
         from inference_core.services.stream_utils import InterruptibleStream
 
         start_time = datetime.now(UTC)
-        accumulator = _RunAccumulator()
+        accumulator = RunAccumulator()
         trace_events: list[AgentSnapshotTraceEvent] = []
 
         configurable = self._make_configurable()
@@ -2286,7 +2286,7 @@ class AgentService:
         )
 
         start_time = datetime.now(UTC)
-        accumulator = _RunAccumulator()
+        accumulator = RunAccumulator()
 
         remote_graph_id = self.agent_config.remote_graph_id
         metadata = self._build_remote_metadata()
