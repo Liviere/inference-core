@@ -23,6 +23,7 @@ services:
     image: pgvector/pgvector:pg17
     container_name: ${APP_NAME:-backend-template}-postgres
     restart: unless-stopped
+    command: postgres -c max_connections=300
     environment:
       POSTGRES_DB: ${DATABASE_NAME:-app_db}
       POSTGRES_USER: ${DATABASE_USER:-db_user}
