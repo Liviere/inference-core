@@ -42,6 +42,13 @@ class ProviderConfig(BaseModel):
     openai_compatible: bool = False
     base_url: Optional[str] = None
     api_key_env: Optional[str] = None
+    allow_byok: bool = False
+    """Whether users may supply their own API key for this provider (BYOK).
+
+    Admin-controlled per provider in ``llm_config.yaml``. When true, an
+    application layer may override every model of this provider with a
+    user-supplied key at request time. Has no effect on the global config.
+    """
 
 
 class BatchRetryConfig(BaseModel):
@@ -1537,6 +1544,42 @@ class LLMConfig:
         """Get provider configuration"""
         provider_config: Dict[str, Any] = self.providers.get(provider_name, {})
         return ProviderConfig(**provider_config)
+
+    def list_byok_eligible_providers(self) -> set[str]:
+        """Return the set of provider names flagged ``allow_byok`` in YAML.
+
+        WHY: Bring-Your-Own-Key only applies to providers an administrator has
+        explicitly opted into. The application layer uses this set to decide
+        which user-supplied keys may override the platform keys at request time.
+        """
+        eligible: set[str] = set()
+        for provider_name in self.providers.keys():
+            try:
+                if self.get_provider_config(provider_name).allow_byok:
+                    eligible.add(provider_name)
+            except Exception:  # pragma: no cover - malformed provider entry
+                continue
+        return eligible
+
+    def models_for_provider(self, provider: str) -> List[str]:
+        """Return the names of all configured models for a given provider.
+
+        ``ModelConfig`` is loaded with ``use_enum_values=True``, so
+        ``model.provider`` is the provider's string value (e.g. ``"openai"``).
+        """
+        return [
+            name
+            for name, model in self.models.items()
+            if str(model.provider) == provider
+        ]
+
+    def build_model_provider_map(self) -> Dict[str, str]:
+        """Return a ``{model_name: provider}`` map for every configured model.
+
+        WHY: billing needs to map a logged ``model_name`` back to its provider
+        to decide whether a call was served by a user-supplied (BYOK) key.
+        """
+        return {name: str(model.provider) for name, model in self.models.items()}
 
     def get_provider_runtime_config(self, provider_name: str) -> Dict[str, Any]:
         """Build runtime provider configuration for batch providers.

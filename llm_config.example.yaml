@@ -2,6 +2,10 @@
 # This file defines available models, providers, and task assignments
 
 # Model Providers Configuration
+#
+# allow_byok (optional, default false): when true, users may store their own
+# API key for this provider (Bring Your Own Key). Their key then overrides the
+# platform key for every model of this provider in that user's agent runs.
 providers:
   openai:
     name: 'OpenAI'
@@ -9,6 +13,7 @@ providers:
     base_url: 'https://api.openai.com/v1'
     requires_api_key: true
     openai_compatible: true
+    allow_byok: true
 
   xai:
     name: 'xAI'

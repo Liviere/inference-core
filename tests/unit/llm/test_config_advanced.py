@@ -353,6 +353,61 @@ class TestGetProviderRuntimeConfig:
 
 
 # ===========================================================================
+# BYOK helpers: allow_byok flag, eligibility, provider maps
+# ===========================================================================
+
+
+class TestByokHelpers:
+    """Test allow_byok parsing and BYOK-related LLMConfig helpers."""
+
+    def test_provider_config_parses_allow_byok(self):
+        """allow_byok defaults to False and parses from the raw provider dict."""
+        assert ProviderConfig(name="x").allow_byok is False
+        assert ProviderConfig(name="x", allow_byok=True).allow_byok is True
+
+    def test_list_byok_eligible_providers(self):
+        """Only providers flagged allow_byok are returned."""
+        cfg = _make_config(
+            providers={
+                "openai": {"name": "openai", "allow_byok": True},
+                "claude": {"name": "claude", "allow_byok": True},
+                "ollama": {"name": "ollama"},  # no flag -> ineligible
+            }
+        )
+        assert cfg.list_byok_eligible_providers() == {"openai", "claude"}
+
+    def test_list_byok_eligible_empty_when_none_flagged(self):
+        cfg = _make_config(
+            providers={"openai": {"name": "openai"}, "ollama": {"name": "ollama"}}
+        )
+        assert cfg.list_byok_eligible_providers() == set()
+
+    def test_models_for_provider_uses_string_value(self):
+        """provider is a string (use_enum_values=True); matching is by value."""
+        cfg = _make_config()
+        assert set(cfg.models_for_provider("openai")) == {"gpt-5", "gpt-5-mini"}
+        assert cfg.models_for_provider("xai") == ["grok-4"]
+        assert cfg.models_for_provider("nonexistent") == []
+
+    def test_build_model_provider_map(self):
+        cfg = _make_config()
+        mapping = cfg.build_model_provider_map()
+        assert mapping["gpt-5"] == "openai"
+        assert mapping["grok-4"] == "xai"
+        assert mapping["gemini-pro"] == "gemini"
+
+    def test_with_overrides_can_set_api_key(self):
+        """The BYOK injection mechanism: override api_key per model."""
+        cfg = _make_config()
+        new_cfg = cfg.with_overrides(
+            model_overrides={"gpt-5": {"api_key": "user-byok-key"}}
+        )
+        assert new_cfg.models["gpt-5"].api_key == "user-byok-key"
+        # Original config is untouched (immutability).
+        assert cfg.models["gpt-5"].api_key == "sk-real-key"
+
+
+# ===========================================================================
 # is_development_mode / get_model_debug_info
 # ===========================================================================
 
