@@ -59,6 +59,17 @@ def _development_settings(**overrides) -> Settings:
     return Settings(**defaults)
 
 
+def _registered_paths(app: FastAPI) -> set[str]:
+    """Return all registered route paths.
+
+    Starlette 1.x no longer flattens sub-routes onto ``app.routes`` — included
+    routers become lazy ``_IncludedRouter`` objects without a ``.path``. The
+    OpenAPI schema is the stable public surface that still lists every path,
+    so we introspect through it instead of walking the route table.
+    """
+    return set(app.openapi()["paths"].keys())
+
+
 # ============================================================================
 # create_application
 # ============================================================================
@@ -99,7 +110,7 @@ class TestCreateApplication:
             external_routers={"/ext": ext},
         )
         # Router should be in app's routes
-        paths = [r.path for r in app.routes if hasattr(r, "path")]
+        paths = _registered_paths(app)
         assert any("/ext/custom" in p for p in paths)
 
 
@@ -311,14 +322,14 @@ class TestSetupRouters:
 
     def test_health_routes_present(self):
         app = create_application(custom_settings=_testing_settings())
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        paths = _registered_paths(app)
         assert "/api/v1/health/" in paths or any(
             "/health" in p for p in paths
         )
 
     def test_auth_routes_present(self):
         app = create_application(custom_settings=_testing_settings())
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        paths = _registered_paths(app)
         assert any("/auth" in p for p in paths)
 
     def test_external_routers_added(self):
@@ -333,7 +344,7 @@ class TestSetupRouters:
         app = FastAPI()
         s = _testing_settings()
         setup_routers(app, s, external_routers={"/custom": ext_router})
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        paths = _registered_paths(app)
         assert any("/custom/ping" in p for p in paths)
 
 
