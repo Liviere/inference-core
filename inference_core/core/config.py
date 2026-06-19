@@ -665,6 +665,20 @@ class Settings(BaseSettings):
         default=True,
         description="If false, newly registered users are inactive by default",
     )
+    auth_register_endpoint_enabled: bool = Field(
+        default=True,
+        description=(
+            "If false, the built-in POST /auth/register endpoint returns 404. "
+            "Use when a deployment ships its own registration endpoint."
+        ),
+    )
+    auth_forgot_password_endpoint_enabled: bool = Field(
+        default=True,
+        description=(
+            "If false, the built-in POST /auth/forgot-password endpoint returns "
+            "404. Use when a deployment ships its own password-reset request flow."
+        ),
+    )
     auth_send_verification_email_on_register: bool = Field(
         default=False, description="If true, send verification email after registration"
     )

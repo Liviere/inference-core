@@ -79,6 +79,10 @@ async def register(
     Raises:
         HTTPException: If username or email already exists
     """
+    if not settings.auth_register_endpoint_enabled:
+        # Deployment ships its own registration endpoint.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
     auth_service = AuthService(db)
 
     # Check if user already exists
@@ -291,7 +295,9 @@ async def change_password(
 
 @router.post("/forgot-password", response_model=SuccessResponse)
 async def forgot_password(
-    reset_data: PasswordResetRequest, db: AsyncSession = Depends(get_db)
+    reset_data: PasswordResetRequest,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> SuccessResponse:
     """
     Request password reset
@@ -303,6 +309,10 @@ async def forgot_password(
     Returns:
         Success response
     """
+    if not settings.auth_forgot_password_endpoint_enabled:
+        # Deployment ships its own password-reset request endpoint.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
     auth_service = AuthService(db)
 
     # Generate reset token and send email
