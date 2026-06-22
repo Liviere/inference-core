@@ -6,6 +6,7 @@ Provides business logic layer over vector store providers.
 """
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -367,7 +368,7 @@ class VectorStoreService:
     ) -> tuple[List[VectorStoreDocument], int]:
         """
         List documents by metadata filters without a text query.
-        
+
         Args:
             collection: Collection name (uses default if None)
             filters: Optional metadata filters to apply
@@ -376,10 +377,10 @@ class VectorStoreService:
             order_by: Field to order by (e.g., 'created_at', provider-specific)
             order: Sort order ('asc' or 'desc')
             include_scores: Whether to include scores (may not be supported)
-            
+
         Returns:
             Tuple of (documents, total_count) where total_count is the total matching items
-            
+
         Raises:
             RuntimeError: If vector store is not available
             ValueError: If input validation fails
@@ -491,14 +492,40 @@ class VectorStoreService:
         logger.debug("Cleared vector store service cache")
 
 
-# Global service instance
-_vector_store_service = None
+# Global service instance (process-wide singleton)
+_vector_store_service: Optional[VectorStoreService] = None
+_vector_store_service_lock = threading.Lock()
 
 
 def get_vector_store_service() -> VectorStoreService:
-    """Get the global vector store service instance"""
+    """Get the global vector store service instance.
+
+    Thread-safe. Under a threaded Celery worker pool (``--pool=threads``) many
+    threads can race on first access. Two guarantees prevent a half-initialized
+    service from ever being observed:
+
+    * **Build-before-publish**: the service is fully initialized into a local
+      variable and only then assigned to the module global, so a concurrent
+      caller never sees an instance whose ``provider`` is still ``None``.
+    * **Double-checked locking**: the steady-state path stays lock-free; only
+      the first build (and a transient-failure retry) takes the lock.
+
+    If a previous build left the provider unset because the underlying factory
+    hit a transient error (the factory no longer caches such ``None`` results),
+    a subsequent call retries provider initialization instead of staying
+    permanently unavailable for the process lifetime.
+    """
     global _vector_store_service
-    if _vector_store_service is None:
-        _vector_store_service = VectorStoreService()
-        _vector_store_service.initialize_provider()
-    return _vector_store_service
+    service = _vector_store_service
+    if service is not None and service.provider is not None:
+        return service
+    with _vector_store_service_lock:
+        if _vector_store_service is None:
+            service = VectorStoreService()
+            service.initialize_provider()
+            _vector_store_service = service
+        elif _vector_store_service.provider is None:
+            # Earlier build got a None provider (e.g. a transient factory error).
+            # Retry so a one-off failure does not pin the worker as unavailable.
+            _vector_store_service.initialize_provider(force=True)
+        return _vector_store_service
