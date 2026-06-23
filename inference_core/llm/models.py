@@ -20,7 +20,7 @@ from pydantic import SecretStr
 
 from inference_core.core.resource_lifecycle import close_resource, close_resource_sync
 
-from .chat_deepinfra import ChatDeepInfraReasoning
+from .chat_deepinfra import DEEPINFRA_OPENAI_BASE_URL, ChatDeepInfraReasoning
 from .chat_fireworks import ChatFireworksReasoning
 from .config import LLMConfig, ModelConfig, ModelProvider
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
@@ -327,10 +327,11 @@ class LLMModelFactory:
     ) -> Optional[ChatDeepInfraReasoning]:
         """Create DeepInfra model instance via the dedicated LangChain integration.
 
-        Uses ``ChatDeepInfraReasoning`` — a drop-in subclass of the
-        ``langchain_community`` ``ChatDeepInfra`` that fixes streaming tool-call
-        parsing (the upstream adapter loses tool-call arguments when streaming)
-        and forwards ``reasoning_effort``.
+        Uses ``ChatDeepInfraReasoning`` — a ``ChatOpenAI`` subclass pointed at
+        DeepInfra's OpenAI-compatible Chat Completions endpoint that lifts the
+        provider's non-standard ``reasoning_content`` field into
+        ``additional_kwargs``.  ``reasoning_effort`` is a native ``ChatOpenAI``
+        field, so it is forwarded automatically.
         """
         if not config.api_key:
             logger.error("DeepInfra API token (DEEPINFRA_API_TOKEN) not provided")
@@ -338,7 +339,8 @@ class LLMModelFactory:
         try:
             return ChatDeepInfraReasoning(
                 model=config.name,
-                deepinfra_api_token=config.api_key,
+                api_key=SecretStr(config.api_key),
+                base_url=config.base_url or DEEPINFRA_OPENAI_BASE_URL,
                 **params,
             )
         except Exception as e:

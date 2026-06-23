@@ -7,7 +7,9 @@ Tests that LLMModelFactory correctly uses the centralized parameter normalizatio
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+from pydantic import SecretStr
 
+from inference_core.llm.chat_deepinfra import DEEPINFRA_OPENAI_BASE_URL
 from inference_core.llm.config import ModelConfig, ModelProvider
 from inference_core.llm.models import LLMModelFactory
 
@@ -186,7 +188,8 @@ class TestLLMModelFactoryParameterNormalization:
 
         mock_chat_deepinfra.assert_called_once_with(
             model="meta-llama/Meta-Llama-3-70B-Instruct",
-            deepinfra_api_token="test-key",
+            api_key=SecretStr("test-key"),
+            base_url=DEEPINFRA_OPENAI_BASE_URL,
             **normalized_params,
         )
         assert result == mock_model
@@ -504,7 +507,8 @@ class TestProviderSpecificParameterHandling:
 
         mock_chat_deepinfra.assert_called_once_with(
             model="meta-llama/Meta-Llama-3-70B-Instruct",
-            deepinfra_api_token="test-key",
+            api_key=SecretStr("test-key"),
+            base_url=DEEPINFRA_OPENAI_BASE_URL,
             **normalized_params,
         )
         assert result == mock_model

@@ -1,322 +1,225 @@
-"""ChatDeepInfra subclass with correct streaming tool-call parsing.
+"""DeepInfra chat model built on :class:`~langchain_openai.ChatOpenAI`.
 
-The upstream ``langchain_community`` adapter
-:class:`~langchain_community.chat_models.deepinfra.ChatDeepInfra` mishandles
-tool calls **on the streaming path**:
+DeepInfra exposes an OpenAI-compatible Chat Completions endpoint at
+``https://api.deepinfra.com/v1/openai``.  Routing it through ``ChatOpenAI``
+(instead of the deprecated ``langchain_community`` ``ChatDeepInfra``) gives us
+the official OpenAI SDK streaming path — with retries and correct
+``tool_call_chunks`` reassembly keyed by ``index`` — which fixes the intermittent
+``ValueError: No generations found in stream`` the community adapter produced.
 
-* :func:`_parse_tool_calling` runs ``json.loads`` on the ``arguments`` field of
-  *every* streamed delta.  OpenAI-compatible servers (DeepInfra included) send
-  tool-call ``arguments`` as incremental JSON *fragments* across many SSE
-  deltas (``{"todos"`` … ``: [...]`` … ``}``).  Each fragment fails to parse,
-  so ``args`` collapses to ``{}``.
-* :func:`_convert_delta_to_message_chunk` then attaches fully-formed
-  ``tool_calls=`` to the chunk instead of ``tool_call_chunks=``.  LangChain can
-  only reassemble streamed argument fragments through ``tool_call_chunks``
-  (merged by ``index`` in :meth:`AIMessageChunk.__add__`).  The net effect is
-  that the accumulated tool call ends up with empty ``args``, so any tool that
-  requires parameters fails with ``Field required`` and the model retries
-  forever.
+``ChatOpenAI`` leaves two DeepInfra-specific reasoning gaps, both handled here:
 
-This module provides :class:`ChatDeepInfraReasoning`, a drop-in replacement
-that:
+* **``reasoning_content`` field.**  Per its own docstring, ``ChatOpenAI`` targets
+  the official OpenAI API only and does not extract the non-standard
+  ``reasoning_content`` field some DeepInfra models return.  We lift it into
+  ``additional_kwargs["reasoning_content"]``.
+* **Inline ``<think>…</think>``.**  DeepInfra-served reasoning models (MiMo,
+  R1-style) emit their thinking trace inline in ``content`` rather than in a
+  ``reasoning_content`` field.  Left untouched it leaks into the chat bubble, so
+  we extract it: incrementally during streaming via
+  :class:`~inference_core.llm.think_tags.ThinkTagStreamRouter` (held in a
+  per-call ``ContextVar`` so routing runs inside
+  ``_convert_chunk_to_generation_chunk`` — i.e. *before* ``on_llm_new_token`` —
+  keeping a shared/cached model instance safe under concurrency), and via a
+  regex on the non-streaming path.
 
-* Emits proper ``tool_call_chunks`` (raw partial ``arguments`` strings, keyed by
-  ``index``) so ``langchain-core`` reassembles them into complete tool calls.
-* Lifts ``delta.reasoning_content`` into
-  ``AIMessageChunk.additional_kwargs["reasoning_content"]`` when the server
-  provides it.
-* Extracts inline ``<think>…</think>`` reasoning from ``content`` (the format
-  MiMo / R1-style models actually emit) into
-  ``additional_kwargs["reasoning_content"]`` — incrementally during streaming
-  via :class:`~inference_core.llm.think_tags.ThinkTagStreamRouter` and via a
-  regex on the non-streaming path.  Downstream, langchain-core normalises that
-  key into a ``reasoning`` content block, so the thinking text renders in the
-  UI's thinking section instead of leaking into the chat bubble.
-* Exposes ``reasoning_effort`` as a first-class constructor parameter and
-  forwards it in the request body (the base class silently ignores unknown
-  constructor kwargs, so ``reasoning_config.reasoning_effort`` from the YAML
-  never reaches the API otherwise).
+Both forms land in ``additional_kwargs["reasoning_content"]``; ``langchain-core``
+then normalises that key into a ``reasoning`` content block (which requires a
+non-``"openai"`` ``model_provider`` — see :meth:`_convert_chunk_to_generation_chunk`),
+so the thinking text renders in the UI's thinking section instead of the chat
+bubble.
 
-The non-streaming path is inherited unchanged: it already parses the *complete*
-``arguments`` string correctly.
+``reasoning_effort`` needs no special handling: it is a native ``ChatOpenAI``
+field forwarded on the Chat Completions path, so the YAML
+``reasoning_config.reasoning_effort`` reaches the API unchanged.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator
+from contextvars import ContextVar
 from typing import Any, Optional
 
-from langchain_core.callbacks.manager import (
-    AsyncCallbackManagerForLLMRun,
-    CallbackManagerForLLMRun,
-)
-from langchain_core.messages import (
-    AIMessage,
-    AIMessageChunk,
-    BaseMessage,
-    BaseMessageChunk,
-    ChatMessageChunk,
-    FunctionMessageChunk,
-    HumanMessageChunk,
-    SystemMessageChunk,
-)
-from langchain_core.messages.tool import tool_call_chunk as create_tool_call_chunk
+from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
-from langchain_community.chat_models.deepinfra import (
-    ChatDeepInfra,
-    _parse_stream,
-    _parse_stream_async,
-)
-from langchain_community.utilities.requests import Requests
+from langchain_openai import ChatOpenAI
 
 from .think_tags import OPEN_TAG, ThinkTagStreamRouter
 
 logger = logging.getLogger(__name__)
 
+DEEPINFRA_OPENAI_BASE_URL = "https://api.deepinfra.com/v1/openai"
+"""DeepInfra's OpenAI-compatible Chat Completions base URL."""
 
-# ---------------------------------------------------------------------------
-# Streaming-aware conversion helpers
-# ---------------------------------------------------------------------------
+# Provider label that makes langchain-core normalise ``reasoning_content`` into a
+# ``reasoning`` content block.  Under ``ChatOpenAI``'s default ``"openai"`` that
+# normalisation is suppressed (OpenAI carries reasoning differently).
+_REASONING_PROVIDER = "deepinfra"
 
-
-def _convert_delta_to_message_chunk_fixed(
-    _dict: Mapping[str, Any], default_class: type[BaseMessageChunk]
-) -> BaseMessageChunk:
-    """Convert a streaming delta into a message chunk.
-
-    Unlike the upstream helper this emits ``tool_call_chunks`` carrying the raw
-    (possibly partial) ``arguments`` string keyed by ``index`` so that
-    ``AIMessageChunk`` accumulation can reassemble fragmented tool-call
-    arguments.  It never calls ``json.loads`` on a partial fragment.
-    """
-    role = _dict.get("role")
-    content = _dict.get("content") or ""
-    raw_tool_calls = _dict.get("tool_calls") or []
-
-    if role == "assistant" or default_class == AIMessageChunk:
-        tool_call_chunks = []
-        for raw_tc in raw_tool_calls:
-            func = raw_tc.get("function") or {}
-            tool_call_chunks.append(
-                create_tool_call_chunk(
-                    name=func.get("name"),
-                    args=func.get("arguments"),
-                    id=raw_tc.get("id"),
-                    index=raw_tc.get("index"),
-                )
-            )
-        chunk = AIMessageChunk(content=content, tool_call_chunks=tool_call_chunks)
-        reasoning_content = _dict.get("reasoning_content")
-        if reasoning_content:
-            chunk.additional_kwargs["reasoning_content"] = reasoning_content
-        return chunk
-    elif role == "user" or default_class == HumanMessageChunk:
-        return HumanMessageChunk(content=content)
-    elif role == "system" or default_class == SystemMessageChunk:
-        return SystemMessageChunk(content=content)
-    elif role == "function" or default_class == FunctionMessageChunk:
-        return FunctionMessageChunk(content=content, name=_dict["name"])
-    elif role or default_class == ChatMessageChunk:
-        return ChatMessageChunk(content=content, role=role)  # type: ignore[arg-type]
-    else:
-        return default_class(content=content)  # type: ignore[call-arg]
-
-
-def _handle_sse_line_fixed(line: str) -> Optional[BaseMessageChunk]:
-    """Parse a single SSE ``data:`` line into a message chunk (fixed converter)."""
-    try:
-        obj = json.loads(line)
-        delta = obj.get("choices", [{}])[0].get("delta", {})
-        return _convert_delta_to_message_chunk_fixed(delta, AIMessageChunk)
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Inline <think> reasoning extraction
-# ---------------------------------------------------------------------------
+# Per-call ``<think>`` router.  Set in ``_stream``/``_astream`` so the per-chunk
+# converter can route content before the callback fires; ``ContextVar`` keeps
+# concurrent streams on a shared model instance isolated (thread- and task-local).
+_THINK_ROUTER: ContextVar[Optional[ThinkTagStreamRouter]] = ContextVar(
+    "deepinfra_think_router", default=None
+)
 
 _THINK_BLOCK_RE = re.compile(r"^\s*<think>(.*?)</think>\s*", re.DOTALL)
 
 
-def _route_think_tags(
-    router: ThinkTagStreamRouter, chunk: BaseMessageChunk
-) -> Optional[BaseMessageChunk]:
-    """Route a streamed chunk's content through the ``<think>`` tag router.
+def _delta_reasoning_content(chunk: dict) -> Optional[str]:
+    """Return ``delta.reasoning_content`` from a streamed chunk dict, if present.
 
-    Text recognised as reasoning moves to
-    ``additional_kwargs["reasoning_content"]`` (appended after any
-    server-provided ``delta.reasoning_content``); tool-call chunks pass through
-    untouched regardless of router state.  Returns ``None`` when the chunk has
-    nothing left to emit (its text is held back pending tag disambiguation).
+    Mirrors how the upstream converter locates choices, including the
+    ``beta.chat.completions.stream`` shape where they live under ``chunk``.
     """
-    if not isinstance(chunk, AIMessageChunk) or not isinstance(chunk.content, str):
-        return chunk
-    reasoning, content = router.feed(chunk.content)
-    server_reasoning = chunk.additional_kwargs.get("reasoning_content") or ""
-    reasoning = server_reasoning + reasoning
-    if not content and not reasoning and not chunk.tool_call_chunks:
+    choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices") or []
+    if not choices:
         return None
-    routed = AIMessageChunk(content=content, tool_call_chunks=chunk.tool_call_chunks)
-    for key, value in chunk.additional_kwargs.items():
-        if key != "reasoning_content":
-            routed.additional_kwargs[key] = value
-    if reasoning:
-        routed.additional_kwargs["reasoning_content"] = reasoning
-    return routed
+    delta = choices[0].get("delta") or {}
+    return delta.get("reasoning_content")
 
 
-def _flush_think_tags(router: ThinkTagStreamRouter) -> Optional[AIMessageChunk]:
-    """Build a final chunk from text the router still holds back, if any."""
+def _append_reasoning(message: AIMessage, reasoning: str) -> None:
+    """Append ``reasoning`` to ``additional_kwargs["reasoning_content"]``."""
+    if not reasoning:
+        return
+    existing = message.additional_kwargs.get("reasoning_content") or ""
+    message.additional_kwargs["reasoning_content"] = existing + reasoning
+
+
+def _flush_think_router(router: ThinkTagStreamRouter) -> Optional[ChatGenerationChunk]:
+    """Emit a final chunk from whatever the router still holds back, if any."""
     reasoning, content = router.flush()
     if not reasoning and not content:
         return None
-    chunk = AIMessageChunk(content=content)
-    if reasoning:
-        chunk.additional_kwargs["reasoning_content"] = reasoning
-    return chunk
+    message = AIMessageChunk(content=content)
+    message.response_metadata["model_provider"] = _REASONING_PROVIDER
+    _append_reasoning(message, reasoning)
+    return ChatGenerationChunk(message=message)
 
 
-# ---------------------------------------------------------------------------
-# ChatDeepInfraReasoning
-# ---------------------------------------------------------------------------
+class ChatDeepInfraReasoning(ChatOpenAI):
+    """``ChatOpenAI`` pointed at DeepInfra, with reasoning extraction.
 
-
-class ChatDeepInfraReasoning(ChatDeepInfra):
-    """``ChatDeepInfra`` with correct streaming tool calls and reasoning support.
-
-    Drop-in replacement for :class:`ChatDeepInfra`.  The non-streaming path is
-    inherited verbatim; only ``_stream`` / ``_astream`` are overridden to use a
-    converter that emits ``tool_call_chunks`` instead of pre-parsed
-    ``tool_calls``.
-    """
-
-    reasoning_effort: Optional[str] = None
-    """Controls reasoning depth: ``"none"``, ``"low"``, ``"medium"`` or ``"high"``.
-
-    Officially supported by the DeepInfra chat-completions API
-    (https://docs.deepinfra.com/chat/reasoning); per the docs it has no effect
-    on non-reasoning models, so sending it is always safe.  Forwarded in the
-    request body.  The base ``ChatDeepInfra`` silently ignores unknown
-    constructor kwargs, so declaring it here is what makes the YAML
-    ``reasoning_config.reasoning_effort`` actually reach the API.
+    Drop-in DeepInfra chat model.  Everything except reasoning extraction is
+    inherited from ``ChatOpenAI``; only the streaming/non-streaming seams are
+    overridden to surface ``reasoning_content`` (server field + inline
+    ``<think>``).
     """
 
     extract_think_tags: bool = True
     """Extract inline ``<think>…</think>`` blocks from ``content`` as reasoning.
 
-    Enabled by default: DeepInfra-served reasoning models (MiMo, R1 family)
-    emit their thinking inline in ``content`` rather than in a separate
-    ``reasoning_content`` field.  Set to ``False`` to pass content through
-    verbatim.
+    Enabled by default: DeepInfra-served reasoning models (MiMo, R1 family) emit
+    their thinking inline in ``content`` rather than in a ``reasoning_content``
+    field.  Set ``False`` to pass content through verbatim.
     """
 
     @property
-    def _default_params(self) -> dict[str, Any]:
-        params = super()._default_params
-        if self.reasoning_effort is not None:
-            params["reasoning_effort"] = self.reasoning_effort
-        return params
+    def _llm_type(self) -> str:
+        return "deepinfra-openai"
 
-    # -- sync streaming -------------------------------------------------------
+    # -- streaming ------------------------------------------------------------
 
-    def _stream(
+    def _convert_chunk_to_generation_chunk(
         self,
-        messages: list[BaseMessage],
-        stop: Optional[list[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
-        **kwargs: Any,
-    ) -> Iterator[ChatGenerationChunk]:
-        message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {**params, **kwargs, "stream": True}
-        router = ThinkTagStreamRouter() if self.extract_think_tags else None
-
-        response = self.completion_with_retry(
-            messages=message_dicts, run_manager=run_manager, **params
+        chunk: dict,
+        default_chunk_class: type,
+        base_generation_info: Optional[dict],
+    ) -> Optional[ChatGenerationChunk]:
+        generation_chunk = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
         )
-        for line in _parse_stream(response.iter_lines()):
-            chunk = _handle_sse_line_fixed(line)
-            if chunk and router is not None:
-                chunk = _route_think_tags(router, chunk)
-            if chunk:
-                cg_chunk = ChatGenerationChunk(message=chunk, generation_info=None)
-                if run_manager:
-                    run_manager.on_llm_new_token(str(chunk.content), chunk=cg_chunk)
-                yield cg_chunk
-        if router is not None:
-            final = _flush_think_tags(router)
-            if final is not None:
-                cg_chunk = ChatGenerationChunk(message=final, generation_info=None)
-                if run_manager:
-                    run_manager.on_llm_new_token(str(final.content), chunk=cg_chunk)
-                yield cg_chunk
+        if generation_chunk is None:
+            return None
+        message = generation_chunk.message
+        if isinstance(message, AIMessageChunk):
+            # ChatOpenAI stamps ``model_provider="openai"``, under which
+            # langchain-core does NOT normalise ``reasoning_content`` into a
+            # ``reasoning`` content block.  Relabel as the true provider so the
+            # block is emitted (and reasoning streams live to the UI).
+            message.response_metadata["model_provider"] = _REASONING_PROVIDER
+            server_reasoning = _delta_reasoning_content(chunk)
+            if server_reasoning:
+                _append_reasoning(message, server_reasoning)
+            router = _THINK_ROUTER.get()
+            if router is not None and isinstance(message.content, str):
+                routed_reasoning, routed_content = router.feed(message.content)
+                # Route content away (held back / moved to reasoning) while
+                # preserving tool_call_chunks / usage_metadata on the chunk.
+                message.content = routed_content
+                _append_reasoning(message, routed_reasoning)
+        return generation_chunk
 
-    # -- async streaming ------------------------------------------------------
+    def _stream(self, *args: Any, **kwargs: Any) -> Iterator[ChatGenerationChunk]:
+        if not self.extract_think_tags:
+            yield from super()._stream(*args, **kwargs)
+            return
+        router = ThinkTagStreamRouter()
+        token = _THINK_ROUTER.set(router)
+        try:
+            yield from super()._stream(*args, **kwargs)
+        finally:
+            _THINK_ROUTER.reset(token)
+        final = _flush_think_router(router)
+        if final is not None:
+            yield final
 
     async def _astream(
-        self,
-        messages: list[BaseMessage],
-        stop: Optional[list[str]] = None,
-        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
-        **kwargs: Any,
+        self, *args: Any, **kwargs: Any
     ) -> AsyncIterator[ChatGenerationChunk]:
-        message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {"messages": message_dicts, "stream": True, **params, **kwargs}
-        router = ThinkTagStreamRouter() if self.extract_think_tags else None
-
-        request_timeout = params.pop("request_timeout")
-        request = Requests(headers=self._headers())
-        async with request.apost(
-            url=self._url(), data=self._body(params), timeout=request_timeout
-        ) as response:
-            async for line in _parse_stream_async(response.content):
-                chunk = _handle_sse_line_fixed(line)
-                if chunk and router is not None:
-                    chunk = _route_think_tags(router, chunk)
-                if chunk:
-                    cg_chunk = ChatGenerationChunk(message=chunk, generation_info=None)
-                    if run_manager:
-                        await run_manager.on_llm_new_token(
-                            str(chunk.content), chunk=cg_chunk
-                        )
-                    yield cg_chunk
-        if router is not None:
-            final = _flush_think_tags(router)
-            if final is not None:
-                cg_chunk = ChatGenerationChunk(message=final, generation_info=None)
-                if run_manager:
-                    await run_manager.on_llm_new_token(
-                        str(final.content), chunk=cg_chunk
-                    )
-                yield cg_chunk
+        if not self.extract_think_tags:
+            async for generation_chunk in super()._astream(*args, **kwargs):
+                yield generation_chunk
+            return
+        router = ThinkTagStreamRouter()
+        token = _THINK_ROUTER.set(router)
+        try:
+            async for generation_chunk in super()._astream(*args, **kwargs):
+                yield generation_chunk
+        finally:
+            _THINK_ROUTER.reset(token)
+        final = _flush_think_router(router)
+        if final is not None:
+            yield final
 
     # -- non-streaming --------------------------------------------------------
 
-    def _create_chat_result(self, response: Mapping[str, Any]) -> ChatResult:
-        """Inherited parsing, plus inline ``<think>`` extraction for parity."""
-        result = super()._create_chat_result(response)
-        if not self.extract_think_tags:
-            return result
-        for generation in result.generations:
+    def _create_chat_result(
+        self,
+        response: Any,
+        generation_info: Optional[dict] = None,
+    ) -> ChatResult:
+        result = super()._create_chat_result(response, generation_info)
+        raw = response if isinstance(response, dict) else response.model_dump()
+        for generation, choice in zip(result.generations, raw.get("choices") or []):
             message = generation.message
-            if not isinstance(message, AIMessage) or not isinstance(
-                message.content, str
-            ):
+            if not isinstance(message, AIMessage):
                 continue
-            stripped = message.content.lstrip()
-            if not stripped.startswith(OPEN_TAG):
-                continue
-            match = _THINK_BLOCK_RE.match(message.content)
-            if match:
-                reasoning = match.group(1)
-                content = message.content[match.end() :]
-            else:  # unterminated block — same fallback as the streaming flush
-                reasoning = stripped[len(OPEN_TAG) :]
-                content = ""
-            existing = message.additional_kwargs.get("reasoning_content") or ""
-            message.additional_kwargs["reasoning_content"] = existing + reasoning
-            message.content = content
+            # Relabel the provider (see ``_convert_chunk_to_generation_chunk``)
+            # so ``reasoning_content`` normalises into a ``reasoning`` block.
+            message.response_metadata["model_provider"] = _REASONING_PROVIDER
+            server_reasoning = (choice.get("message") or {}).get("reasoning_content")
+            if server_reasoning:
+                _append_reasoning(message, server_reasoning)
+            if self.extract_think_tags and isinstance(message.content, str):
+                self._extract_inline_think(message)
         return result
+
+    @staticmethod
+    def _extract_inline_think(message: AIMessage) -> None:
+        """Move a leading inline ``<think>…</think>`` block into reasoning."""
+        stripped = message.content.lstrip()
+        if not stripped.startswith(OPEN_TAG):
+            return
+        match = _THINK_BLOCK_RE.match(message.content)
+        if match:
+            reasoning = match.group(1)
+            content = message.content[match.end() :]
+        else:  # unterminated block — same fallback as the streaming flush
+            reasoning = stripped[len(OPEN_TAG) :]
+            content = ""
+        _append_reasoning(message, reasoning)
+        message.content = content
