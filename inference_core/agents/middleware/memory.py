@@ -1063,6 +1063,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             return None
 
         already_saved = self._has_memory_save_in_run(state)
+
+        # Signal the UI that the main answer is done and post-processing begins.
+        self._emit_finalizing_lifecycle()
+
         start_time = time.monotonic()
 
         try:
@@ -1117,6 +1121,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             return None
 
         already_saved = self._has_memory_save_in_run(state)
+
+        # Signal the UI that the main answer is done and post-processing begins.
+        self._emit_finalizing_lifecycle()
+
         start_time = time.monotonic()
 
         try:
@@ -1167,6 +1175,31 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 elif getattr(tc, "name", None) == "save_memory_store":
                     return True
         return False
+
+    # -------------------------------------------------------------------------
+    # Helper: lifecycle progress signal
+    # -------------------------------------------------------------------------
+
+    def _emit_finalizing_lifecycle(self) -> None:
+        """Emit a generic ``finalizing`` lifecycle event into the stream.
+
+        WHY: post-run analysis runs *inside* the agent graph (this after_agent
+        hook), so by the time the main answer has streamed the UI still shows
+        "Generating…" for a few seconds.  Emitting a custom stream event right
+        before the analysis LLM call lets a consumer (the app's ``on_custom``
+        handler) flip the UI to a distinct "Finalizing…" status.
+
+        Best-effort: uses LangGraph's stream writer and silently no-ops outside
+        a streaming context (e.g. ``invoke``) or on older LangGraph versions.
+        """
+        try:
+            from langgraph.config import get_stream_writer
+
+            writer = get_stream_writer()
+            if writer is not None:
+                writer({"lifecycle": "finalizing"})
+        except Exception:
+            pass
 
 
 # ============================================================================
