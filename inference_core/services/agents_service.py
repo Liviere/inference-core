@@ -955,11 +955,13 @@ class AgentService:
         if not self.agent_config:
             return
 
+        _agent_gen = getattr(self.agent_config, "generation_params", None)
         fallback_middleware = build_model_fallback_middleware(
             model_factory=self.model_factory,
             fallback_models=getattr(self.agent_config, "fallback", None),
             primary_model=self.model_name,
             reasoning_output=getattr(self.agent_config, "reasoning_output", False),
+            generation_params=_agent_gen.as_overrides() if _agent_gen else None,
             owner=self.display_name,
         )
         if fallback_middleware is None:
@@ -3107,11 +3109,13 @@ class DeepAgentService(AgentService):
 
             middleware.extend(build_tool_call_limit_middleware(sub_tool_call_limits))
 
+        _sub_gen = getattr(sub_config, "generation_params", None)
         fallback_middleware = build_model_fallback_middleware(
             model_factory=self.model_factory,
             fallback_models=getattr(sub_config, "fallback", None),
             primary_model=self.model_factory.get_agent_model_name(subagent_name),
             reasoning_output=getattr(sub_config, "reasoning_output", False),
+            generation_params=_sub_gen.as_overrides() if _sub_gen else None,
             owner=f"subagent {subagent_name}",
         )
         if fallback_middleware is not None:

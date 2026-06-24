@@ -431,11 +431,19 @@ class LLMModelFactory:
         # Honor agent override (used by AgentService to map custom agent_type to model)
         model_name = self.get_agent_model_name(agent_name)
 
+        agent_config = self.config.get_specific_agent_config(agent_name)
+
         # Forward reasoning_output from agent config when not explicitly set
         if "reasoning_output" not in kwargs:
-            agent_config = self.config.get_specific_agent_config(agent_name)
             if agent_config and getattr(agent_config, "reasoning_output", False):
                 kwargs["reasoning_output"] = True
+
+        # Apply per-agent generation-param overrides (YAML) over the model
+        # defaults. ``setdefault`` keeps any explicit caller kwarg winning.
+        gen = getattr(agent_config, "generation_params", None) if agent_config else None
+        if gen:
+            for key, value in gen.as_overrides().items():
+                kwargs.setdefault(key, value)
 
         # Extend cache key with agent to avoid reuse between agents
         cache_key = f"{model_name}_{agent_name}_{hash(str(sorted(kwargs.items())))}"

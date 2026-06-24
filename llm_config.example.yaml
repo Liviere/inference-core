@@ -499,6 +499,21 @@ agents:
       ]
     testing: ['gpt-5-nano']
     description: 'Default agent for general tasks'
+
+    # --- Per-agent generation params (optional) ---
+    # Override the generation params of the model this agent references, for
+    # both its primary AND fallback models — no need to duplicate a model entry
+    # just to retune it. Only the keys you set are overridden; the rest fall
+    # back to the model's defaults. Keys a provider does not accept are dropped
+    # automatically, and Claude models with reasoning_output: true ignore
+    # `temperature` (stripped by the Anthropic API). Omit the block for defaults.
+    # generation_params:
+    #   temperature: 0.2
+    #   top_p: 0.9
+    #   max_tokens: 4096
+    #   frequency_penalty: 0.0
+    #   presence_penalty: 0.0
+
     # List of registered tool provider names (see application code for registration)
     local_tool_providers: ['assistant_tools']
 

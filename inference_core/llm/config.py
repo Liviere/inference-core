@@ -297,6 +297,30 @@ class ModelParams(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class GenerationParamsOverride(BaseModel):
+    """Per-agent override of LLM generation params.
+
+    All fields are optional: only explicitly-set keys override the defaults
+    declared on the model the agent references. Bounds mirror ``ModelParams``.
+    ``extra="allow"`` lets provider-specific keys (e.g. ``top_k``) pass through;
+    keys a provider does not accept are dropped downstream by ``normalize_params``.
+    """
+
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=1047576)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    frequency_penalty: Optional[float] = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: Optional[float] = Field(default=None, ge=-2.0, le=2.0)
+    verbosity: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+    def as_overrides(self) -> Dict[str, Any]:
+        """Return only the explicitly-set params (drops unset ``None`` keys)."""
+        return self.model_dump(exclude_none=True)
+
+
 class ModelConfig(ModelParams):
     """Configuration for a specific model"""
 
@@ -660,6 +684,16 @@ class AgentConfig(BaseModel):
             "When True, the agent's model is created with reasoning/thinking "
             "output enabled using the model's reasoning_config. The model "
             "must have a reasoning_config defined for this to take effect."
+        ),
+    )
+    generation_params: Optional[GenerationParamsOverride] = Field(
+        default=None,
+        description=(
+            "Per-agent override of LLM generation params (temperature, top_p, "
+            "max_tokens, frequency_penalty, presence_penalty, verbosity, "
+            "reasoning_effort, ...). Each set key overrides the default declared "
+            "on the agent's primary and fallback models. Field name avoids the "
+            "Pydantic-protected ``model_`` namespace."
         ),
     )
     execution_mode: str = Field(

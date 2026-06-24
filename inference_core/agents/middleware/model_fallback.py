@@ -72,7 +72,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         last_exception: Exception
         try:
             return handler(request)
-        except (GraphInterrupt, AgentCancelled):
+        except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
             last_exception = e
@@ -81,7 +81,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
             self._raise_if_cancelled()
             try:
                 return handler(request.override(model=fallback_model))
-            except (GraphInterrupt, AgentCancelled):
+            except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
                 last_exception = e
@@ -98,7 +98,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         last_exception: Exception
         try:
             return await handler(request)
-        except (GraphInterrupt, AgentCancelled):
+        except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
             last_exception = e
@@ -107,7 +107,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
             self._raise_if_cancelled()
             try:
                 return await handler(request.override(model=fallback_model))
-            except (GraphInterrupt, AgentCancelled):
+            except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
                 last_exception = e
@@ -185,9 +185,16 @@ def build_model_fallback_middleware(
     fallback_models: Sequence[Any] | None,
     primary_model: str | None = None,
     reasoning_output: bool = False,
+    generation_params: Mapping[str, Any] | None = None,
     owner: str = "agent",
 ) -> ModelFallbackMiddleware | None:
-    """Build ``ModelFallbackMiddleware`` from configured model names."""
+    """Build ``ModelFallbackMiddleware`` from configured model names.
+
+    ``generation_params`` carries per-agent generation-param overrides (from the
+    agent's ``generation_params`` YAML field) so fallback models match the
+    primary model's tuning. Keys a provider does not accept are dropped
+    downstream by ``normalize_params``.
+    """
     fallback_names = normalize_fallback_model_names(
         fallback_models,
         primary_model=primary_model,
@@ -215,6 +222,7 @@ def build_model_fallback_middleware(
             model = model_factory.create_model(
                 model_name,
                 reasoning_output=reasoning_output,
+                **(dict(generation_params) if generation_params else {}),
             )
         except Exception:
             logger.exception(
