@@ -23,12 +23,15 @@ scoping to match across restarts.  (Prometheus Python client multiprocess docs.)
 """
 
 import glob
+import logging
 import os
 import time
 from functools import wraps
 from typing import Any, Dict, Optional
 
 from prometheus_client import REGISTRY, Counter, Gauge, Histogram
+
+logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------------
 # Multiprocess cleanup (only if explicitly enabled) — own-group shards only.
@@ -445,3 +448,40 @@ def time_vector_operation(backend: str, collection: str, operation: str):
             return wrapper
 
     return decorator
+
+
+# ----------------------------------------------------------------------------
+# IMAP poll liveness — labeled "most recent timestamp" heartbeat, per host_alias.
+#
+# Unlike the in-progress gauges above (livesum), this is an absolute timestamp
+# gauge, so it uses ``mostrecent`` (the freshest write per label-set wins across
+# worker shards) — identical semantics to ``business_metrics_last_refresh_timestamp``.
+#
+# It is the canary for a *sustained* IMAP outage. The poll task RE-EMITS the
+# last-known success timestamp on every poll (including transient failures and
+# cooldown skips) so the series never goes stale and ``time() - max(...)`` keeps
+# climbing through an outage; otherwise the series would vanish after Prometheus'
+# ~5-min staleness window and a long outage could not be detected.
+# ----------------------------------------------------------------------------
+imap_poll_last_success_timestamp = Gauge(
+    "imap_poll_last_success_timestamp",
+    "Unix timestamp of the last successful IMAP poll, per host_alias "
+    "(sustained-outage canary; re-emitted every poll to stay fresh)",
+    ["host_alias"],
+    multiprocess_mode="mostrecent",
+)
+
+
+def set_imap_poll_success_gauge(host_alias: str, ts: float) -> None:
+    """Fail-soft setter for the IMAP poll heartbeat gauge.
+
+    Emit on EVERY poll: ``ts = now`` on success, or the last-known success
+    timestamp on a transient-failure/cooldown skip. Metrics must never break
+    polling, so any error here is swallowed at debug level.
+    """
+    try:
+        imap_poll_last_success_timestamp.labels(
+            host_alias=host_alias or "unknown"
+        ).set(float(ts))
+    except Exception:  # pragma: no cover - observability must never break polling
+        logger.debug("set_imap_poll_success_gauge failed", exc_info=True)
