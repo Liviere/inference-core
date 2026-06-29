@@ -4,6 +4,7 @@ Tests for email Celery tasks
 
 import base64
 import smtplib
+import socket
 import ssl
 from unittest.mock import MagicMock, Mock, patch
 
@@ -13,11 +14,20 @@ from celery.exceptions import Retry
 from inference_core.celery.tasks.email_tasks import (
     EmailTaskError,
     ImapPollError,
+    _imap_in_cooldown,
+    _imap_last_success_ts,
+    _imap_record_failure,
+    _imap_record_success,
+    _is_imap_retryable_error,
     _is_retryable_error,
     encode_attachment,
     poll_imap_task,
     send_email_async,
     send_email_task,
+)
+from inference_core.services.imap_service import (
+    ImapConnectionError,
+    ImapReadError,
 )
 
 
@@ -523,3 +533,178 @@ class TestPollImapTaskLifecycle:
             )
 
         mock_service.close_all.assert_called_once()
+
+
+class TestImapRetryableUnwrap:
+    """_is_imap_retryable_error must unwrap the service's wrapper exceptions."""
+
+    def test_wrapped_connection_refused_is_transient(self):
+        err = ImapReadError(
+            "read failed",
+            "contact-studio",
+            "INBOX",
+            ConnectionRefusedError(111, "Connection refused"),
+        )
+        assert _is_imap_retryable_error(err) is True
+
+    def test_wrapped_ssl_handshake_timeout_is_transient(self):
+        err = ImapReadError(
+            "read failed",
+            "h",
+            "INBOX",
+            ssl.SSLError("_ssl.c:1064: The handshake operation timed out"),
+        )
+        assert _is_imap_retryable_error(err) is True
+
+    def test_double_nested_via_original_error_is_transient(self):
+        inner = ImapConnectionError("Connection error: timed out", "h", socket.timeout())
+        err = ImapReadError("read failed", "h", "INBOX", inner)
+        assert _is_imap_retryable_error(err) is True
+
+    def test_auth_failure_wrapped_is_non_transient(self):
+        # Auth failure carried inside a read error must STILL page.
+        err = ImapReadError(
+            "read failed",
+            "h",
+            "INBOX",
+            ImapConnectionError("Authentication failed: bad creds", "h"),
+        )
+        assert _is_imap_retryable_error(err) is False
+
+    def test_missing_password_is_non_transient(self):
+        err = ImapConnectionError("Password not found in env var IMAP_PW", "h")
+        assert _is_imap_retryable_error(err) is False
+
+    def test_plain_value_error_is_non_transient(self):
+        assert _is_imap_retryable_error(ValueError("bad message")) is False
+
+    def test_cyclic_context_chain_terminates(self):
+        a = Exception("connection refused")
+        b = Exception("b")
+        a.__context__ = b
+        b.__context__ = a  # cycle — must not loop forever
+        assert _is_imap_retryable_error(a) is True
+
+
+class TestPollImapGracefulSkip:
+    """Transient outage => graceful skip (return), non-transient => raise."""
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_transient_failure_returns_unreachable(self, mock_get_service, mock_redis):
+        fake = MagicMock()
+        fake.exists.return_value = 0  # not in cooldown
+        fake.incr.return_value = 1
+        fake.get.return_value = None
+        mock_redis.return_value = fake
+
+        mock_service = MagicMock()
+        mock_service.fetch_unseen_emails.side_effect = ImapReadError(
+            "read failed",
+            "primary",
+            "INBOX",
+            ConnectionRefusedError(111, "Connection refused"),
+        )
+        mock_get_service.return_value = mock_service
+
+        result = poll_imap_task(
+            host_alias="primary", folder="INBOX", limit=5, skip_processed=False
+        )
+
+        assert result["status"] == "unreachable"
+        assert result["host_alias"] == "primary"
+        mock_service.close_all.assert_called_once()
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_auth_failure_still_raises(self, mock_get_service, mock_redis):
+        fake = MagicMock()
+        fake.exists.return_value = 0
+        mock_redis.return_value = fake
+
+        mock_service = MagicMock()
+        mock_service.fetch_unseen_emails.side_effect = ImapReadError(
+            "read failed",
+            "primary",
+            "INBOX",
+            ImapConnectionError("Authentication failed: nope", "primary"),
+        )
+        mock_get_service.return_value = mock_service
+
+        with pytest.raises(ImapPollError):
+            poll_imap_task(
+                host_alias="primary", folder="INBOX", limit=5, skip_processed=False
+            )
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_cooldown_skips_network(self, mock_get_service, mock_redis):
+        fake = MagicMock()
+        fake.exists.return_value = 1  # in cooldown
+        fake.get.return_value = "1000.0"
+        mock_redis.return_value = fake
+
+        mock_service = MagicMock()
+        mock_get_service.return_value = mock_service
+
+        result = poll_imap_task(
+            host_alias="primary", folder="INBOX", limit=5, skip_processed=False
+        )
+
+        assert result["status"] == "cooldown"
+        mock_service.fetch_unseen_emails.assert_not_called()
+
+
+class TestImapCircuitBreaker:
+    """Per-host Redis circuit-breaker + last-success bookkeeping."""
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_record_failure_opens_cooldown_at_threshold(self, mock_redis):
+        r = MagicMock()
+        r.incr.return_value = 3  # default threshold = 3
+        mock_redis.return_value = r
+        assert _imap_record_failure("h") is True
+        assert any("imap:cooldown:h" in str(c) for c in r.set.call_args_list)
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_record_failure_below_threshold_no_cooldown(self, mock_redis):
+        r = MagicMock()
+        r.incr.return_value = 1
+        mock_redis.return_value = r
+        assert _imap_record_failure("h") is False
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_record_success_clears_state(self, mock_redis):
+        r = MagicMock()
+        mock_redis.return_value = r
+        _imap_record_success("h", 1234.0)
+        r.set.assert_called()  # last_success persisted
+        assert r.delete.call_count >= 2  # failcount + cooldown cleared
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_in_cooldown_true(self, mock_redis):
+        r = MagicMock()
+        r.exists.return_value = 1
+        mock_redis.return_value = r
+        assert _imap_in_cooldown("h") is True
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_in_cooldown_fail_open_on_redis_error(self, mock_redis):
+        mock_redis.side_effect = RuntimeError("redis down")
+        # Must NOT block the poll when Redis is unavailable.
+        assert _imap_in_cooldown("h") is False
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_last_success_ts_seeds_when_missing(self, mock_redis):
+        r = MagicMock()
+        r.get.return_value = None
+        mock_redis.return_value = r
+        assert _imap_last_success_ts("h", 999.0) == 999.0
+        r.set.assert_called()  # baseline seeded (NX)
+
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    def test_last_success_ts_returns_stored(self, mock_redis):
+        r = MagicMock()
+        r.get.return_value = "1500.5"
+        mock_redis.return_value = r
+        assert _imap_last_success_ts("h", 999.0) == 1500.5

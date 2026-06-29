@@ -10,13 +10,20 @@ the same directory. The FastAPI metrics endpoint will automatically switch to a
 IMPORTANT: Gauges require an aggregation mode in multi-process setups. We use
 ``livesum`` so values are summed across processes.
 
-Cleanup: Only the API container should set ``PROMETHEUS_MULTIPROC_CLEANUP=1`` so
-that on cold start it clears stale metric shard files once. Celery workers must
-NOT perform cleanup, otherwise they could delete shards while another process is
-writing.  (Source: Prometheus Python client multiprocess docs – 2025-08)
+Cleanup: ``PROMETHEUS_MULTIPROC_CLEANUP=1`` makes a process clear *its own*
+stale shard files on cold start. Shards are named ``{type}_{group}-{pid}.db``
+where ``group`` comes from ``METRICS_PROCESS_GROUP`` (a stable per-service name
+set in compose). Cleanup is scoped to ``*_{group}-*.db`` so a restarting process
+only removes the previous incarnation of *its own* service — it must NEVER wipe
+the whole shared directory, which would orphan the live mmap handles of sibling
+processes (e.g. the API clearing the Celery worker's shards) and silently drop
+their metrics until they too restart. Set the flag per service whose stale shards
+should be reaped on restart; a stable ``METRICS_PROCESS_GROUP`` is required for the
+scoping to match across restarts.  (Prometheus Python client multiprocess docs.)
 """
 
 import glob
+import logging
 import os
 import time
 from functools import wraps
@@ -24,13 +31,27 @@ from typing import Any, Dict, Optional
 
 from prometheus_client import REGISTRY, Counter, Gauge, Histogram
 
+logger = logging.getLogger(__name__)
+
 # ----------------------------------------------------------------------------
-# Multiprocess cleanup (only if explicitly enabled)
+# Multiprocess cleanup (only if explicitly enabled) — own-group shards only.
+#
+# The multiproc dir is shared across the api + celery workers, so we must only
+# remove shards belonging to *this* process group; a blanket ``glob(dir/*)``
+# would delete sibling processes' live shards and orphan their mmap handles.
 # ----------------------------------------------------------------------------
 _multiproc_dir = os.getenv("PROMETHEUS_MULTIPROC_DIR")
 if os.getenv("PROMETHEUS_MULTIPROC_CLEANUP") == "1" and _multiproc_dir:
+    # Mirror app/__init__._metrics_process_identifier(): the shard filename's
+    # group segment is METRICS_PROCESS_GROUP, falling back to HOSTNAME then a
+    # literal. Without a stable METRICS_PROCESS_GROUP the fallback (HOSTNAME)
+    # changes every recreate, so old shards simply linger instead of being reaped
+    # — still correct (mostrecent gauges self-heal), just not cleaned.
+    _group = (
+        os.getenv("METRICS_PROCESS_GROUP") or os.getenv("HOSTNAME") or "proc"
+    )
     try:
-        for f in glob.glob(os.path.join(_multiproc_dir, "*")):
+        for f in glob.glob(os.path.join(_multiproc_dir, f"*_{glob.escape(_group)}-*.db")):
             try:
                 os.remove(f)
             except FileNotFoundError:  # race-safe
@@ -427,3 +448,40 @@ def time_vector_operation(backend: str, collection: str, operation: str):
             return wrapper
 
     return decorator
+
+
+# ----------------------------------------------------------------------------
+# IMAP poll liveness — labeled "most recent timestamp" heartbeat, per host_alias.
+#
+# Unlike the in-progress gauges above (livesum), this is an absolute timestamp
+# gauge, so it uses ``mostrecent`` (the freshest write per label-set wins across
+# worker shards) — identical semantics to ``business_metrics_last_refresh_timestamp``.
+#
+# It is the canary for a *sustained* IMAP outage. The poll task RE-EMITS the
+# last-known success timestamp on every poll (including transient failures and
+# cooldown skips) so the series never goes stale and ``time() - max(...)`` keeps
+# climbing through an outage; otherwise the series would vanish after Prometheus'
+# ~5-min staleness window and a long outage could not be detected.
+# ----------------------------------------------------------------------------
+imap_poll_last_success_timestamp = Gauge(
+    "imap_poll_last_success_timestamp",
+    "Unix timestamp of the last successful IMAP poll, per host_alias "
+    "(sustained-outage canary; re-emitted every poll to stay fresh)",
+    ["host_alias"],
+    multiprocess_mode="mostrecent",
+)
+
+
+def set_imap_poll_success_gauge(host_alias: str, ts: float) -> None:
+    """Fail-soft setter for the IMAP poll heartbeat gauge.
+
+    Emit on EVERY poll: ``ts = now`` on success, or the last-known success
+    timestamp on a transient-failure/cooldown skip. Metrics must never break
+    polling, so any error here is swallowed at debug level.
+    """
+    try:
+        imap_poll_last_success_timestamp.labels(
+            host_alias=host_alias or "unknown"
+        ).set(float(ts))
+    except Exception:  # pragma: no cover - observability must never break polling
+        logger.debug("set_imap_poll_success_gauge failed", exc_info=True)

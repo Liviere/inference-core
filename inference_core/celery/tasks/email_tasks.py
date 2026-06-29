@@ -6,6 +6,7 @@ Celery tasks for asynchronous email sending with retry/backoff handling.
 
 import base64
 import logging
+import os
 import smtplib
 import socket
 import ssl
@@ -15,6 +16,7 @@ from typing import Any, Dict, List, Optional, Union
 from celery import current_task
 
 from inference_core.celery.celery_main import celery_app
+from inference_core.observability.metrics import set_imap_poll_success_gauge
 from inference_core.services.email_service import EmailSendError, get_email_service
 
 logger = logging.getLogger(__name__)
@@ -323,6 +325,104 @@ def encode_attachment(filename: str, content: bytes, mime_type: str) -> Dict[str
 IMAP_PROCESSED_KEY_PATTERN = "imap:processed:{host_alias}:{folder}"
 IMAP_PROCESSED_TTL_SECONDS_DEFAULT = 7 * 24 * 3600  # 7 days default (fallback)
 
+# ---------------------------------------------------------------------------
+# IMAP poll resilience: per-host circuit-breaker + last-success bookkeeping.
+#
+# A transient outage of an external mail server (e.g. an operator rebooting the
+# box) must NOT surface as a hard Celery task failure (which pages via
+# CeleryTaskFailures). We track per-host state in Redis (reusing get_sync_redis,
+# same client as the processed-UID tracking) so we can: (a) re-emit the
+# last-known success timestamp for the sustained-outage gauge, and (b) back off
+# polling a host that keeps failing instead of hammering it every cycle.
+# ---------------------------------------------------------------------------
+IMAP_LASTSUCCESS_KEY_PATTERN = "imap:last_success:{host_alias}"  # value: unix ts
+IMAP_FAILCOUNT_KEY_PATTERN = "imap:failcount:{host_alias}"  # value: int
+IMAP_COOLDOWN_KEY_PATTERN = "imap:cooldown:{host_alias}"  # presence => skip poll
+
+
+def _imap_cb_settings() -> tuple[int, int, int]:
+    """(fail_threshold, cooldown_seconds, last_success_ttl_seconds) from env."""
+    return (
+        int(os.getenv("IMAP_CB_FAIL_THRESHOLD", "3")),
+        int(os.getenv("IMAP_CB_COOLDOWN_SECONDS", "120")),
+        int(os.getenv("IMAP_LASTSUCCESS_TTL_SECONDS", str(7 * 24 * 3600))),
+    )
+
+
+def _imap_record_success(host_alias: str, ts: float) -> None:
+    """Persist last-success ts and clear the failure counter + cooldown."""
+    try:
+        from inference_core.core.redis_client import get_sync_redis
+
+        r = get_sync_redis()
+        _, _, ttl = _imap_cb_settings()
+        r.set(IMAP_LASTSUCCESS_KEY_PATTERN.format(host_alias=host_alias), ts, ex=ttl)
+        r.delete(IMAP_FAILCOUNT_KEY_PATTERN.format(host_alias=host_alias))
+        r.delete(IMAP_COOLDOWN_KEY_PATTERN.format(host_alias=host_alias))
+    except Exception:
+        logger.debug("imap success bookkeeping failed", exc_info=True)
+
+
+def _imap_record_failure(host_alias: str) -> bool:
+    """Increment the per-host failure counter; open a cooldown window when it
+    reaches the threshold. Returns True iff the cooldown was (re)opened."""
+    try:
+        from inference_core.core.redis_client import get_sync_redis
+
+        r = get_sync_redis()
+        thresh, cooldown, _ = _imap_cb_settings()
+        fc_key = IMAP_FAILCOUNT_KEY_PATTERN.format(host_alias=host_alias)
+        n = r.incr(fc_key)
+        # Keep the counter alive across slow poll intervals so a real outage
+        # actually reaches the threshold (never expire faster than ~5 min).
+        r.expire(fc_key, max(cooldown, 300))
+        if n >= thresh:
+            r.set(
+                IMAP_COOLDOWN_KEY_PATTERN.format(host_alias=host_alias),
+                "1",
+                ex=cooldown,
+            )
+            return True
+    except Exception:
+        logger.debug("imap failure bookkeeping failed", exc_info=True)
+    return False
+
+
+def _imap_in_cooldown(host_alias: str) -> bool:
+    """True iff the host is currently in a circuit-breaker cooldown window.
+
+    Fail-OPEN: if Redis is unavailable we must NOT block the poll, so any error
+    returns False (proceed with the network attempt)."""
+    try:
+        from inference_core.core.redis_client import get_sync_redis
+
+        return bool(
+            get_sync_redis().exists(
+                IMAP_COOLDOWN_KEY_PATTERN.format(host_alias=host_alias)
+            )
+        )
+    except Exception:
+        return False
+
+
+def _imap_last_success_ts(host_alias: str, default_now: float) -> float:
+    """Last-known success ts for the host. Seeds a baseline = ``default_now`` on
+    a never-succeeded host (SET NX) so a broken-from-start mailbox still ages
+    into the sustained-outage alert instead of having no series at all."""
+    try:
+        from inference_core.core.redis_client import get_sync_redis
+
+        r = get_sync_redis()
+        key = IMAP_LASTSUCCESS_KEY_PATTERN.format(host_alias=host_alias)
+        v = r.get(key)
+        if v is not None:
+            return float(v)
+        _, _, ttl = _imap_cb_settings()
+        r.set(key, default_now, ex=ttl, nx=True)
+    except Exception:
+        logger.debug("imap last-success read failed", exc_info=True)
+    return default_now
+
 
 def get_processed_ttl_seconds() -> int:
     """Get configured TTL for processed email tracking from email config.
@@ -513,6 +613,10 @@ def poll_imap_task(
     start_time = time.time()
     task_id = current_task.request.id if current_task else "unknown"
     imap_service = None
+    # Bind alias up-front so the except/finally handlers can reference it even if
+    # service construction fails (avoids UnboundLocalError turning a transient
+    # skip into a hard failure). Refined to the real default host below.
+    alias = host_alias or "default"
 
     try:
         from inference_core.services.imap_service import get_imap_service
@@ -523,6 +627,15 @@ def poll_imap_task(
 
         # Determine which host to poll
         alias = host_alias or imap_service.config.email.default_host
+
+        # Circuit-breaker: if this host is in a cooldown window (too many recent
+        # transient failures), skip the network attempt entirely. We still
+        # re-emit the last-known success timestamp so the sustained-outage gauge
+        # keeps climbing — cooldown must never mask a real long outage.
+        if _imap_in_cooldown(alias):
+            set_imap_poll_success_gauge(alias, _imap_last_success_ts(alias, start_time))
+            logger.warning("IMAP poll skipped (cooldown active) host=%s", alias)
+            return {"status": "cooldown", "host_alias": alias, "folder": folder}
 
         logger.info(
             "Starting IMAP poll task",
@@ -611,6 +724,12 @@ def poll_imap_task(
             },
         )
 
+        # Healthy poll: stamp last-success + clear any failure/cooldown state,
+        # and emit the liveness gauge at "now".
+        _success_ts = time.time()
+        _imap_record_success(alias, _success_ts)
+        set_imap_poll_success_gauge(alias, _success_ts)
+
         return {
             "status": "success",
             "host_alias": alias,
@@ -625,22 +744,45 @@ def poll_imap_task(
         }
 
     except ImapPollError:
+        # Config-level "service not available" — genuinely broken; must page.
         raise
     except Exception as e:
         duration = time.time() - start_time
+        if _is_imap_retryable_error(e):
+            # TRANSIENT connectivity fault (e.g. mail server rebooting). Graceful
+            # skip: record the failure for the circuit-breaker, re-emit the
+            # last-known success ts so the sustained-outage gauge keeps climbing,
+            # and RETURN a status dict — no raise, so no flower task-failed and
+            # no CeleryTaskFailures page. The 60s scheduler retries next cycle.
+            opened = _imap_record_failure(alias)
+            set_imap_poll_success_gauge(alias, _imap_last_success_ts(alias, start_time))
+            logger.warning(
+                "IMAP poll transient failure (graceful skip) host=%s "
+                "cooldown_opened=%s duration=%.3fs err=%s",
+                alias,
+                opened,
+                round(duration, 3),
+                e,
+            )
+            return {
+                "status": "unreachable",
+                "host_alias": alias,
+                "folder": folder,
+                "error": str(e),
+                "cooldown_opened": opened,
+            }
+
+        # NON-transient (auth / config / unexpected bug) — surface it so it pages.
         logger.error(
-            "IMAP poll failed",
+            "IMAP poll failed (non-transient)",
             extra={
                 "task_id": task_id,
+                "host_alias": alias,
                 "error": str(e),
                 "error_type": type(e).__name__,
                 "duration_seconds": round(duration, 3),
             },
         )
-
-        if _is_imap_retryable_error(e):
-            raise self.retry(exc=e)
-
         raise ImapPollError(f"IMAP poll failed: {e}")
     finally:
         if imap_service is not None:
@@ -755,29 +897,98 @@ def poll_all_imap_accounts_task(
                 logger.debug("Failed to close IMAP service", exc_info=True)
 
 
+# Substrings that mark a NON-transient failure even when carried inside a
+# transient-looking wrapper. Checked FIRST so auth/config errors always page.
+_IMAP_NON_TRANSIENT_SUBSTR = (
+    "authentication failed",
+    "auth failed",
+    "login failed",
+    "invalid credentials",
+    "password not found",  # missing-password config (imap_service connect)
+    "not configured",
+)
+# Substrings that mark a transient connectivity fault (covers IMAP4.error and
+# our str-only ImapReadError/ImapConnectionError wrappers).
+_IMAP_TRANSIENT_SUBSTR = (
+    "connection refused",
+    "timed out",
+    "timeout",
+    "try again",
+    "temporary",
+    "temporarily",
+    "handshake",
+    "connection reset",
+    "broken pipe",
+    "network is unreachable",
+    "name or service not known",
+    "no route to host",
+    "connection aborted",
+    "eof occurred",
+)
+
+
+def _unwrap_imap_error(error: BaseException) -> list:
+    """Return ``error`` plus its nested causes, following the IMAP service's
+    ``.original_error`` attribute as well as standard ``__cause__`` /
+    ``__context__`` chains. Bounded + cycle-safe."""
+    seen: set = set()
+    stack = [error]
+    out: list = []
+    while stack and len(out) < 10:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        out.append(e)
+        for nxt in (
+            getattr(e, "original_error", None),
+            getattr(e, "__cause__", None),
+            getattr(e, "__context__", None),
+        ):
+            if nxt is not None and id(nxt) not in seen:
+                stack.append(nxt)
+    return out
+
+
 def _is_imap_retryable_error(error: Exception) -> bool:
-    """Determine if IMAP error is retryable."""
+    """True iff the error (or a nested cause) is a *transient* connectivity fault.
+
+    The IMAP service wraps low-level network errors in its own
+    ``ImapReadError`` / ``ImapConnectionError`` (storing the original on
+    ``.original_error``, NOT via ``raise ... from``), so a plain ``isinstance``
+    check on the outer error misses them. We unwrap the chain and classify.
+
+    Auth failures and missing-password/config errors are explicitly NON-transient
+    so they keep paging; only connection-refused / timeout / SSL-handshake /
+    DNS / reset faults are treated as transient.
+    """
     import imaplib
 
-    if isinstance(
-        error,
-        (
-            socket.timeout,
-            socket.gaierror,
-            ConnectionError,
-            ssl.SSLError,
-            imaplib.IMAP4.abort,
-        ),
-    ):
+    chain = _unwrap_imap_error(error)
+
+    def _msg(e: BaseException) -> str:
+        return str(getattr(e, "message", None) or e).lower()
+
+    # 1. Hard non-transient veto (auth / missing-password / config) wins.
+    for e in chain:
+        if any(s in _msg(e) for s in _IMAP_NON_TRANSIENT_SUBSTR):
+            return False
+
+    # 2. Transient by concrete low-level type anywhere in the chain.
+    transient_types = (
+        socket.timeout,
+        socket.gaierror,
+        ConnectionError,  # incl. ConnectionRefusedError / ConnectionResetError
+        TimeoutError,
+        ssl.SSLError,
+        imaplib.IMAP4.abort,
+    )
+    if any(isinstance(e, transient_types) for e in chain):
         return True
 
-    # Check for temporary IMAP errors
-    if isinstance(error, imaplib.IMAP4.error):
-        error_str = str(error).lower()
-        if any(
-            term in error_str
-            for term in ["temporary", "try again", "connection", "timeout"]
-        ):
+    # 3. Transient by message substring (IMAP4.error + str-only wrappers).
+    for e in chain:
+        if any(s in _msg(e) for s in _IMAP_TRANSIENT_SUBSTR):
             return True
 
     return False
