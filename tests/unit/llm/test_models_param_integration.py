@@ -92,6 +92,33 @@ class TestLLMModelFactoryParameterNormalization:
 
         assert result == mock_model
 
+    @patch("inference_core.llm.models.ChatOpenAI")
+    def test_openai_model_passes_configured_base_url(self, mock_chat_openai):
+        """A configured or runtime-overridden base_url must reach ChatOpenAI."""
+        config = ModelConfig(
+            name="gpt-4",
+            provider=ModelProvider.OPENAI,
+            api_key="test-key",
+            base_url="https://proxy.example.com/v1",
+        )
+
+        self.factory._create_model_instance(config)
+
+        assert (
+            mock_chat_openai.call_args.kwargs["base_url"]
+            == "https://proxy.example.com/v1"
+        )
+
+    @patch("inference_core.llm.models.ChatOpenAI")
+    def test_openai_model_without_base_url_keeps_sdk_default(self, mock_chat_openai):
+        config = ModelConfig(
+            name="gpt-4", provider=ModelProvider.OPENAI, api_key="test-key"
+        )
+
+        self.factory._create_model_instance(config)
+
+        assert "base_url" not in mock_chat_openai.call_args.kwargs
+
     @patch("inference_core.llm.models.normalize_params")
     @patch("inference_core.llm.models.ChatXAI")
     def test_xai_model_uses_normalized_params(self, mock_chat_xai, mock_normalize):

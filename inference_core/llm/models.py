@@ -237,6 +237,10 @@ class LLMModelFactory:
 
         try:
             api_key = SecretStr(config.api_key) if config.api_key else None
+            # Honour a configured endpoint (provider base_url from YAML or a
+            # runtime LLMConfig.with_overrides value); unset keeps the SDK default.
+            if config.base_url:
+                params = {**params, "base_url": config.base_url}
             return ChatOpenAI(model=config.name, api_key=api_key, **params)
         except Exception as e:
             logger.error(f"Failed to create OpenAI model: {str(e)}")
