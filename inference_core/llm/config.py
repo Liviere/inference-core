@@ -1191,6 +1191,19 @@ class LLMConfig:
                         agent_name,
                         support,
                     )
+            # Same leniency for tool_model_overrides: an unknown model makes the
+            # switch a silent no-op at runtime, so surface it at load time.
+            if parsed_agent and parsed_agent.tool_model_overrides:
+                for override in parsed_agent.tool_model_overrides:
+                    if override.model not in self.models:
+                        logging.warning(
+                            "Agent '%s' tool_model_overrides for tool '%s' "
+                            "references model '%s' which is not defined in "
+                            "'models'. The override will be ignored.",
+                            agent_name,
+                            override.tool_name,
+                            override.model,
+                        )
             # Check for environment variable override
             env_var = (
                 yaml_config.get("settings", {}).get("env_overrides", {}).get(agent_name)
