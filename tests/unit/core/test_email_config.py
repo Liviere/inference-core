@@ -140,6 +140,9 @@ class TestConnectAddress:
         assert make_smtp_config().connect_address is None
         assert make_imap_config().connect_address is None
 
+    def test_imap_verifies_certificates_by_default(self):
+        assert make_imap_config().verify_hostname is True
+
     @pytest.mark.parametrize(
         ("address", "stored"),
         [("203.0.113.7", "203.0.113.7"), ("2001:0db8::0007", "2001:db8::7")],

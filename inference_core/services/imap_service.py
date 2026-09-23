@@ -15,6 +15,7 @@ import email
 import imaplib
 import logging
 import re
+import ssl
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.header import decode_header, make_header
@@ -300,11 +301,23 @@ class ImapConnection:
         cfg = self.imap_config
         address = cfg.connect_address
         if cfg.use_ssl:
+            # IMAP4_SSL without a context uses ssl._create_stdlib_context(),
+            # which checks neither the certificate nor the host name.
+            context = ssl.create_default_context()
+            if not cfg.verify_hostname:
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
             if address:
                 return PinnedIMAP4SSL(
-                    cfg.host, cfg.port, pinned_address=address, timeout=cfg.timeout
+                    cfg.host,
+                    cfg.port,
+                    pinned_address=address,
+                    ssl_context=context,
+                    timeout=cfg.timeout,
                 )
-            return imaplib.IMAP4_SSL(cfg.host, cfg.port, timeout=cfg.timeout)
+            return imaplib.IMAP4_SSL(
+                cfg.host, cfg.port, ssl_context=context, timeout=cfg.timeout
+            )
         if address:
             return PinnedIMAP4(
                 cfg.host, cfg.port, pinned_address=address, timeout=cfg.timeout

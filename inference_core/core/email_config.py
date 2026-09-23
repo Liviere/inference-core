@@ -137,6 +137,10 @@ class ImapHostConfig(BaseModel):
     timeout: int = Field(
         default=30, ge=1, le=300, description="Connection timeout in seconds"
     )
+    verify_hostname: bool = Field(
+        default=True,
+        description="Verify the server certificate and host name (use_ssl only)",
+    )
     poll_interval_seconds: Optional[int] = Field(
         default=None, ge=10, le=3600, description="Optional polling interval override"
     )

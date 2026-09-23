@@ -1,5 +1,7 @@
 """Which client ImapConnection opens for a host configuration."""
 
+import ssl
+
 import pytest
 
 from inference_core.core.email_config import (
@@ -67,3 +69,21 @@ def test_opens_the_client_for_the_configuration(opened, use_ssl, address, expect
     assert opened["kwargs"]["timeout"] == 30
     if address:
         assert opened["kwargs"]["pinned_address"] == address
+
+
+@pytest.mark.parametrize("address", ["203.0.113.7", None])
+def test_tls_checks_the_certificate_and_the_name(opened, address):
+    """imaplib's own default context verifies nothing."""
+    _connection(use_ssl=True, port=993, connect_address=address)._open()
+
+    context = opened["kwargs"]["ssl_context"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_verification_can_be_turned_off_per_host(opened):
+    _connection(use_ssl=True, port=993, verify_hostname=False)._open()
+
+    context = opened["kwargs"]["ssl_context"]
+    assert context.verify_mode == ssl.CERT_NONE
+    assert context.check_hostname is False

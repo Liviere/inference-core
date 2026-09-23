@@ -39,6 +39,7 @@ email:
         password_env: IMAP_PRIMARY_PASSWORD
         default_folder: INBOX
         timeout: 30
+        verify_hostname: true # false only for a self-signed/private-CA server
         poll_interval_seconds: 45 # Override default poll interval
 
       # Account metadata for agent tools (optional)
