@@ -157,6 +157,34 @@ class TestConnectAddress:
             make_imap_config(connect_address=address)
 
 
+
+class TestInMemoryPassword:
+    """password: for hosts built at runtime, without touching the environment."""
+
+    def test_takes_precedence_over_password_env(self, monkeypatch):
+        monkeypatch.setenv("TEST_PASSWORD", "from-env")
+        assert make_smtp_config(password="in-memory").get_password() == "in-memory"
+        assert make_imap_config(
+            password="in-memory", password_env="TEST_PASSWORD"
+        ).get_password() == "in-memory"
+
+    def test_password_env_still_works_without_it(self, monkeypatch):
+        monkeypatch.setenv("TEST_PASSWORD", "from-env")
+        assert make_smtp_config().get_password() == "from-env"
+
+    def test_is_left_out_of_dumps_and_repr(self):
+        smtp = make_smtp_config(password="s3cret")
+        imap = make_imap_config(password="s3cret")
+
+        for config in (smtp, imap):
+            assert "password" not in config.model_dump()
+            assert "s3cret" not in config.model_dump_json()
+            assert "s3cret" not in repr(config)
+        host = EmailHostConfig(smtp=smtp, imap=imap)
+        assert "s3cret" not in host.model_dump_json()
+        assert host.get_password() == "s3cret"
+
+
 class TestEmailHostConfig:
     """Test EmailHostConfig validation and property accessors"""
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,15 @@ class SmtpHostConfig(BaseModel):
     password_env: Optional[str] = Field(
         default=None,
         description="Environment variable name containing password (required for password auth)",
+    )
+    password: Optional[SecretStr] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "Password held in memory, for a host built at runtime; takes "
+            "precedence over password_env and is left out of dumps"
+        ),
     )
     auth_type: str = Field(
         default="password", description="Authentication type: 'password' or 'oauth'"
@@ -87,7 +96,9 @@ class SmtpHostConfig(BaseModel):
         return self
 
     def get_password(self) -> Optional[str]:
-        """Get password from environment variable."""
+        """Get the password: the in-memory one, else the environment variable."""
+        if self.password is not None:
+            return self.password.get_secret_value()
         if not self.password_env:
             return None
         return os.getenv(self.password_env)
@@ -106,6 +117,15 @@ class ImapHostConfig(BaseModel):
     username: str = Field(..., description="IMAP username (supports ${ENV_VAR} syntax)")
     password_env: Optional[str] = Field(
         default=None, description="Environment variable name containing password"
+    )
+    password: Optional[SecretStr] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "Password held in memory, for a host built at runtime; takes "
+            "precedence over password_env and is left out of dumps"
+        ),
     )
     auth_type: str = Field(
         default="password", description="Authentication type: 'password' or 'oauth'"
@@ -141,7 +161,9 @@ class ImapHostConfig(BaseModel):
         return _ip_literal(v)
 
     def get_password(self) -> Optional[str]:
-        """Get password from environment variable."""
+        """Get the password: the in-memory one, else the environment variable."""
+        if self.password is not None:
+            return self.password.get_secret_value()
         if not self.password_env:
             return None
         return os.getenv(self.password_env)
