@@ -16,6 +16,7 @@ from inference_core.core.email_config import (
     EmailHostConfig,
     EmailSettings,
     FullEmailConfig,
+    ImapHostConfig,
     SmtpHostConfig,
     clear_email_config_cache,
     get_email_config,
@@ -125,6 +126,35 @@ class TestSmtpHostConfig:
             from_email="no-reply@example.com",
         )
         assert config.get_password() is None
+
+
+
+def make_imap_config(**overrides) -> ImapHostConfig:
+    return ImapHostConfig(host="imap.example.com", username="test@example.com", **overrides)
+
+
+class TestConnectAddress:
+    """connect_address: an address the caller resolved and checked itself."""
+
+    def test_unset_by_default(self):
+        assert make_smtp_config().connect_address is None
+        assert make_imap_config().connect_address is None
+
+    @pytest.mark.parametrize(
+        ("address", "stored"),
+        [("203.0.113.7", "203.0.113.7"), ("2001:0db8::0007", "2001:db8::7")],
+    )
+    def test_accepts_an_ip_literal(self, address, stored):
+        assert make_smtp_config(connect_address=address).connect_address == stored
+        assert make_imap_config(connect_address=address).connect_address == stored
+
+    @pytest.mark.parametrize("address", ["smtp.example.com", "203.0.113.300", ""])
+    def test_refuses_anything_else(self, address):
+        """A host name would be resolved again, which is what the field avoids."""
+        with pytest.raises(ValidationError, match="must be an IP address"):
+            make_smtp_config(connect_address=address)
+        with pytest.raises(ValidationError, match="must be an IP address"):
+            make_imap_config(connect_address=address)
 
 
 class TestEmailHostConfig:

@@ -31,6 +31,7 @@ from inference_core.core.email_config import (
     ImapHostConfig,
     get_email_config,
 )
+from inference_core.services.mail_transport import PinnedIMAP4, PinnedIMAP4SSL
 
 logger = logging.getLogger(__name__)
 
@@ -280,18 +281,7 @@ class ImapConnection:
                 self.imap_config.port,
             )
 
-            if self.imap_config.use_ssl:
-                self._connection = imaplib.IMAP4_SSL(
-                    self.imap_config.host,
-                    self.imap_config.port,
-                    timeout=self.imap_config.timeout,
-                )
-            else:
-                self._connection = imaplib.IMAP4(
-                    self.imap_config.host,
-                    self.imap_config.port,
-                    timeout=self.imap_config.timeout,
-                )
+            self._connection = self._open()
 
             if self.imap_config.auth_type == "oauth" and self.imap_config.access_token:
                 auth_string = f"user={self.imap_config.username}\x01auth=Bearer {self.imap_config.access_token}\x01\x01"
@@ -304,6 +294,22 @@ class ImapConnection:
             raise ImapConnectionError(f"Authentication failed: {e}", self.host_alias, e)
         except Exception as e:
             raise ImapConnectionError(f"Connection error: {e}", self.host_alias, e)
+
+    def _open(self) -> imaplib.IMAP4:
+        """Open the socket, on ``connect_address`` when one is configured."""
+        cfg = self.imap_config
+        address = cfg.connect_address
+        if cfg.use_ssl:
+            if address:
+                return PinnedIMAP4SSL(
+                    cfg.host, cfg.port, pinned_address=address, timeout=cfg.timeout
+                )
+            return imaplib.IMAP4_SSL(cfg.host, cfg.port, timeout=cfg.timeout)
+        if address:
+            return PinnedIMAP4(
+                cfg.host, cfg.port, pinned_address=address, timeout=cfg.timeout
+            )
+        return imaplib.IMAP4(cfg.host, cfg.port, timeout=cfg.timeout)
 
     def disconnect(self) -> None:
         """Close IMAP connection gracefully."""

@@ -26,6 +26,7 @@ from inference_core.core.email_config import (
     get_email_config,
     is_email_configured,
 )
+from inference_core.services.mail_transport import PinnedSMTP, PinnedSMTPSSL
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,10 @@ class EmailService:
         }
         if host_config.use_ssl:
             params["context"] = ssl_context
+        if host_config.smtp.connect_address:
+            # Dial the given address; TLS still verifies host_config.host.
+            smtp_class = PinnedSMTPSSL if host_config.use_ssl else PinnedSMTP
+            params["pinned_address"] = host_config.smtp.connect_address
 
         with smtp_class(**params) as server:
             # Enable debug logging if in debug mode

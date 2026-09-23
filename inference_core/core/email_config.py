@@ -4,6 +4,7 @@ Email Configuration
 Loads and validates email configuration from YAML files with environment variable support.
 """
 
+import ipaddress
 import logging
 import os
 import re
@@ -47,6 +48,13 @@ class SmtpHostConfig(BaseModel):
         default=10, ge=1, le=300, description="Connection timeout in seconds"
     )
     verify_hostname: bool = Field(default=True, description="Verify SSL hostname")
+    connect_address: Optional[str] = Field(
+        default=None,
+        description=(
+            "IP address to connect to instead of resolving `host` again, e.g. "
+            "one a caller has already validated; TLS still verifies `host`"
+        ),
+    )
     rate_limit_per_minute: Optional[int] = Field(
         default=None, ge=1, description="Rate limit per minute"
     )
@@ -59,6 +67,12 @@ class SmtpHostConfig(BaseModel):
     def resolve_smtp_username(cls, v: str) -> str:
         """Resolve environment variables in username."""
         return _resolve_env_vars(v)
+
+    @field_validator("connect_address")
+    @classmethod
+    def validate_smtp_connect_address(cls, v: Optional[str]) -> Optional[str]:
+        """Accept only an IP literal: a name would be resolved again."""
+        return _ip_literal(v)
 
     @model_validator(mode="after")
     def validate_ssl_options(self):
@@ -106,12 +120,25 @@ class ImapHostConfig(BaseModel):
     poll_interval_seconds: Optional[int] = Field(
         default=None, ge=10, le=3600, description="Optional polling interval override"
     )
+    connect_address: Optional[str] = Field(
+        default=None,
+        description=(
+            "IP address to connect to instead of resolving `host` again, e.g. "
+            "one a caller has already validated; TLS still verifies `host`"
+        ),
+    )
 
     @field_validator("username")
     @classmethod
     def resolve_imap_username(cls, v: str) -> str:
         """Resolve environment variables in username."""
         return _resolve_env_vars(v)
+
+    @field_validator("connect_address")
+    @classmethod
+    def validate_imap_connect_address(cls, v: Optional[str]) -> Optional[str]:
+        """Accept only an IP literal: a name would be resolved again."""
+        return _ip_literal(v)
 
     def get_password(self) -> Optional[str]:
         """Get password from environment variable."""
@@ -317,6 +344,16 @@ class FullEmailConfig(BaseModel):
     settings: EmailSettings = Field(
         default_factory=EmailSettings, description="Global settings"
     )
+
+
+def _ip_literal(value: Optional[str]) -> Optional[str]:
+    """Normalise an IP address literal; reject anything else."""
+    if value is None:
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError as exc:
+        raise ValueError(f"connect_address must be an IP address, got {value!r}") from exc
 
 
 def _resolve_env_vars(value: str) -> str:

@@ -95,6 +95,29 @@ class TestEmailService:
         assert message_id is not None
 
     @patch.dict("os.environ", {"TEST_PASSWORD": "secret123"})
+    @patch("inference_core.services.email_service.PinnedSMTPSSL")
+    @patch("smtplib.SMTP_SSL")
+    def test_send_dials_the_connect_address(self, mock_smtp_ssl, mock_pinned):
+        """With connect_address set, the socket goes to that address and TLS
+        still verifies the configured host name."""
+        host_config = make_host_config(smtp_overrides={"connect_address": "203.0.113.7"})
+        config = FullEmailConfig(
+            email=EmailConfig(default_host="primary", hosts={"primary": host_config}),
+            settings=self.settings,
+        )
+        mock_pinned.return_value.__enter__.return_value = MagicMock()
+
+        EmailService(config).send_email(
+            to="recipient@example.com", subject="Pinned", text="Body"
+        )
+
+        mock_smtp_ssl.assert_not_called()
+        call_args = mock_pinned.call_args
+        assert call_args.kwargs["host"] == "smtp.example.com"
+        assert call_args.kwargs["pinned_address"] == "203.0.113.7"
+        assert call_args.kwargs["context"] is not None
+
+    @patch.dict("os.environ", {"TEST_PASSWORD": "secret123"})
     @patch("smtplib.SMTP_SSL")
     def test_send_html_email(self, mock_smtp_ssl):
         """Test sending email with both text and HTML"""
