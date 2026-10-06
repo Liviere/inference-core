@@ -129,6 +129,20 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
         dropped={"frequency_penalty", "presence_penalty"},
         passthrough_prefixes=set(),
     ),
+    ModelProvider.MISTRAL: ProviderParamPolicy(
+        allowed={
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "timeout",
+            "random_seed",
+            "safe_mode",
+            "reasoning_effort",
+        },
+        renamed={"request_timeout": "timeout"},
+        dropped={"frequency_penalty", "presence_penalty"},
+        passthrough_prefixes=set(),
+    ),
     ModelProvider.GEMINI: ProviderParamPolicy(
         allowed={
             "temperature",

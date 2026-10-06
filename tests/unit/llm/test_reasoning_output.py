@@ -263,6 +263,59 @@ class TestCreateModelInstanceReasoning:
         call_kwargs = mock_chat_claude.call_args.kwargs
         assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 5000}
 
+    @patch("inference_core.llm.models.ChatMistralAI")
+    def test_mistral_reasoning_config_merged(self, mock_chat_mistral):
+        """Mistral reasoning_config (model_kwargs.reasoning_effort) is merged."""
+        config = ModelConfig(
+            name="mistral-small-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key="test-key",
+            reasoning_config={"model_kwargs": {"reasoning_effort": "high"}},
+        )
+        mock_chat_mistral.return_value = MagicMock()
+
+        self.factory._create_model_instance(config, reasoning_output=True)
+
+        call_kwargs = mock_chat_mistral.call_args.kwargs
+        assert call_kwargs["model_kwargs"] == {"reasoning_effort": "high"}
+
+    @patch("inference_core.llm.models.ChatMistralAI")
+    def test_mistral_reasoning_config_wins_over_model_level_effort(
+        self, mock_chat_mistral
+    ):
+        """reasoning_config is the explicit opt-in, so it beats the model default."""
+        config = ModelConfig(
+            name="mistral-small-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key="test-key",
+            reasoning_effort="none",
+            reasoning_config={"model_kwargs": {"reasoning_effort": "high"}},
+        )
+        mock_chat_mistral.return_value = MagicMock()
+
+        self.factory._create_model_instance(config, reasoning_output=True)
+
+        call_kwargs = mock_chat_mistral.call_args.kwargs
+        assert call_kwargs["model_kwargs"] == {"reasoning_effort": "high"}
+        assert "reasoning_effort" not in call_kwargs
+
+    @patch("inference_core.llm.models.ChatMistralAI")
+    def test_mistral_reasoning_config_ignored_without_reasoning_output(
+        self, mock_chat_mistral
+    ):
+        """Without reasoning_output the reasoning_config stays out of the request."""
+        config = ModelConfig(
+            name="mistral-small-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key="test-key",
+            reasoning_config={"model_kwargs": {"reasoning_effort": "high"}},
+        )
+        mock_chat_mistral.return_value = MagicMock()
+
+        self.factory._create_model_instance(config)
+
+        assert "model_kwargs" not in mock_chat_mistral.call_args.kwargs
+
 
 class TestGetModelForAgentReasoning:
     """Test get_model_for_agent auto-forwarding reasoning_output."""

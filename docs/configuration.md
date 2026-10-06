@@ -107,6 +107,7 @@ Docker compose uses a split worker topology by default: the threads worker handl
 | `GOOGLE_API_KEY`            | (none)    | Gemini key                             |
 | `ANTHROPIC_API_KEY`         | (none)    | Claude key                             |
 | `FIREWORKS_API_KEY`         | (none)    | Fireworks key                          |
+| `MISTRAL_API_KEY`           | (none)    | Mistral key                            |
 | `TAVILY_API_KEY`            | (none)    | Tavily key for internet search tools   |
 | `OPEN_WEATHER_API_KEY`      | (none)    | OpenWeatherMap key for weather tools   |
 | `LLM_COMPLETION_MODEL`      | (none)    | Override model for completion task     |

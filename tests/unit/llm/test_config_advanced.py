@@ -61,6 +61,11 @@ def _make_config(
             "requires_api_key": True,
             "api_key_env": "GEMINI_API_KEY",
         },
+        "mistral": {
+            "name": "mistral",
+            "requires_api_key": True,
+            "api_key_env": "MISTRAL_API_KEY",
+        },
     }
 
     cfg.models = models or {
@@ -99,6 +104,11 @@ def _make_config(
             name="gemini-pro",
             provider=ModelProvider.GEMINI,
             api_key="gemini-key-123",
+        ),
+        "mistral-large-latest": ModelConfig(
+            name="mistral-large-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key="mistral-key-123",
         ),
     }
 
@@ -139,6 +149,17 @@ class TestIsModelAvailable:
         cfg = _make_config()
         cfg.models["grok-4"].api_key = None
         assert cfg.is_model_available("grok-4") is False
+
+    def test_mistral_with_valid_key(self):
+        """Mistral model with API key is available."""
+        cfg = _make_config()
+        assert cfg.is_model_available("mistral-large-latest") is True
+
+    def test_mistral_without_key(self):
+        """Mistral model without API key is not available."""
+        cfg = _make_config()
+        cfg.models["mistral-large-latest"].api_key = None
+        assert cfg.is_model_available("mistral-large-latest") is False
 
     def test_ollama_with_base_url(self):
         """Ollama model with base_url is available."""

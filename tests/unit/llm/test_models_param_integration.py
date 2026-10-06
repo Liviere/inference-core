@@ -173,6 +173,103 @@ class TestLLMModelFactoryParameterNormalization:
         assert result == mock_model
 
     @patch("inference_core.llm.models.normalize_params")
+    @patch("inference_core.llm.models.ChatMistralAI")
+    def test_mistral_model_uses_normalized_params(
+        self, mock_chat_mistral, mock_normalize
+    ):
+        """Test Mistral model creation uses normalized parameters"""
+        config = ModelConfig(
+            name="mistral-large-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key="test-key",
+            temperature=0.4,
+            max_tokens=256,
+        )
+
+        normalized_params = {
+            "temperature": 0.4,
+            "max_tokens": 256,
+            "top_p": 1.0,
+            "timeout": 60,
+        }
+        mock_normalize.return_value = normalized_params
+
+        mock_model = MagicMock()
+        mock_chat_mistral.return_value = mock_model
+
+        result = self.factory._create_model_instance(config)
+
+        expected_raw_params = {
+            "temperature": 0.4,
+            "max_tokens": 256,
+            "top_p": 1.0,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+            "request_timeout": 60,
+            "verbosity": None,
+            "reasoning_effort": None,
+        }
+        mock_normalize.assert_called_once_with(
+            ModelProvider.MISTRAL, expected_raw_params, model_name=config.name
+        )
+
+        mock_chat_mistral.assert_called_once_with(
+            model="mistral-large-latest",
+            api_key=SecretStr("test-key"),
+            **normalized_params,
+        )
+        # Unset base_url keeps the SDK default endpoint.
+        assert "base_url" not in mock_chat_mistral.call_args.kwargs
+        assert result == mock_model
+
+    @patch("inference_core.llm.models.ChatMistralAI")
+    def test_mistral_model_passes_configured_base_url(self, mock_chat_mistral):
+        """A provider base_url from YAML is forwarded to ChatMistralAI"""
+        config = ModelConfig(
+            name="mistral-large-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key="test-key",
+            base_url="https://mistral.internal.example/v1",
+        )
+
+        self.factory._create_model_instance(config)
+
+        call_kwargs = mock_chat_mistral.call_args.kwargs
+        assert call_kwargs["base_url"] == "https://mistral.internal.example/v1"
+        assert call_kwargs["timeout"] == 60
+        assert "request_timeout" not in call_kwargs
+        assert "frequency_penalty" not in call_kwargs
+        assert "presence_penalty" not in call_kwargs
+
+    @patch("inference_core.llm.models.ChatMistralAI")
+    def test_mistral_reasoning_effort_moved_to_model_kwargs(self, mock_chat_mistral):
+        """reasoning_effort is a payload param, so it travels in model_kwargs"""
+        config = ModelConfig(
+            name="mistral-small-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key="test-key",
+            reasoning_effort="high",
+        )
+
+        self.factory._create_model_instance(config)
+
+        call_kwargs = mock_chat_mistral.call_args.kwargs
+        assert call_kwargs["model_kwargs"] == {"reasoning_effort": "high"}
+        assert "reasoning_effort" not in call_kwargs
+
+    @patch("inference_core.llm.models.ChatMistralAI")
+    def test_mistral_model_requires_api_key(self, mock_chat_mistral):
+        """Missing API key yields no model instead of a broken client"""
+        config = ModelConfig(
+            name="mistral-large-latest",
+            provider=ModelProvider.MISTRAL,
+            api_key=None,
+        )
+
+        assert self.factory._create_model_instance(config) is None
+        mock_chat_mistral.assert_not_called()
+
+    @patch("inference_core.llm.models.normalize_params")
     @patch("inference_core.llm.models.ChatDeepInfraReasoning")
     def test_deepinfra_model_uses_normalized_params(
         self, mock_chat_deepinfra, mock_normalize

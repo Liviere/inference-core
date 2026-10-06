@@ -3826,6 +3826,25 @@ mcp = ">=1.24.0,<2.0.0"
 typing-extensions = ">=4.14.0"
 
 [[package]]
+name = "langchain-mistralai"
+version = "1.1.6"
+description = "An integration package connecting Mistral and LangChain"
+optional = false
+python-versions = "<4.0.0,>=3.10.0"
+groups = ["main"]
+files = [
+    {file = "langchain_mistralai-1.1.6-py3-none-any.whl", hash = "sha256:0aa59b313b406ee934dc0431873b0e11849d8d746a6a7e281103c6848a9b1319"},
+    {file = "langchain_mistralai-1.1.6.tar.gz", hash = "sha256:c2694828adee61a497c571e25eaba1472095cd1d1f260a7fe15a6e60f9ece039"},
+]
+
+[package.dependencies]
+httpx = ">=0.25.2,<1.0.0"
+httpx-sse = ">=0.3.1,<1.0.0"
+langchain-core = ">=1.4.7,<2.0.0"
+pydantic = ">=2.0.0,<3.0.0"
+tokenizers = ">=0.15.1,<1.0.0"
+
+[[package]]
 name = "langchain-ollama"
 version = "1.1.0"
 description = "An integration package connecting Ollama and LangChain"
@@ -9414,4 +9433,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.14,<3.15"
-content-hash = "6959acde7e972b2f7c0b2c147d44cc472759953cf5667400573d84c20c07a051"
+content-hash = "d5b8eeaa07cb1ad4887b6fcf50e5271af73f96324b31210b6f7f15c5de7fb88c"

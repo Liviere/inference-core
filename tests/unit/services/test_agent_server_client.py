@@ -197,6 +197,57 @@ class TestForwardEvents:
         assert tokens[0][1]["type"] == "text"
         assert tokens[1][1]["type"] == "reasoning"
 
+    def test_forward_message_mistral_thinking_chunks(self):
+        """Mistral sends ``thinking`` as a list of text chunks, not a string."""
+        tokens = []
+        callback = lambda text, meta: tokens.append((text, meta))
+        data = [
+            {
+                "type": "ai",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": [
+                            {"type": "text", "text": "Step one. "},
+                            {"type": "text", "text": "Step two."},
+                        ],
+                    },
+                    {"type": "text", "text": "Answer"},
+                ],
+                "name": "agent",
+            }
+        ]
+        _forward_message_event(data, callback)
+        assert tokens[0] == (
+            "Step one. Step two.",
+            {"node": "agent", "type": "reasoning"},
+        )
+        assert tokens[1][0] == "Answer"
+        assert tokens[1][1]["type"] == "text"
+
+    def test_forward_message_plain_string_inside_block_list(self):
+        """Merged chunks can carry answer text as a bare string next to blocks."""
+        tokens = []
+        callback = lambda text, meta: tokens.append((text, meta))
+        data = [
+            {
+                "type": "ai",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": [{"type": "text", "text": "Thinking."}],
+                    },
+                    "Answer",
+                ],
+                "name": "agent",
+            }
+        ]
+        _forward_message_event(data, callback)
+        assert [(text, meta["type"]) for text, meta in tokens] == [
+            ("Thinking.", "reasoning"),
+            ("Answer", "text"),
+        ]
+
     def test_forward_message_ignores_non_ai(self):
         tokens = []
         callback = lambda text, meta: tokens.append((text, meta))

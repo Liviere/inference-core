@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai import ChatMistralAI
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langchain_xai import ChatXAI
@@ -220,6 +221,9 @@ class LLMModelFactory:
         elif config.provider == ModelProvider.FIREWORKS:
             return self._create_fireworks_model(config, model_params)
 
+        elif config.provider == ModelProvider.MISTRAL:
+            return self._create_mistral_model(config, model_params)
+
         elif config.provider == ModelProvider.OLLAMA:
             return self._create_ollama_model(config, model_params)
 
@@ -371,6 +375,46 @@ class LLMModelFactory:
             )
         except Exception as e:
             logger.error(f"Failed to create Fireworks model: {str(e)}")
+            return None
+
+    def _create_mistral_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatMistralAI]:
+        """Create Mistral AI model via the dedicated LangChain integration.
+
+        WHY: ChatMistralAI speaks Mistral's native chat API, so it handles the
+        provider's 9-character tool-call ids and translates ``thinking`` chunks
+        into standard ``reasoning`` content blocks — neither of which a generic
+        OpenAI-compatible wrapper does.
+
+        ``reasoning_effort`` is a request payload parameter rather than a
+        ChatMistralAI field, so it is moved into ``model_kwargs`` explicitly.
+        A value already present in ``model_kwargs`` (from ``reasoning_config``)
+        takes precedence over the model-level one.
+        """
+        if not config.api_key:
+            logger.error("Mistral API key (MISTRAL_API_KEY) not provided")
+            return None
+
+        try:
+            params = dict(params)
+            reasoning_effort = params.pop("reasoning_effort", None)
+            if reasoning_effort is not None:
+                model_kwargs = dict(params.get("model_kwargs") or {})
+                model_kwargs.setdefault("reasoning_effort", reasoning_effort)
+                params["model_kwargs"] = model_kwargs
+
+            # Unset base_url keeps the SDK default (or MISTRAL_BASE_URL).
+            if config.base_url:
+                params["base_url"] = config.base_url
+
+            return ChatMistralAI(
+                model=config.name,
+                api_key=SecretStr(config.api_key),
+                **params,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create Mistral model: {str(e)}")
             return None
 
     def _create_ollama_model(

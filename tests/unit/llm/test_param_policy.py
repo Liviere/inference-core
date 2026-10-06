@@ -46,6 +46,7 @@ class TestPoliciesDefinition:
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
             ModelProvider.DEEPINFRA,
             ModelProvider.FIREWORKS,
+            ModelProvider.MISTRAL,
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
             ModelProvider.OLLAMA,
@@ -115,6 +116,26 @@ class TestPoliciesDefinition:
             "top_p",
             "top_k",
             "timeout",
+        }
+        expected_renamed = {"request_timeout": "timeout"}
+        expected_dropped = {"frequency_penalty", "presence_penalty"}
+
+        assert policy.allowed == expected_allowed
+        assert policy.renamed == expected_renamed
+        assert policy.dropped == expected_dropped
+
+    def test_mistral_policy(self):
+        """Test Mistral provider policy"""
+        policy = POLICIES[ModelProvider.MISTRAL]
+
+        expected_allowed = {
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "timeout",
+            "random_seed",
+            "safe_mode",
+            "reasoning_effort",
         }
         expected_renamed = {"request_timeout": "timeout"}
         expected_dropped = {"frequency_penalty", "presence_penalty"}
@@ -202,6 +223,36 @@ class TestNormalizeParams:
         assert result == expected
         mock_logger.debug.assert_any_call(
             "Parameter renamed for ModelProvider.XAI: request_timeout -> timeout"
+        )
+
+    @patch("inference_core.llm.param_policy.logger")
+    def test_mistral_params_normalized(self, mock_logger):
+        """Test Mistral parameters are correctly normalized"""
+        raw_params = {
+            "temperature": 0.7,
+            "max_tokens": 100,
+            "top_p": 0.9,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.2,
+            "request_timeout": 30,
+            "random_seed": 7,
+            "reasoning_effort": "high",
+        }
+
+        result = normalize_params(ModelProvider.MISTRAL, raw_params)
+
+        expected = {
+            "temperature": 0.7,
+            "max_tokens": 100,
+            "top_p": 0.9,
+            "timeout": 30,
+            "random_seed": 7,
+            "reasoning_effort": "high",
+        }
+
+        assert result == expected
+        mock_logger.debug.assert_any_call(
+            "Parameter renamed for ModelProvider.MISTRAL: request_timeout -> timeout"
         )
 
     @patch("inference_core.llm.param_policy.logger")
@@ -358,6 +409,7 @@ class TestGetSupportedProviders:
             ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
             ModelProvider.DEEPINFRA,
             ModelProvider.FIREWORKS,
+            ModelProvider.MISTRAL,
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
             ModelProvider.OLLAMA,

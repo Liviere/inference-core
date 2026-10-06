@@ -329,12 +329,19 @@ def _forward_message_event(
         # Handle structured content blocks
         elif isinstance(content, list):
             for block in content:
-                if isinstance(block, dict):
+                # Merged stream chunks may mix plain strings with block dicts
+                # (e.g. Mistral: a thinking block followed by answer text).
+                if isinstance(block, str):
+                    if block:
+                        on_token(block, {**meta, "type": "text"})
+                elif isinstance(block, dict):
                     block_type = block.get("type", "text")
                     if block_type == "text" and block.get("text"):
                         on_token(block["text"], {**meta, "type": "text"})
                     elif block_type == "thinking" and block.get("thinking"):
-                        on_token(block["thinking"], {**meta, "type": "reasoning"})
+                        thinking_text = _thinking_block_text(block["thinking"])
+                        if thinking_text:
+                            on_token(thinking_text, {**meta, "type": "reasoning"})
                     elif block_type in ("tool_use", "tool_call"):
                         tool_name = block.get("name")
                         if tool_name:
@@ -342,6 +349,24 @@ def _forward_message_event(
                                 f"calling `{tool_name}`\n",
                                 {**meta, "type": "reasoning"},
                             )
+
+
+def _thinking_block_text(thinking: Any) -> str:
+    """Return the reasoning text of a raw ``thinking`` content block.
+
+    WHY: Providers disagree on the payload shape. Anthropic sends a plain
+    string, Mistral sends a list of ``{"type": "text", "text": ...}`` chunks.
+    ``on_token`` only accepts text, so both shapes are flattened here.
+    """
+    if isinstance(thinking, str):
+        return thinking
+    if isinstance(thinking, list):
+        return "".join(
+            chunk.get("text") or ""
+            for chunk in thinking
+            if isinstance(chunk, dict) and chunk.get("type") == "text"
+        )
+    return ""
 
 
 def _forward_step_event(

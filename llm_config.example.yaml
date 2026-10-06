@@ -59,6 +59,15 @@ providers:
     requires_api_key: true
     openai_compatible: false
 
+  mistral:
+    name: 'Mistral AI'
+    api_key_env: 'MISTRAL_API_KEY'
+    requires_api_key: true
+    openai_compatible: false
+    # Optional endpoint override (self-hosted / regional deployments).
+    # Unset uses https://api.mistral.ai/v1 (or MISTRAL_BASE_URL when exported).
+    # base_url: 'https://api.mistral.ai/v1'
+
 # Available Models Configuration
 models:
   # OpenAI Models
@@ -461,6 +470,47 @@ models:
     reasoning_config:
       reasoning_effort: 'medium'
       reasoning_history: 'preserved'
+
+  # Mistral AI Models (dedicated provider, langchain-mistralai)
+  # NOTE: Mistral accepts `temperature` only in the 0.0-1.0 range; a higher
+  # value (model- or agent-level) makes the model fail to initialize.
+  # `timeout` must be a whole number of seconds.
+  mistral-large-latest:
+    provider: 'mistral'
+    display_name: 'Mistral Large'
+    description: 'Flagship Mistral model for complex chat and tool-using tasks'
+    max_tokens: 8192
+    temperature: 0.7
+    # Pricing (sourced from Mistral pricing page)
+    # Source: https://mistral.ai/pricing (captured 2026-10-06)
+    # Values are per 1M tokens (cost_per_1m).
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 0.5 # $0.50 per 1M tokens
+      output:
+        cost_per_1m: 1.5 # $1.50 per 1M tokens
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+      rounding:
+        decimals: 6
+
+  mistral-small-latest:
+    provider: 'mistral'
+    display_name: 'Mistral Small'
+    description: 'Fast Mistral model with adjustable reasoning'
+    max_tokens: 8192
+    temperature: 0.7
+    # Mistral reasoning is a request payload parameter, so it is passed via
+    # model_kwargs. Supported values: 'high' (full thinking) or 'none'.
+    # Thinking chunks are surfaced as standard `reasoning` content blocks.
+    # Magistral models reason natively and need no reasoning_config.
+    reasoning_config:
+      model_kwargs:
+        reasoning_effort: 'high'
+    # Add a `pricing` block with the current rates from https://mistral.ai/pricing
+    # to enable cost tracking for this model.
 
 # Tool Providers Registry
 # Declaratively register LangChain ToolProvider classes so that

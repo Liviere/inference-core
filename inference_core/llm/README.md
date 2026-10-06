@@ -5,7 +5,7 @@ This package now contains shared LLM infrastructure, not a standalone completion
 ## Components
 
 - `config.py`: loads and validates `llm_config.yaml` providers, models, agents, batch settings, MCP profiles, and usage logging config.
-- `models.py`: creates provider-specific chat model instances for AgentService, batch, embeddings, and vector workflows, including dedicated adapters such as `ChatXAI` for Grok.
+- `models.py`: creates provider-specific chat model instances for AgentService, batch, embeddings, and vector workflows, including dedicated adapters such as `ChatXAI` for Grok and `ChatMistralAI` for Mistral.
 - `param_policy.py`: normalizes provider/model parameters and blocks deprecated parameters for models that no longer accept them.
 - `tools.py`: registry for local LangChain-compatible tool providers used by AgentService.
 - `mcp_tools.py`: MCP integration helpers used by configured agents.
@@ -75,6 +75,25 @@ accounts/fireworks/models/kimi-k2p5:
     reasoning_effort: 'medium'
     reasoning_history: 'preserved'
 ```
+
+## Mistral Provider
+
+Mistral models use `langchain-mistralai`'s `ChatMistralAI` adapter (`provider: 'mistral'`, key from `MISTRAL_API_KEY`). The native adapter handles Mistral's 9-character tool-call ids and translates `thinking` chunks into standard `reasoning` content blocks, so no local subclass is needed. The Mistral parameter policy normalizes `request_timeout` to `timeout` and drops `frequency_penalty` / `presence_penalty`.
+
+Reasoning is a request payload parameter, so it is configured through `model_kwargs`:
+
+```yaml
+mistral-small-latest:
+  provider: 'mistral'
+  max_tokens: 8192
+  reasoning_config:
+    model_kwargs:
+      reasoning_effort: 'high' # or 'none'
+```
+
+A model-level `reasoning_effort` is moved into `model_kwargs` as well; the value from `reasoning_config` wins when both are set. Constraints inherited from `ChatMistralAI`: `temperature` must stay within 0.0-1.0 (a higher value makes model creation fail) and `timeout` is an integer number of seconds. Embeddings and provider-native batch jobs are not wired for Mistral.
+
+Known limitation: raw `thinking` blocks are not translated between providers. Mistral stores them as a list of text chunks, Claude as a string with a signature, and both adapters forward the other provider's block unchanged. Avoid pairing Mistral and Claude in one `fallback` chain when `reasoning_output` is enabled for both, because a mid-conversation switch replays a history the other API may reject.
 
 ## xAI Grok Provider
 
