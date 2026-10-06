@@ -598,11 +598,13 @@ class AgentService:
             )
 
             if not has_cost_tracking:
-                # Get pricing config for the model
+                # Pricing and provider of the model this service runs: read
+                # from its own config, which may carry models and overrides
+                # the global one does not.
                 pricing_config = None
                 provider = None
                 try:
-                    llm_config = get_llm_config()
+                    llm_config = self.model_factory.config
                     model_cfg = llm_config.models.get(self.model_name)
                     if model_cfg:
                         pricing_config = model_cfg.pricing

@@ -42,6 +42,7 @@ def _make_agent_service(**overrides):
     mock_model_factory.get_agent_model_name.return_value = "gpt-4o"
     mock_model_factory.get_model_for_agent.return_value = mock_model
     mock_model_factory.aclose = AsyncMock()
+    mock_model_factory.config.models = {}
     mock_model_factory.config.get_specific_agent_config.return_value = MagicMock(
         local_tool_providers=[],
         mcp_profile=None,
@@ -299,6 +300,27 @@ class TestBuildMiddleware:
 
         ct_count = sum(1 for m in middleware if isinstance(m, CostTrackingMiddleware))
         assert ct_count == 1
+
+    def test_cost_tracking_reads_the_service_config(self, agent_service):
+        """Pricing and provider come from the config the service was built with.
+
+        The global config may not know the model at all: a per-request config
+        can add models and override the ones it shares.
+        """
+        from inference_core.agents.middleware import CostTrackingMiddleware
+
+        pricing = MagicMock(name="pricing")
+        agent_service._mock_model_factory.config.models = {
+            "gpt-4o": SimpleNamespace(pricing=pricing, provider="in_house_gateway")
+        }
+
+        with patch("inference_core.services.agents_service.get_llm_config") as mock_cfg:
+            mock_cfg.return_value.models = {}
+            middleware = agent_service._build_middleware()
+
+        ct = [m for m in middleware if isinstance(m, CostTrackingMiddleware)]
+        assert ct[0].pricing_config is pricing
+        assert ct[0]._provider == "in_house_gateway"
 
 
 # ---------------------------------------------------------------------------
