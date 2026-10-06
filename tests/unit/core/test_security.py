@@ -9,8 +9,8 @@ import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import jwt
 import pytest
-from jose import jwt
 from pydantic import BaseModel
 
 from inference_core.core.security import (
@@ -168,6 +168,34 @@ class TestSecurityManager:
         token = jwt.encode(
             payload,
             self.security_manager.settings.secret_key,
+            algorithm=self.security_manager.settings.algorithm,
+        )
+
+        token_data = self.security_manager.verify_token(token)
+
+        assert token_data is None
+
+    def test_verify_token_expired_access_token(self):
+        """Test that verify_token rejects an expired access token"""
+        token = self.security_manager.create_access_token(
+            {"sub": "user123"}, expires_delta=timedelta(minutes=-5)
+        )
+
+        token_data = self.security_manager.verify_token(token)
+
+        assert token_data is None
+
+    def test_verify_token_wrong_signature(self):
+        """Test that verify_token rejects a token signed with another secret"""
+        payload = {
+            "sub": "user123",
+            "exp": datetime.now(UTC) + timedelta(minutes=30),
+            "type": "access",
+            "jti": "test-jti",
+        }
+        token = jwt.encode(
+            payload,
+            "another-secret-key-at-least-32-bytes-long",
             algorithm=self.security_manager.settings.algorithm,
         )
 
@@ -418,7 +446,7 @@ class TestSecurityManagerWithMockedSettings:
         """Test SecurityManager with custom settings"""
         with patch("inference_core.core.security.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
-            mock_settings.secret_key = "test-secret-key"
+            mock_settings.secret_key = "test-secret-key-at-least-32-bytes-long"
             mock_settings.algorithm = "HS256"
             mock_settings.access_token_expire_minutes = 15
             mock_settings.refresh_token_expire_days = 30
@@ -432,7 +460,7 @@ class TestSecurityManagerWithMockedSettings:
             data = {"sub": "user123"}
             token = security_mgr.create_access_token(data)
 
-            payload = jwt.decode(token, "test-secret-key", algorithms=["HS256"])
+            payload = jwt.decode(token, "test-secret-key-at-least-32-bytes-long", algorithms=["HS256"])
 
             assert payload["sub"] == "user123"
             assert payload["type"] == "access"

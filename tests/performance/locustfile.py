@@ -30,7 +30,7 @@ from config import (
     get_profile,
     is_llm_mock_embedding_backend,
 )
-from jose import jwt
+import jwt
 from locust import HttpUser, between, events, task
 from locust.env import Environment
 import requests
@@ -142,7 +142,7 @@ class BaseUser(HttpUser):
         protected request; verifying the JWT client-side adds no value here.
         """
         try:
-            claims = jwt.get_unverified_claims(access_token)
+            claims = jwt.decode(access_token, options={"verify_signature": False})
         except Exception:
             return None
         exp = claims.get("exp")

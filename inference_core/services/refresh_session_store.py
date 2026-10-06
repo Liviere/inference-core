@@ -7,7 +7,7 @@ Stores refresh token sessions keyed by a token ID (jti), with TTL matching token
 from datetime import datetime, timezone
 from typing import Optional
 
-from jose import jwt
+import jwt
 
 from inference_core.core.config import get_settings
 from inference_core.core.redis_client import get_redis

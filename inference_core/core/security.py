@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 import bcrypt
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from pydantic import ValidationError
 
 from inference_core.core.config import get_settings
@@ -169,7 +169,7 @@ class SecurityManager:
             token_data = TokenData(user_id=user_id)
             return token_data
 
-        except (JWTError, ValidationError):
+        except (jwt.PyJWTError, ValidationError):
             return None
 
     def generate_password_reset_token(self, email: str) -> str:
@@ -214,7 +214,7 @@ class SecurityManager:
                 return None
 
             return decoded_token["sub"]
-        except JWTError:
+        except jwt.PyJWTError:
             return None
 
     def generate_email_verification_token(self, user_id: str) -> str:
@@ -259,7 +259,7 @@ class SecurityManager:
                 return None
 
             return decoded_token["sub"]
-        except JWTError:
+        except jwt.PyJWTError:
             return None
 
     @staticmethod
@@ -308,7 +308,7 @@ async def get_current_user_token(
         if token_data is None:
             raise credentials_exception
         return token_data
-    except JWTError:
+    except jwt.PyJWTError:
         raise credentials_exception
 
 

@@ -8,8 +8,8 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
-from jose import jwt
 
 from inference_core.services.refresh_session_store import RefreshSessionStore
 
@@ -296,7 +296,7 @@ class TestRefreshSessionStore:
     ):
         """Test decode_and_validate_refresh successfully validates token"""
         mock_settings = MagicMock()
-        mock_settings.secret_key = "test-secret"
+        mock_settings.secret_key = "test-secret-key-at-least-32-bytes-long"
         mock_settings.algorithm = "HS256"
         mock_settings.redis_refresh_prefix = "auth:refresh:"
         mock_get_settings.return_value = mock_settings
@@ -314,7 +314,7 @@ class TestRefreshSessionStore:
             "jti": "test-jti",
             "exp": 9999999999,
         }
-        token = jwt.encode(payload, "test-secret", algorithm="HS256")
+        token = jwt.encode(payload, "test-secret-key-at-least-32-bytes-long", algorithm="HS256")
 
         result = await store.decode_and_validate_refresh(token)
 
@@ -331,7 +331,7 @@ class TestRefreshSessionStore:
     ):
         """Test decode_and_validate_refresh raises error for wrong token type"""
         mock_settings = MagicMock()
-        mock_settings.secret_key = "test-secret"
+        mock_settings.secret_key = "test-secret-key-at-least-32-bytes-long"
         mock_settings.algorithm = "HS256"
         mock_settings.redis_refresh_prefix = "auth:refresh:"
         mock_get_settings.return_value = mock_settings
@@ -347,7 +347,7 @@ class TestRefreshSessionStore:
             "jti": "test-jti",
             "exp": 9999999999,
         }
-        token = jwt.encode(payload, "test-secret", algorithm="HS256")
+        token = jwt.encode(payload, "test-secret-key-at-least-32-bytes-long", algorithm="HS256")
 
         with pytest.raises(ValueError, match="Not a refresh token"):
             await store.decode_and_validate_refresh(token)
@@ -360,7 +360,7 @@ class TestRefreshSessionStore:
     ):
         """Test decode_and_validate_refresh raises error for missing required fields"""
         mock_settings = MagicMock()
-        mock_settings.secret_key = "test-secret"
+        mock_settings.secret_key = "test-secret-key-at-least-32-bytes-long"
         mock_settings.algorithm = "HS256"
         mock_settings.redis_refresh_prefix = "auth:refresh:"
         mock_get_settings.return_value = mock_settings
@@ -376,7 +376,7 @@ class TestRefreshSessionStore:
             "exp": 9999999999,
             # Missing jti
         }
-        token = jwt.encode(payload, "test-secret", algorithm="HS256")
+        token = jwt.encode(payload, "test-secret-key-at-least-32-bytes-long", algorithm="HS256")
 
         with pytest.raises(ValueError, match="Malformed refresh token"):
             await store.decode_and_validate_refresh(token)
@@ -389,7 +389,7 @@ class TestRefreshSessionStore:
     ):
         """Test decode_and_validate_refresh raises error when session not in Redis"""
         mock_settings = MagicMock()
-        mock_settings.secret_key = "test-secret"
+        mock_settings.secret_key = "test-secret-key-at-least-32-bytes-long"
         mock_settings.algorithm = "HS256"
         mock_settings.redis_refresh_prefix = "auth:refresh:"
         mock_get_settings.return_value = mock_settings
@@ -407,7 +407,7 @@ class TestRefreshSessionStore:
             "jti": "test-jti",
             "exp": 9999999999,
         }
-        token = jwt.encode(payload, "test-secret", algorithm="HS256")
+        token = jwt.encode(payload, "test-secret-key-at-least-32-bytes-long", algorithm="HS256")
 
         with pytest.raises(ValueError, match="Refresh session not found or revoked"):
             await store.decode_and_validate_refresh(token)
@@ -420,7 +420,7 @@ class TestRefreshSessionStore:
     ):
         """Test decode_and_validate_refresh handles invalid JWT tokens"""
         mock_settings = MagicMock()
-        mock_settings.secret_key = "test-secret"
+        mock_settings.secret_key = "test-secret-key-at-least-32-bytes-long"
         mock_settings.algorithm = "HS256"
         mock_settings.redis_refresh_prefix = "auth:refresh:"
         mock_get_settings.return_value = mock_settings
@@ -430,7 +430,7 @@ class TestRefreshSessionStore:
         store = RefreshSessionStore()
 
         # Invalid token
-        with pytest.raises((ValueError, jwt.JWTError)):
+        with pytest.raises((ValueError, jwt.PyJWTError)):
             await store.decode_and_validate_refresh("invalid.token.here")
 
 
@@ -450,7 +450,7 @@ class TestRefreshSessionStoreIntegration:
     async def test_full_session_lifecycle(self, mock_get_settings, mock_get_redis):
         """Test complete session lifecycle: add, exists, get_subject, revoke"""
         mock_settings = MagicMock()
-        mock_settings.secret_key = "test-secret"
+        mock_settings.secret_key = "test-secret-key-at-least-32-bytes-long"
         mock_settings.algorithm = "HS256"
         mock_settings.redis_refresh_prefix = "auth:refresh:"
         mock_get_settings.return_value = mock_settings

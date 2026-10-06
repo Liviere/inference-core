@@ -80,6 +80,8 @@ Explicit environment variables or dotenv entries still win, so you can opt back 
 | `AUTH_EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | 60                      | Verification token TTL                |
 | `AUTH_EMAIL_VERIFICATION_URL_BASE`          | null                    | Base URL for email verification links |
 
+`SECRET_KEY` should be at least 32 bytes long for HS256. PyJWT emits `InsecureKeyLengthWarning` for shorter keys, including the default value.
+
 ## Redis / Celery
 
 | Variable                        | Default                  | Description                                                                |

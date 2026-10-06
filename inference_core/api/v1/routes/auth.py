@@ -8,9 +8,9 @@ and session management.
 import logging
 from datetime import UTC, datetime, timedelta
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPBearer
-from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from inference_core.core.config import Settings, get_settings
