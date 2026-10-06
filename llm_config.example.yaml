@@ -69,6 +69,10 @@ providers:
     # base_url: 'https://api.mistral.ai/v1'
 
 # Available Models Configuration
+#
+# `provider` is one of the providers above or a name the application registered
+# with register_chat_model_provider() (see docs/custom-model-providers.md); a
+# registered provider needs no entry under `providers`.
 models:
   # OpenAI Models
   gpt-5:

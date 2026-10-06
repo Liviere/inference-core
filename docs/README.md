@@ -20,6 +20,7 @@ Central index of project documentation
 | Vector Store Guide                 | Semantic search & ingestion                  | `vector-store.md`                    |
 | Performance Testing Guide          | Locust profiles, wrappers, and load runs     | `../tests/performance/README.md`     |
 | Provider Extensions (OpenAI batch) | Provider specific behavior                   | `providers/openai-batch-provider.md` |
+| Custom Chat Model Providers        | Registering a provider of your own           | `custom-model-providers.md`          |
 | Docker Test Environments           | Isolated test setup                          | `testing-docker.md`                  |
 | Database Migrations (Alembic)      | Schema management & history                  | `database-migrations.md`             |
 | LLM Usage Logging                  | Cost / usage persistence & privacy notes     | `observability/llm-usage-logging.md` |

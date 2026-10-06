@@ -26,6 +26,7 @@ from .chat_fireworks import ChatFireworksReasoning
 from .config import LLMConfig, ModelConfig, ModelProvider
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
 from .param_policy import normalize_params
+from .provider_registry import get_registered_provider
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,11 @@ class LLMModelFactory:
                 config.name,
                 list(reasoning_config.keys()),
             )
+
+        # A provider the application registered builds its own model.
+        registered = get_registered_provider(config.provider)
+        if registered is not None:
+            return registered.builder(config, model_params)
 
         if config.provider == ModelProvider.OPENAI:
             return self._create_openai_model(config, model_params)

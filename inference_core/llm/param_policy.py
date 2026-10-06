@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Set
 
 from .config import ModelProvider
+from .provider_registry import get_registered_provider
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,31 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
     ),
 }
 
+# What a provider registered by the application accepts when it names no policy
+# of its own: the sampling parameters every chat API shares, and the timeout.
+DEFAULT_REGISTERED_POLICY = ProviderParamPolicy(
+    allowed={
+        "temperature",
+        "max_tokens",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "request_timeout",
+    }
+)
+
+
+def _base_policy(provider: ModelProvider) -> Optional[ProviderParamPolicy]:
+    """The provider's policy: built in, or the one it was registered with."""
+    policy = POLICIES.get(provider)
+    if policy is not None:
+        return policy
+    registered = get_registered_provider(provider)
+    if registered is None:
+        return None
+    return registered.param_policy or DEFAULT_REGISTERED_POLICY
+
+
 # Dynamic override state
 _DYNAMIC_LOADED = False
 _EFFECTIVE_MODEL_POLICIES: Dict[str, ProviderParamPolicy] = {}
@@ -285,13 +311,13 @@ def _resolve_model_policy(
         raw_override = getattr(existing, "_raw_override")
         # Determine provider: override may specify provider explicitly
         override_provider = getattr(existing, "_provider", None) or provider
-        base_policy = POLICIES.get(override_provider, ProviderParamPolicy())
+        base_policy = _base_policy(override_provider) or ProviderParamPolicy()
         effective = _merge_policy(base_policy, raw_override)
         # Cache resolved effective policy (remove attrs)
         _EFFECTIVE_MODEL_POLICIES[model_name] = effective
         return effective
     # No model-specific override: return provider effective policy
-    return POLICIES.get(provider, ProviderParamPolicy())
+    return _base_policy(provider) or ProviderParamPolicy()
 
 
 def get_effective_policy(
@@ -301,7 +327,7 @@ def get_effective_policy(
     _ensure_dynamic_loaded()
     if model_name:
         return _resolve_model_policy(model_name, provider)
-    return POLICIES.get(provider, ProviderParamPolicy())
+    return _base_policy(provider) or ProviderParamPolicy()
 
 
 def normalize_params(
@@ -322,7 +348,7 @@ def normalize_params(
     Raises:
         ValueError: If provider is not supported
     """
-    if provider not in POLICIES:
+    if _base_policy(provider) is None:
         raise ValueError(f"Unsupported provider: {provider}")
 
     policy = get_effective_policy(provider, model_name=model_name)
@@ -390,10 +416,11 @@ def get_provider_policy(provider: ModelProvider) -> ProviderParamPolicy:
     Raises:
         ValueError: If provider is not supported
     """
-    if provider not in POLICIES:
-        raise ValueError(f"Unsupported provider: {provider}")
     _ensure_dynamic_loaded()
-    return POLICIES[provider]
+    policy = _base_policy(provider)
+    if policy is None:
+        raise ValueError(f"Unsupported provider: {provider}")
+    return policy
 
 
 def get_model_policy(model_name: str, provider: ModelProvider) -> ProviderParamPolicy:

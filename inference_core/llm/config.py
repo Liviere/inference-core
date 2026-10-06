@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from inference_core.core.env import get_project_dotenv_path
 
+from .provider_registry import is_registered_provider
+
 load_dotenv(dotenv_path=get_project_dotenv_path())
 
 
@@ -33,6 +35,27 @@ class ModelProvider(str, Enum):
     GEMINI = "gemini"
     CLAUDE = "claude"
     OLLAMA = "ollama"
+
+
+def resolve_provider_name(provider: Any) -> str:
+    """Return the provider's name, built in or registered by the application.
+
+    Raises ValueError for a name that is neither, so a typo in a model entry
+    fails where it is written instead of when the model is first built.
+    """
+    if isinstance(provider, ModelProvider):
+        return provider.value
+    name = str(provider) if provider is not None else ""
+    try:
+        return ModelProvider(name).value
+    except ValueError:
+        pass
+    if is_registered_provider(name):
+        return name
+    raise ValueError(
+        f"Unknown provider '{name}': not a built-in provider and not registered "
+        "with register_chat_model_provider()"
+    )
 
 
 class ProviderConfig(BaseModel):
@@ -326,7 +349,13 @@ class ModelConfig(ModelParams):
     """Configuration for a specific model"""
 
     name: str
-    provider: ModelProvider
+    provider: str = Field(
+        description=(
+            "A built-in provider (see ModelProvider) or one the application "
+            "registered with register_chat_model_provider(). Always stored as "
+            "the provider's name."
+        )
+    )
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     timeout: int = Field(default=60, ge=1)
@@ -356,6 +385,11 @@ class ModelConfig(ModelParams):
     )
 
     model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _known_provider(cls, value: Any) -> str:
+        return resolve_provider_name(value)
 
 
 class MCPServerTimeouts(BaseModel):
@@ -1078,8 +1112,7 @@ class LLMConfig:
 
         for model_name, model_data in models_config.items():
             provider_name = model_data.get("provider")
-            provider_config = self.providers.get(provider_name, {})
-            provider_config = ProviderConfig(**provider_config)
+            provider_config = self.get_provider_config(provider_name)
 
             # Get API key from environment if required
             api_key = None
@@ -1151,7 +1184,7 @@ class LLMConfig:
 
             self.models[model_name] = ModelConfig(
                 name=model_name,
-                provider=ModelProvider(provider_name),
+                provider=provider_name,
                 api_key=api_key,
                 base_url=base_url,
                 pricing=pricing_config,
@@ -1556,6 +1589,11 @@ class LLMConfig:
         if config.provider == ModelProvider.OLLAMA:
             return True if not config.base_url else bool(config.base_url.strip())
 
+        # A provider the application registered builds its own models, so
+        # there is no key or endpoint here to judge it by.
+        if is_registered_provider(config.provider):
+            return True
+
         return False
 
     def get_agent_model(self, agent_name: str) -> str:
@@ -1591,6 +1629,9 @@ class LLMConfig:
     def get_provider_config(self, provider_name: str) -> ProviderConfig:
         """Get provider configuration"""
         provider_config: Dict[str, Any] = self.providers.get(provider_name, {})
+        if not provider_config and is_registered_provider(provider_name):
+            # A registered provider needs no entry under ``providers``.
+            return ProviderConfig(name=str(provider_name))
         return ProviderConfig(**provider_config)
 
     def list_byok_eligible_providers(self) -> set[str]:
