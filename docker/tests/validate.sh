@@ -66,7 +66,7 @@ required_vars=(
     "ENVIRONMENT=testing"
     "PORT=8100"
     "REDIS_PORT=6380"
-    "DATABASE_PORT_POSTGRES=55432"
+    "DATABASE_PORT_POSTGRES=15432"
     "DATABASE_PORT_MYSQL=33306"
     "SECRET_KEY=test-secret-key-do-not-use-in-production"
 )
@@ -86,7 +86,7 @@ echo "5. Checking port mappings..."
 ports_check=(
     "docker/tests/docker-compose.test.sqlite.yml:8100"
     "docker/tests/docker-compose.test.sqlite.yml:6380"
-    "docker/tests/docker-compose.test.postgres.yml:55432"
+    "docker/tests/docker-compose.test.postgres.yml:15432"
     "docker/tests/docker-compose.test.mysql.yml:33306"
 )
 

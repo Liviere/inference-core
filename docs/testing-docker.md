@@ -38,7 +38,7 @@ The test environment uses alternative ports to avoid conflicts with development 
 | ----------- | ---------------- | --------- | ---------------------------- |
 | FastAPI App | 8000             | 8100      | Main application             |
 | Redis       | 6379             | 6380      | Celery broker/sessions       |
-| PostgreSQL  | 5432             | 55432     | Database (postgres only)     |
+| PostgreSQL  | 5432             | 15432     | Database (postgres only)     |
 | MySQL       | 3306             | 33306     | Database (mysql only)        |
 | Flower      | 5555             | 5556      | Celery monitoring (optional) |
 

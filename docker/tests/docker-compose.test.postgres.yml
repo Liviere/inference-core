@@ -1,5 +1,5 @@
 # Docker Compose for Isolated Test Environment - PostgreSQL
-# Ports: inference-core-test:8100, redis-test:6380, postgres-test:55432
+# Ports: inference-core-test:8100, redis-test:6380, postgres-test:15432
 # Usage: docker compose -f docker/tests/docker-compose.test.postgres.yml --env-file .env.test.example up -d
 # Cleanup: docker compose -f docker/tests/docker-compose.test.postgres.yml down -v
 
@@ -109,7 +109,9 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-test_user}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-test_password}
     ports:
-      - '${DATABASE_PORT_POSTGRES:-55432}:5432'
+      # Keep the host port below 49152: Windows reserves 49152-65535 as its dynamic
+      # range, and under WSL2 mirrored networking nothing can listen there.
+      - '${DATABASE_PORT_POSTGRES:-15432}:5432'
     # Use tmpfs for ephemeral storage (no persistence)
     tmpfs:
       - /var/lib/postgresql/data:noexec,nosuid,size=500m
