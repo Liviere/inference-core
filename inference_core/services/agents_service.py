@@ -245,6 +245,7 @@ class AgentService:
         memory_tool_instructions_enabled: Optional[bool] = None,
         memory_scope: str = "shared",
         response_format_override: Optional[Any] = None,
+        enable_snapshots: bool = True,
     ):
         """Initialize the AgentService.
 
@@ -299,6 +300,11 @@ class AgentService:
                 the schema as a Python type (so LangChain can return a validated
                 Pydantic instance via ``structured_response``) instead of going
                 through a YAML JSON-Schema round-trip.
+            enable_snapshots: Whether this service takes part in run snapshots
+                when the settings switch them on. Set to False for a run whose
+                input must stay where the run puts it: capture writes the input
+                to the snapshot store, and replay sends it to the embedding
+                service to find a similar recorded run.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -350,6 +356,7 @@ class AgentService:
         # Middleware setup
         self._middleware = middleware or []
         self._enable_cost_tracking = enable_cost_tracking
+        self._enable_snapshots = enable_snapshots
         self._user_id = user_id
         self._session_id = session_id
         self._request_id = request_id
@@ -1831,9 +1838,13 @@ class AgentService:
         return segments
 
     def _snapshot_capture_enabled(self) -> bool:
+        if not self._enable_snapshots:
+            return False
         return bool(getattr(get_settings(), "agent_snapshot_capture_enabled", False))
 
     def _snapshot_replay_enabled(self) -> bool:
+        if not self._enable_snapshots:
+            return False
         return bool(getattr(get_settings(), "agent_snapshot_replay_enabled", False))
 
     def _build_snapshot_resolved_config(self) -> AgentSnapshotResolvedConfig:

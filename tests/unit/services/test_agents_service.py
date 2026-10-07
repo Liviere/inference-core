@@ -509,6 +509,39 @@ class TestRunAgentSteps:
         assert response.metadata.model_name == "gpt-4o"
         assert response.result["messages"][0]["content"] == "Recorded answer"
 
+    def test_a_service_can_opt_out_of_snapshots(self, tmp_path):
+        """Its input is neither written to the store nor looked up in it."""
+        service = _make_agent_service(enable_snapshots=False)
+        ai_msg = AIMessage(content="Live answer")
+        service.agent = MagicMock()
+        service.agent.stream.return_value = [
+            {"type": "updates", "data": {"agent": {"messages": [ai_msg]}}, "ns": []},
+        ]
+
+        with (
+            patch(
+                "inference_core.services.agents_service.get_settings",
+                return_value=MagicMock(
+                    llm_emulation_enabled=False,
+                    agent_snapshot_capture_enabled=True,
+                    agent_snapshot_replay_enabled=True,
+                    agent_snapshot_replay_match_mode="exact_or_semantic",
+                    agent_snapshot_replay_min_score=0.92,
+                    agent_snapshot_storage_path=str(tmp_path),
+                    vector_dim=8,
+                ),
+            ),
+            patch(
+                "inference_core.services.agents_service.AgentSnapshotMatcher",
+                side_effect=AssertionError("the input was looked up"),
+            ),
+        ):
+            response = service.run_agent_steps("Keep this to yourself")
+
+        service.agent.stream.assert_called_once()
+        assert isinstance(response, AgentResponse)
+        assert list(Path(tmp_path).glob("*.json")) == []
+
     def test_lazy_initializes_agent_for_sync_run(self, agent_service):
         """run_agent_steps creates the local agent graph on first use."""
         mock_agent = MagicMock()
