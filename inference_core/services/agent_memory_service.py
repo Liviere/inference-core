@@ -1349,16 +1349,20 @@ def delete_user_memory_entries(
 
 
 @contextmanager
-def open_memory_store() -> Iterator[Any]:
+def open_memory_store(*, with_index: bool = False) -> Iterator[Any]:
     """Open the process-configured LangGraph memory store for one-off operations.
 
     Builds a sync store from ``settings.database_url`` (mapping async drivers to
-    their sync counterparts) WITHOUT an embedding index — list and delete
-    operations need no vectors.  Unknown dialects yield a fresh in-memory store
-    (nothing is persisted there, so counts/purges are no-ops).
+    their sync counterparts). By default it has no embedding index: list and
+    delete operations need no vectors. With ``with_index=True`` it gets the
+    index agents' stores have, built on the process's embedding service, so
+    items put through it are embedded and ``search`` with a query ranks by
+    meaning — what a caller outside an agent run needs to save or recall a
+    memory. Unknown dialects yield a fresh in-memory store (nothing is
+    persisted there, so counts/purges are no-ops).
 
     Mirrors the store construction in
-    ``inference_core.agents.graph_builder._init_memory_store``.
+    ``inference_core.services.agents_service.AgentService``.
     """
     from inference_core.core.config import get_settings
 
@@ -1373,17 +1377,27 @@ def open_memory_store() -> Iterator[Any]:
             url = url.replace(async_drv, sync_drv)
             break
 
+    index = None
+    if with_index:
+        from inference_core.services.embedding_service import get_embedding_service
+
+        embeddings = get_embedding_service()
+        index = {
+            "embed": embeddings.get_embed_fn(),
+            "dims": embeddings.get_dimension(),
+        }
+
     if "sqlite" in url:
         from langgraph.store.sqlite import SqliteStore
 
-        with SqliteStore.from_conn_string(url) as store:
+        with SqliteStore.from_conn_string(url, index=index) as store:
             if hasattr(store, "setup") and callable(store.setup):
                 store.setup()
             yield store
     elif "postgresql" in url:
         from langgraph.store.postgres import PostgresStore
 
-        with PostgresStore.from_conn_string(url) as store:
+        with PostgresStore.from_conn_string(url, index=index) as store:
             if hasattr(store, "setup") and callable(store.setup):
                 store.setup()
             yield store
@@ -1394,7 +1408,7 @@ def open_memory_store() -> Iterator[Any]:
             "Unknown DB dialect for memory store (%s); using ephemeral InMemoryStore",
             url,
         )
-        yield InMemoryStore()
+        yield InMemoryStore(index=index)
 
 
 def purge_user_long_term_memory(

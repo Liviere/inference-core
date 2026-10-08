@@ -930,3 +930,99 @@ class TestListAndDeleteMemoryEntries:
         assert deleted == 2
         assert list_user_memories(store, "u1")[1] == 1
         assert list_user_memories(store, "u2")[1] == 1
+
+
+# =============================================================================
+# open_memory_store
+# =============================================================================
+
+
+class _FakeEmbeddings:
+    """Stands in for the process's embedding service: two-dimensional vectors
+    that put texts about food apart from everything else."""
+
+    def __init__(self):
+        self.embedded: List[str] = []
+
+    def get_dimension(self) -> int:
+        return 2
+
+    def get_embed_fn(self):
+        def embed(texts):
+            self.embedded.extend(texts)
+            return [
+                [1.0, 0.0] if "pizza" in text or "eat" in text else [0.0, 1.0]
+                for text in texts
+            ]
+
+        return embed
+
+
+class TestOpenMemoryStore:
+    @pytest.fixture
+    def embeddings(self):
+        fake = _FakeEmbeddings()
+        with patch(
+            "inference_core.services.embedding_service.get_embedding_service",
+            return_value=fake,
+        ):
+            yield fake
+
+    @pytest.fixture
+    def unknown_dialect(self):
+        """A database the store has no backend for: an in-memory store is used."""
+        settings = MagicMock(database_url="oracle://example/db")
+        with patch("inference_core.core.config.get_settings", return_value=settings):
+            yield
+
+    def test_without_an_index_nothing_is_embedded(self, embeddings, unknown_dialect):
+        from inference_core.services.agent_memory_service import open_memory_store
+
+        with open_memory_store() as store:
+            store.put(("u1", "semantic"), "a", {"content": "likes pizza"})
+            assert [item.key for item in store.search(("u1",))] == ["a"]
+
+        assert embeddings.embedded == []
+
+    def test_with_an_index_a_search_ranks_by_meaning(self, embeddings, unknown_dialect):
+        from inference_core.services.agent_memory_service import open_memory_store
+
+        with open_memory_store(with_index=True) as store:
+            store.put(("u1", "semantic"), "car", {"content": "drives a blue car"})
+            store.put(("u1", "semantic"), "food", {"content": "likes pizza"})
+            found = store.search(("u1",), query="what does the user eat", limit=1)
+
+        assert [item.key for item in found] == ["food"]
+        assert embeddings.embedded
+
+    @pytest.mark.parametrize(
+        "url, store_path",
+        [
+            ("sqlite+aiosqlite:///./x.db", "langgraph.store.sqlite.SqliteStore"),
+            ("postgresql+asyncpg://u@h/db", "langgraph.store.postgres.PostgresStore"),
+        ],
+    )
+    @pytest.mark.parametrize("with_index", [False, True])
+    def test_the_index_goes_to_the_database_store(
+        self, embeddings, url, store_path, with_index
+    ):
+        from inference_core.services.agent_memory_service import open_memory_store
+
+        opened = MagicMock()
+        settings = MagicMock(database_url=url)
+        with (
+            patch("inference_core.core.config.get_settings", return_value=settings),
+            patch(f"{store_path}.from_conn_string") as from_conn_string,
+        ):
+            from_conn_string.return_value.__enter__.return_value = opened
+            with open_memory_store(with_index=with_index) as store:
+                assert store is opened
+
+        (sync_url,), kwargs = from_conn_string.call_args
+        assert "+" not in sync_url
+        if with_index:
+            assert kwargs["index"]["dims"] == 2
+            assert callable(kwargs["index"]["embed"])
+        else:
+            assert kwargs["index"] is None
+        opened.setup.assert_called_once()
