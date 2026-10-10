@@ -49,6 +49,76 @@ class ImapConnectionError(Exception):
         super().__init__(f"IMAP connection failed for {host_alias}: {message}")
 
 
+# Response codes (RFC 5530) by which a server says the sign-in itself is
+# wrong. Any other code on a refused sign-in names a condition of the server
+# (unavailable, a limit reached, a bug) that other credentials would not change.
+_CREDENTIAL_RESPONSE_CODES = frozenset(
+    {"AUTHENTICATIONFAILED", "AUTHORIZATIONFAILED", "EXPIRED"}
+)
+# A refusal without a code that still reads as "not now" rather than "not you".
+_TEMPORARY_REFUSAL_WORDS = (
+    "temporar",
+    "try again",
+    "later",
+    "too many",
+    "unavailable",
+    "rate limit",
+)
+_LEADING_RESPONSE_CODE = re.compile(r"^\s*\[([A-Za-z][A-Za-z0-9-]*)")
+
+
+class ImapAuthenticationError(ImapConnectionError):
+    """The server answered the sign-in itself with a refusal (``NO``).
+
+    Raised only for that answer: a connection that broke during the sign-in, a
+    refused greeting or a command the server did not understand stay an
+    ``ImapConnectionError``. ``refusal`` is what the server said and
+    ``response_code`` the bracketed code it gave first, if any.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        host_alias: str,
+        original_error: Optional[Exception] = None,
+        refusal: str = "",
+    ):
+        super().__init__(message, host_alias, original_error)
+        self.refusal = refusal
+        match = _LEADING_RESPONSE_CODE.match(refusal)
+        self.response_code: Optional[str] = match.group(1).upper() if match else None
+
+    @property
+    def rejects_credentials(self) -> bool:
+        """Whether the refusal says these credentials are wrong.
+
+        With a response code the code decides. Without one the answer counts as
+        a rejection unless its words say the server cannot take a sign-in now.
+        """
+        if self.response_code is not None:
+            return self.response_code in _CREDENTIAL_RESPONSE_CODES
+        lowered = self.refusal.lower()
+        return not any(word in lowered for word in _TEMPORARY_REFUSAL_WORDS)
+
+
+def _sign_in_refusal(error: BaseException) -> Optional[str]:
+    """What the server said when it answered a sign-in with ``NO``, else None.
+
+    imaplib raises ``IMAP4.error`` for more than that answer: ``abort`` (the
+    connection broke), a ``BAD`` reply (it names the command) and a command it
+    would not send in the connection's state.
+    """
+    if not isinstance(error, imaplib.IMAP4.error) or isinstance(
+        error, imaplib.IMAP4.abort
+    ):
+        return None
+    said = error.args[0] if error.args else ""
+    text = said.decode("utf-8", "replace") if isinstance(said, bytes) else str(said)
+    if "command error: BAD" in text or "illegal in state" in text:
+        return None
+    return text
+
+
 class ImapReadError(Exception):
     """Exception raised when reading emails fails."""
 
@@ -274,27 +344,47 @@ class ImapConnection:
                 self.host_alias,
             )
 
+        logger.info(
+            "[%s] Connecting to IMAP %s:%d",
+            self.host_alias,
+            self.imap_config.host,
+            self.imap_config.port,
+        )
         try:
-            logger.info(
-                "[%s] Connecting to IMAP %s:%d",
-                self.host_alias,
-                self.imap_config.host,
-                self.imap_config.port,
-            )
-
             self._connection = self._open()
+        except Exception as e:
+            self._connection = None
+            raise ImapConnectionError(f"Connection error: {e}", self.host_alias, e)
 
+        try:
             if self.imap_config.auth_type == "oauth" and self.imap_config.access_token:
                 auth_string = f"user={self.imap_config.username}\x01auth=Bearer {self.imap_config.access_token}\x01\x01"
                 self._connection.authenticate("XOAUTH2", lambda x: auth_string)
             else:
                 self._connection.login(self.imap_config.username, password)
-            logger.info("[%s] IMAP login successful", self.host_alias)
-
-        except imaplib.IMAP4.error as e:
-            raise ImapConnectionError(f"Authentication failed: {e}", self.host_alias, e)
         except Exception as e:
+            # A connection that did not sign in is not kept: NOOP passes on
+            # it, so the next call would take it for a healthy one and fail
+            # on its first command instead of signing in.
+            self._drop()
+            refusal = _sign_in_refusal(e)
+            if refusal is not None:
+                raise ImapAuthenticationError(
+                    f"Authentication failed: {e}", self.host_alias, e, refusal
+                )
             raise ImapConnectionError(f"Connection error: {e}", self.host_alias, e)
+        logger.info("[%s] IMAP login successful", self.host_alias)
+
+    def _drop(self) -> None:
+        """Close a connection without the farewell a signed-in one gets."""
+        connection, self._connection = self._connection, None
+        self._current_folder = None
+        if connection is None:
+            return
+        try:
+            connection.shutdown()
+        except Exception:
+            logger.debug("[%s] Closing the IMAP socket failed", self.host_alias)
 
     def _open(self) -> imaplib.IMAP4:
         """Open the socket, on ``connect_address`` when one is configured."""

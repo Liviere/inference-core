@@ -87,3 +87,137 @@ def test_verification_can_be_turned_off_per_host(opened):
     context = opened["kwargs"]["ssl_context"]
     assert context.verify_mode == ssl.CERT_NONE
     assert context.check_hostname is False
+
+
+# ── Signing in ────────────────────────────────────────────────────────
+
+
+class _Client:
+    """An IMAP client whose sign-in ends the way a test says."""
+
+    def __init__(self, failure=None):
+        self.failure = failure
+        self.sign_ins = 0
+        self.closed = False
+
+    def login(self, _user, _password):
+        self.sign_ins += 1
+        if self.failure is not None:
+            raise self.failure
+
+    def authenticate(self, _mechanism, _answer):
+        self.login(None, None)
+
+    def noop(self):
+        return "OK", [b""]
+
+    def shutdown(self):
+        self.closed = True
+
+
+def _signing_in(monkeypatch, *clients, **imap_overrides) -> ImapConnection:
+    connection = _connection(password="secret", **imap_overrides)
+    queue = list(clients)
+    monkeypatch.setattr(ImapConnection, "_open", lambda self: queue.pop(0))
+    return connection
+
+
+def _refused(text):
+    return imap_service.imaplib.IMAP4.error(text)
+
+
+@pytest.mark.parametrize(
+    ("answer", "code", "rejects"),
+    [
+        (b"[AUTHENTICATIONFAILED] Authentication failed.", "AUTHENTICATIONFAILED", True),
+        (b"[AUTHORIZATIONFAILED] Not allowed.", "AUTHORIZATIONFAILED", True),
+        (b"[EXPIRED] Password expired.", "EXPIRED", True),
+        (b"LOGIN failed.", None, True),
+        # What a server says about itself is not about the credentials.
+        (b"[UNAVAILABLE] Temporary authentication failure.", "UNAVAILABLE", False),
+        (b"[LIMIT] Too many login attempts.", "LIMIT", False),
+        (b"[INUSE] Mailbox is busy.", "INUSE", False),
+        (b"[ALERT] Please log in via your web browser.", "ALERT", False),
+        (b"Too many simultaneous connections.", None, False),
+        (b"Server busy, try again later.", None, False),
+    ],
+)
+def test_a_refused_sign_in_says_what_was_refused(monkeypatch, answer, code, rejects):
+    client = _Client(_refused(answer))
+    connection = _signing_in(monkeypatch, client)
+
+    with pytest.raises(imap_service.ImapAuthenticationError) as raised:
+        connection.connect()
+
+    assert raised.value.response_code == code
+    assert raised.value.rejects_credentials is rejects
+    # The wording other code matches on is kept.
+    assert raised.value.message.startswith("Authentication failed:")
+
+
+def test_a_refused_xoauth2_sign_in_is_a_refusal_too(monkeypatch):
+    client = _Client(_refused("[AUTHENTICATIONFAILED] Invalid credentials (Failure)"))
+    connection = _signing_in(
+        monkeypatch, client, auth_type="oauth", access_token="token"
+    )
+
+    with pytest.raises(imap_service.ImapAuthenticationError) as raised:
+        connection.connect()
+
+    assert raised.value.rejects_credentials is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        imap_service.imaplib.IMAP4.abort("socket error: EOF"),
+        imap_service.imaplib.IMAP4.error("LOGIN command error: BAD [b'Syntax']"),
+        imap_service.imaplib.IMAP4.error(
+            "command LOGIN illegal in state LOGOUT, only allowed in states NONAUTH"
+        ),
+        TimeoutError("timed out"),
+    ],
+)
+def test_a_sign_in_that_broke_is_not_a_refusal(monkeypatch, failure):
+    connection = _signing_in(monkeypatch, _Client(failure))
+
+    with pytest.raises(imap_service.ImapConnectionError) as raised:
+        connection.connect()
+
+    assert not isinstance(raised.value, imap_service.ImapAuthenticationError)
+    assert raised.value.message.startswith("Connection error:")
+    assert raised.value.original_error is failure
+
+
+def test_a_refused_greeting_is_not_a_refusal_of_the_sign_in(monkeypatch):
+    connection = _connection(password="secret")
+    greeting = _refused(b"* BYE Too many connections from your IP")
+
+    def refuse(self):
+        raise greeting
+
+    monkeypatch.setattr(ImapConnection, "_open", refuse)
+
+    with pytest.raises(imap_service.ImapConnectionError) as raised:
+        connection.connect()
+
+    assert not isinstance(raised.value, imap_service.ImapAuthenticationError)
+    assert connection._connection is None
+
+
+def test_a_connection_that_did_not_sign_in_is_not_kept(monkeypatch):
+    """It passes NOOP, so a kept one was taken for healthy and never signed in."""
+    refused = _Client(_refused(b"[AUTHENTICATIONFAILED] Authentication failed."))
+    accepted = _Client()
+    connection = _signing_in(monkeypatch, refused, accepted)
+
+    with pytest.raises(imap_service.ImapAuthenticationError):
+        connection.connect()
+
+    assert refused.closed is True
+    assert connection._connection is None
+
+    connection.connect()
+
+    assert accepted.sign_ins == 1
+    assert connection._connection is accepted
