@@ -79,11 +79,17 @@ providers:
 # with register_chat_model_provider() (see docs/custom-model-providers.md); a
 # registered provider needs no entry under `providers`.
 models:
+  # Prices below are per 1M tokens (cost_per_1m) and were captured 2026-10-11.
+  # Providers change them: check the linked pricing page before relying on one.
+
   # OpenAI Models
-  gpt-5:
+  # Source: https://developers.openai.com/api/docs/pricing
+  # NOTE: GPT-6 prompts over 272K tokens are charged more (input x2, output x1.5).
+  # `context_tiers` takes one multiplier per tier, so that surcharge is not modelled.
+  gpt-6.1-sol:
     provider: 'openai'
-    display_name: 'GPT-5'
-    description: 'Most capable model for complex tasks'
+    display_name: 'GPT-6.1 Sol'
+    description: 'Mid-tier GPT-6 model for complex chat and tool-using tasks'
     max_tokens: 8192
     temperature: 0.7
     # Multimodal (vision) capable. Drives capability-aware tool routing.
@@ -96,18 +102,15 @@ models:
       reasoning:
         effort: "low"
         summary: "auto"
-    # Pricing (sourced from OpenAI pricing page)
-    # Source: https://platform.openai.com/docs/pricing (values shown are per 1M tokens)
-    # Pricing is per 1M tokens (cost_per_1m).
     pricing:
       currency: USD
       input:
-        cost_per_1m: 1.25 # $1.25 per 1M tokens 
+        cost_per_1m: 2 # $2.00 per 1M tokens
       output:
-        cost_per_1m: 10 # $10.00 per 1M tokens 
+        cost_per_1m: 10 # $10.00 per 1M tokens
       extras:
         cache_read_tokens:
-          cost_per_1m: 0.125 # cached input $0.125 per 1M 
+          cost_per_1m: 0.1 # cached input $0.10 per 1M
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -115,10 +118,10 @@ models:
       rounding:
         decimals: 6
 
-  gpt-5-mini:
+  gpt-6-luna:
     provider: 'openai'
-    display_name: 'GPT-5 Mini'
-    description: 'Affordable and intelligent small model'
+    display_name: 'GPT-6 Luna'
+    description: 'Cheapest GPT-6 model for fast general tasks'
     max_tokens: 8192
     temperature: 0.7
     multimodal: true
@@ -126,17 +129,15 @@ models:
       reasoning:
         effort: "high"
         summary: "auto"
-    # Pricing (sourced from OpenAI pricing page)
-    # Pricing is per 1M tokens (cost_per_1m).
     pricing:
       currency: USD
       input:
-        cost_per_1m: 0.25 # $0.25 per 1M 
+        cost_per_1m: 0.1 # $0.10 per 1M
       output:
-        cost_per_1m: 2 # $2.00 per 1M 
+        cost_per_1m: 0.5 # $0.50 per 1M
       extras:
         cache_read_tokens:
-          cost_per_1m: 0.025 # cached input $0.025 per 1M 
+          cost_per_1m: 0.01 # cached input $0.01 per 1M
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -157,40 +158,15 @@ models:
       '50256': -100
     response_format:
       type: 'json_object'
-    # Pricing (sourced from OpenAI pricing page)
     pricing:
       currency: USD
       input:
-        cost_per_1m: 0.05 # $0.05 per 1M 
+        cost_per_1m: 0.05 # $0.05 per 1M
       output:
-        cost_per_1m: 0.4 # $0.40 per 1M 
+        cost_per_1m: 0.4 # $0.40 per 1M
       extras:
         cache_read_tokens:
-          cost_per_1m: 0.005 # cached input $0.005 per 1M 
-      key_aliases:
-        prompt_tokens: input_tokens
-        completion_tokens: output_tokens
-        cached_input: cache_read_tokens
-      rounding:
-        decimals: 6
-
-  gpt-4.1:
-    provider: 'openai'
-    display_name: 'GPT-4.1'
-    description: 'Legacy model with advanced capabilities'
-    max_tokens: 8192
-    temperature: 0.7
-    multimodal: true
-    # Pricing (sourced from OpenAI pricing page)
-    pricing:
-      currency: USD
-      input:
-        cost_per_1m: 2 # $2.00 per 1M 
-      output:
-        cost_per_1m: 8 # $8.00 per 1M 
-      extras:
-        cache_read_tokens:
-          cost_per_1m: 0.5 # cached input $0.50 per 1M 
+          cost_per_1m: 0.005 # cached input $0.005 per 1M
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -201,8 +177,8 @@ models:
   # xAI Grok Models
   grok-4.3-latest:
     provider: 'xai'
-    display_name: 'Grok 4'
-    description: 'Latest Grok model for complex chat and tool-using tasks'
+    display_name: 'Grok 4.3'
+    description: 'Grok model for complex chat and tool-using tasks'
     max_tokens: 8192
     temperature: 0.7
     pricing:
@@ -214,10 +190,29 @@ models:
     reasoning_config:
       reasoning_effort: 'high'
 
+  grok-4.7:
+    provider: 'xai'
+    display_name: 'Grok 4.7'
+    description: 'Newest Grok model; costs more than Grok 4.3'
+    max_tokens: 8192
+    temperature: 0.7
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 2 # $2.00 per 1M tokens
+      output:
+        cost_per_1m: 6 # $6.00 per 1M tokens
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.5 # cached input $0.50 per 1M
+    reasoning_config:
+      reasoning_effort: 'high'
+
   # Gemini Models
-  gemini-2.5-flash: # Fast multimodal
+  # Source: https://ai.google.dev/gemini-api/docs/pricing
+  gemini-3.8-flash: # Fast multimodal
     provider: 'gemini'
-    display_name: 'Gemini 2.0 Flash'
+    display_name: 'Gemini 3.8 Flash'
     description: 'Fast Gemini model for general tasks'
     max_tokens: 8192
     temperature: 0.7
@@ -226,18 +221,17 @@ models:
     reasoning_config:
       thinking_level: "low"
       include_thoughts: true
-    # Pricing (sourced from Google Gemini pricing page)
-    # Source: https://ai.google.dev/gemini-api/docs/pricing (captured 2025-09-27)
-    # Values are per 1M tokens (cost_per_1m).
+    # NOTE: these prices hold through 2026-12-31. From 2027-01-01 Google charges
+    # 1.50 input / 7.50 output / 0.15 cache read.
     pricing:
       currency: USD
       input:
-        cost_per_1m: 0.3 # $0.30 per 1M tokens  (text/image/video)
+        cost_per_1m: 0.75 # $0.75 per 1M tokens
       output:
-        cost_per_1m: 2.5 # $2.50 per 1M tokens 
+        cost_per_1m: 3.75 # $3.75 per 1M tokens
       extras:
         cache_read_tokens:
-          cost_per_1m: 0.075 # context caching $0.075 per 1M 
+          cost_per_1m: 0.075 # context caching $0.075 per 1M
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -245,33 +239,22 @@ models:
       rounding:
         decimals: 6
 
-  gemini-2.5-pro: # Higher quality reasoning
+  gemini-3.1-flash-lite: # Cheapest
     provider: 'gemini'
-    display_name: 'Gemini 2.0 Pro'
-    description: 'High quality Gemini model for complex reasoning'
+    display_name: 'Gemini 3.1 Flash Lite'
+    description: 'The most cost effective Gemini model for general tasks'
     max_tokens: 8192
-    temperature: 0.6
+    temperature: 0.7
     multimodal: true
-    # Pricing (sourced from Google Gemini pricing page)
-    # Source: https://ai.google.dev/gemini-api/docs/pricing (captured 2025-09-27)
-    # Values are per 1M tokens (cost_per_1m).
     pricing:
       currency: USD
       input:
-        cost_per_1m: 1.25 # $1.25 per 1M tokens 
+        cost_per_1m: 0.25 # $0.25 per 1M tokens
       output:
-        cost_per_1m: 10 # $10.00 per 1M tokens 
+        cost_per_1m: 1.5 # $1.50 per 1M tokens
       extras:
         cache_read_tokens:
-          cost_per_1m: 0.31 # context caching $0.31 per 1M  (see page for tiered values)
-      # Gemini 2.5 Pro uses tiered pricing depending on prompt/context size (notably around 200k tokens).
-      # The public pricing page lists different paid-tier prices for prompts <= 200k tokens vs other sizes.
-      # We model this using `context_tiers`. Adjust multipliers as needed to match exact per-dimension rules.
-      context_tiers:
-        - max_context: 200000
-          multiplier: 1.0 # baseline tier (<= 200k). The source shows special per-dimension prices for small prompts.
-        - max_context: 1000000
-          multiplier: 2 # larger-context multiplier (applies up to 1M tokens)
+          cost_per_1m: 0.025 # context caching $0.025 per 1M
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -280,83 +263,32 @@ models:
         decimals: 6
 
   # Claude Models
-  claude-opus-4-1-20250805:
+  # Source: https://platform.claude.com/docs/en/about-claude/pricing
+  # cache_write is the 5-minute rate.
+  # Claude models use the 'thinking' kwarg. These models take adaptive thinking
+  # only: a thinking budget, `temperature` and `top_p` are rejected by the API
+  # (see the `dropped` entries under param_policies).
+  claude-opus-5-5:
     provider: 'claude'
-    display_name: 'Claude Opus 4.1'
-    description: 'Latest Claude model with the most advanced capabilities'
+    display_name: 'Claude Opus 5.5'
+    description: 'Claude Opus 5.5, for complex agents and coding'
     max_tokens: 8192
-    temperature: 0.7
     multimodal: true
-    # Pricing (sourced from Claude pricing page)
-    # Source: https://claude.com/pricing#api (captured live)
-    # Values shown on the page are per MTok (1,000,000 tokens) — use cost_per_1m directly.
-    pricing:
-      currency: USD
-      input:
-        cost_per_1m: 15 # $15 / MTok 
-      output:
-        cost_per_1m: 75 # $75 / MTok 
-      extras:
-        cache_write_tokens:
-          cost_per_1m: 18.75 # $18.75 / MTok 
-          billed_separately: true
-        cache_read_tokens:
-          cost_per_1m: 1.5 # $1.50 / MTok 
-      key_aliases:
-        prompt_tokens: input_tokens
-        completion_tokens: output_tokens
-        cache_write: cache_write_tokens
-        cache_read: cache_read_tokens
-      rounding:
-        decimals: 6
-
-  claude-sonnet-4-20250514:
-    provider: 'claude'
-    display_name: 'Claude Sonnet 4'
-    description: 'Claude Sonnet 4 model for high performance'
-    max_tokens: 8192
-    temperature: 0.7
-    multimodal: true
-    # Claude models use the 'thinking' kwarg for extended thinking.
-    # When thinking is enabled, the runtime removes `temperature` so Claude can
-    # use its default value, and increases `max_tokens` if it would otherwise be
-    # less than or equal to the thinking budget.
     reasoning_config:
       thinking:
-        type: "enabled"
-        budget_tokens: 5000
-    # Pricing (sourced from Claude pricing page)
-    # Sonnet 4 uses tiered pricing depending on prompt size (<=200K tokens vs >200K tokens)
-    # Values are per MTok (cost_per_1m).
+        type: "adaptive"
     pricing:
       currency: USD
-      # base prices correspond to the <=200K prompt tier
       input:
-        cost_per_1m: 3 # $3 / MTok  (prompts <= 200k)
+        cost_per_1m: 4 # $4 / MTok
       output:
-        cost_per_1m: 15 # $15 / MTok  (prompts <= 200k)
+        cost_per_1m: 20 # $20 / MTok
       extras:
         cache_write_tokens:
-          cost_per_1m: 3.75 # $3.75 / MTok  (<=200k)
+          cost_per_1m: 5 # $5 / MTok
           billed_separately: true
         cache_read_tokens:
-          cost_per_1m: 0.3 # $0.30 / MTok  (<=200k)
-      # context_tiers allow per-context multipliers; Sonnet's >200K tier uses different multipliers per-dimension
-      context_tiers:
-        - max_context: 200000
-          multipliers:
-            input: 1.0
-            output: 1.0
-            extras:
-              cache_write_tokens: 1.0
-              cache_read_tokens: 1.0
-        - max_context: 1000000
-          multipliers:
-            input: 2.0 # input doubles: $6 / MTok -> multiplier 2.0
-            output: 1.5 # output increases by 1.5x: $22.50 / MTok
-            extras:
-              cache_write_tokens: 2.0
-              cache_read_tokens: 2.0
+          cost_per_1m: 0.2 # $0.20 / MTok
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -365,27 +297,27 @@ models:
       rounding:
         decimals: 6
 
-  claude-3-7-sonnet-latest:
+  claude-sonnet-5-5:
     provider: 'claude'
-    display_name: 'Claude 3.7 Sonnet'
-    description: 'Balanced performance Claude model'
+    display_name: 'Claude Sonnet 5.5'
+    description: 'Claude Sonnet 5.5, fast and capable for everyday agent work'
     max_tokens: 8192
-    temperature: 0.7
     multimodal: true
-    # Pricing (sourced from Claude pricing page - legacy models section)
-    # Values are per MTok; converted to per-1k.
+    reasoning_config:
+      thinking:
+        type: "adaptive"
     pricing:
       currency: USD
       input:
-        cost_per_1m: 3 # $3 / MTok 
+        cost_per_1m: 2 # $2 / MTok
       output:
-        cost_per_1m: 15 # $15 / MTok 
+        cost_per_1m: 10 # $10 / MTok
       extras:
         cache_write_tokens:
-          cost_per_1m: 3.75 # $3.75 / MTok 
+          cost_per_1m: 2.5 # $2.50 / MTok
           billed_separately: true
         cache_read_tokens:
-          cost_per_1m: 0.3 # $0.30 / MTok 
+          cost_per_1m: 0.1 # $0.10 / MTok
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -394,26 +326,36 @@ models:
       rounding:
         decimals: 6
 
-  claude-3-5-haiku-latest:
+  claude-haiku-5-5:
     provider: 'claude'
-    display_name: 'Claude 3.5 Haiku'
-    description: 'Fast Claude model for lower latency tasks'
+    display_name: 'Claude Haiku 5.5'
+    description: 'Fastest and cheapest Claude model'
     max_tokens: 8192
-    temperature: 0.7
-    # Pricing (sourced from Claude pricing page)
-    # Values are per MTok (cost_per_1m).
+    multimodal: true
+    reasoning_config:
+      thinking:
+        type: "adaptive"
     pricing:
       currency: USD
+      # base prices correspond to prompts of up to 100K tokens
       input:
-        cost_per_1m: 0.8 # $0.80 / MTok 
+        cost_per_1m: 0.1 # $0.10 / MTok
       output:
-        cost_per_1m: 4 # $4 / MTok 
+        cost_per_1m: 0.5 # $0.50 / MTok
       extras:
         cache_write_tokens:
-          cost_per_1m: 1 # $1 / MTok 
+          cost_per_1m: 0.125 # $0.125 / MTok
           billed_separately: true
         cache_read_tokens:
-          cost_per_1m: 0.08 # $0.08 / MTok 
+          cost_per_1m: 0.01 # $0.01 / MTok
+      # Tiered pricing by prompt size: `context_tiers` multiplies every price of
+      # the entry by the multiplier of the first tier the request fits in.
+      # Prompts over 100K tokens cost five times as much (0.50 / 2.50).
+      context_tiers:
+        - max_context: 100000
+          multiplier: 1.0
+        - max_context: 1000000
+          multiplier: 5.0
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -446,10 +388,12 @@ models:
     temperature: 0.7
 
   # DeepInfra Models (dedicated provider)
-  deepseek-ai/DeepSeek-V3.2:
+  # Prices are the list prices from DeepInfra's model listing. DeepInfra also
+  # runs discounts with no end date; they are not reflected here.
+  deepseek-ai/DeepSeek-V4-Flash-0731:
     provider: 'deepinfra'
-    display_name: 'DeepSeek V3.2'
-    description: 'DeepSeek V3 model, hosted on DeepInfra'
+    display_name: 'DeepSeek V4 Flash 0731'
+    description: 'DeepSeek V4 Flash (text only), hosted on DeepInfra'
     max_tokens: 8192
     temperature: 0.7
     default_timeout: 300
@@ -457,19 +401,43 @@ models:
     reasoning_config:
       model_kwargs:
         reasoning_effort: "medium"
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 0.06
+      output:
+        cost_per_1m: 0.18
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.015
+      rounding:
+        decimals: 6
 
-  deepseek-ai/DeepSeek-V3.2:
+  XiaomiMiMo/MiMo-V2.6-Flash:
     provider: 'deepinfra'
-    display_name: 'DeepSeek V3 0324'
-    description: 'DeepSeek V3 0324, hosted on DeepInfra'
+    display_name: 'MiMo V2.6 Flash'
+    description: 'Xiaomi MiMo V2.6 Flash, hosted on DeepInfra'
     max_tokens: 8192
     temperature: 0.7
+    multimodal: true
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 0.14
+      output:
+        cost_per_1m: 0.28
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.0028
+      rounding:
+        decimals: 6
 
   # Fireworks AI Models (dedicated provider)
-  accounts/fireworks/models/kimi-k2p5:
+  # Source: https://fireworks.ai/models (serverless)
+  accounts/fireworks/models/kimi-k3:
     provider: 'fireworks'
-    display_name: 'Kimi K2.5'
-    description: 'Kimi K2.5 model, hosted on Fireworks AI'
+    display_name: 'Kimi K3'
+    description: 'Kimi K3 model, hosted on Fireworks AI'
     max_tokens: 8192
     temperature: 0.7
     # Fireworks reasoning models can preserve reasoning_content across turns.
@@ -479,8 +447,17 @@ models:
     reasoning_config:
       reasoning_effort: 'medium'
       reasoning_history: 'preserved'
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 3 # $3.00 per 1M tokens
+      output:
+        cost_per_1m: 15 # $15.00 per 1M tokens
+      rounding:
+        decimals: 6
 
   # Mistral AI Models (dedicated provider, langchain-mistralai)
+  # Source: https://docs.mistral.ai/inference/pricing
   # NOTE: Mistral accepts `temperature` only in the 0.0-1.0 range; a higher
   # value (model- or agent-level) makes the model fail to initialize.
   # `timeout` must be a whole number of seconds.
@@ -490,9 +467,6 @@ models:
     description: 'Flagship Mistral model for complex chat and tool-using tasks'
     max_tokens: 8192
     temperature: 0.7
-    # Pricing (sourced from Mistral pricing page)
-    # Source: https://mistral.ai/pricing (captured 2026-10-06)
-    # Values are per 1M tokens (cost_per_1m).
     pricing:
       currency: USD
       input:
@@ -518,8 +492,41 @@ models:
     reasoning_config:
       model_kwargs:
         reasoning_effort: 'high'
-    # Add a `pricing` block with the current rates from https://mistral.ai/pricing
-    # to enable cost tracking for this model.
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 0.15 # $0.15 per 1M tokens
+      output:
+        cost_per_1m: 0.6 # $0.60 per 1M tokens
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+      rounding:
+        decimals: 6
+
+  # Public preview since 2026-10-06, sold at half price during the launch. The
+  # entry carries the list price; the sale price is 0.68 input / 2.09 output.
+  mistral-large-4:
+    provider: 'mistral'
+    display_name: 'Mistral Large 4'
+    description: 'Newest Mistral flagship (preview): 1M context, reasoning, multimodal'
+    max_tokens: 8192
+    temperature: 0.7
+    multimodal: true
+    reasoning_config:
+      model_kwargs:
+        reasoning_effort: 'high'
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 1.36 # $1.36 per 1M tokens
+      output:
+        cost_per_1m: 4.18 # $4.18 per 1M tokens
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+      rounding:
+        decimals: 6
 
 # Tool Providers Registry
 # Declaratively register LangChain ToolProvider classes so that
@@ -547,14 +554,14 @@ tool_providers:
 # Agent Model Assignments
 agents:
   default_agent:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     # Runtime fallback chain used when a model call fails.
     # User instances may override it with config_overrides.fallback.
     fallback:
       [
-        'gemini-2.5-flash',
-        'deepseek-ai/DeepSeek-V3.2',
-        'claude-3-5-haiku-latest',
+        'gemini-3.8-flash',
+        'deepseek-ai/DeepSeek-V4-Flash-0731',
+        'claude-haiku-5-5',
       ]
     testing: ['gpt-5-nano']
     description: 'Default agent for general tasks'
@@ -615,8 +622,8 @@ agents:
   # Example: Agent with tool-based model switching
   # This agent uses different models depending on which tool was just called
   reasoning_agent:
-    primary: 'gpt-5-mini'
-    fallback: ['gemini-2.5-flash']
+    primary: 'gpt-6-luna'
+    fallback: ['gemini-3.8-flash']
     description: 'Agent that switches models based on tool usage'
     local_tool_providers: ['assistant_tools']
     # Enable reasoning/thinking output for this agent.
@@ -632,40 +639,40 @@ agents:
   # ToolBasedModelSwitchMiddleware. Use `skip` (default) to simply filter out
   # such tools.
   vision_aware_agent:
-    primary: 'deepseek-ai/DeepSeek-V3.2'
+    primary: 'deepseek-ai/DeepSeek-V4-Flash-0731'
     description: 'Text-only agent that can still call custom vision tools via delegation'
     local_tool_providers: ['custom_multimodal_tools']
     on_missing_capability: 'delegate'          # 'skip' (default) or 'delegate'
-    multimodal_support_model: 'gpt-5-mini'     # must have multimodal: true
+    multimodal_support_model: 'gpt-6-luna'     # must have multimodal: true
   # Example: Coordinator-style workflows with specialist subagents.
   # Parent coordinators can expose no direct tools at all and delegate the
   # actual I/O to MCP-backed or built-in specialists.
   browser_workflow_coordinator:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     description: 'Coordinator for browser-heavy workflows that delegates MCP browser work to specialists'
     subagents: ['browser_readonly_worker', 'browser_action_worker']
     reasoning_output: true
 
   browser_readonly_worker:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     description: 'Read-only browser subagent backed by the browser-readonly MCP profile'
     mcp_profile: 'browser-readonly'
     reasoning_output: true
 
   browser_action_worker:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     description: 'Mutating browser subagent backed by the browser-actions MCP profile'
     mcp_profile: 'browser-actions'
     reasoning_output: true
 
   email_workflow_coordinator:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     description: 'Coordinator for inbox triage with optional MCP-backed browser follow-up'
     subagents: ['email_reader_worker', 'browser_readonly_worker']
     reasoning_output: true
 
   email_reader_worker:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     description: 'Email subagent backed by the built-in email tools provider'
     local_tool_providers: ['email_tools']
     allowed_tools:
@@ -677,14 +684,14 @@ agents:
     reasoning_output: true
 
   research_collection_coordinator:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     description: 'Coordinator for research workflows that delegates browser and email evidence gathering'
     skills: ['./skills/web-research/']
     subagents: ['browser_readonly_worker', 'email_reader_worker']
     reasoning_output: true
 
   internal_process_agent:
-    primary: 'gpt-5-mini'
+    primary: 'gpt-6-luna'
     description: 'Agent for internal processes, not exposed to users'
     reasoning_output: true
     user_selectable: false
@@ -692,7 +699,7 @@ agents:
   # Example: Agent running on remote LangGraph Agent Server
   # Requires AGENT_SERVER_ENABLED=True and AGENT_SERVER_URL in .env
   # remote_agent:
-  #   primary: 'gpt-5-mini'
+  #   primary: 'gpt-6-luna'
   #   description: 'Agent delegated to LangGraph Agent Server'
   #   execution_mode: 'remote'             # 'local' (default) or 'remote'
   #   remote_graph_id: 'my_graph'          # Graph ID on Agent Server (defaults to agent name)
@@ -703,7 +710,7 @@ agents:
   # The captured object is exposed via AgentResponse.structured_response.
   # Strategy (provider-native vs tool-calling) is auto-selected per model.
   # structured_extractor:
-  #   primary: 'gpt-5-mini'
+  #   primary: 'gpt-6-luna'
   #   description: 'Extracts contact info as structured JSON'
   #   response_format:
   #     type: object
@@ -718,7 +725,7 @@ agents:
   # Pairs with WeatherToolsProvider (weather_agent_tools) and check_weather tool.
   # The raw OpenWeatherMap payload is normalised by the model into the schema below.
   # weather_agent:
-  #   primary: 'gpt-5-mini'
+  #   primary: 'gpt-6-luna'
   #   description: 'Agent specialized in providing weather information'
   #   execution_mode: 'remote'
   #   allowed_tools: ['check_weather']
@@ -881,7 +888,7 @@ param_policies:
       patch:
         allowed: ['metadata', 'system']
   models:
-    gpt-5:
+    gpt-6.1-sol:
       replace:
         allowed: ['reasoning_effort', 'verbosity']
         dropped:
@@ -893,7 +900,7 @@ param_policies:
             'max_tokens',
             'request_timeout',
           ]
-    gpt-5-mini:
+    gpt-6-luna:
       replace:
         allowed: ['reasoning_effort', 'verbosity']
         dropped:
@@ -917,6 +924,15 @@ param_policies:
             'max_tokens',
             'request_timeout',
           ]
+    claude-opus-5-5:
+      replace:
+        dropped: ['top_p', 'temperature']
+    claude-sonnet-5-5:
+      replace:
+        dropped: ['top_p', 'temperature']
+    claude-haiku-5-5:
+      replace:
+        dropped: ['top_p', 'temperature']
 
 # Batch Processing Configuration
 batch:
@@ -932,19 +948,19 @@ batch:
     openai:
       enabled: true
       models:
-        - name: gpt-5-mini
+        - name: gpt-5-nano
           mode: chat
           max_prompts_per_batch: 20
           pricing_tier: batch
     gemini:
       enabled: true
       models:
-        - name: gemini-2.5-flash
+        - name: gemini-3.8-flash
           mode: chat
           max_prompts_per_batch: 100
     claude:
       enabled: true
       models:
-        - name: claude-3-5-haiku-latest
+        - name: claude-haiku-5-5
           mode: chat
           max_prompts_per_batch: 100
