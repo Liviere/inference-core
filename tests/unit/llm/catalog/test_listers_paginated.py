@@ -231,6 +231,7 @@ class TestFireworks:
                         "contextLength": 262144,
                         "supportsImageInput": False,
                         "supportsTools": True,
+                        "supportsServerless": True,
                         "conversationConfig": {"style": "chat"},
                     }
                 ],
@@ -255,6 +256,8 @@ class TestFireworks:
         assert current.kind is ModelKind.CHAT
         assert current.lifecycle is ModelLifecycle.ACTIVE
         assert current.attributes["capabilities"] == {"vision": False, "tools": True}
+        assert current.attributes["serverless"] is True
+        assert "serverless" not in old.attributes
         assert old.lifecycle is ModelLifecycle.DEPRECATED
         assert old.retires_at == datetime(2026, 12, 1, tzinfo=timezone.utc)
 

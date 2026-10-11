@@ -120,6 +120,16 @@ Docker compose uses a split worker topology by default: the threads worker handl
 | `LLM_USAGE_FAIL_OPEN`       | true      | Ignore logging errors if true          |
 | `RUN_LLM_REAL_TESTS`        | 0         | Enable real provider test suite        |
 
+## Model Catalog
+
+Reads the providers' model listings and compares them with the configured models. See [`model-catalog.md`](model-catalog.md).
+
+| Variable                                     | Default | Description                                                      |
+| -------------------------------------------- | ------- | ---------------------------------------------------------------- |
+| `LLM_MODEL_CATALOG_ENABLED`                  | false   | Read the providers' model listings on a schedule                 |
+| `LLM_MODEL_CATALOG_REFRESH_INTERVAL_SECONDS` | 86400   | How often a provider's listing is read (3600 to 2592000)         |
+| `LLM_MODEL_CATALOG_HTTP_TIMEOUT_SECONDS`     | 20      | Read timeout of one listing request                              |
+
 ## LLM Emulation
 
 Controls the local no-cost chat model used by tests, performance profiles, and development overrides.

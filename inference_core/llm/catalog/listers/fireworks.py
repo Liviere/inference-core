@@ -4,6 +4,10 @@ Models belong to accounts, and their ids say so:
 ``accounts/<account>/models/<model>``. The listing is that of the public
 ``fireworks`` account; a model of any other account is found by looking its id
 up.
+
+``deprecationDate`` is the day a model's serverless deployment is taken down.
+The model stays in the listing after that day, so a date in the past means it
+no longer answers.
 """
 
 import re
@@ -80,6 +84,9 @@ def _parse(item: Dict[str, Any]) -> Optional[DiscoveredModel]:
                 "display_name": clean_text(item.get("displayName")),
                 "created_at": iso(from_iso(item.get("createTime"))),
                 "context_window": positive_int(item.get("contextLength")),
+                # Whether the model can be called without a deployment of
+                # one's own. Most models in the listing cannot.
+                "serverless": _flag(item.get("supportsServerless")),
                 "capabilities": compact(
                     {
                         "vision": _flag(item.get("supportsImageInput")),

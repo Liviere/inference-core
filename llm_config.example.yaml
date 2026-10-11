@@ -6,6 +6,11 @@
 # allow_byok (optional, default false): when true, users may store their own
 # API key for this provider (Bring Your Own Key). Their key then overrides the
 # platform key for every model of this provider in that user's agent runs.
+#
+# catalog (optional): the provider's part in the model catalog, which reads the
+# provider's model listing and compares it with the models below
+# (docs/model-catalog.md). `catalog: {enabled: false}` leaves the provider out.
+# The catalog never makes a model usable: only an entry under `models` does.
 providers:
   openai:
     name: 'OpenAI'
