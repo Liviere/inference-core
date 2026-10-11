@@ -116,13 +116,15 @@ Written by `llm.catalog_refresh` on every run, from what is stored:
 
 Every series exists for every provider that has a lister, with 0 for nothing to report. None carries a model name: with Prometheus' multiprocess mode a labelled series cannot be taken back, so an alert for one model would stay up after that model left the config. Alert on the counts, and ask `drift` which models are meant.
 
+Switching the catalog off stops the task, and the gauges with it. Where gauges outlive a process (a Prometheus multiprocess directory), their last values would keep alerting about a state nobody updates, so a worker that starts with the catalog off writes them back to 0. A publish timestamp of 0 means "never published": filter it out, as below, and no rule fires for a catalog that is off.
+
 Example alert expressions:
 
 ```promql
 llm_catalog_configured_models{state="missing"} > 0
 (llm_catalog_configured_retirement_soonest_timestamp > 0) - time() < 30 * 86400
 llm_catalog_provider_stale > 0
-time() - max(llm_catalog_publish_timestamp) > 3600
+time() - max(llm_catalog_publish_timestamp > 0) > 3600
 ```
 
 ## A lister for a provider of your own

@@ -8,12 +8,20 @@ start counting anew with every restart of beat and might never come round.
 
 Every run writes the catalog gauges from what is stored, so they stay fresh
 between readings and also show what a command-line refresh changed.
+
+Switching the catalog off stops the task, and with it the gauges. In
+Prometheus' multiprocess mode their last values would stay on disk and keep
+alerting about a state nobody updates, so a worker that starts with the
+catalog off writes them back to zero.
 """
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
+
+from celery.signals import worker_ready
 
 from inference_core.celery.async_utils import run_in_worker_loop
 from inference_core.celery.celery_main import celery_app
@@ -21,6 +29,7 @@ from inference_core.core.config import get_settings
 from inference_core.core.redis_client import get_sync_redis
 from inference_core.llm.catalog.drift import DRIFT_STATES
 from inference_core.llm.catalog.reconcile import EVENT_TYPES
+from inference_core.llm.catalog.registry import listed_providers
 from inference_core.llm.catalog.service import refresh
 from inference_core.llm.catalog.summary import summarize
 from inference_core.llm.config import get_llm_config
@@ -95,3 +104,28 @@ def catalog_refresh(self) -> Dict[str, Any]:
         )
     finally:
         redis_client.delete(CATALOG_REFRESH_LOCK_KEY)
+
+
+@worker_ready.connect
+def reset_gauges_while_switched_off(**_: Any) -> None:
+    """Zero the catalog gauges of a worker that starts with the catalog off.
+
+    Only where gauges outlive a process: with a multiprocess directory. A
+    zero publish timestamp reads as "never published", which no rule alerts on.
+    """
+    if not os.getenv("PROMETHEUS_MULTIPROC_DIR"):
+        return
+    if get_settings().llm_model_catalog_enabled:
+        return
+    set_model_catalog_gauges(
+        providers=listed_providers(),
+        event_types=EVENT_TYPES,
+        drift_states=DRIFT_STATES,
+        last_success={},
+        stale={},
+        model_counts={},
+        recent_events={},
+        configured={},
+        soonest_retirement={},
+        now=0.0,
+    )

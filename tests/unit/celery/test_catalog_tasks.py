@@ -151,3 +151,38 @@ class TestRefreshAndPublish:
 
         assert result == {"status": "ok", "providers": {}}
         set_gauges.assert_called_once()
+
+
+class TestGaugesWhileSwitchedOff:
+    def _reset(self, monkeypatch, *, enabled: bool, multiproc: bool):
+        if multiproc:
+            monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/does-not-matter")
+        else:
+            monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR", raising=False)
+        with (
+            patch(f"{MODULE}.get_settings", return_value=_settings(enabled)),
+            patch(f"{MODULE}.set_model_catalog_gauges") as set_gauges,
+        ):
+            catalog_tasks.reset_gauges_while_switched_off(sender=None)
+        return set_gauges
+
+    def test_a_worker_starting_with_the_catalog_off_zeroes_them(self, monkeypatch):
+        set_gauges = self._reset(monkeypatch, enabled=False, multiproc=True)
+
+        gauges = set_gauges.call_args.kwargs
+        assert "openai" in gauges["providers"]
+        assert gauges["now"] == 0.0
+        for name in ("last_success", "stale", "model_counts", "configured"):
+            assert gauges[name] == {}
+
+    def test_left_alone_while_the_catalog_is_on(self, monkeypatch):
+        self._reset(monkeypatch, enabled=True, multiproc=True).assert_not_called()
+
+    def test_left_alone_where_gauges_die_with_the_process(self, monkeypatch):
+        self._reset(monkeypatch, enabled=False, multiproc=False).assert_not_called()
+
+    def test_connected_to_the_worker_start(self):
+        from celery.signals import worker_ready
+
+        receivers = [receiver() for _, receiver in worker_ready.receivers]
+        assert catalog_tasks.reset_gauges_while_switched_off in receivers
