@@ -77,3 +77,50 @@ def test_attach_base_task_class_returns_expected_type() -> None:
         name = "tests.sample-task"
 
     assert issubclass(_SampleTask, base_cls)
+
+
+def test_model_catalog_task_is_included() -> None:
+    """The catalog task module is part of every app the factory builds."""
+    app = create_celery_app()
+    assert "inference_core.celery.tasks.catalog_tasks" in app.conf.include
+
+
+def test_model_catalog_is_scheduled_only_when_enabled() -> None:
+    """Beat asks the catalog for due providers only with the flag on."""
+    from inference_core.core.config import get_settings
+
+    base = get_settings()
+    off = create_celery_app(
+        custom_settings=base.model_copy(update={"llm_model_catalog_enabled": False})
+    )
+    on = create_celery_app(
+        custom_settings=base.model_copy(update={"llm_model_catalog_enabled": True})
+    )
+
+    assert "llm-catalog-refresh" not in off.conf.beat_schedule
+    entry = on.conf.beat_schedule["llm-catalog-refresh"]
+    assert entry["task"] == "llm.catalog_refresh"
+    assert entry["schedule"] == 900.0
+    assert entry["options"] == {"queue": "default", "expires": 900}
+    # The schedule shared by every app is left as it was.
+    assert "batch-poll" in on.conf.beat_schedule
+    assert (
+        "llm-catalog-refresh"
+        not in create_celery_app(
+            custom_settings=base.model_copy(update={"llm_model_catalog_enabled": False})
+        ).conf.beat_schedule
+    )
+
+
+def test_model_catalog_schedule_can_be_overridden() -> None:
+    """An application's own entry under the same key wins."""
+    from inference_core.core.config import get_settings
+
+    settings = get_settings().model_copy(update={"llm_model_catalog_enabled": True})
+    override = {
+        "llm-catalog-refresh": {"task": "llm.catalog_refresh", "schedule": 60.0}
+    }
+
+    app = create_celery_app(custom_settings=settings, beat_schedule_overrides=override)
+
+    assert app.conf.beat_schedule["llm-catalog-refresh"]["schedule"] == 60.0

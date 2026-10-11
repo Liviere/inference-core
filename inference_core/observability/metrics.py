@@ -485,3 +485,107 @@ def set_imap_poll_success_gauge(host_alias: str, ts: float) -> None:
         ).set(float(ts))
     except Exception:  # pragma: no cover - observability must never break polling
         logger.debug("set_imap_poll_success_gauge failed", exc_info=True)
+
+
+# ----------------------------------------------------------------------------
+# Model catalog — what the providers' model listings say about the config.
+#
+# Every gauge is a pure function of the stored catalog and the LLM config, and
+# the whole set is written on every publish, for every provider that has a
+# lister. So 0 always means "nothing to report", never "not written yet", and
+# no series has to disappear: in multiprocess mode a labelled series cannot be
+# taken back once a process wrote it, which is why none of these carries a
+# model name. Which models are meant is a question for the catalog itself.
+# ----------------------------------------------------------------------------
+llm_catalog_publish_timestamp = Gauge(
+    "llm_catalog_publish_timestamp",
+    "Unix timestamp of the last time the model catalog gauges were written",
+    multiprocess_mode="mostrecent",
+)
+llm_catalog_provider_last_success_timestamp = Gauge(
+    "llm_catalog_provider_last_success_timestamp",
+    "Unix timestamp of the last successful reading of a provider's model "
+    "listing (0 = never)",
+    ["provider"],
+    multiprocess_mode="mostrecent",
+)
+llm_catalog_provider_stale = Gauge(
+    "llm_catalog_provider_stale",
+    "1 when a provider in the catalog has not been read successfully for "
+    "three refresh intervals",
+    ["provider"],
+    multiprocess_mode="mostrecent",
+)
+llm_catalog_provider_models = Gauge(
+    "llm_catalog_provider_models",
+    "Models in a provider's latest listing",
+    ["provider"],
+    multiprocess_mode="mostrecent",
+)
+llm_catalog_events_recent = Gauge(
+    "llm_catalog_events_recent",
+    "Catalog changes in the last 24 hours, by provider and type",
+    ["provider", "type"],
+    multiprocess_mode="mostrecent",
+)
+llm_catalog_configured_models = Gauge(
+    "llm_catalog_configured_models",
+    "Configured models the catalog reports, by provider and state "
+    "(missing, deprecated, retiring)",
+    ["provider", "state"],
+    multiprocess_mode="mostrecent",
+)
+llm_catalog_configured_retirement_soonest_timestamp = Gauge(
+    "llm_catalog_configured_retirement_soonest_timestamp",
+    "Unix timestamp of the earliest retirement date among a provider's "
+    "configured models (0 = none has one)",
+    ["provider"],
+    multiprocess_mode="mostrecent",
+)
+
+
+def set_model_catalog_gauges(
+    *,
+    providers,
+    event_types,
+    drift_states,
+    last_success: Dict[str, float],
+    stale: Dict[str, bool],
+    model_counts: Dict[str, int],
+    recent_events: Dict[Any, int],
+    configured: Dict[Any, int],
+    soonest_retirement: Dict[str, float],
+    now: float,
+) -> None:
+    """Write the whole set of model catalog gauges.
+
+    ``providers``, ``event_types`` and ``drift_states`` span the series: each
+    combination is written, with 0 where the mappings have no entry.
+    ``recent_events`` is keyed by ``(provider, type)`` and ``configured`` by
+    ``(provider, state)``. Fail-soft: metrics never break the refresh.
+    """
+    try:
+        for provider in providers:
+            llm_catalog_provider_last_success_timestamp.labels(provider=provider).set(
+                last_success.get(provider, 0.0)
+            )
+            llm_catalog_provider_stale.labels(provider=provider).set(
+                1 if stale.get(provider) else 0
+            )
+            llm_catalog_provider_models.labels(provider=provider).set(
+                model_counts.get(provider, 0)
+            )
+            llm_catalog_configured_retirement_soonest_timestamp.labels(
+                provider=provider
+            ).set(soonest_retirement.get(provider, 0.0))
+            for event_type in event_types:
+                llm_catalog_events_recent.labels(
+                    provider=provider, type=event_type
+                ).set(recent_events.get((provider, event_type), 0))
+            for state in drift_states:
+                llm_catalog_configured_models.labels(
+                    provider=provider, state=state
+                ).set(configured.get((provider, state), 0))
+        llm_catalog_publish_timestamp.set(now)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("model catalog gauges not written: %s", exc)

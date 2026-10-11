@@ -349,6 +349,29 @@ class Settings(BaseSettings):
             "from the project root. Useful for fully emulated test profiles."
         ),
     )
+    llm_model_catalog_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, the providers' model listings are read on a schedule "
+            "into the model catalog. Which models can be used is not affected."
+        ),
+    )
+    llm_model_catalog_refresh_interval_seconds: int = Field(
+        default=86400,
+        ge=3600,
+        le=30 * 86400,
+        description=(
+            "How often a provider's model listing is read. Also how far apart "
+            "two readings must be before a model missing from both counts as "
+            "removed."
+        ),
+    )
+    llm_model_catalog_http_timeout_seconds: int = Field(
+        default=20,
+        ge=1,
+        le=120,
+        description="Read timeout of one request for a model listing.",
+    )
     llm_emulation_enabled: bool = Field(
         default=False,
         description=(

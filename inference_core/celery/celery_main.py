@@ -239,7 +239,12 @@ DEFAULT_TASK_MODULES: list[str] = [
     "inference_core.celery.tasks.email_tasks",
     "inference_core.celery.tasks.vector_tasks",
     "inference_core.celery.tasks.embedding_tasks",
+    "inference_core.celery.tasks.catalog_tasks",
 ]
+
+# How often beat asks the model catalog whether a provider is due. The refresh
+# interval itself is a setting; this only bounds how late a due reading starts.
+MODEL_CATALOG_TICK_SECONDS = 15 * 60
 DEFAULT_AUTODISCOVER: list[Union[str, Sequence[str], Callable[[], Sequence[str]]]] = [
     "inference_core.celery.tasks",
 ]
@@ -328,6 +333,17 @@ def create_celery_app(
         merged_routes = dict(getattr(celery_app.conf, "task_routes", {}) or {})
         merged_routes.update(extra_task_routes)
         celery_app.conf.task_routes = merged_routes
+
+    if settings.llm_model_catalog_enabled:
+        catalog_schedule = dict(getattr(celery_app.conf, "beat_schedule", {}) or {})
+        catalog_schedule["llm-catalog-refresh"] = {
+            "task": "llm.catalog_refresh",
+            "schedule": float(MODEL_CATALOG_TICK_SECONDS),
+            # A tick nobody picked up in time is worth nothing: the next one
+            # does the same work.
+            "options": {"queue": "default", "expires": MODEL_CATALOG_TICK_SECONDS},
+        }
+        celery_app.conf.beat_schedule = catalog_schedule
 
     if beat_schedule_overrides:
         merged_schedule = dict(getattr(celery_app.conf, "beat_schedule", {}) or {})
