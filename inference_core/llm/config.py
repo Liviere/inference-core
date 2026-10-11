@@ -75,6 +75,20 @@ class ProviderConfig(BaseModel):
     """
 
 
+class ProviderCatalogConfig(BaseModel):
+    """A provider's ``catalog:`` block: its part in the model catalog.
+
+    Read apart from :class:`ProviderConfig` on purpose. Every model load goes
+    through ``ProviderConfig``, so a mistake in this optional block must not
+    be able to take a provider's models down with it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    """Whether the provider's model listing is read at all."""
+
+
 class BatchRetryConfig(BaseModel):
     """Configuration for batch retry settings"""
 
@@ -1633,6 +1647,26 @@ class LLMConfig:
             # A registered provider needs no entry under ``providers``.
             return ProviderConfig(name=str(provider_name))
         return ProviderConfig(**provider_config)
+
+    def get_provider_catalog_config(self, provider_name: str) -> ProviderCatalogConfig:
+        """Return the provider's ``catalog:`` settings.
+
+        A provider without the block gets the defaults. So does one whose
+        block cannot be read, with a warning: the block only says how the
+        provider's models are listed, never which of them can be used.
+        """
+        provider_raw = self.providers.get(provider_name) or {}
+        block = provider_raw.get("catalog") if isinstance(provider_raw, dict) else None
+        if block is None:
+            return ProviderCatalogConfig()
+        try:
+            return ProviderCatalogConfig(**block)
+        except Exception:
+            logging.warning(
+                "Ignoring the unreadable 'catalog' block of provider '%s'",
+                provider_name,
+            )
+            return ProviderCatalogConfig()
 
     def list_byok_eligible_providers(self) -> set[str]:
         """Return the set of provider names flagged ``allow_byok`` in YAML.

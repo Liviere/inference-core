@@ -15,6 +15,7 @@ from .llm_config import (
     UserLLMPreferenceType,
 )
 from .llm_request_log import LLMRequestLog
+from .model_catalog import LLMCatalogEvent, LLMCatalogModel, LLMCatalogProviderState
 from .pricing_snapshot import LLMPricingSnapshot
 from .user import User
 from .user_agent_instance import UserAgentInstance
@@ -27,6 +28,10 @@ __all__ = [
     "BatchEvent",
     "LLMRequestLog",
     "LLMPricingSnapshot",
+    # Model catalog
+    "LLMCatalogModel",
+    "LLMCatalogEvent",
+    "LLMCatalogProviderState",
     # LLM Config models
     "LLMConfigOverride",
     "UserLLMPreference",
