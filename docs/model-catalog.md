@@ -60,6 +60,7 @@ python -m inference_core.llm.catalog refresh [--provider NAME ...]
 python -m inference_core.llm.catalog status
 python -m inference_core.llm.catalog drift [--check]
 python -m inference_core.llm.catalog events [--since 7d] [--provider NAME]
+python -m inference_core.llm.catalog scaffold PROVIDER MODEL
 ```
 
 - `refresh` reads the providers now, whenever they were last read. Exits with 1 when a provider failed.
@@ -67,7 +68,9 @@ python -m inference_core.llm.catalog events [--since 7d] [--provider NAME]
 - `drift` lists the configured models that need a look (see below). With `--check` it exits with 1 when there is any, for use in a deploy check.
 - `events` lists what changed in the listings, newest first.
 
-`status`, `drift` and `events` read what is stored and ask no provider.
+- `scaffold` prints a draft `models:` entry for a model in the catalog, with what the listing says filled in and what it does not say (prices, for most providers) marked in a comment. It changes no file: adding a model to the config stays a decision somebody makes.
+
+`status`, `drift`, `events` and `scaffold` read what is stored and ask no provider.
 
 ## Drift
 

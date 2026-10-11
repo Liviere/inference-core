@@ -267,3 +267,34 @@ class TestEvents:
         assert await cli._events(_args("events", "--provider", OTHER)) == 0
 
         assert "No changes" in capsys.readouterr().out
+
+
+class TestScaffold:
+    async def test_prints_a_draft_entry(self, catalog, capsys):
+        catalog[ACME].models = [
+            _model(
+                ACME,
+                "org/model-1",
+                attributes={
+                    "display_name": "Model One",
+                    "max_output_tokens": 8192,
+                    "capabilities": {"vision": True},
+                    "pricing": {"input": 0.35, "output": 0.4},
+                },
+            )
+        ]
+        await cli._refresh(_args("refresh", "--provider", ACME))
+        capsys.readouterr()
+
+        assert await cli._scaffold(_args("scaffold", ACME, "org/model-1")) == 0
+
+        out = capsys.readouterr().out
+        assert "  org/model-1:\n    provider: acme_gateway\n" in out
+        assert "cost_per_1m: 0.35" in out
+
+    async def test_unknown_model(self, catalog, capsys):
+        assert await cli._scaffold(_args("scaffold", ACME, "nope")) == 2
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "nope" in captured.err

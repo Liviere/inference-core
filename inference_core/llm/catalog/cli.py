@@ -4,11 +4,13 @@
     python -m inference_core.llm.catalog status
     python -m inference_core.llm.catalog drift [--check]
     python -m inference_core.llm.catalog events [--since 7d] [--provider NAME]
+    python -m inference_core.llm.catalog scaffold PROVIDER MODEL
 
 ``refresh`` reads the providers now, whether or not the scheduled refresh is
 switched on and whenever they were last read. The others read what is stored
 and ask no provider. ``drift --check`` exits with 1 when a configured model
-needs a look, for use in a deploy check.
+needs a look, for use in a deploy check. ``scaffold`` prints a draft
+``models:`` entry for a model in the catalog; it changes no file.
 """
 
 import argparse
@@ -175,6 +177,27 @@ async def _events(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _scaffold(args: argparse.Namespace) -> int:
+    from .scaffold import render_model_entry
+    from .service import catalog_models
+
+    rows = [
+        row
+        for row in await catalog_models(provider=args.provider)
+        if row.removed_at is None
+    ]
+    match = next((row for row in rows if row.model_id == args.model), None)
+    if match is None:
+        print(
+            f"The catalog has no model '{args.model}' of provider '{args.provider}'. "
+            "Run 'refresh' first, or check the id with the provider.",
+            file=sys.stderr,
+        )
+        return 2
+    print(render_model_entry(match), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m inference_core.llm.catalog",
@@ -212,6 +235,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     events.add_argument("--provider", metavar="NAME", help="only this provider")
     events.set_defaults(run=_events)
+
+    scaffold = commands.add_parser(
+        "scaffold", help="print a draft 'models:' entry for a model in the catalog"
+    )
+    scaffold.add_argument("provider", metavar="PROVIDER")
+    scaffold.add_argument("model", metavar="MODEL", help="the provider's model id")
+    scaffold.set_defaults(run=_scaffold)
 
     return parser
 
