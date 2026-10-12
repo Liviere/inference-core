@@ -280,8 +280,9 @@ class AgentService:
                 call.  When None, uses settings.agent_memory_postrun_analysis_model
                 (typically the agent's own model).
             memory_analysis_model: The chat model post-run memory analysis runs
-                on, already built.  When given, it is used as it is and none is
-                resolved by name (see ``MemoryMiddleware``).
+                on, already built, or several to try in order.  When given, it
+                is used as it is and none is resolved by name (see
+                ``MemoryMiddleware``).
             memory_tools: Override for which memory tools are exposed to the model.
                 When None, inherits from AgentConfig.memory_tools or exposes all.
                 Empty list disables model-facing memory tools while keeping the
@@ -2656,7 +2657,8 @@ class DeepAgentService(AgentService):
             instance_context: Optional identity of the UserAgentInstance backing this run.
             _visited_agents: Internal recursion guard.
             memory_analysis_model: The chat model post-run memory analysis runs
-                on, already built (see ``AgentService``).
+                on, already built, or several to try in order (see
+                ``AgentService``).
         """
         super().__init__(
             agent_name,

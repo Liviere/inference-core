@@ -393,6 +393,15 @@ already built: `AgentService(memory_analysis_model=...)`, passed on to
 `MemoryMiddleware(analysis_model=...)`. That model is then used as it is and
 none of the names above is resolved.
 
+Several models may be handed over, as an iterable. The first call of the
+analysis goes to the first of them that answers: a model that cannot take the
+tools, or whose call fails, is passed over with a warning. The model that
+answered makes the rest of the analysis and is the one named in the usage log.
+The iterable is read only as far as needed, so it may build its models on
+demand. A run that was cancelled or interrupted is not carried on by the next
+model, and an empty iterable means that no analysis runs at all: the agent's
+own model is not used in its place.
+
 Otherwise the model is instantiated through the global model factory so provider and
 parameters from `llm_config.yaml` are applied. The middleware asks the model to
 inspect semantically similar memories first and then call `save_memory_store`,

@@ -19,7 +19,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional
 
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -28,6 +28,7 @@ from langchain.agents.middleware import (
     ModelResponse,
 )
 from langchain.messages import SystemMessage
+from langgraph.errors import GraphInterrupt
 from langgraph.runtime import Runtime
 from typing_extensions import NotRequired
 
@@ -66,9 +67,31 @@ from inference_core.llm.model_identity import (
     get_usage_details,
     provider_name,
 )
+from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
 
 logger = logging.getLogger(__name__)
+
+
+def _is_one_model(value: Any) -> bool:
+    """Whether *value* is one chat model, not several to try in order."""
+    return hasattr(value, "bind_tools") or hasattr(value, "ainvoke")
+
+
+def _models_to_try(model: Any) -> Iterator[Any]:
+    """The models post-run analysis may run on, in order.
+
+    *model* is one chat model or an iterable of them. The iterable is read
+    only as far as needed, so it may build its models on demand.
+    """
+    if model is None:
+        return
+    if _is_one_model(model):
+        yield model
+        return
+    for candidate in model:
+        if candidate is not None:
+            yield candidate
 
 
 class MemoryState(AgentState):
@@ -191,6 +214,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 they run).  When given, no model is resolved by name: this one
                 is used as it is, and its usage is logged under the model it
                 says it is (see ``inference_core.llm.model_identity``).
+                Several models may be given, as an iterable: they are tried in
+                order, and the first that answers does the whole analysis.
+                None of them (an empty one) means no analysis.
         """
         self.memory_service = memory_service
         self.user_id = user_id
@@ -661,12 +687,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         A model handed to the middleware (``analysis_model``) comes first and is
         used as it is: whoever built it chose it, and nothing is resolved by
-        name.  Its name is the one written on it, when there is one.
+        name.  Its name is the one written on it, when there is one.  Several
+        models handed over are returned as they came, without a name: which of
+        them answers is known only once the analysis has run.
 
         Returns ``(None, None)`` when no model is available at all; the caller
         skips analysis and logs a warning rather than failing.
         """
         if self._analysis_model is not None:
+            if not _is_one_model(self._analysis_model):
+                return self._analysis_model, None
             identity = get_model_identity(self._analysis_model)
             return self._analysis_model, identity.name if identity else None
 
@@ -985,7 +1015,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         update_tool = UpdateMemoryStoreTool(
             memory_service=self.memory_service, user_id=user_id
         )
-        bound_model = model.bind_tools([save_tool, recall_tool, update_tool])
+        tools = [save_tool, recall_tool, update_tool]
+        bound_model: Any = None
 
         messages_ctx: list[Any] = [
             {"role": "system", "content": self._TOOL_ANALYSIS_SYSTEM_PROMPT},
@@ -1000,13 +1031,22 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         iterations = 0
 
         for loop_idx in range(4):  # cap prevents runaway loops
-            try:
-                response = await bound_model.ainvoke(messages_ctx)
-            except Exception as e:
-                logger.warning(
-                    "Post-run tool-call analysis: model invocation failed: %s", e
-                )
-                break
+            if bound_model is None:
+                # The first call goes to the first model that answers it; that
+                # model makes the rest of the analysis and is the one billed.
+                answered = await self._first_answer(model, tools, messages_ctx)
+                if answered is None:
+                    break
+                model, bound_model, response = answered
+            else:
+                try:
+                    response = await bound_model.ainvoke(messages_ctx)
+                except Exception as e:
+                    logger.warning(
+                        "Post-run tool-call analysis: model invocation failed: %s",
+                        e,
+                    )
+                    break
 
             iterations += 1
             # Accumulate token usage so the session is billed for memory work.
@@ -1075,6 +1115,48 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         return saved_count
 
+    async def _first_answer(
+        self, model: Any, tools: List[Any], messages: List[Any]
+    ) -> Optional[tuple[Any, Any, Any]]:
+        """Make the first call of the analysis on the first model that answers.
+
+        *model* is one chat model or several to try in order.  A model that
+        cannot take the tools, or whose call fails, is passed over with a
+        warning.  A run that was cancelled or interrupted is not carried on by
+        another model.
+
+        Returns ``(model, model bound to the tools, response)``, or ``None``
+        when no model answered.
+        """
+        for candidate in _models_to_try(model):
+            try:
+                bound = candidate.bind_tools(tools)
+                response = await bound.ainvoke(messages)
+            except (AgentCancelled, GraphInterrupt) as e:
+                logger.warning("Post-run tool-call analysis stopped: %s", e)
+                return None
+            except Exception as e:
+                logger.warning(
+                    "Post-run tool-call analysis: model invocation failed: %s", e
+                )
+                continue
+            return candidate, bound, response
+        return None
+
+    def _no_model_to_analyse_on(self) -> bool:
+        """Whether the models to analyse on were handed over and are none.
+
+        An application that hands over an empty set says that nothing may run
+        the analysis; that is not the same as no model having been resolved.
+        """
+        given = self._analysis_model
+        if given is None or _is_one_model(given):
+            return False
+        try:
+            return len(given) == 0
+        except TypeError:
+            return False
+
     # -------------------------------------------------------------------------
     # Post-run analysis hooks
     # -------------------------------------------------------------------------
@@ -1111,6 +1193,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             logger.debug(
                 "Post-run analysis skipped — too few messages (%d)", len(messages)
             )
+            return None
+
+        if self._no_model_to_analyse_on():
+            logger.debug("Post-run analysis skipped — no model to run it on")
             return None
 
         model, model_name = self._get_analysis_model()
@@ -1172,6 +1258,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         messages = state.get("messages", [])
         if len(messages) < 2:
+            return None
+
+        if self._no_model_to_analyse_on():
+            logger.debug("Post-run analysis (async) skipped — no model to run it on")
             return None
 
         model, model_name = self._get_analysis_model()

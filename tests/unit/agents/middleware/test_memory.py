@@ -1080,6 +1080,192 @@ class TestAnalyseViaToolCall:
 
 
 # ---------------------------------------------------------------------------
+# Several models to analyse on
+# ---------------------------------------------------------------------------
+
+
+def _answering(*responses):
+    """A model that answers the analysis' calls with *responses*, in order."""
+    model = MagicMock()
+    model.bind_tools.return_value.ainvoke = AsyncMock(side_effect=list(responses))
+    return model
+
+
+def _failing(error=None):
+    """A model whose call fails."""
+    model = MagicMock()
+    model.bind_tools.return_value.ainvoke = AsyncMock(
+        side_effect=error or RuntimeError("provider down")
+    )
+    return model
+
+
+def _response(*tool_calls):
+    response = MagicMock()
+    response.tool_calls = list(tool_calls)
+    response.response_metadata = {}
+    response.usage_metadata = {"input_tokens": 10, "output_tokens": 2}
+    return response
+
+
+_SAVE = {"name": "save_memory_store", "args": {"content": "Uses Python"}}
+
+
+class TestSeveralAnalysisModels:
+    """Post-run analysis handed several models tries them in order."""
+
+    STATE_MESSAGES = ("I use Python", "Got it.")
+
+    def _state(self):
+        human, ai = self.STATE_MESSAGES
+        return MemoryState(messages=[_make_human(human), _make_ai(ai)])
+
+    async def test_models_are_tried_in_order_until_one_answers(
+        self, middleware, mock_memory_service
+    ):
+        mock_memory_service.save_memory = AsyncMock(return_value="mem-id")
+        first, second, third = (
+            _failing(),
+            _answering(_response(_SAVE), _response()),
+            _answering(),
+        )
+
+        saved = await middleware._analyse_via_tool_call(
+            self._state(), [first, second, third], None, "u1", False
+        )
+
+        assert saved == 1
+        first.bind_tools.return_value.ainvoke.assert_awaited_once()
+        # The one that answered the first call makes the rest of the analysis.
+        assert second.bind_tools.return_value.ainvoke.await_count == 2
+        # Nobody asks a model that was not needed.
+        third.bind_tools.assert_not_called()
+
+    async def test_the_model_that_answered_is_the_one_in_the_usage_log(
+        self, middleware
+    ):
+        first, second = _failing(), _answering(_response())
+        middleware._bill_memory_usage = AsyncMock()
+
+        await middleware._analyse_via_tool_call(
+            self._state(), (first, second), None, "u1", False
+        )
+
+        middleware._bill_memory_usage.assert_awaited_once()
+        assert middleware._bill_memory_usage.await_args.kwargs["model"] is second
+        # One call was made on it; the failed try is not counted.
+        assert middleware._bill_memory_usage.await_args.args[3] == 1
+
+    async def test_a_model_that_cannot_take_tools_is_passed_over(self, middleware):
+        cannot_bind = MagicMock()
+        cannot_bind.bind_tools.side_effect = NotImplementedError("no tools")
+        second = _answering(_response())
+        middleware._bill_memory_usage = AsyncMock()
+
+        await middleware._analyse_via_tool_call(
+            self._state(), [cannot_bind, second], None, "u1", False
+        )
+
+        assert middleware._bill_memory_usage.await_args.kwargs["model"] is second
+
+    async def test_nothing_is_saved_or_logged_when_every_model_fails(
+        self, middleware, mock_memory_service
+    ):
+        mock_memory_service.save_memory = AsyncMock()
+
+        with patch("inference_core.llm.usage_logging.UsageSession") as MockSession:
+            saved = await middleware._analyse_via_tool_call(
+                self._state(), [_failing(), _failing()], None, "u1", False
+            )
+
+        assert saved == 0
+        mock_memory_service.save_memory.assert_not_awaited()
+        MockSession.assert_not_called()
+
+    async def test_the_models_are_read_only_as_far_as_needed(self, middleware):
+        """They may be built on demand: one that is not needed is never asked for."""
+        asked = []
+
+        class _OnDemand:
+            def __len__(self):
+                return 3
+
+            def __iter__(self):
+                for index, model in enumerate(
+                    (_failing(), _answering(_response()), _answering())
+                ):
+                    asked.append(index)
+                    yield model
+
+        middleware._bill_memory_usage = AsyncMock()
+
+        await middleware._analyse_via_tool_call(
+            self._state(), _OnDemand(), None, "u1", False
+        )
+
+        assert asked == [0, 1]
+
+    @pytest.mark.parametrize("stopped", ["cancelled", "interrupted"])
+    async def test_a_run_that_was_stopped_is_not_carried_on_by_the_next_model(
+        self, middleware, stopped
+    ):
+        from langgraph.errors import GraphInterrupt
+
+        from inference_core.services._cancel import AgentCancelled
+
+        error = AgentCancelled() if stopped == "cancelled" else GraphInterrupt()
+        first, second = _failing(error), _answering(_response())
+
+        saved = await middleware._analyse_via_tool_call(
+            self._state(), [first, second], None, "u1", False
+        )
+
+        assert saved == 0
+        second.bind_tools.assert_not_called()
+
+    def test_several_models_are_handed_on_as_they_came(self, mock_memory_service):
+        models = [MagicMock(), MagicMock()]
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service, user_id="u1", analysis_model=models
+        )
+
+        # No name: which of them answers is known only after the analysis.
+        assert mw._get_analysis_model() == (models, None)
+
+    @pytest.mark.parametrize("none_of_them", [[], ()])
+    async def test_no_model_handed_over_means_no_analysis(
+        self, mock_memory_service, none_of_them
+    ):
+        """An empty set says that nothing may run it. That is not "no model was
+        resolved": the agent's own model is not used in its place."""
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            analysis_model=none_of_them,
+        )
+        mw._captured_model = MagicMock()
+        mw._analyse_via_tool_call = AsyncMock(return_value=1)
+        mw._emit_finalizing_lifecycle = MagicMock()
+
+        assert mw.after_agent(self._state(), MagicMock()) is None
+        assert await mw.aafter_agent(self._state(), MagicMock()) is None
+
+        mw._analyse_via_tool_call.assert_not_called()
+        mw._emit_finalizing_lifecycle.assert_not_called()
+
+    def test_one_model_is_not_taken_for_several(self, mock_memory_service):
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        model = FakeListChatModel(responses=["ok"])
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service, user_id="u1", analysis_model=model
+        )
+
+        assert mw._no_model_to_analyse_on() is False
+        assert mw._get_analysis_model()[0] is model
+
+
+# ---------------------------------------------------------------------------
 # _prefetch_existing_memories
 # ---------------------------------------------------------------------------
 
