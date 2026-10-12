@@ -16,7 +16,10 @@ from sqlalchemy.exc import IntegrityError
 
 from inference_core.celery.async_utils import run_async_safely
 from inference_core.database.sql.connection import get_async_session
-from inference_core.database.sql.models.llm_request_log import LLMRequestLog
+from inference_core.database.sql.models.llm_request_log import (
+    REPORTED_MODEL_NAME_MAX_LENGTH,
+    LLMRequestLog,
+)
 from inference_core.database.sql.models.pricing_snapshot import LLMPricingSnapshot
 from inference_core.llm.config import PricingConfig, UsageLoggingConfig
 
@@ -271,11 +274,16 @@ class UsageSession:
         logging_config: Optional[UsageLoggingConfig] = None,
         instance_id: Optional[uuid.UUID] = None,
         instance_name: Optional[str] = None,
+        reported_model_name: Optional[str] = None,
     ):
         self.task_type = task_type
         self.request_mode = request_mode
+        # The configured name of the model that was called, and its provider.
         self.model_name = model_name
         self.provider = provider
+        # What the provider's response named, which may be a snapshot or an
+        # alias of the configured model.
+        self.reported_model_name = reported_model_name
         self.pricing_config = pricing_config
         self.user_id = user_id
         self.session_id = session_id
@@ -439,6 +447,14 @@ class UsageSession:
                 request_mode=self.request_mode,
                 model_name=self.model_name,
                 provider=self.provider,
+                # A provider chooses this text; one too long for the column
+                # must not cost the whole log entry.
+                reported_model_name=(
+                    self.reported_model_name[:REPORTED_MODEL_NAME_MAX_LENGTH]
+                    if isinstance(self.reported_model_name, str)
+                    and self.reported_model_name
+                    else None
+                ),
                 request_id=self.request_id,
                 latency_ms=latency_ms,
                 success=success,

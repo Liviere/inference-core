@@ -59,6 +59,7 @@ from inference_core.agents.middleware._runtime_context import (
     populate_from_configurable,
 )
 from inference_core.llm.config import PricingConfig, UsageLoggingConfig, get_llm_config
+from inference_core.llm.model_identity import get_model_identity, provider_name
 from inference_core.llm.usage_logging import PricingCalculator, UsageSession
 from inference_core.services._cancel import AgentCancelled
 
@@ -82,8 +83,14 @@ class CostTrackingState(AgentState):
         model_call_count: Number of model calls made during the run
         model_call_latencies: List of model call durations in milliseconds
         last_request_log_id: UUID of the most recently created LLMRequestLog
-        last_request_cost_usd: Cost (USD) of the most recent model call
-        last_request_model_name: Model name for the most recent call
+        last_request_cost_usd: Cost (USD) of the most recent model call;
+            ``0.0`` when the model that was called has no pricing
+        last_request_model_name: Configured name of the model the most recent
+            call was made on (a fallback's own name when a fallback answered)
+        last_request_provider: Provider of that model; ``None`` when the model
+            could not be told from the call
+        last_request_reported_model_name: The name the provider's response gave
+            for the most recent call, which may be a snapshot or an alias
     """
 
     usage_session_id: NotRequired[str]
@@ -98,29 +105,69 @@ class CostTrackingState(AgentState):
     last_request_log_id: NotRequired[str]
     last_request_cost_usd: NotRequired[float]
     last_request_model_name: NotRequired[str]
+    last_request_provider: NotRequired[Optional[str]]
+    last_request_reported_model_name: NotRequired[Optional[str]]
+
+
+@dataclass(frozen=True)
+class _InvokedModel:
+    """The model a call was made on, as far as the call lets it be told."""
+
+    name: str
+    # None when the model is not one the configuration knows.
+    provider: Optional[str]
+    # False when ``name`` is only what the response said, or the default.
+    identified: bool
+
+
+@dataclass(frozen=True)
+class _PreparedCall:
+    """A model call ready to be logged: who answered and what it used."""
+
+    session: UsageSession
+    fragment: Dict[str, Any]
+    extra_tokens: Dict[str, int]
+    is_estimated: bool
+    model: _InvokedModel
+    reported_model_name: Optional[str]
+    pricing_config: Optional[PricingConfig]
+
+
+@dataclass(frozen=True)
+class _PersistedCall:
+    """What one logged model call leaves for ``after_model`` to put in state.
+
+    One record, set in one assignment: the fields describe the same call, and
+    a reader never sees the log of one call next to the model of another.
+    """
+
+    log_id: str
+    model_name: str
+    provider: Optional[str]
+    reported_model_name: Optional[str]
+    # 0.0 for a model without pricing: the call is logged, and costs nothing.
+    cost_usd: float
+    fragment: Dict[str, Any]
+    extra_tokens: Dict[str, int]
+    is_estimated: bool
 
 
 @dataclass
 class _MiddlewareContext:
     """Internal context for tracking data between middleware hooks.
 
-    The ``persisted_*`` fields are populated by ``_persist_from_response()``
-    (called inside ``wrap_model_call``) so that ``after_model`` can update
-    the graph state without re-persisting to the database.  This is critical
-    because ``after_model`` runs as a **separate LangGraph node** and may be
-    skipped when the agent is cancelled between the model node and the
-    after_model node.
+    ``persisted`` is set by ``_persist_from_response()`` (called inside
+    ``wrap_model_call``) so that ``after_model`` can update the graph state
+    without re-persisting to the database.  This is critical because
+    ``after_model`` runs as a **separate LangGraph node** and may be skipped
+    when the agent is cancelled between the model node and the after_model
+    node.
     """
 
     model_call_start_time: Optional[float] = None
 
-    # Populated by _persist_from_response() inside wrap_model_call
-    persisted_log_id: Optional[str] = None
-    persisted_cost_usd: Optional[float] = None
-    persisted_model_name: Optional[str] = None
-    persisted_fragment: Optional[Dict[str, Any]] = None
-    persisted_extra_tokens: Optional[Dict[str, int]] = None
-    persisted_is_estimated: bool = False
+    # Set by _persist_from_response() inside wrap_model_call
+    persisted: Optional[_PersistedCall] = None
 
 
 class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
@@ -162,6 +209,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         model_name: Optional[str] = None,
         instance_id: Optional[uuid.UUID] = None,
         instance_name: Optional[str] = None,
+        llm_config: Optional[Any] = None,
     ):
         """Initialize the cost tracking middleware.
 
@@ -174,10 +222,16 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             logging_config: Usage logging configuration. If None, uses defaults.
             task_type: Task type for logging (default: "agent").
             request_mode: Request mode for logging (default: "sync").
-            provider: LLM provider name (e.g., "openai"). Auto-detected if None.
-            model_name: Model name. Auto-detected from runtime if None.
+            provider: Provider of ``model_name``. Used for a call whose model
+                cannot be told; a call on another model (a fallback, a
+                subagent's) is logged with that model's own provider.
+            model_name: Configured name of the model this middleware is built
+                for. Auto-detected from runtime if None.
             instance_id: Optional UserAgentInstance UUID for per-instance attribution.
             instance_name: Optional UserAgentInstance name for per-instance attribution.
+            llm_config: The LLM configuration the agent runs on, when it is not
+                the global one (a per-user copy, for instance). Models and
+                their pricing are looked up there.
         """
         self.pricing_config = pricing_config
         self.user_id = user_id
@@ -190,6 +244,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         self._model_name = model_name
         self.instance_id = instance_id
         self.instance_name = instance_name
+        self._llm_config = llm_config
         self.cancel_check: Callable[[], bool] | None = None
 
         # Per-invocation context (reset on each before_agent)
@@ -270,8 +325,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         This hook reads the pre-persisted data from ``_ctx`` and only
         accumulates token counters + exposes ``last_request_log_id`` etc.
-        to the shared state (consumed by downstream middleware such as
-        ``CreditBillingMiddleware``).
+        to the shared state, where middleware outside this one reads them
+        (one that charges for the call, for instance).
 
         If ``_ctx`` has no persisted data (edge-case safety net), the hook
         falls back to the legacy path and persists from ``state.messages``.
@@ -294,9 +349,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         try:
             # ----- Fast path: data already persisted by wrap_model_call -----
-            if self._ctx.persisted_log_id is not None:
-                fragment = self._ctx.persisted_fragment or {}
-                extra_tokens = self._ctx.persisted_extra_tokens or {}
+            call = self._ctx.persisted
+            if call is not None:
+                fragment = call.fragment or {}
+                extra_tokens = call.extra_tokens or {}
 
                 if fragment:
                     updates["accumulated_input_tokens"] = state.get(
@@ -312,11 +368,13 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                         state.get("accumulated_extra_tokens", {}), extra_tokens
                     )
 
-                updates["last_request_log_id"] = self._ctx.persisted_log_id
-                if self._ctx.persisted_cost_usd is not None:
-                    updates["last_request_cost_usd"] = self._ctx.persisted_cost_usd
-                if self._ctx.persisted_model_name:
-                    updates["last_request_model_name"] = self._ctx.persisted_model_name
+                # The whole set, every time: a value left over from the call
+                # before would be read as this call's (its cost, most of all).
+                updates["last_request_log_id"] = call.log_id
+                updates["last_request_cost_usd"] = call.cost_usd
+                updates["last_request_model_name"] = call.model_name
+                updates["last_request_provider"] = call.provider
+                updates["last_request_reported_model_name"] = call.reported_model_name
 
                 return updates if updates else None
 
@@ -331,10 +389,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             # LangChain v1 AIMessage has usage_metadata attribute
             usage_metadata = getattr(last_message, "usage_metadata", None)
 
+            # Nothing here says which model was called, only what the response
+            # named: the name is the reported one, and no provider is claimed.
             response_metadata = getattr(last_message, "response_metadata", None) or {}
-            model_name = response_metadata.get(
-                "model_name", self._model_name or "unknown"
-            )
+            reported_name = self._reported_model_name(response_metadata)
+            model_name = reported_name or self._model_name or "unknown"
 
             # Determine usage fragment: prefer real metadata, fall back to estimation
             if usage_metadata and isinstance(usage_metadata, dict):
@@ -369,7 +428,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     state.get("accumulated_extra_tokens", {}), extra_tokens
                 )
 
-                provider = self._provider or self._detect_provider(model_name)
+                provider = provider_name(self._provider) or self._detect_provider(
+                    model_name
+                )
                 pricing_config = self._get_pricing_config(model_name)
 
                 session = UsageSession(
@@ -377,6 +438,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     request_mode=self.request_mode,
                     model_name=model_name,
                     provider=provider,
+                    reported_model_name=reported_name,
                     pricing_config=pricing_config,
                     user_id=self.user_id or get_user_id(),
                     session_id=self.session_id or get_session_id(),
@@ -399,15 +461,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                     details={"estimated": True} if is_estimated else None,
                 )
 
-                if log_id and pricing_config:
-                    cost_result = PricingCalculator.compute_cost(
+                if log_id:
+                    updates["last_request_log_id"] = str(log_id)
+                    updates["last_request_cost_usd"] = self._cost_of(
                         fragment, pricing_config
                     )
-                    updates["last_request_log_id"] = str(log_id)
-                    updates["last_request_cost_usd"] = cost_result.get(
-                        "cost_total_usd", 0.0
-                    )
                     updates["last_request_model_name"] = model_name
+                    updates["last_request_provider"] = None
+                    updates["last_request_reported_model_name"] = reported_name
         except Exception as e:
             logger.warning(
                 f"Error extracting usage from model response: {e}", exc_info=True
@@ -416,12 +477,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             if self._ctx:
                 self._ctx.model_call_start_time = None
                 # Reset persisted data so next model call starts clean
-                self._ctx.persisted_log_id = None
-                self._ctx.persisted_cost_usd = None
-                self._ctx.persisted_model_name = None
-                self._ctx.persisted_fragment = None
-                self._ctx.persisted_extra_tokens = None
-                self._ctx.persisted_is_estimated = False
+                self._ctx.persisted = None
 
         return updates if updates else None
 
@@ -603,17 +659,102 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     # Internal helpers
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _reported_model_name(response_metadata: Dict[str, Any]) -> Optional[str]:
+        """The model name a response carries, when it carries one."""
+        reported = response_metadata.get("model_name")
+        return reported if isinstance(reported, str) and reported else None
+
+    @staticmethod
+    def _declared_model_id(model: Any) -> Optional[str]:
+        """The model id a chat-model object was built with, whatever it calls it."""
+        for attr in ("model_name", "model"):
+            try:
+                value = getattr(model, attr, None)
+            except Exception:
+                continue
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    def _config(self) -> Optional[Any]:
+        """The LLM configuration this agent runs on, or ``None``."""
+        if self._llm_config is not None:
+            return self._llm_config
+        try:
+            return get_llm_config()
+        except Exception as e:
+            logger.debug("Could not load the LLM config: %s", e)
+            return None
+
+    def _configured_provider(self, model_name: str) -> Optional[str]:
+        """Provider of a configured model, or ``None`` for a name not configured."""
+        config = self._config()
+        if config is None:
+            return None
+        try:
+            model_cfg = config.models.get(model_name)
+        except Exception:
+            return None
+        return provider_name(getattr(model_cfg, "provider", None))
+
+    def _resolve_invoked_model(
+        self, request: ModelRequest, reported_name: Optional[str]
+    ) -> _InvokedModel:
+        """Tell which configured model a call was made on.
+
+        The request holds the model object that was called, which is the
+        fallback's when a fallback answered and a subagent's when this
+        middleware is shared with one. Its identity is read, in order:
+
+        1. from what the model factory wrote on it;
+        2. from the id it was built with, when that is a configured model
+           (a model built outside the factory);
+        3. failing both, the name is what the response reported, as it used to
+           be, and no provider is claimed for it.
+        """
+        model = getattr(request, "model", None)
+
+        identity = get_model_identity(model)
+        if identity is not None:
+            return _InvokedModel(
+                name=identity.name,
+                provider=identity.provider or self._configured_provider(identity.name),
+                identified=True,
+            )
+
+        declared = self._declared_model_id(model)
+        if declared:
+            provider = self._configured_provider(declared)
+            if provider:
+                return _InvokedModel(name=declared, provider=provider, identified=True)
+
+        return _InvokedModel(
+            name=reported_name or self._model_name or "unknown",
+            provider=None,
+            identified=False,
+        )
+
+    @staticmethod
+    def _cost_of(
+        fragment: Dict[str, Any], pricing_config: Optional[PricingConfig]
+    ) -> float:
+        """Cost of a call in USD; ``0.0`` for a model without pricing."""
+        if not pricing_config:
+            return 0.0
+        cost_result = PricingCalculator.compute_cost(fragment, pricing_config)
+        return float(cost_result.get("cost_total_usd") or 0.0)
+
     def _build_usage_session(
         self, response: ModelResponse, request: ModelRequest
-    ) -> tuple | None:
+    ) -> Optional[_PreparedCall]:
         """Prepare a UsageSession and extract usage data from a model response.
 
         Shared preparation logic for both sync (_persist_from_response) and
         async (_apersist_from_response) persist paths, keeping both callers DRY.
 
         Returns:
-            (session, fragment, extra_tokens, is_estimated, model_name,
-             pricing_config) or None if there is nothing to persist.
+            The call ready to be logged, or None if there is nothing to persist.
         """
         if not response.result:
             return None
@@ -621,7 +762,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         ai_message = response.result[-1]
         usage_metadata = getattr(ai_message, "usage_metadata", None)
         response_metadata = getattr(ai_message, "response_metadata", None) or {}
-        model_name = response_metadata.get("model_name", self._model_name or "unknown")
+        reported_name = self._reported_model_name(response_metadata)
+        invoked = self._resolve_invoked_model(request, reported_name)
 
         if usage_metadata and isinstance(usage_metadata, dict):
             fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
@@ -640,15 +782,23 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 logger.info(
                     "usage_metadata unavailable for model=%s; "
                     "falling back to estimated tokens (wrap_model_call): %s",
-                    model_name,
+                    invoked.name,
                     fragment,
                 )
 
         if not fragment:
             return None
 
-        provider = self._provider or self._detect_provider(model_name)
-        pricing_config = self._get_pricing_config(model_name)
+        # The log needs a provider even for a model that could not be told:
+        # then it is this middleware's own, or a guess from the name.
+        provider = (
+            invoked.provider
+            or provider_name(self._provider)
+            or self._detect_provider(invoked.name)
+        )
+        pricing_config = self._get_pricing_config(
+            invoked.name, identified=invoked.identified
+        )
 
         # Resolve per-request IDs: prefer instance attrs (local),
         # fall back to task-local context vars (Agent Server).
@@ -661,8 +811,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         session = UsageSession(
             task_type=self.task_type,
             request_mode=self.request_mode,
-            model_name=model_name,
+            model_name=invoked.name,
             provider=provider,
+            reported_model_name=reported_name,
             pricing_config=pricing_config,
             user_id=effective_user_id,
             session_id=effective_session_id,
@@ -675,31 +826,32 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         if self._ctx and self._ctx.model_call_start_time:
             session.start_time = self._ctx.model_call_start_time
 
-        return session, fragment, extra_tokens, is_estimated, model_name, pricing_config
+        return _PreparedCall(
+            session=session,
+            fragment=fragment,
+            extra_tokens=extra_tokens,
+            is_estimated=is_estimated,
+            model=invoked,
+            reported_model_name=reported_name,
+            pricing_config=pricing_config,
+        )
 
-    def _apply_persist_result(
-        self,
-        log_id,
-        fragment: Dict[str, Any],
-        extra_tokens: Dict[str, int],
-        is_estimated: bool,
-        model_name: str,
-        pricing_config,
-    ) -> None:
+    def _apply_persist_result(self, log_id: Any, prepared: _PreparedCall) -> None:
         """Store persist results in middleware context after finalize.
 
         Shared epilogue for both sync and async persist paths.
         """
         if log_id and self._ctx:
-            self._ctx.persisted_log_id = str(log_id)
-            self._ctx.persisted_fragment = fragment
-            self._ctx.persisted_extra_tokens = extra_tokens
-            self._ctx.persisted_is_estimated = is_estimated
-            self._ctx.persisted_model_name = model_name
-
-            if pricing_config:
-                cost_result = PricingCalculator.compute_cost(fragment, pricing_config)
-                self._ctx.persisted_cost_usd = cost_result.get("cost_total_usd", 0.0)
+            self._ctx.persisted = _PersistedCall(
+                log_id=str(log_id),
+                model_name=prepared.model.name,
+                provider=prepared.model.provider,
+                reported_model_name=prepared.reported_model_name,
+                cost_usd=self._cost_of(prepared.fragment, prepared.pricing_config),
+                fragment=prepared.fragment,
+                extra_tokens=prepared.extra_tokens,
+                is_estimated=prepared.is_estimated,
+            )
 
     def _persist_from_response(
         self, response: ModelResponse, request: ModelRequest
@@ -708,7 +860,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         Called from ``wrap_model_call`` (sync path) so the DB write happens
         inside the same LangGraph node as the model call. Results are stored
-        in ``self._ctx.persisted_*`` for ``after_model`` to propagate into
+        in ``self._ctx.persisted`` for ``after_model`` to propagate into
         graph state without a second DB write.
 
         For the async path (``awrap_model_call``) use
@@ -722,31 +874,20 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             return
 
         try:
-            result = self._build_usage_session(response, request)
-            if result is None:
+            prepared = self._build_usage_session(response, request)
+            if prepared is None:
                 return
 
-            (
-                session,
-                fragment,
-                extra_tokens,
-                is_estimated,
-                model_name,
-                pricing_config,
-            ) = result
-
-            log_id = session.finalize_sync(
+            log_id = prepared.session.finalize_sync(
                 success=True,
                 error=None,
-                final_usage=fragment,
+                final_usage=prepared.fragment,
                 streamed=False,
                 partial=False,
-                details={"estimated": True} if is_estimated else None,
+                details={"estimated": True} if prepared.is_estimated else None,
             )
 
-            self._apply_persist_result(
-                log_id, fragment, extra_tokens, is_estimated, model_name, pricing_config
-            )
+            self._apply_persist_result(log_id, prepared)
         except Exception as e:
             logger.warning(
                 "Failed to persist usage from wrap_model_call: %s",
@@ -773,31 +914,20 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             return
 
         try:
-            result = self._build_usage_session(response, request)
-            if result is None:
+            prepared = self._build_usage_session(response, request)
+            if prepared is None:
                 return
 
-            (
-                session,
-                fragment,
-                extra_tokens,
-                is_estimated,
-                model_name,
-                pricing_config,
-            ) = result
-
-            log_id = await session.finalize(
+            log_id = await prepared.session.finalize(
                 success=True,
                 error=None,
-                final_usage=fragment,
+                final_usage=prepared.fragment,
                 streamed=False,
                 partial=False,
-                details={"estimated": True} if is_estimated else None,
+                details={"estimated": True} if prepared.is_estimated else None,
             )
 
-            self._apply_persist_result(
-                log_id, fragment, extra_tokens, is_estimated, model_name, pricing_config
-            )
+            self._apply_persist_result(log_id, prepared)
         except Exception as e:
             logger.warning(
                 "Failed to persist usage from awrap_model_call: %s",
@@ -830,19 +960,28 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         else:
             return "unknown"
 
-    def _get_pricing_config(self, model_name: str) -> Optional[PricingConfig]:
+    def _get_pricing_config(
+        self, model_name: str, *, identified: bool = False
+    ) -> Optional[PricingConfig]:
         """Fetch pricing config for a given model.
 
-        Prefers llm_config per-model pricing; falls back to middleware default.
+        Prefers the model's own pricing in the LLM config. The middleware's
+        default is the pricing of the model it was built for, so it stands in
+        only for that model, or for a call whose model could not be told
+        (``identified=False``): another model that has no pricing of its own
+        is not billed at this one's rates.
         """
 
         try:
-            llm_config = get_llm_config()
+            llm_config = self._llm_config or get_llm_config()
             model_cfg = llm_config.models.get(model_name)
             if model_cfg and model_cfg.pricing:
                 return model_cfg.pricing
         except Exception as e:
             logger.debug(f"Could not load pricing config for {model_name}: {e}")
+
+        if identified and self._model_name and model_name != self._model_name:
+            return None
 
         if self.pricing_config:
             return self.pricing_config

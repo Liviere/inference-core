@@ -167,6 +167,23 @@ For per-step LLM accounting, `CostTrackingMiddleware` now persists each
 This avoids losing billing or token records when execution is cancelled between
 the model node and later middleware hooks.
 
+Each call is logged under the model it was made on. `LLMRequestLog.model_name`
+is that model's name in the LLM config and `provider` is its provider, also
+when a fallback answered or a subagent shares the middleware: the middleware
+reads the model off the request, where the model factory wrote which configured
+model the object is (`inference_core/llm/model_identity.py`). A model built
+outside the factory is recognised by the id it was built with, when that is a
+configured model. What the provider's response named, which may be a dated
+snapshot or an alias, goes to `reported_model_name`. Pricing is the called
+model's own; the pricing the middleware was constructed with stands in only for
+its own model, or for a call whose model could not be told.
+
+The middleware leaves the last call in graph state for middleware outside it:
+`last_request_log_id`, `last_request_cost_usd` (`0.0` for a model without
+pricing), `last_request_model_name` (the configured name),
+`last_request_provider` (`None` when the model could not be told) and
+`last_request_reported_model_name`. All five are written on every call.
+
 ## Cancellation
 
 `AgentService.run_agent_steps()` and `AgentService.arun_agent_steps()` accept an
@@ -371,9 +388,9 @@ contains several durable facts, preferences, or corrections.
 
 Memory-handling LLM calls (post-run analysis) are billed to the triggering
 session via `LLMRequestLog` rows tagged `task_type="agent_memory"`. The
-`session_id` and `request_id` from the parent agent run are forwarded so the
-billing layer (`CreditBillingMiddleware`) can charge the session for memory
-work. This is fail-soft: any billing error is logged and swallowed.
+`session_id` and `request_id` from the parent agent run are forwarded so an
+application's billing layer can charge the session for memory work. This is
+fail-soft: any billing error is logged and swallowed.
 
 The post-run analysis runs with a dedicated system prompt so the transcript and
 prefetched memories are treated as data, not instructions. This is the main

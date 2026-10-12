@@ -1,8 +1,18 @@
 import asyncio
+import uuid
+from typing import Any, List, Optional
+from unittest.mock import patch
 
 import pytest
+from langchain.agents import create_agent
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.errors import GraphInterrupt
+
+from inference_core.agents.middleware.cost_tracking import CostTrackingMiddleware
+from inference_core.llm.model_identity import tag_model_identity
 
 from inference_core.agents.middleware.model_fallback import (
     CancelAwareModelFallbackMiddleware,
@@ -259,3 +269,76 @@ def test_async_regular_exception_still_triggers_fallback() -> None:
 
     assert asyncio.run(run()) == "fallback-response"
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# A fallback that answers is the model the call is logged under
+# ---------------------------------------------------------------------------
+
+
+class _DownModel(BaseChatModel):
+    """A model whose provider is down."""
+
+    @property
+    def _llm_type(self) -> str:
+        return "down"
+
+    def _generate(
+        self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kw: Any
+    ) -> ChatResult:
+        raise RuntimeError("provider down")
+
+
+class _ReportingModel(BaseChatModel):
+    """A model whose response names a snapshot of it."""
+
+    reports: str
+
+    @property
+    def _llm_type(self) -> str:
+        return "reporting"
+
+    def _generate(
+        self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kw: Any
+    ) -> ChatResult:
+        message = AIMessage(
+            content="answer",
+            response_metadata={"model_name": self.reports},
+            usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+def test_a_call_answered_by_a_fallback_is_logged_as_the_fallback() -> None:
+    """The primary fails and leaves no log; the fallback's call is its own."""
+    primary = _DownModel()
+    tag_model_identity(primary, name="primary-model", provider="mistral")
+    fallback = _ReportingModel(reports="fallback-model-2025-08-07")
+    tag_model_identity(fallback, name="fallback-model", provider="openai")
+
+    cost_tracking = CostTrackingMiddleware(
+        provider="mistral", model_name="primary-model"
+    )
+    agent = create_agent(
+        primary,
+        tools=[],
+        middleware=[CancelAwareModelFallbackMiddleware(fallback), cost_tracking],
+    )
+
+    with patch(
+        "inference_core.agents.middleware.cost_tracking.UsageSession"
+    ) as MockSession:
+        MockSession.return_value.finalize_sync.return_value = uuid.uuid4()
+        state = agent.invoke({"messages": [("user", "hi")]})
+
+    assert state["messages"][-1].content == "answer"
+    # One log: the attempt that failed wrote none.
+    assert MockSession.call_count == 1
+    logged = MockSession.call_args.kwargs
+    assert logged["model_name"] == "fallback-model"
+    assert logged["provider"] == "openai"
+    assert logged["reported_model_name"] == "fallback-model-2025-08-07"
+    # And that is what the middleware outside reads from the state.
+    assert state["last_request_model_name"] == "fallback-model"
+    assert state["last_request_provider"] == "openai"
+    assert state["last_request_reported_model_name"] == "fallback-model-2025-08-07"

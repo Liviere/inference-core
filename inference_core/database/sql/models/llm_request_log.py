@@ -13,6 +13,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from ..base import Base, SmartJSON, TimestampMixin
 
+# A provider chooses the name its response reports; this is as much of it as
+# is kept.
+REPORTED_MODEL_NAME_MAX_LENGTH = 255
+
 
 class LLMRequestLog(Base, TimestampMixin):
     """
@@ -25,8 +29,9 @@ class LLMRequestLog(Base, TimestampMixin):
         session_id: Optional session identifier
         task_type: Type of task (completion, chat, batch, etc.)
         request_mode: Request mode (sync, async, streaming)
-        model_name: LLM model used
-        provider: LLM provider (openai, claude, etc.)
+        model_name: Configured name of the model the call was made on
+        provider: Provider of that model (openai, claude, etc.)
+        reported_model_name: Name the provider's response gave, when it gave one
         request_id: Correlation ID (Celery task id, etc.)
         latency_ms: Request latency in milliseconds
         success: Whether request completed successfully
@@ -97,10 +102,18 @@ class LLMRequestLog(Base, TimestampMixin):
         String(20), nullable=False, doc="Request mode (sync, async, streaming)"
     )
     model_name: Mapped[str] = mapped_column(
-        String(100), nullable=False, index=True, doc="LLM model name"
+        String(100),
+        nullable=False,
+        index=True,
+        doc="Configured name of the model the call was made on",
     )
     provider: Mapped[str] = mapped_column(
-        String(50), nullable=False, doc="LLM provider"
+        String(50), nullable=False, doc="Provider of the model the call was made on"
+    )
+    reported_model_name: Mapped[Optional[str]] = mapped_column(
+        String(REPORTED_MODEL_NAME_MAX_LENGTH),
+        nullable=True,
+        doc="Model name the provider's response gave (a snapshot, an alias), if any",
     )
     request_id: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True, doc="Correlation ID (Celery task id, etc.)"

@@ -707,8 +707,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         Writes a cost-tracked usage row tagged ``task_type="agent_memory"`` with
         the triggering session's ``session_id`` / ``user_id`` / ``request_id``.
-        The app billing layer (``CreditBillingMiddleware`` reconciliation) then
-        charges the session for this memory-handling LLM work.
+        An application's billing layer can then charge the session for this
+        memory-handling LLM work.
 
         Fail-soft: any error is logged and swallowed — billing must never break
         memory analysis.

@@ -353,6 +353,7 @@ def _build_server_middleware(
     # --- CostTrackingMiddleware (user_id=None → resolved from runtime) ---
     pricing_config = None
     provider = None
+    llm_config = None
     try:
         llm_config = get_llm_config()
         model_cfg = llm_config.models.get(model_name)
@@ -371,6 +372,7 @@ def _build_server_middleware(
         request_mode="sync",
         provider=provider,
         model_name=model_name,
+        llm_config=llm_config,
     )
     middleware.append(cost_middleware)
 

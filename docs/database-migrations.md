@@ -52,6 +52,23 @@ To undo the last applied migration:
 poetry run alembic downgrade -1
 ```
 
+## Applications with a Migration Tree of Their Own
+
+An application that keeps its own Alembic tree over these tables does not run
+the revisions in `migrations/versions/`; it repeats each schema change in a
+revision of its own. Revisions that change a table an application is likely to
+have:
+
+| Revision | Change |
+| --- | --- |
+| `e70bd305a912` | `user_agent_instances.skills` (JSON, nullable) |
+| `widen_agent_instance_text_cols` | `user_agent_instances.instance_name` and `display_name` widened to `Text` |
+| `add_reported_model_name` | `llm_request_logs.reported_model_name` (`String(255)`, nullable) |
+
+Apply the schema change before the code that writes the column: a usage log
+that cannot be inserted is dropped (`usage_logging.fail_open`), and the call it
+described is then missing from the accounts.
+
 ## Best Practices
 
 - **One Revision per PR**: Combine related schema changes into a single migration file.

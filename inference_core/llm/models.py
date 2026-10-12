@@ -25,6 +25,7 @@ from .chat_deepinfra import DEEPINFRA_OPENAI_BASE_URL, ChatDeepInfraReasoning
 from .chat_fireworks import ChatFireworksReasoning
 from .config import LLMConfig, ModelConfig, ModelProvider
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
+from .model_identity import tag_model_identity
 from .param_policy import normalize_params
 from .provider_registry import get_registered_provider
 
@@ -64,6 +65,7 @@ class LLMModelFactory:
                     model_name,
                 )
                 model = create_emulated_chat_model(model_name, **kwargs)
+                tag_model_identity(model, name=model_name)
                 self._remember_model(model)
                 if self.config.enable_caching:
                     self._model_cache[cache_key] = model
@@ -78,6 +80,11 @@ class LLMModelFactory:
                 kwargs["streaming"] = True if user_callbacks else False
 
             model = self._create_model_instance(model_config, **kwargs)
+
+            # Whoever sees this object make a call can tell which configured
+            # model it is; a provider's response may name another (a dated
+            # snapshot, an alias).
+            tag_model_identity(model, name=model_name, provider=model_config.provider)
 
             # Some providers (or our param normalization) may strip callbacks; re-attach if missing
             if model and user_callbacks:

@@ -610,6 +610,7 @@ class AgentService:
                 # the global one does not.
                 pricing_config = None
                 provider = None
+                llm_config = None
                 try:
                     llm_config = self.model_factory.config
                     model_cfg = llm_config.models.get(self.model_name)
@@ -638,6 +639,9 @@ class AgentService:
                         if self.instance_context
                         else None
                     ),
+                    # Fallbacks and subagents call other models of this same
+                    # config: their provider and pricing are looked up in it.
+                    llm_config=llm_config,
                 )
                 # Append at the end so CostTracking runs FIRST in the
                 # reversed after_model phase — before any interrupt-causing

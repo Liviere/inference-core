@@ -2,7 +2,9 @@
 Unit tests for LLM usage logging functionality
 """
 
+from contextlib import asynccontextmanager
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -252,6 +254,58 @@ class TestUsageSession:
 
         assert session.accumulated_usage["model_name"] == "gpt-4-new"
         assert session.accumulated_usage["tokens"] == 150
+
+
+class TestReportedModelName:
+    """What the provider named is kept next to the configured model."""
+
+    async def _logged_entry(self, **session_kwargs):
+        """Finalize a session and return the log entry it handed to the database."""
+        added = []
+        db = MagicMock()
+        db.add = added.append
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_session():
+            yield db
+
+        session = UsageSession(
+            task_type="agent",
+            request_mode="sync",
+            model_name="gpt-5-nano",
+            provider="openai",
+            **session_kwargs,
+        )
+        with patch("inference_core.llm.usage_logging.get_async_session", fake_session):
+            await session.finalize(
+                success=True, final_usage={"input_tokens": 1, "output_tokens": 1}
+            )
+        assert len(added) == 1
+        return added[0]
+
+    @pytest.mark.asyncio
+    async def test_it_is_written_with_the_configured_name(self):
+        entry = await self._logged_entry(reported_model_name="gpt-5-nano-2025-08-07")
+
+        assert entry.model_name == "gpt-5-nano"
+        assert entry.provider == "openai"
+        assert entry.reported_model_name == "gpt-5-nano-2025-08-07"
+
+    @pytest.mark.asyncio
+    async def test_it_is_absent_when_the_response_named_nothing(self):
+        assert (await self._logged_entry()).reported_model_name is None
+        assert (
+            await self._logged_entry(reported_model_name="")
+        ).reported_model_name is None
+
+    @pytest.mark.asyncio
+    async def test_a_name_too_long_for_the_column_is_cut_not_refused(self):
+        """A log entry the database refuses is a call nobody is billed for."""
+        entry = await self._logged_entry(reported_model_name="m" * 400)
+
+        assert len(entry.reported_model_name) == 255
 
 
 class TestUsageLoggingConfig:

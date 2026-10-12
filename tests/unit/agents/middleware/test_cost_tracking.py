@@ -12,12 +12,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain.messages import ToolMessage
 
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
 from inference_core.agents.middleware.cost_tracking import (
     CostTrackingMiddleware,
     CostTrackingState,
     _MiddlewareContext,
+    _PersistedCall,
     create_cost_tracking_middleware,
 )
+from inference_core.llm.config import DimensionPrice, PricingConfig
+from inference_core.llm.model_identity import tag_model_identity
 from inference_core.services._cancel import AgentCancelled
 
 # ---------------------------------------------------------------------------
@@ -506,6 +511,37 @@ class TestGetPricingConfig:
 
         assert result is fallback_pricing
 
+    def test_another_model_is_not_priced_as_the_middlewares_own(self, middleware):
+        """A model that is known not to be ours gets no default pricing."""
+        middleware.pricing_config = MagicMock()
+
+        mock_llm_config = MagicMock()
+        mock_llm_config.models = {"fallback-model": MagicMock(pricing=None)}
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.get_llm_config",
+            return_value=mock_llm_config,
+        ):
+            other = middleware._get_pricing_config("fallback-model", identified=True)
+            own = middleware._get_pricing_config("gpt-4o", identified=True)
+
+        assert other is None
+        assert own is middleware.pricing_config
+
+    def test_looks_in_the_config_it_was_given(self):
+        """A config of the agent's own is read instead of the global one."""
+        own_pricing = _pricing(1.0, 2.0)
+        mw = CostTrackingMiddleware(
+            model_name="gpt-4o",
+            llm_config=_llm_config({"only-here": ("openai", own_pricing)}),
+        )
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.get_llm_config",
+            side_effect=AssertionError("the global config was read"),
+        ):
+            assert mw._get_pricing_config("only-here") is own_pricing
+
     def test_returns_none_when_nothing_available(self, middleware):
         """If neither llm_config nor middleware has pricing, return None."""
         middleware.pricing_config = None
@@ -587,12 +623,59 @@ def _make_model_response(ai_message):
     return resp
 
 
-def _make_model_request():
-    """Helper: create a MagicMock ModelRequest."""
+def _make_model_request(model=None):
+    """Helper: create a MagicMock ModelRequest, optionally for a given model."""
     req = MagicMock()
     req.messages = []
     req.system_message = None
+    if model is not None:
+        req.model = model
     return req
+
+
+def _persisted(
+    log_id="log-1",
+    cost_usd=0.0,
+    model_name="gpt-4o",
+    provider=None,
+    reported_model_name=None,
+    fragment=None,
+):
+    """Helper: what a logged model call leaves for after_model."""
+    return _PersistedCall(
+        log_id=log_id,
+        model_name=model_name,
+        provider=provider,
+        reported_model_name=reported_model_name,
+        cost_usd=cost_usd,
+        fragment=fragment or {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        extra_tokens={},
+        is_estimated=False,
+    )
+
+
+def _pricing(input_per_1k, output_per_1k):
+    return PricingConfig(
+        input=DimensionPrice(cost_per_1k=input_per_1k),
+        output=DimensionPrice(cost_per_1k=output_per_1k),
+    )
+
+
+def _llm_config(models):
+    """A config that knows *models*: name -> (provider, pricing or None)."""
+    config = MagicMock()
+    config.models = {
+        name: MagicMock(provider=provider, pricing=pricing)
+        for name, (provider, pricing) in models.items()
+    }
+    return config
+
+
+def _tagged_model(name, provider):
+    """A chat model as the factory hands it out: marked with what it is."""
+    model = FakeListChatModel(responses=["ok"])
+    tag_model_identity(model, name=name, provider=provider)
+    return model
 
 
 class TestPersistFromResponse:
@@ -624,11 +707,12 @@ class TestPersistFromResponse:
 
             middleware._persist_from_response(response, request)
 
-        assert middleware._ctx.persisted_log_id == str(fake_log_id)
-        assert middleware._ctx.persisted_cost_usd == 0.0042
-        assert middleware._ctx.persisted_model_name == "gpt-4o"
-        assert middleware._ctx.persisted_fragment["input_tokens"] == 10
-        assert middleware._ctx.persisted_fragment["output_tokens"] == 5
+        call = middleware._ctx.persisted
+        assert call.log_id == str(fake_log_id)
+        assert call.cost_usd == 0.0042
+        assert call.model_name == "gpt-4o"
+        assert call.fragment["input_tokens"] == 10
+        assert call.fragment["output_tokens"] == 5
 
     def test_no_ctx_returns_silently(self, middleware):
         """If _ctx is None, method returns without error."""
@@ -644,7 +728,7 @@ class TestPersistFromResponse:
 
         middleware._persist_from_response(response, MagicMock())
 
-        assert middleware._ctx.persisted_log_id is None
+        assert middleware._ctx.persisted is None
 
     def test_finalize_failure_is_non_fatal(self, middleware):
         """If finalize_sync raises, the exception is swallowed."""
@@ -660,8 +744,8 @@ class TestPersistFromResponse:
 
             middleware._persist_from_response(response, request)
 
-        # No exception, persisted_log_id stays None
-        assert middleware._ctx.persisted_log_id is None
+        # No exception, nothing is left for after_model
+        assert middleware._ctx.persisted is None
 
     def test_no_usage_metadata_falls_back_to_estimation(self, middleware):
         """When usage_metadata is None, estimation is used."""
@@ -685,8 +769,134 @@ class TestPersistFromResponse:
 
             middleware._persist_from_response(response, request)
 
-        assert middleware._ctx.persisted_log_id == str(fake_log_id)
-        assert middleware._ctx.persisted_is_estimated is True
+        assert middleware._ctx.persisted.log_id == str(fake_log_id)
+        assert middleware._ctx.persisted.is_estimated is True
+        # A model without pricing is logged, and costs nothing.
+        assert middleware._ctx.persisted.cost_usd == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Which model a call is logged under
+# ---------------------------------------------------------------------------
+
+
+class TestInvokedModel:
+    """A call is logged under the model it was made on, not the one reported."""
+
+    SMALL = _pricing(0.001, 0.002)
+    NANO = _pricing(0.1, 0.2)
+
+    def _middleware(self, models, **kwargs):
+        mw = CostTrackingMiddleware(
+            pricing_config=self.SMALL,
+            provider="mistral",
+            model_name="mistral-small",
+            llm_config=_llm_config(models),
+            **kwargs,
+        )
+        mw._ctx = _MiddlewareContext()
+        return mw
+
+    def _persist(self, mw, model, reported):
+        """Log one call on *model* whose response named *reported*."""
+        response = _make_model_response(_make_ai_message(model_name=reported))
+        if reported is None:
+            response.result[-1].response_metadata = {}
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            MockSession.return_value.finalize_sync.return_value = uuid.uuid4()
+            mw._persist_from_response(response, _make_model_request(model))
+        return MockSession.call_args.kwargs, mw._ctx.persisted
+
+    def test_a_snapshot_name_is_logged_under_the_configured_model(self):
+        mw = self._middleware(
+            {
+                "mistral-small": ("mistral", self.SMALL),
+                "gpt-5-nano": ("openai", self.NANO),
+            }
+        )
+
+        logged, call = self._persist(
+            mw, _tagged_model("gpt-5-nano", "openai"), "gpt-5-nano-2025-08-07"
+        )
+
+        assert logged["model_name"] == "gpt-5-nano"
+        assert logged["provider"] == "openai"
+        assert logged["reported_model_name"] == "gpt-5-nano-2025-08-07"
+        # Priced as itself, not as the model this middleware was built for.
+        assert logged["pricing_config"] is self.NANO
+        assert (call.model_name, call.provider, call.reported_model_name) == (
+            "gpt-5-nano",
+            "openai",
+            "gpt-5-nano-2025-08-07",
+        )
+        # 10 input + 5 output tokens at 0.1 / 0.2 per 1k.
+        assert call.cost_usd == pytest.approx(0.002)
+
+    def test_one_middleware_logs_each_model_with_its_own_provider(self):
+        """A subagent or a fallback shares the instance; its provider is its own."""
+        mw = self._middleware(
+            {
+                "mistral-small": ("mistral", self.SMALL),
+                "claude-x": ("claude", self.NANO),
+            }
+        )
+
+        first, _ = self._persist(
+            mw, _tagged_model("mistral-small", "mistral"), "mistral-small-2506"
+        )
+        second, _ = self._persist(
+            mw, _tagged_model("claude-x", "claude"), "claude-x-20250929"
+        )
+
+        assert (first["model_name"], first["provider"]) == ("mistral-small", "mistral")
+        assert (second["model_name"], second["provider"]) == ("claude-x", "claude")
+
+    def test_another_model_without_pricing_costs_nothing(self):
+        mw = self._middleware(
+            {
+                "mistral-small": ("mistral", self.SMALL),
+                "free-model": ("ollama", None),
+            }
+        )
+
+        logged, call = self._persist(mw, _tagged_model("free-model", "ollama"), None)
+
+        assert logged["pricing_config"] is None
+        assert logged["reported_model_name"] is None
+        assert call.cost_usd == 0.0
+
+    def test_a_model_built_elsewhere_is_known_by_the_name_it_was_built_with(self):
+        """No mark from the factory, but its id is a configured model."""
+        mw = self._middleware(
+            {
+                "mistral-small": ("mistral", self.SMALL),
+                "gpt-5-nano": ("openai", self.NANO),
+            }
+        )
+        model = MagicMock()
+        model.metadata = None
+        model.bound = None
+        model.model_name = "gpt-5-nano"
+
+        logged, call = self._persist(mw, model, "gpt-5-nano-2025-08-07")
+
+        assert (logged["model_name"], logged["provider"]) == ("gpt-5-nano", "openai")
+        assert call.provider == "openai"
+
+    def test_a_model_that_cannot_be_told_keeps_the_reported_name(self):
+        """As before: the reported name, the middleware's provider in the log."""
+        mw = self._middleware({"mistral-small": ("mistral", self.SMALL)})
+
+        logged, call = self._persist(mw, None, "something-else-2025")
+
+        assert logged["model_name"] == "something-else-2025"
+        assert logged["provider"] == "mistral"
+        assert logged["pricing_config"] is self.SMALL
+        # No provider is claimed for it in what other middleware reads.
+        assert call.provider is None
+        assert call.reported_model_name == "something-else-2025"
 
 
 # ---------------------------------------------------------------------------
@@ -735,17 +945,19 @@ class TestAfterModelFastPath:
     """Verify after_model reads pre-persisted data and skips DB write."""
 
     def test_uses_ctx_persisted_data(self, middleware):
-        """When _ctx has persisted_log_id, after_model uses it directly."""
+        """When _ctx has a persisted call, after_model uses it directly."""
         middleware._ctx = _MiddlewareContext()
-        middleware._ctx.persisted_log_id = "log-abc-123"
-        middleware._ctx.persisted_cost_usd = 0.005
-        middleware._ctx.persisted_model_name = "gpt-4o"
-        middleware._ctx.persisted_fragment = {
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "total_tokens": 150,
-        }
-        middleware._ctx.persisted_extra_tokens = {}
+        middleware._ctx.persisted = _persisted(
+            log_id="log-abc-123",
+            cost_usd=0.005,
+            provider="openai",
+            reported_model_name="gpt-4o-2024-08-06",
+            fragment={
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+            },
+        )
 
         state = CostTrackingState(
             messages=[MagicMock()],
@@ -766,23 +978,17 @@ class TestAfterModelFastPath:
         assert updates["last_request_log_id"] == "log-abc-123"
         assert updates["last_request_cost_usd"] == 0.005
         assert updates["last_request_model_name"] == "gpt-4o"
+        assert updates["last_request_provider"] == "openai"
+        assert updates["last_request_reported_model_name"] == "gpt-4o-2024-08-06"
         assert updates["accumulated_input_tokens"] == 300
         assert updates["accumulated_output_tokens"] == 150
         assert updates["accumulated_total_tokens"] == 450
         assert updates["model_call_count"] == 2
 
     def test_resets_persisted_data_after_use(self, middleware):
-        """After fast-path, persisted_* fields are reset for next model call."""
+        """After fast-path, the persisted call is cleared for the next one."""
         middleware._ctx = _MiddlewareContext()
-        middleware._ctx.persisted_log_id = "log-xyz"
-        middleware._ctx.persisted_cost_usd = 0.001
-        middleware._ctx.persisted_model_name = "gpt-4o"
-        middleware._ctx.persisted_fragment = {
-            "input_tokens": 1,
-            "output_tokens": 1,
-            "total_tokens": 2,
-        }
-        middleware._ctx.persisted_extra_tokens = {}
+        middleware._ctx.persisted = _persisted(log_id="log-xyz", cost_usd=0.001)
 
         state = CostTrackingState(
             messages=[MagicMock()],
@@ -795,10 +1001,32 @@ class TestAfterModelFastPath:
 
         middleware.after_model(state, MagicMock())
 
-        assert middleware._ctx.persisted_log_id is None
-        assert middleware._ctx.persisted_cost_usd is None
-        assert middleware._ctx.persisted_model_name is None
-        assert middleware._ctx.persisted_fragment is None
+        assert middleware._ctx.persisted is None
+
+    def test_a_call_without_a_cost_overwrites_the_cost_before_it(self, middleware):
+        """An unpriced call writes 0.0: the cost of the call before is not its own."""
+        middleware._ctx = _MiddlewareContext()
+        middleware._ctx.persisted = _persisted(
+            log_id="log-unpriced", cost_usd=0.0, model_name="no-pricing-model"
+        )
+        state = CostTrackingState(
+            messages=[MagicMock()],
+            model_call_count=1,
+            last_request_log_id="log-before",
+            last_request_cost_usd=0.25,
+            last_request_model_name="gpt-4o",
+            last_request_provider="openai",
+            last_request_reported_model_name="gpt-4o-2024-08-06",
+        )
+
+        updates = middleware.after_model(state, MagicMock())
+
+        assert updates["last_request_log_id"] == "log-unpriced"
+        assert updates["last_request_cost_usd"] == 0.0
+        assert updates["last_request_model_name"] == "no-pricing-model"
+        # Not known for this call, so not the previous call's either.
+        assert updates["last_request_provider"] is None
+        assert updates["last_request_reported_model_name"] is None
 
     def test_fallback_to_legacy_when_no_persisted(self, middleware):
         """When _ctx has no persisted data, after_model falls back to DB write."""
