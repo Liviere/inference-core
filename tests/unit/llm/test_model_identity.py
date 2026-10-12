@@ -13,8 +13,10 @@ from inference_core.llm.config import ModelConfig, ModelProvider
 from inference_core.llm.model_identity import (
     ModelIdentity,
     get_model_identity,
+    get_usage_details,
     provider_name,
     tag_model_identity,
+    tag_usage_details,
 )
 from inference_core.llm.models import LLMModelFactory
 
@@ -130,3 +132,85 @@ def test_the_factory_tags_an_emulated_model_it_has_no_config_for(monkeypatch):
     assert get_model_identity(model) == ModelIdentity(
         name="not-configured", provider=None
     )
+
+
+# ---------------------------------------------------------------------------
+# Details a model's builder wants recorded with the usage of its calls
+# ---------------------------------------------------------------------------
+
+
+def test_usage_details_come_back_as_they_were_written():
+    model = ChatOpenAI(model="gpt-5", api_key="k")
+
+    tag_usage_details(model, {"purpose": "summary", "attempt": 2, "shared": False})
+
+    assert get_usage_details(model) == {
+        "purpose": "summary",
+        "attempt": 2,
+        "shared": False,
+    }
+
+
+def test_usage_details_are_read_through_a_tool_binding_and_a_copy():
+    model = ChatOpenAI(model="gpt-5", api_key="k")
+    tag_usage_details(model, {"purpose": "summary"})
+
+    assert get_usage_details(model.bind_tools([_noop])) == {"purpose": "summary"}
+    assert get_usage_details(model.model_copy()) == {"purpose": "summary"}
+
+
+def test_usage_details_and_identity_do_not_disturb_each_other():
+    model = FakeListChatModel(responses=["ok"])
+
+    tag_model_identity(model, name="m", provider="openai")
+    tag_usage_details(model, {"purpose": "summary"})
+    tag_model_identity(model, name="m", provider="mistral")
+
+    assert get_model_identity(model) == ModelIdentity(name="m", provider="mistral")
+    assert get_usage_details(model) == {"purpose": "summary"}
+
+
+def test_only_plain_values_are_kept_as_usage_details():
+    """They end up in a JSON column and in the metadata of a traced run."""
+    model = FakeListChatModel(responses=["ok"])
+
+    tag_usage_details(
+        model, {"purpose": "summary", "none": None, "nested": {"a": 1}, "obj": object()}
+    )
+
+    assert get_usage_details(model) == {"purpose": "summary", "none": None}
+
+
+def test_writing_usage_details_again_replaces_them():
+    model = FakeListChatModel(responses=["ok"])
+    tag_usage_details(model, {"purpose": "summary"})
+
+    tag_usage_details(model, {"purpose": "extraction"})
+    assert get_usage_details(model) == {"purpose": "extraction"}
+
+    tag_usage_details(model, None)
+    assert get_usage_details(model) == {}
+
+
+def test_what_is_read_is_a_dict_of_the_readers_own():
+    model = FakeListChatModel(responses=["ok"])
+    tag_usage_details(model, {"purpose": "summary"})
+
+    get_usage_details(model)["purpose"] = "changed"
+
+    assert get_usage_details(model) == {"purpose": "summary"}
+
+
+@pytest.mark.parametrize("model", [None, object(), MagicMock(), "gpt-5"])
+def test_an_untagged_object_has_no_usage_details(model):
+    assert get_usage_details(model) == {}
+    tag_usage_details(model, {"purpose": "summary"})  # quiet, whatever it is given
+
+
+def test_usage_details_are_not_sent_to_the_provider():
+    model = ChatOpenAI(model="gpt-5", api_key="k")
+    tag_usage_details(model, {"purpose": "a-word-not-in-the-request"})
+
+    payload = model._get_request_payload([("user", "hi")])
+
+    assert "a-word-not-in-the-request" not in str(payload)

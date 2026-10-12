@@ -246,6 +246,7 @@ class AgentService:
         memory_scope: str = "shared",
         response_format_override: Optional[Any] = None,
         enable_snapshots: bool = True,
+        memory_analysis_model: Optional[Any] = None,
     ):
         """Initialize the AgentService.
 
@@ -278,6 +279,9 @@ class AgentService:
             memory_postrun_model: Optional model name for the post-run extraction LLM
                 call.  When None, uses settings.agent_memory_postrun_analysis_model
                 (typically the agent's own model).
+            memory_analysis_model: The chat model post-run memory analysis runs
+                on, already built.  When given, it is used as it is and none is
+                resolved by name (see ``MemoryMiddleware``).
             memory_tools: Override for which memory tools are exposed to the model.
                 When None, inherits from AgentConfig.memory_tools or exposes all.
                 Empty list disables model-facing memory tools while keeping the
@@ -376,6 +380,7 @@ class AgentService:
         # Post-run memory analysis overrides (None = use settings defaults)
         self._memory_postrun_analysis = memory_postrun_analysis
         self._memory_postrun_model = memory_postrun_model
+        self._memory_analysis_model = memory_analysis_model
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -684,6 +689,7 @@ class AgentService:
                         # Attribute memory-handling LLM cost to this session.
                         session_id=self._session_id,
                         request_id=self._request_id,
+                        analysis_model=self._memory_analysis_model,
                     )
                     # Insert before CostTracking (which sits at the end)
                     # so memory context enrichment runs in before_model first.
@@ -2617,6 +2623,7 @@ class DeepAgentService(AgentService):
         user_skills: Optional[list[dict[str, str]]] = None,
         memory_scope: str = "shared",
         _visited_agents: Optional[set[str]] = None,
+        memory_analysis_model: Optional[Any] = None,
     ):
         """Initialize the DeepAgentService.
 
@@ -2648,6 +2655,8 @@ class DeepAgentService(AgentService):
                 create_agent().  Used when the DB instance extends the base prompt.
             instance_context: Optional identity of the UserAgentInstance backing this run.
             _visited_agents: Internal recursion guard.
+            memory_analysis_model: The chat model post-run memory analysis runs
+                on, already built (see ``AgentService``).
         """
         super().__init__(
             agent_name,
@@ -2667,6 +2676,7 @@ class DeepAgentService(AgentService):
             system_prompt_append=system_prompt_append,
             user_skills=user_skills,
             memory_scope=memory_scope,
+            memory_analysis_model=memory_analysis_model,
         )
         self._explicit_subagents = subagents or []
 

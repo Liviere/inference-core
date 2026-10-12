@@ -22,7 +22,7 @@ from inference_core.agents.middleware.cost_tracking import (
     create_cost_tracking_middleware,
 )
 from inference_core.llm.config import DimensionPrice, PricingConfig
-from inference_core.llm.model_identity import tag_model_identity
+from inference_core.llm.model_identity import tag_model_identity, tag_usage_details
 from inference_core.services._cancel import AgentCancelled
 
 # ---------------------------------------------------------------------------
@@ -884,6 +884,37 @@ class TestInvokedModel:
 
         assert (logged["model_name"], logged["provider"]) == ("gpt-5-nano", "openai")
         assert call.provider == "openai"
+
+    def test_details_written_on_the_model_are_recorded_with_its_call(self):
+        mw = self._middleware({"gpt-5-nano": ("openai", self.NANO)})
+        model = _tagged_model("gpt-5-nano", "openai")
+        tag_usage_details(model, {"purpose": "summary"})
+        response = _make_model_response(_make_ai_message())
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            MockSession.return_value.finalize_sync.return_value = uuid.uuid4()
+            mw._persist_from_response(response, _make_model_request(model))
+
+        finalize = MockSession.return_value.finalize_sync.call_args.kwargs
+        assert finalize["details"] == {"purpose": "summary"}
+
+    def test_a_model_with_no_details_leaves_the_logs_details_empty(self):
+        mw = self._middleware({"gpt-5-nano": ("openai", self.NANO)})
+        response = _make_model_response(_make_ai_message())
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            MockSession.return_value.finalize_sync.return_value = uuid.uuid4()
+            mw._persist_from_response(
+                response, _make_model_request(_tagged_model("gpt-5-nano", "openai"))
+            )
+
+        assert (
+            MockSession.return_value.finalize_sync.call_args.kwargs["details"] is None
+        )
 
     def test_a_model_that_cannot_be_told_keeps_the_reported_name(self):
         """As before: the reported name, the middleware's provider in the log."""

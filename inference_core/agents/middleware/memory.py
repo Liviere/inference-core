@@ -61,6 +61,11 @@ from inference_core.agents.tools.memory_tools import (
     SaveMemoryStoreTool,
     UpdateMemoryStoreTool,
 )
+from inference_core.llm.model_identity import (
+    get_model_identity,
+    get_usage_details,
+    provider_name,
+)
 from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
 
 logger = logging.getLogger(__name__)
@@ -136,6 +141,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         memory_model_override: Optional[str] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
+        analysis_model: Optional[Any] = None,
     ):
         """Initialize the memory middleware.
 
@@ -179,6 +185,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 back to the per-request context var when ``None``.
             request_id: Correlation ID (e.g. Celery task ID) for the memory
                 usage log.  Falls back to the per-request context var when ``None``.
+            analysis_model: The chat model post-run analysis runs on, already
+                built.  For an application that chooses the model itself, by
+                rules of its own (which models suit the job, on whose account
+                they run).  When given, no model is resolved by name: this one
+                is used as it is, and its usage is logged under the model it
+                says it is (see ``inference_core.llm.model_identity``).
         """
         self.memory_service = memory_service
         self.user_id = user_id
@@ -192,6 +204,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self.memory_model_override = memory_model_override
         self.session_id = session_id
         self.request_id = request_id
+        self._analysis_model = analysis_model
         # Set in wrap_model_call / awrap_model_call; used by after_agent.
         self._captured_model: Optional[Any] = None
         self.include_memory_types = include_memory_types or [
@@ -646,9 +659,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         cannot be created — in that case ``model_name`` is ``None`` and the
         caller derives it from the response metadata for billing.
 
+        A model handed to the middleware (``analysis_model``) comes first and is
+        used as it is: whoever built it chose it, and nothing is resolved by
+        name.  Its name is the one written on it, when there is one.
+
         Returns ``(None, None)`` when no model is available at all; the caller
         skips analysis and logs a warning rather than failing.
         """
+        if self._analysis_model is not None:
+            identity = get_model_identity(self._analysis_model)
+            return self._analysis_model, identity.name if identity else None
+
         model_name = self._resolve_memory_model_name()
         if model_name:
             try:
@@ -702,6 +723,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         model_name: Optional[str],
         usage: Dict[str, int],
         iterations: int,
+        *,
+        model: Optional[Any] = None,
+        reported_model_name: Optional[str] = None,
     ) -> None:
         """Persist an ``LLMRequestLog`` for the post-run memory analysis call(s).
 
@@ -709,6 +733,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         the triggering session's ``session_id`` / ``user_id`` / ``request_id``.
         An application's billing layer can then charge the session for this
         memory-handling LLM work.
+
+        The row names the model the analysis ran on. When *model* says which
+        configured model it is, that name and its provider are logged, and the
+        name the provider's response gave goes next to them; *model_name* is
+        what is known otherwise (the configured name, or the reported one).
+        Usage details written on the model are copied into the row.
 
         Fail-soft: any error is logged and swallowed — billing must never break
         memory analysis.
@@ -724,15 +754,18 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             from inference_core.llm.config import get_llm_config
             from inference_core.llm.usage_logging import UsageSession
 
-            resolved_name = model_name or "unknown"
+            identity = get_model_identity(model)
+            resolved_name = (identity.name if identity else None) or (
+                model_name or "unknown"
+            )
 
-            provider: Optional[str] = None
+            provider: Optional[str] = identity.provider if identity else None
             pricing_config = None
             try:
                 model_cfg = get_llm_config().models.get(resolved_name)
                 if model_cfg:
                     pricing_config = model_cfg.pricing
-                    provider = model_cfg.provider
+                    provider = provider or provider_name(model_cfg.provider)
             except Exception as e:
                 logger.debug(
                     "Memory billing: could not load pricing for %s: %s",
@@ -754,6 +787,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 user_id=uid,
                 session_id=self.session_id or _ctx_get_session_id(),
                 request_id=self.request_id or _ctx_get_request_id(),
+                reported_model_name=reported_model_name,
             )
             await session.finalize(
                 success=True,
@@ -761,7 +795,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 final_usage=usage,
                 streamed=False,
                 partial=False,
-                details={"memory_postrun": True, "iterations": iterations},
+                details={
+                    # What the model's builder wanted on its usage, under what
+                    # this log says for itself.
+                    **get_usage_details(model),
+                    "memory_postrun": True,
+                    "iterations": iterations,
+                },
             )
         except Exception as e:
             logger.warning(
@@ -956,6 +996,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         # Usage accumulation for billing the memory-handling LLM call(s).
         billed_usage: Dict[str, int] = {}
         resolved_model_name = model_name
+        reported_model_name: Optional[str] = None
         iterations = 0
 
         for loop_idx in range(4):  # cap prevents runaway loops
@@ -970,9 +1011,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             iterations += 1
             # Accumulate token usage so the session is billed for memory work.
             self._accumulate_response_usage(response, billed_usage)
+            response_metadata = getattr(response, "response_metadata", None) or {}
+            reported = response_metadata.get("model_name")
+            if isinstance(reported, str) and reported:
+                reported_model_name = reported
             if resolved_model_name is None:
-                response_metadata = getattr(response, "response_metadata", None) or {}
-                resolved_model_name = response_metadata.get("model_name")
+                resolved_model_name = reported_model_name
 
             tool_calls = getattr(response, "tool_calls", []) or []
             if not tool_calls:
@@ -1021,7 +1065,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         # Bill the memory-handling LLM call(s) to the triggering session, even
         # when nothing was persisted (the model still consumed tokens).
         await self._bill_memory_usage(
-            user_id, resolved_model_name, billed_usage, iterations
+            user_id,
+            resolved_model_name,
+            billed_usage,
+            iterations,
+            model=model,
+            reported_model_name=reported_model_name,
         )
 
         return saved_count

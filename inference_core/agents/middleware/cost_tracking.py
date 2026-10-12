@@ -59,7 +59,11 @@ from inference_core.agents.middleware._runtime_context import (
     populate_from_configurable,
 )
 from inference_core.llm.config import PricingConfig, UsageLoggingConfig, get_llm_config
-from inference_core.llm.model_identity import get_model_identity, provider_name
+from inference_core.llm.model_identity import (
+    get_model_identity,
+    get_usage_details,
+    provider_name,
+)
 from inference_core.llm.usage_logging import PricingCalculator, UsageSession
 from inference_core.services._cancel import AgentCancelled
 
@@ -131,6 +135,9 @@ class _PreparedCall:
     model: _InvokedModel
     reported_model_name: Optional[str]
     pricing_config: Optional[PricingConfig]
+    # What goes into the log's ``details``: whether the usage was estimated,
+    # and whatever the model's builder wanted recorded with its calls.
+    details: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -838,6 +845,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         if self._ctx and self._ctx.model_call_start_time:
             session.start_time = self._ctx.model_call_start_time
 
+        details = get_usage_details(getattr(request, "model", None))
+        if is_estimated:
+            details["estimated"] = True
+
         return _PreparedCall(
             session=session,
             fragment=fragment,
@@ -846,6 +857,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             model=invoked,
             reported_model_name=reported_name,
             pricing_config=pricing_config,
+            details=details or None,
         )
 
     def _apply_persist_result(self, log_id: Any, prepared: _PreparedCall) -> None:
@@ -896,7 +908,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 final_usage=prepared.fragment,
                 streamed=False,
                 partial=False,
-                details={"estimated": True} if prepared.is_estimated else None,
+                details=prepared.details,
             )
 
             self._apply_persist_result(log_id, prepared)
@@ -936,7 +948,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 final_usage=prepared.fragment,
                 streamed=False,
                 partial=False,
-                details={"estimated": True} if prepared.is_estimated else None,
+                details=prepared.details,
             )
 
             self._apply_persist_result(log_id, prepared)

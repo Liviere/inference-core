@@ -180,6 +180,15 @@ its own model, or for a call whose model could not be told. A run resumed after
 an interrupt continues on a fresh middleware instance, past `before_agent`; its
 calls are logged in the model node all the same.
 
+Whoever builds a model may write details on it that every usage log of a call
+on it should carry: `tag_usage_details(model, {...})` in
+`inference_core/llm/model_identity.py`, next to the model's identity. The
+middleware copies them into `LLMRequestLog.details` as they are (plain values
+only: text, numbers, flags) and reads nothing into them. This is for facts the
+builder knows and the middleware cannot: what the model is used for, on whose
+account it runs. The details are on the model object, so an object that carries
+them should not be shared with a caller they do not describe.
+
 The middleware leaves the last call in graph state for middleware outside it:
 `last_request_log_id`, `last_request_cost_usd` (`0.0` for a model without
 pricing), `last_request_model_name` (the configured name),
@@ -379,7 +388,12 @@ It uses a dedicated memory model resolved via the following precedence:
 2. `AGENT_MEMORY_MODEL` (dedicated memory model, default: `gemini-3.1-flash-lite-preview`)
 3. The agent's own session model (emergency fallback)
 
-The model is instantiated through the global model factory so provider and
+An application that chooses the model by rules of its own can hand it over
+already built: `AgentService(memory_analysis_model=...)`, passed on to
+`MemoryMiddleware(analysis_model=...)`. That model is then used as it is and
+none of the names above is resolved.
+
+Otherwise the model is instantiated through the global model factory so provider and
 parameters from `llm_config.yaml` are applied. The middleware asks the model to
 inspect semantically similar memories first and then call `save_memory_store`,
 `update_memory_store`, or `recall_memories_store` as needed. It executes those
@@ -393,6 +407,13 @@ session via `LLMRequestLog` rows tagged `task_type="agent_memory"`. The
 `session_id` and `request_id` from the parent agent run are forwarded so an
 application's billing layer can charge the session for memory work. This is
 fail-soft: any billing error is logged and swallowed.
+
+The row names the model the analysis ran on: its configured name and provider
+when the model says which configured model it is (every model the factory
+builds does), with the name the provider's response gave in
+`reported_model_name`. Usage details written on the model
+(`tag_usage_details`) are copied into the row's `details`, next to
+`memory_postrun` and `iterations`.
 
 The post-run analysis runs with a dedicated system prompt so the transcript and
 prefetched memories are treated as data, not instructions. This is the main

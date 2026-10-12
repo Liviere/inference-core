@@ -663,6 +663,114 @@ class TestGetAnalysisModel:
         with patch.object(mw, "_resolve_memory_model_name", return_value=None):
             assert mw._get_analysis_model() == (None, None)
 
+    def test_a_model_handed_in_is_used_as_it_is(self, mock_memory_service):
+        """Whoever built it chose it: nothing is resolved by name."""
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        from inference_core.llm.model_identity import tag_model_identity
+
+        handed_in = FakeListChatModel(responses=["ok"])
+        tag_model_identity(handed_in, name="approved-model", provider="mistral")
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service,
+            user_id="u1",
+            postrun_analysis_model="another-model",
+            analysis_model=handed_in,
+        )
+
+        with patch(
+            "inference_core.llm.models.get_model_factory",
+            side_effect=AssertionError("a model was resolved by name"),
+        ):
+            model, name = mw._get_analysis_model()
+
+        assert model is handed_in
+        assert name == "approved-model"
+
+    def test_a_model_handed_in_without_a_name_is_still_the_one_used(
+        self, mock_memory_service
+    ):
+        handed_in = MagicMock()
+        mw = MemoryMiddleware(
+            memory_service=mock_memory_service, user_id="u1", analysis_model=handed_in
+        )
+
+        assert mw._get_analysis_model() == (handed_in, None)
+
+
+class TestMemoryUsageLog:
+    """The usage log of post-run analysis names the model it ran on."""
+
+    USAGE = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+
+    async def _logged(self, mw, model_name, **kwargs):
+        """Log one analysis and return (session kwargs, finalize kwargs)."""
+        with (
+            patch("inference_core.llm.usage_logging.UsageSession") as MockSession,
+            patch("inference_core.llm.config.get_llm_config") as mock_config,
+        ):
+            mock_config.return_value.models = {
+                "approved-model": MagicMock(provider="mistral", pricing=None)
+            }
+            MockSession.return_value.finalize = AsyncMock()
+            await mw._bill_memory_usage(
+                "not-a-uuid", model_name, self.USAGE, 2, **kwargs
+            )
+        return (
+            MockSession.call_args.kwargs,
+            MockSession.return_value.finalize.call_args.kwargs,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_model_says_which_configured_model_it_is(
+        self, mock_memory_service
+    ):
+        """Its own name and provider, and what the provider reported next to them."""
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        from inference_core.llm.model_identity import (
+            tag_model_identity,
+            tag_usage_details,
+        )
+
+        model = FakeListChatModel(responses=["ok"])
+        tag_model_identity(model, name="approved-model", provider="mistral")
+        tag_usage_details(model, {"purpose": "memory", "iterations": "not-this"})
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+
+        session, finalize = await self._logged(
+            mw,
+            # What the loop knew the model by: the name its response gave.
+            "approved-model-2025-08-07",
+            model=model.bind(),
+            reported_model_name="approved-model-2025-08-07",
+        )
+
+        assert session["task_type"] == "agent_memory"
+        assert session["model_name"] == "approved-model"
+        assert session["provider"] == "mistral"
+        assert session["reported_model_name"] == "approved-model-2025-08-07"
+        # The builder's details are recorded; what the log says itself wins.
+        assert finalize["details"] == {
+            "purpose": "memory",
+            "memory_postrun": True,
+            "iterations": 2,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_model_that_says_nothing_is_logged_by_the_name_given(
+        self, mock_memory_service
+    ):
+        """As before: the configured name, its provider from the config."""
+        mw = MemoryMiddleware(memory_service=mock_memory_service, user_id="u1")
+
+        session, finalize = await self._logged(mw, "approved-model")
+
+        assert session["model_name"] == "approved-model"
+        assert session["provider"] == "mistral"
+        assert session["reported_model_name"] is None
+        assert finalize["details"] == {"memory_postrun": True, "iterations": 2}
+
 
 # ---------------------------------------------------------------------------
 # _analyse_via_tool_call
