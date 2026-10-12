@@ -922,6 +922,43 @@ class TestWrapModelCallPersistence:
         mock_persist.assert_called_once_with(response, request)
         assert result is response
 
+    def test_a_call_on_an_instance_no_run_started_on_is_logged_in_the_model_node(
+        self,
+    ):
+        """A resumed run skips before_agent; its first call is logged all the same.
+
+        Logged in the model node, the call is known by the model it was made
+        on. Left to after_model it was known only by what the response named.
+        """
+        nano = _pricing(0.1, 0.2)
+        mw = CostTrackingMiddleware(
+            provider="mistral",
+            model_name="mistral-small",
+            llm_config=_llm_config({"gpt-5-nano": ("openai", nano)}),
+        )
+        assert mw._ctx is None  # before_agent never ran on this instance
+        request = _make_model_request(_tagged_model("gpt-5-nano", "openai"))
+        response = _make_model_response(
+            _make_ai_message(model_name="gpt-5-nano-2025-08-07")
+        )
+
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            MockSession.return_value.finalize_sync.return_value = uuid.uuid4()
+            mw.wrap_model_call(request, MagicMock(return_value=response))
+            logged = MockSession.call_args.kwargs
+            state_updates = mw.after_model(
+                CostTrackingState(messages=[MagicMock()]), MagicMock()
+            )
+
+        # One log, written by the wrapper; after_model wrote no second one.
+        assert MockSession.call_count == 1
+        assert (logged["model_name"], logged["provider"]) == ("gpt-5-nano", "openai")
+        assert logged["reported_model_name"] == "gpt-5-nano-2025-08-07"
+        assert state_updates["last_request_model_name"] == "gpt-5-nano"
+        assert state_updates["last_request_provider"] == "openai"
+
     def test_persist_not_called_when_cancelled_before_model(self, middleware):
         """If cancel_check fires before handler, _persist is never called."""
         middleware._ctx = _MiddlewareContext()

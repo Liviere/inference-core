@@ -250,6 +250,20 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         # Per-invocation context (reset on each before_agent)
         self._ctx: Optional[_MiddlewareContext] = None
 
+    def _context(self) -> _MiddlewareContext:
+        """The context of the run in progress, made if there is none yet.
+
+        ``before_agent`` makes it when a run starts on this instance. A run
+        that is resumed after an interrupt continues past that hook on a
+        fresh instance, so a model call can arrive with no context: it gets
+        one here, and is logged in the model node like any other call.
+        Without it the call was logged only later, from the state, where
+        nothing says which model it was made on.
+        """
+        if self._ctx is None:
+            self._ctx = _MiddlewareContext()
+        return self._ctx
+
     def _init_context(self):
         """Initialize the internal middleware context."""
         self._ctx = _MiddlewareContext()
@@ -533,8 +547,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             except Exception:
                 pass
 
-        if self._ctx:
-            self._ctx.model_call_start_time = time.monotonic()
+        self._context().model_call_start_time = time.monotonic()
 
         response = handler(request)
 
@@ -560,8 +573,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             except Exception:
                 pass
 
-        if self._ctx:
-            self._ctx.model_call_start_time = time.monotonic()
+        self._context().model_call_start_time = time.monotonic()
 
         response = await handler(request)
 

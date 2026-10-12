@@ -176,7 +176,9 @@ outside the factory is recognised by the id it was built with, when that is a
 configured model. What the provider's response named, which may be a dated
 snapshot or an alias, goes to `reported_model_name`. Pricing is the called
 model's own; the pricing the middleware was constructed with stands in only for
-its own model, or for a call whose model could not be told.
+its own model, or for a call whose model could not be told. A run resumed after
+an interrupt continues on a fresh middleware instance, past `before_agent`; its
+calls are logged in the model node all the same.
 
 The middleware leaves the last call in graph state for middleware outside it:
 `last_request_log_id`, `last_request_cost_usd` (`0.0` for a model without
