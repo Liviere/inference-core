@@ -270,7 +270,8 @@ def _coordinator_and_researcher(parent_skills):
                     {
                         "name": "task",
                         "args": {
-                            "description": "Find today's news.",
+                            "description": "Today's news",
+                            "prompt": "Find today's news.",
                             "subagent_type": "researcher",
                         },
                         "id": "task-1",

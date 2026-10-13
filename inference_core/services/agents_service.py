@@ -10,7 +10,6 @@ from deepagents import CompiledSubAgent, SubAgent
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.backends.utils import create_file_data
-from deepagents.middleware import SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import InterruptOnConfig
 from langchain.messages import AIMessageChunk, HumanMessage
@@ -24,9 +23,9 @@ from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel
 
 from inference_core.agents.middleware import (
+    BriefedSubAgentMiddleware,
     CostTrackingMiddleware,
     MemoryMiddleware,
-    TaskBriefMiddleware,
     ToolBasedModelSwitchMiddleware,
     build_model_fallback_middleware,
     canonicalize_fallback_overrides,
@@ -2804,14 +2803,14 @@ class DeepAgentService(AgentService):
         self._give_subagents_their_skills(subagent_skills, store, store_backend)
 
         if subagent_specs:
-            sub_middleware = SubAgentMiddleware(
+            # deepagents' middleware, with a ``task`` tool that takes a label
+            # and a required brief: a model that reads ``description`` as a
+            # title started subagents on a few words.
+            sub_middleware = BriefedSubAgentMiddleware(
                 backend=self._backend,
                 subagents=subagent_specs,
             )
             middleware.append(sub_middleware)
-            # A ``task`` call may carry its brief under an argument the tool
-            # does not read: the subagent would be started on a title.
-            middleware.append(TaskBriefMiddleware())
         if skills_middleware is not None:
             middleware.append(skills_middleware)
 

@@ -29,10 +29,13 @@ For each specific location use the `task` tool to spawn a `weather_agent`.
 
 ```json
 {
-	"task_name": "weather_agent",
-	"instructions": "Check the weather in Krakow for tomorrow morning and tell me if it will rain."
+	"description": "Krakow weather tomorrow",
+	"prompt": "Check the weather in Krakow for tomorrow morning and tell me if it will rain.",
+	"subagent_type": "weather_agent"
 }
 ```
+
+`prompt` is all the subagent reads, so the location and the timeframe go there. `description` is a label of a few words.
 
 ### Step 3: Synthesize and Advise
 

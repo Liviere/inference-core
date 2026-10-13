@@ -546,8 +546,8 @@ def _build_deep_agent_middleware(
     which LangGraph Platform rejects — the platform manages its own store.
     """
     from deepagents.backends import StateBackend
-    from deepagents.middleware import SubAgentMiddleware
 
+    from inference_core.agents.middleware.task_brief import BriefedSubAgentMiddleware
     from inference_core.agents.tools.skill_reader import (
         add_skill_reader_tool,
         create_skills_middleware,
@@ -565,7 +565,7 @@ def _build_deep_agent_middleware(
             agent_config.subagents, factory, visited=visited
         )
         if subagent_specs:
-            sub_middleware = SubAgentMiddleware(
+            sub_middleware = BriefedSubAgentMiddleware(
                 backend=StateBackend,
                 subagents=subagent_specs,
             )

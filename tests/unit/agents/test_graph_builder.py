@@ -297,9 +297,8 @@ class TestBuildDeepAgentMiddleware:
         assert middleware == []
 
     def test_adds_subagent_middleware(self):
-        from deepagents.middleware import SubAgentMiddleware
-
         from inference_core.agents.graph_builder import _build_deep_agent_middleware
+        from inference_core.agents.middleware import BriefedSubAgentMiddleware
 
         # Build a factory that can resolve the subagent config + model
         sub_config = _mock_agent_config(
@@ -330,7 +329,17 @@ class TestBuildDeepAgentMiddleware:
             result = _build_deep_agent_middleware(parent_config, factory, middleware)
 
         assert result is None  # No skills → no store
-        assert any(isinstance(m, SubAgentMiddleware) for m in middleware)
+        # The one whose ``task`` tool takes a label and a required brief: a
+        # graph of the Agent Server delegates like one a service builds.
+        [subagents] = [
+            m for m in middleware if isinstance(m, BriefedSubAgentMiddleware)
+        ]
+        [task] = subagents.tools
+        assert sorted(task.args_schema.model_fields) == [
+            "description",
+            "prompt",
+            "subagent_type",
+        ]
 
     def test_adds_skills_middleware_with_backend(self, tmp_path):
         from deepagents.middleware import SkillsMiddleware

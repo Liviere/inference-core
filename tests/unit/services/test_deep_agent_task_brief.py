@@ -1,12 +1,15 @@
-"""The whole brief of a delegated task reaches the subagent.
+"""A delegated task has a label and a brief, and the subagent is handed the brief.
 
-deepagents' ``task`` tool reads the subagent's task from ``description``. A
-model that knows another framework's tool of that name writes a title there
-and the brief under an argument of its own (``prompt`` in one run, ``content``
-in the next), which the tool's schema drops in silence: the subagent was
-started on a few words. The last tests run a real graph with stand-ins for
-the two models, since what a tool call is made of by the time the tool runs
-is the agent framework's to decide.
+deepagents' ``task`` tool takes the subagent's task from ``description``. A
+model that knows another framework's tool of that name reads ``description``
+as a label: it wrote the brief under ``prompt`` in one run, under ``content``
+in the next, and in two more not at all, so the subagent was started on a few
+words. The tool is given the layout such a model expects (a label, a required
+``prompt``), a call that carries its brief elsewhere is read for what it
+means, and a call without one is refused. The last tests run a real graph
+with stand-ins for the two models, since what a tool call is made of by the
+time the tool runs, and what the model is shown of a tool, is the agent
+framework's to decide.
 """
 
 import uuid
@@ -15,12 +18,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import tool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 
-from inference_core.agents.middleware import TaskBriefMiddleware
-from inference_core.agents.middleware.task_brief import whole_brief
+from inference_core.agents.middleware import BriefedSubAgentMiddleware
+from inference_core.agents.middleware.task_brief import (
+    AS_WRITTEN,
+    FROM_LABEL,
+    JOINED,
+    LABELLED,
+    MISSING,
+    MOVED,
+    NO_BRIEF,
+    briefed,
+    settle,
+    with_prompt,
+)
 from inference_core.services.agents_service import DeepAgentService
 
 FINDINGS = (
@@ -31,129 +47,189 @@ FINDINGS = (
 
 
 # --------------------------------------------------------------------------- #
-# The rule
+# Where a call's brief is
 # --------------------------------------------------------------------------- #
 
 
-def test_a_brief_under_another_tools_argument_is_put_where_this_one_reads_it():
-    moved = whole_brief(
-        {
-            "description": "Write the summary",
-            "prompt": FINDINGS,
-            "subagent_type": "writer",
-            "model": "lite",
-        }
-    )
+def test_a_call_written_the_tools_way_is_left_alone():
+    call = {
+        "description": "Write the summary",
+        "prompt": FINDINGS,
+        "subagent_type": "writer",
+        "model": "lite",
+    }
 
-    # The title stays in front of it: a line the subagent can use.
-    assert moved["description"] == f"Write the summary\n\n{FINDINGS}"
-    assert "prompt" not in moved
-    assert moved["subagent_type"] == "writer"
+    assert settle(call) == (call, AS_WRITTEN)
+
+
+def test_a_short_brief_is_a_brief_when_it_is_written_as_one():
+    """Nothing is asked of a text under ``prompt`` but that it is there."""
+    call = {
+        "description": "Rain tomorrow",
+        "prompt": "Will it rain in Krakow tomorrow?",
+        "subagent_type": "weather",
+    }
+
+    assert settle(call) == (call, AS_WRITTEN)
 
 
 @pytest.mark.parametrize(
-    "argument", ["prompt", "content", "task", "instructions", "anything_else"]
+    "argument", ["content", "task", "instructions", "anything_else"]
 )
-def test_the_brief_is_found_under_whichever_argument_the_model_chose(argument):
+def test_a_brief_under_an_argument_the_tool_does_not_have_is_moved(argument):
     """The same model wrote ``prompt`` in one run and ``content`` in the next."""
-    moved = whole_brief(
+    args, how = settle(
         {
             "description": "Write the summary",
             argument: FINDINGS,
             "subagent_type": "writer",
+            "model": "lite",
         }
     )
 
-    assert moved == {
-        "description": f"Write the summary\n\n{FINDINGS}",
+    assert how == MOVED
+    # The label is not put in front of it: the subagent is handed the brief.
+    assert args == {
+        "description": "Write the summary",
+        "prompt": FINDINGS,
         "subagent_type": "writer",
+        "model": "lite",
     }
 
 
 def test_a_word_that_picks_something_is_not_taken_for_the_brief():
-    """``model: lite`` came with a call whose brief was where it belongs."""
-    assert (
-        whole_brief(
-            {"description": FINDINGS, "model": "lite", "subagent_type": "writer"}
-        )
-        is None
+    args, how = settle(
+        {"description": "Write", "model": "lite", "subagent_type": "writer"}
     )
-    # Not even where there is no title to be longer than.
-    assert whole_brief({"model": "lite", "subagent_type": "writer"}) is None
 
-    moved = whole_brief(
+    assert how == MISSING
+    assert "prompt" not in args
+
+
+def test_a_text_shorter_than_the_label_is_not_the_brief():
+    args, how = settle(
         {
-            "description": "Summary",
-            "content": FINDINGS,
-            "model": "lite",
-            "subagent_type": "writer",
-        }
-    )
-    assert moved["description"] == f"Summary\n\n{FINDINGS}"
-    # What was not the brief stays as it came: the tool's schema drops it.
-    assert moved["model"] == "lite"
-    assert "content" not in moved
-
-
-def test_a_text_shorter_than_the_title_is_not_the_brief():
-    assert (
-        whole_brief(
-            {
-                "description": FINDINGS,
-                "note": "two sources at most",
-                "subagent_type": "writer",
-            }
-        )
-        is None
-    )
-
-
-def test_a_title_the_brief_already_says_is_not_said_twice():
-    moved = whole_brief(
-        {
-            "description": "three points",
-            "prompt": "Write three points from the findings.",
+            "description": "Summarise the three release notes",
+            "note": "be brief",
             "subagent_type": "writer",
         }
     )
 
-    assert moved["description"] == "Write three points from the findings."
+    assert how == MISSING
+    assert "prompt" not in args
 
 
-def test_a_brief_alone_is_the_task():
-    moved = whole_brief({"prompt": f"  {FINDINGS}  ", "subagent_type": "writer"})
+def test_a_brief_under_description_alone_is_taken_from_there():
+    """How deepagents' own tool takes it, and how every call made before this
+    layout is written: a conversation that goes on must not start failing."""
+    args, how = settle({"description": FINDINGS, "subagent_type": "writer"})
 
-    assert moved == {"description": FINDINGS, "subagent_type": "writer"}
+    assert how == FROM_LABEL
+    assert args["prompt"] == FINDINGS
+    assert args["description"] == "Write three points in Polish from these findings:"
+    assert args["subagent_type"] == "writer"
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        {"description": FINDINGS, "subagent_type": "writer"},
-        {"description": FINDINGS, "prompt": "", "subagent_type": "writer"},
-        {"description": FINDINGS, "prompt": "   ", "subagent_type": "writer"},
-        {"description": FINDINGS, "prompt": None, "subagent_type": "writer"},
-        {"description": FINDINGS, "prompt": {"not": "text"}, "subagent_type": "w"},
-        {},
-    ],
-)
-def test_a_call_written_the_tools_own_way_is_left_alone(args):
-    assert whole_brief(args) is None
+def test_a_brief_under_description_with_a_pointer_under_prompt_is_joined():
+    """A model that goes by the calls of an older conversation and by the new
+    schema at once."""
+    args, how = settle(
+        {
+            "description": FINDINGS,
+            "prompt": "Do as described.",
+            "subagent_type": "writer",
+        }
+    )
+
+    assert how == JOINED
+    assert args["prompt"] == f"{FINDINGS}\n\nDo as described."
+    assert args["description"] == "Write three points in Polish from these findings:"
+
+
+def test_a_brief_written_under_both_is_not_said_twice():
+    call = {"description": FINDINGS, "prompt": FINDINGS, "subagent_type": "writer"}
+
+    assert settle(call) == (call, AS_WRITTEN)
+
+
+def test_a_label_and_nothing_else_is_no_brief():
+    for call in (
+        {"description": "Write the summary", "subagent_type": "writer"},
+        {"description": "Write the summary", "prompt": "  ", "subagent_type": "writer"},
+        {"description": "Write the summary", "prompt": None, "subagent_type": "writer"},
+        {"subagent_type": "writer"},
+    ):
+        args, how = settle(call)
+        assert how == MISSING, call
+        assert "prompt" not in args, call
+        assert "prompt" not in briefed(call), call
+
+
+def test_where_a_label_ends_and_a_brief_begins():
+    twelve = "one two three four five six seven eight nine ten eleven twelve"
+
+    assert settle({"description": twelve, "subagent_type": "w"})[1] == MISSING
+    assert settle({"description": f"{twelve} more", "subagent_type": "w"})[1] == (
+        FROM_LABEL
+    )
+    # Two lines are a brief however short they are.
+    assert (
+        settle({"description": "Find it.\nSay where.", "subagent_type": "w"})[1]
+        == FROM_LABEL
+    )
+
+
+def test_a_brief_without_a_label_is_given_one():
+    """A call with a real brief does not fail over the label it lacks."""
+    long_first_line = (
+        "Go through every release note of the last quarter and list changes"
+    )
+    args, how = settle({"prompt": long_first_line, "subagent_type": "writer"})
+
+    assert how == LABELLED
+    assert args["prompt"] == long_first_line
+    assert args["description"] == "Go through every release note of the last…"
+
+    moved = briefed({"content": "Find it.\nSay where.", "subagent_type": "w"})
+    assert moved == {
+        "description": "Find it.",
+        "prompt": "Find it.\nSay where.",
+        "subagent_type": "w",
+    }
+
+
+def test_a_prompt_that_is_no_text_is_left_for_the_tool_to_refuse():
+    call = {"description": "Summary", "prompt": ["a", "b"], "subagent_type": "w"}
+
+    assert settle(call) == (call, AS_WRITTEN)
 
 
 def test_only_the_task_tool_is_looked_at():
-    seen = []
+    middleware = object.__new__(BriefedSubAgentMiddleware)
     request = MagicMock()
     request.tool_call = {
         "name": "write_file",
-        "args": {"description": "notes", "prompt": "not a brief"},
+        "args": {"path": "notes.md", "content": FINDINGS},
         "id": "call-1",
     }
+    handler = MagicMock(return_value="written")
 
-    TaskBriefMiddleware().wrap_tool_call(request, seen.append)
-
-    assert seen == [request]
+    assert middleware.wrap_tool_call(request, handler) == "written"
+    handler.assert_called_once_with(request)
     request.override.assert_not_called()
+
+
+def test_a_tool_that_is_not_the_one_this_was_written_against_is_refused():
+    """deepagents building its tool another way is noticed when an agent is
+    built, not when a subagent is started on the wrong text."""
+
+    @tool
+    def task(instructions: str, agent: str) -> str:
+        """Start a subagent."""
+        return instructions
+
+    with pytest.raises(RuntimeError, match="not what inference-core wraps"):
+        with_prompt(task)
 
 
 # --------------------------------------------------------------------------- #
@@ -162,16 +238,19 @@ def test_only_the_task_tool_is_looked_at():
 
 
 class _Scripted(BaseChatModel):
-    """Answers with its replies in order and keeps what it was sent."""
+    """Answers with its replies in order, and keeps what it was sent and the
+    tools it was bound with."""
 
     replies: List[Any]
     seen: List[List[BaseMessage]] = Field(default_factory=list)
+    bound: List[dict] = Field(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
         return "scripted"
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> "_Scripted":
+        self.bound[:] = [convert_to_openai_tool(one) for one in tools]
         return self
 
     def _generate(
@@ -244,14 +323,21 @@ def _deep_service(model: BaseChatModel, **overrides: Any) -> DeepAgentService:
         return DeepAgentService(**arguments)
 
 
-def _coordinator_and_writer(task_args: dict):
-    writer = _Scripted(replies=[AIMessage(content="Three points, in Polish.")])
+def _task_call(args: dict, call_id: str = "task-1") -> AIMessage:
+    return AIMessage(
+        content="", tool_calls=[{"name": "task", "args": args, "id": call_id}]
+    )
+
+
+def _coordinator_and_writer(*task_args: dict):
+    """A coordinator that makes the given ``task`` calls one after another and
+    then answers, and the writer it hands them to."""
+    writer = _Scripted(
+        replies=[AIMessage(content="Three points, in Polish.") for _ in task_args]
+    )
     coordinator = _Scripted(
         replies=[
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "task", "args": task_args, "id": "task-1"}],
-            ),
+            *(_task_call(args, f"task-{n}") for n, args in enumerate(task_args, 1)),
             AIMessage(content="Here is the summary."),
         ]
     )
@@ -267,20 +353,75 @@ def _coordinator_and_writer(task_args: dict):
             }
         ],
     )
-    return service, writer
+    return service, coordinator, writer
 
 
-def _task_of(writer: _Scripted) -> str:
+def _task_of(writer: _Scripted, run: int = 0) -> str:
     """What the subagent was asked: its one human message."""
-    [asked] = [m for m in writer.seen[0] if isinstance(m, HumanMessage)]
+    [asked] = [m for m in writer.seen[run] if isinstance(m, HumanMessage)]
     return asked.text if hasattr(asked, "text") else str(asked.content)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("argument", ["prompt", "content"])
-async def test_a_subagent_is_handed_the_brief_and_not_its_title(argument):
-    """The call as a model that knows another ``task`` tool writes it."""
-    service, writer = _coordinator_and_writer(
+async def test_a_subagent_is_handed_the_prompt_and_not_the_label():
+    service, _coordinator, writer = _coordinator_and_writer(
+        {
+            "description": "Write the summary",
+            "prompt": FINDINGS,
+            "subagent_type": "writer",
+        }
+    )
+    agent = await service.create_agent(system_prompt="You coordinate.")
+
+    state = await agent.ainvoke({"messages": [("user", "What is new?")]})
+
+    assert state["messages"][-1].content == "Here is the summary."
+    assert _task_of(writer) == FINDINGS
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_is_handed_on_in_a_run_that_is_not_async_too():
+    service, _coordinator, writer = _coordinator_and_writer(
+        {"description": "Summary", "prompt": FINDINGS, "subagent_type": "writer"}
+    )
+    agent = await service.create_agent(system_prompt="You coordinate.")
+
+    agent.invoke({"messages": [("user", "What is new?")]})
+
+    assert _task_of(writer) == FINDINGS
+
+
+@pytest.mark.asyncio
+async def test_the_coordinators_model_is_shown_a_label_and_a_required_prompt():
+    service, coordinator, _writer = _coordinator_and_writer(
+        {"description": "Summary", "prompt": FINDINGS, "subagent_type": "writer"}
+    )
+    agent = await service.create_agent(system_prompt="You coordinate.")
+
+    await agent.ainvoke({"messages": [("user", "What is new?")]})
+
+    [task] = [
+        t["function"] for t in coordinator.bound if t["function"]["name"] == "task"
+    ]
+    parameters = task["parameters"]
+    assert sorted(parameters["properties"]) == [
+        "description",
+        "prompt",
+        "subagent_type",
+    ]
+    assert sorted(parameters["required"]) == ["description", "prompt", "subagent_type"]
+    assert "never sees it" in parameters["properties"]["description"]["description"]
+    assert "only message" in parameters["properties"]["prompt"]["description"]
+    # deepagents' own description, with its list of subagents, and what this
+    # layout adds to it.
+    assert "- writer: Writes summaries." in task["description"]
+    assert task["description"].rstrip().endswith("A call without `prompt` is refused.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("argument", ["content", "instructions"])
+async def test_a_brief_under_another_argument_reaches_the_subagent(argument):
+    service, _coordinator, writer = _coordinator_and_writer(
         {
             "description": "Write the summary",
             argument: FINDINGS,
@@ -290,31 +431,82 @@ async def test_a_subagent_is_handed_the_brief_and_not_its_title(argument):
     )
     agent = await service.create_agent(system_prompt="You coordinate.")
 
-    state = await agent.ainvoke({"messages": [("user", "What is new?")]})
-
-    assert state["messages"][-1].content == "Here is the summary."
-    assert _task_of(writer) == f"Write the summary\n\n{FINDINGS}"
-
-
-@pytest.mark.asyncio
-async def test_a_call_written_the_tools_own_way_reaches_the_subagent_as_it_is():
-    service, writer = _coordinator_and_writer(
-        {"description": FINDINGS, "subagent_type": "writer"}
-    )
-    agent = await service.create_agent(system_prompt="You coordinate.")
-
     await agent.ainvoke({"messages": [("user", "What is new?")]})
 
     assert _task_of(writer) == FINDINGS
 
 
 @pytest.mark.asyncio
-async def test_the_brief_is_handed_on_in_a_run_that_is_not_async_too():
-    service, writer = _coordinator_and_writer(
-        {"description": "Summary", "prompt": FINDINGS, "subagent_type": "writer"}
+async def test_a_call_written_for_deepagents_own_tool_reaches_the_subagent_whole():
+    """Every call a conversation made before this layout looks like this, and
+    a model goes by the calls it sees."""
+    service, _coordinator, writer = _coordinator_and_writer(
+        {"description": FINDINGS, "subagent_type": "writer"}
     )
     agent = await service.create_agent(system_prompt="You coordinate.")
 
-    agent.invoke({"messages": [("user", "What is new?")]})
+    state = await agent.ainvoke({"messages": [("user", "What is new?")]})
 
-    assert _task_of(writer) == f"Summary\n\n{FINDINGS}"
+    assert _task_of(writer) == FINDINGS
+    assert state["messages"][-1].content == "Here is the summary."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_a_title_alone_starts_no_subagent_and_is_answered_in_words(sync):
+    """What used to start a writer on four words. The coordinator is told what
+    is missing, and its next call, with the brief, goes through."""
+    service, coordinator, writer = _coordinator_and_writer(
+        {"description": "Write the summary", "subagent_type": "writer"},
+        {
+            "description": "Write the summary",
+            "prompt": FINDINGS,
+            "subagent_type": "writer",
+        },
+    )
+    # The first call starts nobody, so the writer answers once.
+    writer.replies = writer.replies[:1]
+    agent = await service.create_agent(system_prompt="You coordinate.")
+
+    question = {"messages": [("user", "What is new?")]}
+    state = agent.invoke(question) if sync else await agent.ainvoke(question)
+
+    refusal = coordinator.seen[1][-1]
+    assert isinstance(refusal, ToolMessage)
+    assert refusal.status == "error"
+    assert refusal.tool_call_id == "task-1"
+    assert refusal.content == NO_BRIEF
+    assert "`prompt`" in refusal.content
+    assert len(writer.seen) == 1
+    assert _task_of(writer) == FINDINGS
+    assert state["messages"][-1].content == "Here is the summary."
+
+
+def test_rebuilding_the_tool_does_not_bring_the_old_arguments_back():
+    """``SubAgentMiddleware`` builds its tool anew when its private state keys
+    are set, with its own two arguments."""
+    middleware = BriefedSubAgentMiddleware(
+        backend=MagicMock(),
+        subagents=[
+            {
+                "name": "writer",
+                "description": "Writes summaries.",
+                "system_prompt": "You are the writer.",
+                "model": _Scripted(replies=[]),
+                "tools": [],
+            }
+        ],
+    )
+    [before] = middleware.tools
+
+    middleware.private_state_keys = frozenset({"scratch"})
+
+    [after] = middleware.tools
+    assert after is not before
+    assert middleware.private_state_keys == frozenset({"scratch"})
+    for built in (before, after):
+        assert sorted(built.args_schema.model_fields) == [
+            "description",
+            "prompt",
+            "subagent_type",
+        ]
