@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from inference_core.agents.middleware import (
     CostTrackingMiddleware,
     MemoryMiddleware,
+    TaskBriefMiddleware,
     ToolBasedModelSwitchMiddleware,
     build_model_fallback_middleware,
     canonicalize_fallback_overrides,
@@ -2808,6 +2809,9 @@ class DeepAgentService(AgentService):
                 subagents=subagent_specs,
             )
             middleware.append(sub_middleware)
+            # A ``task`` call may carry its brief under an argument the tool
+            # does not read: the subagent would be started on a title.
+            middleware.append(TaskBriefMiddleware())
         if skills_middleware is not None:
             middleware.append(skills_middleware)
 

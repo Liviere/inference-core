@@ -55,6 +55,7 @@ from .model_fallback import (
     fallback_models_from_mapping,
     normalize_fallback_model_names,
 )
+from .task_brief import TaskBriefMiddleware
 from .tool_call_limits import (
     build_tool_call_limit_middleware,
     generate_tool_call_limits_instructions,
@@ -84,6 +85,8 @@ __all__ = [
     "canonicalize_fallback_overrides",
     "fallback_models_from_mapping",
     "normalize_fallback_model_names",
+    # Subagents: the whole brief of a delegated task
+    "TaskBriefMiddleware",
     # Tool-based model switching
     "ToolBasedModelSwitchMiddleware",
     "ToolModelOverride",
