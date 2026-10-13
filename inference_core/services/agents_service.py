@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -748,19 +749,23 @@ class AgentService:
     def _build_skills_store(
         user_skills: list[dict[str, str]],
         base_path: str = "/skills/",
+        store: Optional[InMemoryStore] = None,
     ) -> tuple[InMemoryStore, list[str]]:
         """Build an InMemoryStore populated with user-defined skills.
 
         Each skill entry is a dict with 'name', 'description', 'content'.
         The content is stored as a SKILL.md file inside the store under
-        ``{base_path}{name}/SKILL.md``.
+        ``{base_path}{name}/SKILL.md``. With *store* the skills are added to
+        that one: a run has one store, and a deep agent keeps its own skills
+        and each subagent's in it, under a ``base_path`` each.
 
         Returns:
             A tuple of (store, [base_path]) to pass to StoreBackend/SkillsMiddleware.
             The source path must be the *parent* directory of all skill subdirectories,
             because SkillsMiddleware.ls_info scans one level down for skill dirs.
         """
-        store = InMemoryStore()
+        if store is None:
+            store = InMemoryStore()
 
         for skill in user_skills:
             skill_name = skill["name"]
@@ -2585,6 +2590,15 @@ class AgentService:
         )
 
 
+# The key a declarative subagent spec carries its own skills under until
+# ``DeepAgentService.create_agent`` takes it off: not one of deepagents' own.
+_SUBAGENT_USER_SKILLS_KEY = "user_skills"
+
+# Where the subagents' skills are kept in the run's skills store: a directory
+# per subagent, apart from the parent's own under ``/skills/``.
+SUBAGENT_SKILLS_ROOT = "/subagent_skills/"
+
+
 class DeepAgentService(AgentService):
     """Service for creating agents with sub-agent orchestration via SubAgentMiddleware.
 
@@ -2595,8 +2609,11 @@ class DeepAgentService(AgentService):
 
     * Declarative subagent specs (SubAgent TypedDict) built from YAML config
     * Pre-compiled subagent runnables (CompiledSubAgent)
-    * Per-subagent interrupt_on / skills / middleware
+    * Per-subagent interrupt_on / middleware
     * SkillsMiddleware for the parent agent itself
+    * A declarative subagent's own skills (``user_skills`` on its spec): its
+      own list of them in its prompt and its own reader, which sees no other
+      agent's
     """
 
     # Source: deepagents v0.4.4 – SubAgentMiddleware, SkillsMiddleware docs
@@ -2740,29 +2757,34 @@ class DeepAgentService(AgentService):
             if isinstance(m, (CostTrackingMiddleware, MemoryMiddleware))
         ]
 
-        # 4. Build subagent specs and add SubAgentMiddleware
+        # 4. Build subagent specs
         subagent_specs = await self._build_subagent_specs(
             inherited_middleware=propagated_middleware
         )
-        if subagent_specs:
-            sub_middleware = SubAgentMiddleware(
-                backend=self._backend,
-                subagents=subagent_specs,
-            )
-            middleware.append(sub_middleware)
 
-        # 5. Add SkillsMiddleware if parent has skills configured (YAML or user-defined)
+        # 5. Skills: the parent's own (YAML sources or user-defined) and each
+        #    declarative subagent's. One store for the run, since a subagent's
+        #    graph runs on its parent's store, with a directory per owner.
         yaml_skills = (self.agent_config.skills if self.agent_config else None) or []
         user_skills = self._user_skills or []
+        subagent_skills = self._take_subagent_skills(subagent_specs)
 
+        store: Optional[InMemoryStore] = None
+        if user_skills or subagent_skills:
+            store = InMemoryStore()
+            kwargs.setdefault("store", store)
+        store_backend = lambda rt: StoreBackend(rt)  # noqa: E731
+
+        skills_middleware = None
         if yaml_skills or user_skills:
             if user_skills:
                 # User skills require a StoreBackend populated with skill files.
                 # Merge YAML skill sources with user-defined skill sources.
-                store, user_skill_sources = self._build_skills_store(user_skills)
+                _, user_skill_sources = self._build_skills_store(
+                    user_skills, store=store
+                )
                 all_sources = list(yaml_skills) + user_skill_sources
-                skills_backend = lambda rt: StoreBackend(rt)
-                kwargs.setdefault("store", store)
+                skills_backend = store_backend
             else:
                 all_sources = list(yaml_skills)
                 skills_backend = self._backend
@@ -2771,12 +2793,23 @@ class DeepAgentService(AgentService):
                 backend=skills_backend,
                 sources=all_sources,
             )
-            middleware.append(skills_middleware)
             add_skill_reader_tool(
                 self.tools,
                 backend=skills_backend,
                 sources=all_sources,
             )
+
+        # Before SubAgentMiddleware is made: it compiles the specs it is given.
+        self._give_subagents_their_skills(subagent_skills, store, store_backend)
+
+        if subagent_specs:
+            sub_middleware = SubAgentMiddleware(
+                backend=self._backend,
+                subagents=subagent_specs,
+            )
+            middleware.append(sub_middleware)
+        if skills_middleware is not None:
+            middleware.append(skills_middleware)
 
         # 6. Ensure CostTrackingMiddleware is absolute last so its
         #    after_model (state accumulation) runs FIRST in reverse order,
@@ -2942,6 +2975,7 @@ class DeepAgentService(AgentService):
                     model=sub_model,
                     tools=[],
                     base_agent_name=sub_instance.base_agent_name,
+                    user_skills=sub_instance.skills,
                 )
                 db_subagents.append(spec)
 
@@ -3111,6 +3145,7 @@ class DeepAgentService(AgentService):
                 interrupt_on=sub_interrupt,
                 skills=skills,
                 middleware=middleware,
+                user_skills=subagent.get(_SUBAGENT_USER_SKILLS_KEY),
             )
 
             return spec
@@ -3205,6 +3240,74 @@ class DeepAgentService(AgentService):
         return spec
 
     @staticmethod
+    def _take_subagent_skills(
+        specs: list["SubAgent | CompiledSubAgent"],
+    ) -> list[tuple[dict[str, Any], list[dict[str, str]]]]:
+        """Take the subagents' own skills off their specs.
+
+        Returns ``[(spec, skills)]`` for the declarative specs that carry any.
+        The key is taken off every spec either way: deepagents does not know
+        it. A compiled subagent has no spec to add to; one that is a service
+        of its own brings its skills itself.
+        """
+        taken: list[tuple[dict[str, Any], list[dict[str, str]]]] = []
+        for spec in specs:
+            if not isinstance(spec, dict) or "runnable" in spec:
+                continue
+            skills = spec.pop(_SUBAGENT_USER_SKILLS_KEY, None)
+            if skills:
+                taken.append((spec, list(skills)))
+        return taken
+
+    def _give_subagents_their_skills(
+        self,
+        subagent_skills: list[tuple[dict[str, Any], list[dict[str, str]]]],
+        store: Optional[InMemoryStore],
+        backend: Any,
+    ) -> None:
+        """Give each subagent that has skills its list of them and its reader.
+
+        What the parent has for its own skills, per subagent: the SKILL.md
+        files in the store, ``SkillsMiddleware`` (the names and descriptions
+        in the system prompt) and ``read_skill_file`` (the instructions, when
+        the task calls for them). Each is tied to the subagent's own
+        directory, so it neither lists nor can read its parent's skills or
+        another subagent's.
+
+        ``deepagents.create_deep_agent`` does this for a spec's ``skills``;
+        ``SubAgentMiddleware`` alone, which is what this service uses, does
+        not look at that key.
+        """
+        if store is None:
+            return
+        taken_directories: set[str] = set()
+        for spec, skills in subagent_skills:
+            directory = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(spec.get("name") or ""))
+            directory = directory.strip("._") or "subagent"
+            base, attempt = directory, 1
+            while directory in taken_directories:
+                attempt += 1
+                directory = f"{base}-{attempt}"
+            taken_directories.add(directory)
+
+            _, sources = self._build_skills_store(
+                skills,
+                base_path=f"{SUBAGENT_SKILLS_ROOT}{directory}/",
+                store=store,
+            )
+            sub_middleware = list(spec.get("middleware") or [])
+            sub_middleware.append(
+                create_skills_middleware(backend=backend, sources=sources)
+            )
+            # CostTracking must stay last so it runs first in after_model.
+            self._ensure_cost_tracking_last(sub_middleware)
+            spec["middleware"] = sub_middleware
+
+            tools = list(spec.get("tools") or [])
+            add_skill_reader_tool(tools, backend=backend, sources=sources)
+            spec["tools"] = tools
+
+    @staticmethod
     def _build_declarative_subagent_spec(
         name: str,
         description: str,
@@ -3215,11 +3318,18 @@ class DeepAgentService(AgentService):
         interrupt_on: Optional[dict[str, bool | InterruptOnConfig]] = None,
         skills: Optional[list[Any]] = None,
         middleware: Optional[list[Any]] = None,
+        user_skills: Optional[list[dict[str, str]]] = None,
     ) -> dict[str, Any]:
         """Creates a standardized declarative SubAgent TypedDict.
 
         Using this ensures that SubAgentMiddleware receives a consistent dictionary
         with properly initialized instances, explicitly skipping string-based LangChain `init_chat_model` bugs.
+
+        ``user_skills`` are the subagent's own skills, as records with
+        ``name``, ``description`` and ``content`` (a whole SKILL.md), the way a
+        user-defined agent stores them. It is not a key ``SubAgentMiddleware``
+        knows: :meth:`create_agent` takes it off the spec and gives the
+        subagent its skills (see :meth:`_give_subagents_their_skills`).
         """
         spec: dict[str, Any] = {
             "name": name,
@@ -3237,6 +3347,8 @@ class DeepAgentService(AgentService):
             spec["skills"] = skills
         if middleware is not None:
             spec["middleware"] = middleware
+        if user_skills:
+            spec[_SUBAGENT_USER_SKILLS_KEY] = list(user_skills)
 
         return spec
 

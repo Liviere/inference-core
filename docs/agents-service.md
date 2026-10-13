@@ -66,7 +66,7 @@ Key concepts:
   compatibility alias `fallback_models`; an empty list disables inherited
   fallback for that instance.
 - **Skills** – on-demand instructions loaded from `SKILL.md` files; allow complex workflows without filling the context window.
-- **Subagents** – pointers to other agents defined in `llm_config.yaml` that can be invoked via the `task()` tool. In coordinator workflows, keep the parent tool surface narrow and let specialists handle raw browser/email execution.
+- **Subagents** – pointers to other agents defined in `llm_config.yaml` that can be invoked via the `task()` tool. In coordinator workflows, keep the parent tool surface narrow and let specialists handle raw browser/email execution. A subagent passed to `DeepAgentService` as a declarative spec may carry skills of its own under `user_skills` (records with `name`, `description`, `content`): it is given its own skill list and its own `read_skill_file`, apart from the parent's.
 - **Local Tool Providers** – reusable bundles of tools registered in the code. Inference Core ships `weather_agent_tools`, `default_agent_tools`, `demo_tool_calling`, and `email_tools`; application-specific providers can be registered alongside them.
 - **MCP Profiles** – configuration for Model Context Protocol servers. Use these for browser-style tools instead of inventing a local browser provider name.
 - **Agent Memory** – integrated long-term memory for persistence across sessions.

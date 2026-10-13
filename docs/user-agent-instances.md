@@ -66,6 +66,8 @@ Validation rules enforced by the API:
 - `description` is limited to 1024 characters.
 - `content` is limited to 100000 characters.
 
+An instance that runs as a subagent of a deep agent keeps its skills. `DeepAgentService.from_user_instance` puts them on the subagent's spec as `user_skills`, and the subagent gets its own list of skills in its system prompt and its own `read_skill_file`, both tied to a directory of its own in the run's store (`/subagent_skills/<subagent name>/`): it neither lists nor can read the parent's skills or another subagent's, and the parent cannot read the subagent's. This holds for a subagent given as a declarative spec; one that is a service or a compiled graph of its own brings its skills itself.
+
 Example payload fragment:
 
 ```json
