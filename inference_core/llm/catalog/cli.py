@@ -5,12 +5,15 @@
     python -m inference_core.llm.catalog drift [--check]
     python -m inference_core.llm.catalog events [--since 7d] [--provider NAME]
     python -m inference_core.llm.catalog scaffold PROVIDER MODEL
+    python -m inference_core.llm.catalog models [--provider NAME ...]
 
 ``refresh`` reads the providers now, whether or not the scheduled refresh is
 switched on and whenever they were last read. The others read what is stored
 and ask no provider. ``drift --check`` exits with 1 when a configured model
 needs a look, for use in a deploy check. ``scaffold`` prints a draft
-``models:`` entry for a model in the catalog; it changes no file.
+``models:`` entry for a model in the catalog; it changes no file. ``models``
+lists every configured model, of every provider, with what the catalog says
+about it; the list is the config's, so it is printed without the catalog too.
 """
 
 import argparse
@@ -198,6 +201,51 @@ async def _scaffold(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _models(args: argparse.Namespace) -> int:
+    from inference_core.llm.config import get_llm_config
+
+    from .drift import configured_models
+    from .service import catalog_models, describe_error, provider_states
+
+    config = get_llm_config()
+    try:
+        stored, states = await catalog_models(), await provider_states()
+    except Exception as exc:
+        # The list is the config's: it does not need the catalog to be there.
+        stored, states = [], []
+        print(
+            f"The catalog could not be read ({describe_error(exc)}): "
+            "the CATALOG column is empty.",
+            file=sys.stderr,
+        )
+
+    entries = configured_models(config, stored, states)
+    if args.provider:
+        entries = [entry for entry in entries if entry.provider in args.provider]
+    if not entries:
+        print("No configured model.")
+        return 0
+
+    rows = [["PROVIDER", "MODEL", "NAME", "AGENTS", "CATALOG"]]
+    for entry in entries:
+        rows.append(
+            [
+                entry.provider,
+                entry.model,
+                entry.display_name or "-",
+                str(entry.agents),
+                entry.catalog_state or "-",
+            ]
+        )
+    _table(rows)
+    models, providers = len(entries), len({entry.provider for entry in entries})
+    print(
+        f"\n{models} model{'' if models == 1 else 's'}, "
+        f"{providers} provider{'' if providers == 1 else 's'}"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m inference_core.llm.catalog",
@@ -242,6 +290,17 @@ def build_parser() -> argparse.ArgumentParser:
     scaffold.add_argument("provider", metavar="PROVIDER")
     scaffold.add_argument("model", metavar="MODEL", help="the provider's model id")
     scaffold.set_defaults(run=_scaffold)
+
+    models = commands.add_parser(
+        "models", help="every configured model, and what the catalog says of it"
+    )
+    models.add_argument(
+        "--provider",
+        action="append",
+        metavar="NAME",
+        help="only this provider (may be given more than once)",
+    )
+    models.set_defaults(run=_models)
 
     return parser
 

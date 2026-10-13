@@ -6,6 +6,8 @@ Covers:
 - refresh: what is printed, and a failed provider as the exit code
 - status and events: what is stored, as a table
 - drift: the report, the exit code of --check, and providers not read yet
+- models: every configured model as a table, also when the catalog cannot
+  be read
 """
 
 import functools
@@ -100,6 +102,10 @@ class TestParser:
     def test_drift_check(self):
         assert _args("drift").check is False
         assert _args("drift", "--check").check is True
+
+    def test_models_takes_providers(self):
+        assert _args("models").provider is None
+        assert _args("models", "--provider", "a").provider == ["a"]
 
 
 class TestRefresh:
@@ -234,6 +240,59 @@ class TestDrift:
         assert await cli._drift(_args("drift", "--check")) == 0
 
         assert OTHER in capsys.readouterr().err
+
+
+class TestModels:
+    async def test_lists_every_configured_model(self, catalog, capsys):
+        catalog[ACME].models = [
+            _model(ACME, "a"),
+            _model(ACME, "old", lifecycle=ModelLifecycle.DEPRECATED),
+        ]
+        await cli._refresh(_args("refresh", "--provider", ACME))
+        capsys.readouterr()
+
+        assert await cli._models(_args("models")) == 0
+
+        captured = capsys.readouterr()
+        lines = [line.split() for line in captured.out.splitlines()]
+        assert lines == [
+            ["PROVIDER", "MODEL", "NAME", "AGENTS", "CATALOG"],
+            [ACME, "a", "-", "0", "ok"],
+            [ACME, "old", "-", "0", "deprecated"],
+            [ACME, "typo", "-", "0", "missing"],
+            [OTHER, "x", "-", "0", "-"],
+            [],
+            ["4", "models,", "2", "providers"],
+        ]
+        assert captured.err == ""
+
+    async def test_one_provider(self, catalog, capsys):
+        assert await cli._models(_args("models", "--provider", OTHER)) == 0
+
+        lines = capsys.readouterr().out.splitlines()
+        assert [line.split()[:2] for line in lines[1:2]] == [[OTHER, "x"]]
+        assert lines[-1] == "1 model, 1 provider"
+
+    async def test_a_provider_with_no_model(self, catalog, capsys):
+        assert await cli._models(_args("models", "--provider", "nobody")) == 0
+
+        assert "No configured model" in capsys.readouterr().out
+
+    async def test_without_the_catalog(self, catalog, monkeypatch, capsys):
+        """The list is the config's: a database that is away does not stop it."""
+
+        async def unreachable(**kwargs):
+            raise ConnectionRefusedError("postgres://user:secret@host/db")
+
+        monkeypatch.setattr(service, "catalog_models", unreachable)
+
+        assert await cli._models(_args("models")) == 0
+
+        captured = capsys.readouterr()
+        lines = [line.split() for line in captured.out.splitlines()]
+        assert [line[-1] for line in lines[1:5]] == ["-", "-", "-", "-"]
+        assert "ConnectionRefusedError" in captured.err
+        assert "secret" not in captured.err
 
 
 class TestEvents:

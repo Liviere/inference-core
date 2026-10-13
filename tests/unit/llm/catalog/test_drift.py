@@ -6,6 +6,8 @@ Covers:
 - a configured alias is the model it stands for
 - models nobody configured are never drift
 - a provider that was not read yet, or is skipped, says nothing
+- the list of configured models: every provider, the catalog's state where
+  there is one, the display name, how many agents name a model
 """
 
 from datetime import datetime, timezone
@@ -20,9 +22,14 @@ from inference_core.llm.catalog import (
     register_model_lister,
     unregister_model_lister,
 )
-from inference_core.llm.catalog.drift import compute_drift, current_drift
+from inference_core.llm.catalog.drift import (
+    compute_drift,
+    configured_models,
+    current_drift,
+)
 from inference_core.llm.catalog.service import refresh
 from inference_core.llm.catalog.types import DiscoveredModel, ModelLifecycle
+from inference_core.llm.config import AgentConfig, ModelConfig, ToolModelOverrideConfig
 from inference_core.llm.provider_registry import (
     register_chat_model_provider,
     unregister_chat_model_provider,
@@ -190,3 +197,112 @@ async def test_current_drift_reads_the_stored_catalog(session_factory):
         ("b", "missing"),
     ]
     assert entries[0].retires_at == RETIRES
+
+
+class TestConfiguredModels:
+    """The list of what is configured, with the catalog's word on each."""
+
+    def test_every_model_with_its_catalog_state(self):
+        config = make_config(
+            {}, {name: ACME for name in ("a", "typo", "old", "going", "alias")}
+        )
+        rows = [
+            _row("a"),
+            _row("old", lifecycle="deprecated"),
+            _row("going", retires_at=RETIRES),
+            _row("dated-1", aliases=["alias"]),
+            _row("unconfigured"),
+        ]
+
+        entries = configured_models(config, rows, [_read()])
+
+        assert [(e.provider, e.model, e.catalog_state) for e in entries] == [
+            (ACME, "a", "ok"),
+            (ACME, "typo", "missing"),
+            (ACME, "old", "deprecated"),
+            (ACME, "going", "retiring"),
+            (ACME, "alias", "ok"),
+        ]
+
+    def test_agrees_with_drift(self):
+        config = make_config({}, {name: ACME for name in ("a", "typo", "old")})
+        rows = [_row("a"), _row("old", lifecycle="deprecated")]
+
+        listed = configured_models(config, rows, [_read()])
+        drift = compute_drift(config, rows, [_read()])
+
+        assert [(e.model, e.catalog_state) for e in listed if e.catalog_state != "ok"]
+        assert [
+            (e.model, e.catalog_state) for e in listed if e.catalog_state != "ok"
+        ] == [(e.model, e.state) for e in drift]
+
+    def test_providers_by_name_and_models_in_the_configs_order(self):
+        config = make_config({}, {"z": ACME, "local": "ollama", "b": ACME})
+
+        entries = configured_models(config, [_row("z"), _row("b")], [_read()])
+
+        assert [(e.provider, e.model) for e in entries] == [
+            (ACME, "z"),
+            (ACME, "b"),
+            ("ollama", "local"),
+        ]
+
+    def test_no_state_where_the_catalog_cannot_say(self):
+        """Not read yet, switched off, or a provider nobody lists."""
+        config = make_config({}, {"a": ACME, "local": "ollama"})
+        off = make_config({ACME: {"catalog": {"enabled": False}}}, {"a": ACME})
+
+        unread = configured_models(config, [], [])
+        no_lister = configured_models(config, [_row("a")], [_read()])
+        skipped = configured_models(off, [_row("a")], [_read()])
+
+        assert [e.catalog_state for e in unread] == [None, None]
+        assert [(e.model, e.catalog_state) for e in no_lister] == [
+            ("a", "ok"),
+            ("local", None),
+        ]
+        assert [e.catalog_state for e in skipped] == [None]
+
+    def test_the_config_alone(self):
+        config = make_config({}, {"a": ACME})
+
+        (entry,) = configured_models(config)
+
+        assert (entry.model, entry.catalog_state) == ("a", None)
+
+    def test_display_name(self):
+        config = make_config({}, {"a": ACME, "b": ACME, "c": ACME})
+        config.models["a"] = ModelConfig(
+            name="a", provider=ACME, display_name="Model A"
+        )
+        config.models["b"] = ModelConfig(name="b", provider=ACME, display_name="  ")
+
+        entries = configured_models(config)
+
+        assert [e.display_name for e in entries] == ["Model A", None, None]
+
+    def test_counts_the_agents_that_name_a_model(self):
+        """An agent counts once per model, in whichever role it names it."""
+        config = make_config({}, {name: ACME for name in "abcde"})
+        config.agent_configs = {
+            "one": AgentConfig(primary="a", fallback=["b", "a"]),
+            "two": AgentConfig(
+                primary="a",
+                multimodal_support_model="c",
+                tool_model_overrides=[
+                    ToolModelOverrideConfig(tool_name="t", model="d")
+                ],
+            ),
+        }
+        # The primary in force, not the one written: "two" was moved to "b".
+        config.agent_models = {"one": "a", "two": "b"}
+
+        entries = configured_models(config)
+
+        assert {e.model: e.agents for e in entries} == {
+            "a": 1,
+            "b": 2,
+            "c": 1,
+            "d": 1,
+            "e": 0,
+        }

@@ -61,6 +61,7 @@ python -m inference_core.llm.catalog status
 python -m inference_core.llm.catalog drift [--check]
 python -m inference_core.llm.catalog events [--since 7d] [--provider NAME]
 python -m inference_core.llm.catalog scaffold PROVIDER MODEL
+python -m inference_core.llm.catalog models [--provider NAME ...]
 ```
 
 - `refresh` reads the providers now, whenever they were last read. Exits with 1 when a provider failed.
@@ -69,8 +70,9 @@ python -m inference_core.llm.catalog scaffold PROVIDER MODEL
 - `events` lists what changed in the listings, newest first.
 
 - `scaffold` prints a draft `models:` entry for a model in the catalog, with what the listing says filled in and what it does not say (prices, for most providers) marked in a comment. It changes no file: adding a model to the config stays a decision somebody makes.
+- `models` lists every model of the config, one row each: its provider, its key, its `display_name`, how many agents name it (as their primary, a fallback, `multimodal_support_model` or in `tool_model_overrides`) and what the catalog says of it (`ok`, or a drift state). Unlike the others it covers every provider, also one without a lister; the catalog column is `-` where the catalog cannot say (no lister, skipped, not read yet). The list is the config's, so it is printed when the database cannot be reached too, with a line on stderr and an empty catalog column.
 
-`status`, `drift`, `events` and `scaffold` read what is stored and ask no provider.
+`status`, `drift`, `events`, `scaffold` and `models` read what is stored and ask no provider.
 
 ## Drift
 
