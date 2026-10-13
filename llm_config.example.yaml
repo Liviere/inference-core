@@ -514,6 +514,12 @@ models:
     # go on reasoning alone, and the call then ends with neither text nor a
     # tool call (finish_reason: length).
     max_tokens: 32768
+    # The read timeout, in seconds, between two chunks of a streamed answer.
+    # Mistral sends a tool call's arguments in one chunk once they are complete,
+    # so the stream is silent while they are generated: about 80 seconds for
+    # 9,500 characters. At the default of 60 a longer tool call is cut off with
+    # a read timeout and handed to the fallback model.
+    timeout: 300
     temperature: 0.7
     multimodal: true
     reasoning_config:
