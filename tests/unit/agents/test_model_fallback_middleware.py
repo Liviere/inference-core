@@ -16,8 +16,10 @@ from inference_core.llm.model_identity import tag_model_identity
 
 from inference_core.agents.middleware.model_fallback import (
     CancelAwareModelFallbackMiddleware,
+    ModelAnswerFailed,
     build_model_fallback_middleware,
     canonicalize_fallback_overrides,
+    failed_answer_reason,
     fallback_models_from_mapping,
     normalize_fallback_model_names,
 )
@@ -342,3 +344,132 @@ def test_a_call_answered_by_a_fallback_is_logged_as_the_fallback() -> None:
     assert state["last_request_model_name"] == "fallback-model"
     assert state["last_request_provider"] == "openai"
     assert state["last_request_reported_model_name"] == "fallback-model-2025-08-07"
+
+
+# ---------------------------------------------------------------------------
+# A failure that a provider delivers as an answer
+# ---------------------------------------------------------------------------
+
+
+def _error_answer() -> AIMessage:
+    """What a stream that went wrong can end with: nothing, and a reason."""
+    return AIMessage(content="", response_metadata={"finish_reason": "error"})
+
+
+def test_an_empty_answer_that_ended_in_an_error_is_a_failure() -> None:
+    assert failed_answer_reason(_error_answer()) is not None
+    # A list of empty text chunks holds nothing either.
+    assert (
+        failed_answer_reason(
+            AIMessage(content=["", ""], response_metadata={"finish_reason": "ERROR"})
+        )
+        is not None
+    )
+
+
+def test_an_answer_with_something_in_it_is_an_answer() -> None:
+    text = AIMessage(content="partial", response_metadata={"finish_reason": "error"})
+    call = AIMessage(
+        content="",
+        tool_calls=[{"name": "search", "args": {}, "id": "call-1"}],
+        response_metadata={"finish_reason": "error"},
+    )
+    reasoning = AIMessage(
+        content=[{"type": "thinking", "thinking": "still thinking"}],
+        response_metadata={"finish_reason": "error"},
+    )
+
+    assert failed_answer_reason(text) is None
+    assert failed_answer_reason(call) is None
+    assert failed_answer_reason(reasoning) is None
+
+
+def test_an_empty_answer_with_another_finish_reason_is_the_models_own() -> None:
+    for reason in ("stop", "length", None):
+        message = AIMessage(content="", response_metadata={"finish_reason": reason})
+        assert failed_answer_reason(message) is None
+    # Whatever a handler returns that is no message is left alone.
+    assert failed_answer_reason("fallback-response") is None
+
+
+def test_a_failed_answer_is_read_off_a_model_response() -> None:
+    from langchain.agents.middleware import ModelResponse
+
+    assert failed_answer_reason(ModelResponse(result=[_error_answer()])) is not None
+    assert failed_answer_reason(ModelResponse(result=[AIMessage(content="ok")])) is None
+
+
+def test_a_failed_answer_of_the_primary_goes_to_the_fallback() -> None:
+    middleware = _build_middleware(num_fallbacks=1)
+    calls: list[object] = []
+
+    def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        if len(calls) == 1:
+            return _error_answer()
+        return AIMessage(content="answer")
+
+    result = middleware.wrap_model_call(_FakeRequest(), handler)
+
+    assert result.content == "answer"
+    assert len(calls) == 2
+    assert calls[1].model is middleware.models[0]
+
+
+def test_when_every_model_answers_with_a_failure_the_call_fails() -> None:
+    middleware = _build_middleware(num_fallbacks=2)
+    calls: list[object] = []
+
+    def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        return _error_answer()
+
+    with pytest.raises(ModelAnswerFailed):
+        middleware.wrap_model_call(_FakeRequest(), handler)
+
+    assert len(calls) == 3
+
+
+def test_async_failed_answer_goes_to_the_fallback() -> None:
+    middleware = _build_middleware(num_fallbacks=1)
+    calls: list[object] = []
+
+    async def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        if len(calls) == 1:
+            return _error_answer()
+        return AIMessage(content="answer")
+
+    async def run() -> object:
+        return await middleware.awrap_model_call(_FakeRequest(), handler)
+
+    assert asyncio.run(run()).content == "answer"
+    assert len(calls) == 2
+
+
+class _ErrorAnswerModel(BaseChatModel):
+    """A model whose provider ends the call with an error and no output."""
+
+    @property
+    def _llm_type(self) -> str:
+        return "error-answer"
+
+    def _generate(
+        self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kw: Any
+    ) -> ChatResult:
+        return ChatResult(generations=[ChatGeneration(message=_error_answer())])
+
+
+def test_a_failed_answer_never_becomes_a_turn_of_the_conversation() -> None:
+    """The empty message would stay in the history a stricter provider refuses."""
+    fallback = _ReportingModel(reports="fallback-model")
+    agent = create_agent(
+        _ErrorAnswerModel(),
+        tools=[],
+        middleware=[CancelAwareModelFallbackMiddleware(fallback)],
+    )
+
+    state = agent.invoke({"messages": [("user", "hi")]})
+
+    ai_messages = [m for m in state["messages"] if m.type == "ai"]
+    assert [m.content for m in ai_messages] == ["answer"]

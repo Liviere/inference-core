@@ -22,6 +22,62 @@ _FALLBACK_KEYS = ("fallback", "fallback_models")
 _MISSING = object()
 
 
+class ModelAnswerFailed(RuntimeError):
+    """A model call that came back as an answer and is a failure.
+
+    Raised in place of the provider's own error when every model answered
+    that way, so the caller sees a failed call and not an empty reply.
+    """
+
+
+def failed_answer_reason(response: Any) -> str | None:
+    """Why *response* is a failure delivered as an answer, or ``None``.
+
+    A provider can end a call that went wrong without raising: the stream
+    closes with ``finish_reason: "error"`` and a message that has neither
+    content nor a tool call. Taken as an answer, that message is an empty
+    turn of the assistant. The agent stops with nothing, and the message
+    stays in the conversation, where a stricter provider refuses every later
+    request because of it ("Assistant message must have either content or
+    tool_calls").
+
+    Only that case counts: an empty message whose finish reason is anything
+    else is the model's own choice to say nothing, and one that carries text
+    or a tool call is an answer whatever its finish reason.
+    """
+    inner = getattr(response, "model_response", response)
+    result = getattr(inner, "result", None)
+    messages = result if isinstance(result, list) else [inner]
+
+    for message in reversed(messages):
+        if getattr(message, "type", None) != "ai":
+            continue
+        metadata = getattr(message, "response_metadata", None)
+        reason = metadata.get("finish_reason") if isinstance(metadata, dict) else None
+        if str(reason or "").strip().lower() != "error":
+            return None
+        if getattr(message, "tool_calls", None) or getattr(
+            message, "invalid_tool_calls", None
+        ):
+            return None
+        if _has_content(getattr(message, "content", None)):
+            return None
+        return "the model ended its answer with finish_reason 'error' and no output"
+    return None
+
+
+def _has_content(content: Any) -> bool:
+    """Whether a message's ``content`` holds anything at all."""
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, (list, tuple)):
+        return any(
+            bool(item.strip()) if isinstance(item, str) else bool(item)
+            for item in content
+        )
+    return bool(content)
+
+
 class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
     """``ModelFallbackMiddleware`` that never swallows cancellation/interrupts.
 
@@ -38,6 +94,10 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
     immediately (primary and fallback attempts alike) and additionally
     checks ``cancel_check`` before starting each fallback attempt, so no
     new paid model call begins after cancellation was requested.
+
+    It also takes a failure that a provider delivered as an answer for what
+    it is (:func:`failed_answer_reason`) and tries the next model, where the
+    stock middleware would hand the empty message on as the model's reply.
 
     ``cancel_check`` is populated by ``AgentService.set_cancel_check``,
     which assigns the callback to every middleware exposing the attribute.
@@ -71,21 +131,30 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         """Try fallback models in sequence, propagating cancellation."""
         last_exception: Exception
         try:
-            return handler(request)
+            response = handler(request)
         except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
             last_exception = e
+        else:
+            failure = failed_answer_reason(response)
+            if failure is None:
+                return response
+            last_exception = ModelAnswerFailed(failure)
 
         for fallback_model in self.models:
             self._raise_if_cancelled()
             try:
-                return handler(request.override(model=fallback_model))
+                response = handler(request.override(model=fallback_model))
             except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
                 last_exception = e
                 continue
+            failure = failed_answer_reason(response)
+            if failure is None:
+                return response
+            last_exception = ModelAnswerFailed(failure)
 
         raise last_exception
 
@@ -97,21 +166,30 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         """Async version of :meth:`wrap_model_call`."""
         last_exception: Exception
         try:
-            return await handler(request)
+            response = await handler(request)
         except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
             last_exception = e
+        else:
+            failure = failed_answer_reason(response)
+            if failure is None:
+                return response
+            last_exception = ModelAnswerFailed(failure)
 
         for fallback_model in self.models:
             self._raise_if_cancelled()
             try:
-                return await handler(request.override(model=fallback_model))
+                response = await handler(request.override(model=fallback_model))
             except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
                 last_exception = e
                 continue
+            failure = failed_answer_reason(response)
+            if failure is None:
+                return response
+            last_exception = ModelAnswerFailed(failure)
 
         raise last_exception
 
