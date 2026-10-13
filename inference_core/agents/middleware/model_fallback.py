@@ -34,16 +34,21 @@ def failed_answer_reason(response: Any) -> str | None:
     """Why *response* is a failure delivered as an answer, or ``None``.
 
     A provider can end a call that went wrong without raising: the stream
-    closes with ``finish_reason: "error"`` and a message that has neither
-    content nor a tool call. Taken as an answer, that message is an empty
-    turn of the assistant. The agent stops with nothing, and the message
-    stays in the conversation, where a stricter provider refuses every later
-    request because of it ("Assistant message must have either content or
-    tool_calls").
+    closes with ``finish_reason: "error"``. What has arrived by then is not
+    an answer. It may be nothing at all, or the reasoning and the sentence
+    that leads up to a tool call ("Everything is ready, here is the
+    proposal:") with the call itself never sent, because a tool call's
+    arguments come last and in one piece.
 
-    Only that case counts: an empty message whose finish reason is anything
-    else is the model's own choice to say nothing, and one that carries text
-    or a tool call is an answer whatever its finish reason.
+    Taken as an answer, such a message ends the agent's run where the model
+    meant to act. An empty one also stays in the conversation, where a
+    stricter provider refuses every later request because of it ("Assistant
+    message must have either content or tool_calls").
+
+    So a message whose finish reason is ``error`` is a failed call unless it
+    carries a tool call the agent can run. Any other finish reason is the
+    model's own: an empty message that ended with ``stop`` is its choice to
+    say nothing, and one cut off at the output limit says ``length``.
     """
     inner = getattr(response, "model_response", response)
     result = getattr(inner, "result", None)
@@ -56,26 +61,10 @@ def failed_answer_reason(response: Any) -> str | None:
         reason = metadata.get("finish_reason") if isinstance(metadata, dict) else None
         if str(reason or "").strip().lower() != "error":
             return None
-        if getattr(message, "tool_calls", None) or getattr(
-            message, "invalid_tool_calls", None
-        ):
+        if getattr(message, "tool_calls", None):
             return None
-        if _has_content(getattr(message, "content", None)):
-            return None
-        return "the model ended its answer with finish_reason 'error' and no output"
+        return "the model's answer ended with finish_reason 'error' before it was complete"
     return None
-
-
-def _has_content(content: Any) -> bool:
-    """Whether a message's ``content`` holds anything at all."""
-    if isinstance(content, str):
-        return bool(content.strip())
-    if isinstance(content, (list, tuple)):
-        return any(
-            bool(item.strip()) if isinstance(item, str) else bool(item)
-            for item in content
-        )
-    return bool(content)
 
 
 class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):

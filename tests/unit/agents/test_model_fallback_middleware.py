@@ -356,7 +356,7 @@ def _error_answer() -> AIMessage:
     return AIMessage(content="", response_metadata={"finish_reason": "error"})
 
 
-def test_an_empty_answer_that_ended_in_an_error_is_a_failure() -> None:
+def test_an_answer_that_ended_in_an_error_is_a_failure() -> None:
     assert failed_answer_reason(_error_answer()) is not None
     # A list of empty text chunks holds nothing either.
     assert (
@@ -367,27 +367,43 @@ def test_an_empty_answer_that_ended_in_an_error_is_a_failure() -> None:
     )
 
 
-def test_an_answer_with_something_in_it_is_an_answer() -> None:
-    text = AIMessage(content="partial", response_metadata={"finish_reason": "error"})
+def test_what_arrived_before_the_error_does_not_make_it_an_answer() -> None:
+    """The sentence that leads up to a tool call, and the call never sent."""
+    lead_in = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "All done. Call the final tool."},
+            "Everything is ready, here is the proposal:",
+        ],
+        response_metadata={"finish_reason": "error"},
+    )
+    broken_call = AIMessage(
+        content="",
+        invalid_tool_calls=[
+            {"name": "search", "args": '{"query": "py', "id": "call-1", "error": "cut"}
+        ],
+        response_metadata={"finish_reason": "error"},
+    )
+
+    assert failed_answer_reason(lead_in) is not None
+    assert failed_answer_reason(broken_call) is not None
+
+
+def test_an_answer_with_a_tool_call_to_run_is_an_answer() -> None:
     call = AIMessage(
         content="",
         tool_calls=[{"name": "search", "args": {}, "id": "call-1"}],
         response_metadata={"finish_reason": "error"},
     )
-    reasoning = AIMessage(
-        content=[{"type": "thinking", "thinking": "still thinking"}],
-        response_metadata={"finish_reason": "error"},
-    )
 
-    assert failed_answer_reason(text) is None
     assert failed_answer_reason(call) is None
-    assert failed_answer_reason(reasoning) is None
 
 
-def test_an_empty_answer_with_another_finish_reason_is_the_models_own() -> None:
-    for reason in ("stop", "length", None):
-        message = AIMessage(content="", response_metadata={"finish_reason": reason})
-        assert failed_answer_reason(message) is None
+def test_any_other_finish_reason_is_the_models_own() -> None:
+    for reason in ("stop", "length", "tool_calls", None):
+        empty = AIMessage(content="", response_metadata={"finish_reason": reason})
+        text = AIMessage(content="Done.", response_metadata={"finish_reason": reason})
+        assert failed_answer_reason(empty) is None
+        assert failed_answer_reason(text) is None
     # Whatever a handler returns that is no message is left alone.
     assert failed_answer_reason("fallback-response") is None
 
@@ -465,6 +481,38 @@ def test_a_failed_answer_never_becomes_a_turn_of_the_conversation() -> None:
     fallback = _ReportingModel(reports="fallback-model")
     agent = create_agent(
         _ErrorAnswerModel(),
+        tools=[],
+        middleware=[CancelAwareModelFallbackMiddleware(fallback)],
+    )
+
+    state = agent.invoke({"messages": [("user", "hi")]})
+
+    ai_messages = [m for m in state["messages"] if m.type == "ai"]
+    assert [m.content for m in ai_messages] == ["answer"]
+
+
+class _LeadInThenErrorModel(BaseChatModel):
+    """A model whose provider fails after the sentence that announces a tool call."""
+
+    @property
+    def _llm_type(self) -> str:
+        return "lead-in-then-error"
+
+    def _generate(
+        self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kw: Any
+    ) -> ChatResult:
+        message = AIMessage(
+            content="Everything is ready, here is the proposal:",
+            response_metadata={"finish_reason": "error"},
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+def test_a_reply_cut_off_by_an_error_is_made_again_by_the_fallback() -> None:
+    """Taken as the reply, the lead-in would end the run where the model meant to act."""
+    fallback = _ReportingModel(reports="fallback-model")
+    agent = create_agent(
+        _LeadInThenErrorModel(),
         tools=[],
         middleware=[CancelAwareModelFallbackMiddleware(fallback)],
     )
