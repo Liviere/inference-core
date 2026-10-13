@@ -1,16 +1,16 @@
 """The whole brief of a delegated task reaches the subagent.
 
-deepagents' ``task`` tool takes the brief as ``description``: that text is the
-subagent's only message. A model that learned another agent framework's tool
-of the same name writes a short title there and puts the brief under
-``prompt``, an argument this tool does not have and whose schema drops it
-without a word. The subagent is then started on a title of a few words. A
+deepagents' ``task`` tool has two arguments. It takes the brief as
+``description``, and that text is the subagent's only message. A model that
+learned another agent framework's tool of the same name writes a short title
+there and puts the brief under an argument of its own choosing: ``prompt`` in
+one run, ``content`` in the next. The tool's schema drops what it does not
+know without a word, so the subagent is started on a title of a few words. A
 researcher guesses its job from it, and a writer that was to be handed
 findings is handed none and answers with nothing.
 
-So a ``task`` call that carries a ``prompt`` gets its brief put where the tool
-reads it, before the tool runs. A call written the tool's own way is not
-touched.
+So before the tool runs, the text a ``task`` call carries beside its title is
+put where the tool reads it. A call written the tool's own way is not touched.
 """
 
 from __future__ import annotations
@@ -20,12 +20,26 @@ from typing import Any, Awaitable, Callable, Mapping, Optional
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ToolCallRequest
 
-# The tool deepagents' SubAgentMiddleware adds, and the argument it reads the
-# subagent's task from.
+# The tool deepagents' SubAgentMiddleware adds.
 TASK_TOOL_NAME = "task"
+# The argument it reads the subagent's task from, and the two it has.
 _BRIEF = "description"
-# Where a model that knows another ``task`` tool writes it.
-_MISNAMED_BRIEF = "prompt"
+_READ = frozenset({_BRIEF, "subagent_type"})
+
+# A text of one word that is no longer than this picks something (a model, a
+# mode): it is not what a subagent is to be told.
+_LONGEST_WORD_THAT_IS_NO_BRIEF = 40
+
+
+def _is_brief(text: str, title: str) -> bool:
+    """Whether *text*, found under an argument the tool does not read, is the task.
+
+    It says more than the title does, and it is a sentence rather than a
+    single word such as ``lite``.
+    """
+    if len(text) <= len(title):
+        return False
+    return len(text.split()) > 1 or len(text) > _LONGEST_WORD_THAT_IS_NO_BRIEF
 
 
 def whole_brief(args: Mapping[str, Any]) -> Optional[dict[str, Any]]:
@@ -35,16 +49,20 @@ def whole_brief(args: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     is kept in front of the brief unless the brief already says it: it is
     then the title of the task, a line the subagent can use.
     """
-    misnamed = args.get(_MISNAMED_BRIEF)
-    if not isinstance(misnamed, str) or not misnamed.strip():
-        return None
-    brief = misnamed.strip()
     title = args.get(_BRIEF)
     title = title.strip() if isinstance(title, str) else ""
-    if title and title not in brief:
-        brief = f"{title}\n\n{brief}"
-    moved = {key: value for key, value in args.items() if key != _MISNAMED_BRIEF}
-    moved[_BRIEF] = brief
+    misplaced = {
+        key: value.strip()
+        for key, value in args.items()
+        if key not in _READ and isinstance(value, str) and _is_brief(value, title)
+    }
+    if not misplaced:
+        return None
+    parts = list(misplaced.values())
+    if title and not any(title in part for part in parts):
+        parts.insert(0, title)
+    moved = {key: value for key, value in args.items() if key not in misplaced}
+    moved[_BRIEF] = "\n\n".join(parts)
     return moved
 
 

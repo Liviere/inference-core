@@ -2,10 +2,11 @@
 
 deepagents' ``task`` tool reads the subagent's task from ``description``. A
 model that knows another framework's tool of that name writes a title there
-and the brief under ``prompt``, which the tool's schema drops in silence: the
-subagent was started on a few words. The last tests run a real graph with
-stand-ins for the two models, since what a tool call is made of by the time
-the tool runs is the agent framework's to decide.
+and the brief under an argument of its own (``prompt`` in one run, ``content``
+in the next), which the tool's schema drops in silence: the subagent was
+started on a few words. The last tests run a real graph with stand-ins for
+the two models, since what a tool call is made of by the time the tool runs
+is the agent framework's to decide.
 """
 
 import uuid
@@ -48,6 +49,63 @@ def test_a_brief_under_another_tools_argument_is_put_where_this_one_reads_it():
     assert moved["description"] == f"Write the summary\n\n{FINDINGS}"
     assert "prompt" not in moved
     assert moved["subagent_type"] == "writer"
+
+
+@pytest.mark.parametrize(
+    "argument", ["prompt", "content", "task", "instructions", "anything_else"]
+)
+def test_the_brief_is_found_under_whichever_argument_the_model_chose(argument):
+    """The same model wrote ``prompt`` in one run and ``content`` in the next."""
+    moved = whole_brief(
+        {
+            "description": "Write the summary",
+            argument: FINDINGS,
+            "subagent_type": "writer",
+        }
+    )
+
+    assert moved == {
+        "description": f"Write the summary\n\n{FINDINGS}",
+        "subagent_type": "writer",
+    }
+
+
+def test_a_word_that_picks_something_is_not_taken_for_the_brief():
+    """``model: lite`` came with a call whose brief was where it belongs."""
+    assert (
+        whole_brief(
+            {"description": FINDINGS, "model": "lite", "subagent_type": "writer"}
+        )
+        is None
+    )
+    # Not even where there is no title to be longer than.
+    assert whole_brief({"model": "lite", "subagent_type": "writer"}) is None
+
+    moved = whole_brief(
+        {
+            "description": "Summary",
+            "content": FINDINGS,
+            "model": "lite",
+            "subagent_type": "writer",
+        }
+    )
+    assert moved["description"] == f"Summary\n\n{FINDINGS}"
+    # What was not the brief stays as it came: the tool's schema drops it.
+    assert moved["model"] == "lite"
+    assert "content" not in moved
+
+
+def test_a_text_shorter_than_the_title_is_not_the_brief():
+    assert (
+        whole_brief(
+            {
+                "description": FINDINGS,
+                "note": "two sources at most",
+                "subagent_type": "writer",
+            }
+        )
+        is None
+    )
 
 
 def test_a_title_the_brief_already_says_is_not_said_twice():
@@ -219,12 +277,13 @@ def _task_of(writer: _Scripted) -> str:
 
 
 @pytest.mark.asyncio
-async def test_a_subagent_is_handed_the_brief_and_not_its_title():
+@pytest.mark.parametrize("argument", ["prompt", "content"])
+async def test_a_subagent_is_handed_the_brief_and_not_its_title(argument):
     """The call as a model that knows another ``task`` tool writes it."""
     service, writer = _coordinator_and_writer(
         {
             "description": "Write the summary",
-            "prompt": FINDINGS,
+            argument: FINDINGS,
             "subagent_type": "writer",
             "model": "lite",
         }
