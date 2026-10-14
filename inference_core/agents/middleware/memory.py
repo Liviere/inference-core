@@ -70,6 +70,7 @@ from inference_core.llm.model_identity import (
 from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agent_memory_service import (
     DEFAULT_CONTEXT_TYPES,
+    VIA_ANALYSIS,
     MemoryCategory,
     MemoryType,
     RecalledContext,
@@ -458,6 +459,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             ModelResponse from the handler
         """
         self._captured_model = getattr(request, "model", None)
+        self._observe(getattr(request, "messages", None))
 
         injection_blocks = self._build_injection_blocks()
         if not injection_blocks:
@@ -491,6 +493,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     ) -> ModelResponse:
         """Async version of wrap_model_call for use with astream."""
         self._captured_model = getattr(request, "model", None)
+        self._observe(getattr(request, "messages", None))
 
         injection_blocks = self._build_injection_blocks()
         if not injection_blocks:
@@ -512,6 +515,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     # -------------------------------------------------------------------------
     # Helper methods
     # -------------------------------------------------------------------------
+
+    def _observe(self, messages: Any) -> None:
+        """Show the memory service's write policy what the run has read.
+
+        Called before every model call, so a memory the model saves after it
+        is decided on with all it had seen, and before the analysis.
+        """
+        policy = getattr(self.memory_service, "write_policy", None)
+        observe = getattr(policy, "observe", None)
+        if not callable(observe) or not messages:
+            return
+        try:
+            observe(list(messages))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Memory write policy failed to observe the run: %s", exc)
 
     def _extract_user_input(self, state: MemoryState) -> Optional[str]:
         """Extract the latest user input from state messages.
@@ -1036,14 +1054,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             transcript=transcript,
         )
 
+        self._observe(messages)
         save_tool = SaveMemoryStoreTool(
-            memory_service=self.memory_service, user_id=user_id
+            memory_service=self.memory_service, user_id=user_id, via=VIA_ANALYSIS
         )
         recall_tool = RecallMemoryStoreTool(
             memory_service=self.memory_service, user_id=user_id
         )
         update_tool = UpdateMemoryStoreTool(
-            memory_service=self.memory_service, user_id=user_id
+            memory_service=self.memory_service, user_id=user_id, via=VIA_ANALYSIS
         )
         tools = [save_tool, recall_tool, update_tool]
         bound_model: Any = None

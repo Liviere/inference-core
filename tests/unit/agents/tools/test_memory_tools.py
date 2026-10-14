@@ -20,6 +20,7 @@ from inference_core.services.agent_memory_service import (
     DELETED,
     NOT_FOUND,
     READ_ONLY,
+    SAVED,
     UPDATED,
     AgentMemoryStoreService,
     MemorySpace,
@@ -43,6 +44,13 @@ def mock_memory_service():
     service.delete_memory.return_value = True
     service.update_memory.return_value = MemoryWriteOutcome(UPDATED, "mem-abc")
     service.remove_memory.return_value = MemoryWriteOutcome(DELETED, "mem-del")
+
+    async def write_memory(**kwargs):
+        kwargs.pop("via", None)
+        memory_id = await service.save_memory(**kwargs)
+        return MemoryWriteOutcome(SAVED, memory_id, MemorySpace(key="shared"))
+
+    service.write_memory = AsyncMock(side_effect=write_memory)
     return service
 
 

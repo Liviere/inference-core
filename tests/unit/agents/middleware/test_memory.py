@@ -16,8 +16,10 @@ from inference_core.agents.middleware.memory import (
     create_memory_middleware,
 )
 from inference_core.services.agent_memory_service import (
+    SAVED,
     UPDATED,
     MemoryCategory,
+    MemorySpace,
     MemoryStoreDocument,
     MemoryType,
     MemoryWriteOutcome,
@@ -43,6 +45,16 @@ def mock_memory_service():
     service = MagicMock()
     # recall_memories is used by _prefetch_existing_memories in post-run analysis
     service.recall_memories = AsyncMock(return_value=[])
+    service.spaces = ()
+    service.space_for_write = MagicMock(return_value=MemorySpace(key="shared"))
+
+    async def write_memory(**kwargs):
+        # The save tool writes through write_memory; tests set save_memory.
+        kwargs.pop("via", None)
+        memory_id = await service.save_memory(**kwargs)
+        return MemoryWriteOutcome(SAVED, memory_id, MemorySpace(key="shared"))
+
+    service.write_memory = write_memory
     return service
 
 

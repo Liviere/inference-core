@@ -22,7 +22,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 if TYPE_CHECKING:
     from inference_core.services.agents_service import AgentService
@@ -301,6 +311,8 @@ UPDATED = "updated"
 DELETED = "deleted"
 NOT_FOUND = "not_found"
 READ_ONLY = "read_only"
+HELD = "held"
+REFUSED = "refused"
 
 
 @dataclass(frozen=True)
@@ -310,6 +322,74 @@ class MemoryWriteOutcome:
     status: str
     memory_id: Optional[str] = None
     space: Optional[MemorySpace] = None
+    reason: str = ""
+
+
+class MemoryWriteRefused(ValueError):
+    """A write the service's write policy refused."""
+
+
+# =============================================================================
+# Write policy
+# =============================================================================
+
+# Who wrote a memory: the model with a tool, or the analysis after a run.
+VIA_TOOL = "tool"
+VIA_ANALYSIS = "analysis"
+
+# What a write policy decides.
+SAVE = "save"
+HOLD = "hold"
+REFUSE = "refuse"
+
+
+@dataclass(frozen=True)
+class MemoryWriteRequest:
+    """A memory an agent is about to save, or a change to one it has."""
+
+    user_id: str
+    content: str
+    topic: Optional[str]
+    memory_type: str
+    category: str
+    space: MemorySpace
+    via: str = VIA_TOOL
+    replaces: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class MemoryWriteDecision:
+    """What becomes of a write.
+
+    ``save`` writes it; ``hold`` keeps it where no agent reads it, until
+    someone outside the run lets it into its space; ``refuse`` writes
+    nothing. ``origin`` is added to what the memory records about where it
+    came from.
+    """
+
+    action: str = SAVE
+    origin: Dict[str, Any] = field(default_factory=dict)
+    reason: str = ""
+
+
+class MemoryWritePolicy:
+    """Decides what becomes of a memory an agent writes.
+
+    The default saves everything. An application that knows more about a run
+    (what it read, who started it) observes its messages before each model
+    call and decides per write: a memory written after reading text nobody
+    vouches for may be held for a person to approve.
+    """
+
+    def observe(self, messages: Sequence[Any]) -> None:
+        """The run's messages, before a model call and before the analysis."""
+
+    def decide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
+        return MemoryWriteDecision()
+
+
+# A held memory lies in (user_id, *HOLD_PATH, category): no space reads it.
+HOLD_PATH: Tuple[str, ...] = ("held",)
 
 
 @dataclass(frozen=True)
@@ -614,7 +694,27 @@ class AgentMemoryStoreService:
         scope: str = "hybrid",
         spaces: Optional[Sequence[MemorySpace]] = None,
         default_write: Optional[str] = None,
+        write_policy: Optional[MemoryWritePolicy] = None,
+        origin: Optional[Dict[str, Any]] = None,
+        hold_path: Sequence[str] = HOLD_PATH,
+        entry_renderer: Optional[
+            Callable[["MemoryStoreDocument", str], str]
+        ] = None,
     ) -> None:
+        """
+        Args:
+            spaces: The spaces the agent reads; the writable ones it writes.
+            default_write: The key of the space a memory goes to when the
+                agent names none.
+            write_policy: Decides what becomes of each write (see
+                :class:`MemoryWritePolicy`); without one, all are saved.
+            origin: What every memory written here records about where it
+                came from (merged into ``extra_metadata["origin"]``).
+            hold_path: Where held memories lie, between the user id and the
+                category. It must not lie under any space's namespace.
+            entry_renderer: Turns a recalled memory's line into what the
+                model is shown (``(document, line) -> line``).
+        """
         self.store = store
         self.base_namespace = tuple(base_namespace)
         self.max_results = max_results
@@ -632,7 +732,32 @@ class AgentMemoryStoreService:
         if len(set(keys)) != len(keys):
             raise ValueError(f"Memory space keys must be unique, got {keys}")
         self.default_write = default_write
+        self.write_policy = write_policy
+        self.origin = dict(origin or {})
+        self.hold_path = tuple(hold_path)
+        self.entry_renderer = entry_renderer
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+
+    def render_entry(self, document: "MemoryStoreDocument", line: str) -> str:
+        """The line a recalled memory is shown to the model as."""
+        if self.entry_renderer is None:
+            return line
+        try:
+            return self.entry_renderer(document, line)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.warning("Memory entry renderer failed: %s", exc)
+            return line
+
+    def _decide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
+        if self.write_policy is None:
+            return MemoryWriteDecision()
+        return self.write_policy.decide(request)
+
+    def _origin(self, via: str, decision: MemoryWriteDecision) -> Dict[str, Any]:
+        return {**self.origin, **decision.origin, "via": via}
+
+    def hold_namespace(self, user_id: str, category: "MemoryCategory | str") -> Tuple[str, ...]:
+        return (str(user_id), *self.hold_path, MemoryCategory(category).value)
 
     def _namespace(self, user_id: str) -> tuple:
         """Build a namespaced tuple for store isolation per user (legacy)."""
@@ -786,7 +911,7 @@ class AgentMemoryStoreService:
             )
         return value
 
-    async def save_memory(
+    async def write_memory(
         self,
         user_id: str,
         content: str,
@@ -797,13 +922,16 @@ class AgentMemoryStoreService:
         memory_id: Optional[str] = None,
         category: Optional[str] = None,
         space: Optional[str] = None,
-    ) -> str:
-        """Persist a memory item in a space the agent may write.
+        via: str = VIA_TOOL,
+    ) -> MemoryWriteOutcome:
+        """Write a memory to a space the agent may write, as the policy decides.
 
         The category is auto-resolved from memory_type when not provided, and
         the space is *space* or the default one (see :meth:`space_for_write`).
-        A given *memory_id* is written under that key in that space; to change
-        a memory wherever it lies, use :meth:`update_memory`.
+        The write policy may save it (``saved``), hold it where no agent reads
+        it (``held``), or refuse it (``refused``). A given *memory_id* is
+        written under that key; to change a memory wherever it lies, use
+        :meth:`update_memory`.
 
         Raises:
             MemorySpaceError: when no writable space takes the memory.
@@ -823,6 +951,22 @@ class AgentMemoryStoreService:
         if not memory_id:
             memory_id = str(uuid.uuid4())
 
+        decision = self._decide(
+            MemoryWriteRequest(
+                user_id=user_id,
+                content=content,
+                topic=topic,
+                memory_type=memory_type,
+                category=resolved_category.value,
+                space=target,
+                via=via,
+            )
+        )
+        if decision.action == REFUSE:
+            return MemoryWriteOutcome(REFUSED, None, target, decision.reason)
+
+        metadata = dict(extra_metadata or {})
+        metadata["origin"] = {**metadata.get("origin", {}), **self._origin(via, decision)}
         memory_data = MemoryData(
             content=content,
             memory_type=memory_type,
@@ -830,17 +974,80 @@ class AgentMemoryStoreService:
             session_id=session_id,
             topic=topic,
             agent_name=self.agent_name,
-            extra_metadata=extra_metadata or {},
+            extra_metadata=metadata,
         )
+        namespace = target.namespace(user_id, resolved_category)
+
+        if decision.action == HOLD:
+            self._hold(user_id, resolved_category, memory_id, memory_data, target, namespace)
+            return MemoryWriteOutcome(HELD, memory_id, target, decision.reason)
 
         self.store.put(
-            target.namespace(user_id, resolved_category),
+            namespace,
             memory_id,
             self._stored_value(memory_data),
             index=INDEXED_FIELDS,
         )
+        return MemoryWriteOutcome(SAVED, memory_id, target)
 
-        return memory_id
+    def _hold(
+        self,
+        user_id: str,
+        category: MemoryCategory,
+        memory_id: str,
+        memory_data: "MemoryData",
+        target: MemorySpace,
+        namespace: Tuple[str, ...],
+        replaces: Optional[str] = None,
+    ) -> None:
+        """Put a memory where no agent reads it, with where it was meant to go.
+
+        Not indexed: a held memory is never found by a search with a query.
+        """
+        value = self._stored_value(memory_data)
+        value["held_for"] = {
+            "space": target.key,
+            "namespace": list(namespace),
+            "replaces": replaces,
+        }
+        self.store.put(self.hold_namespace(user_id, category), memory_id, value, index=False)
+
+    async def save_memory(
+        self,
+        user_id: str,
+        content: str,
+        memory_type: str = MemoryType.GENERAL.value,
+        session_id: Optional[str] = None,
+        topic: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+        memory_id: Optional[str] = None,
+        category: Optional[str] = None,
+        space: Optional[str] = None,
+        via: str = VIA_TOOL,
+    ) -> str:
+        """Persist a memory item; its id. See :meth:`write_memory`.
+
+        A held memory's id is returned as well: it is kept, for approval.
+
+        Raises:
+            MemorySpaceError: when no writable space takes the memory.
+            MemoryWriteRefused: when the write policy refuses it.
+        """
+        outcome = await self.write_memory(
+            user_id=user_id,
+            content=content,
+            memory_type=memory_type,
+            session_id=session_id,
+            topic=topic,
+            extra_metadata=extra_metadata,
+            memory_id=memory_id,
+            category=category,
+            space=space,
+            via=via,
+        )
+        if outcome.status == REFUSED:
+            raise MemoryWriteRefused(outcome.reason or "The memory was not saved.")
+        return outcome.memory_id
 
     async def find_memory(
         self, user_id: str, memory_id: str
@@ -872,13 +1079,16 @@ class AgentMemoryStoreService:
         topic: Optional[str] = None,
         session_id: Optional[str] = None,
         category: Optional[str] = None,
+        via: str = VIA_TOOL,
     ) -> MemoryWriteOutcome:
         """Change a memory where it lies.
 
         A memory in a space the agent only reads is not changed and not
         copied: the outcome is ``read_only``. A new category moves the memory
         within its space, to that category's namespace. The time it was first
-        saved stays.
+        saved stays. The write policy decides as for a new memory; a held
+        change leaves the memory as it is and keeps the new text, with the id
+        it is to replace, for approval.
         """
         user_id = str(user_id)
         found = await self.find_memory(user_id, memory_id)
@@ -896,6 +1106,23 @@ class AgentMemoryStoreService:
         if not found.space.holds(new_category):
             new_category = found.category
 
+        decision = self._decide(
+            MemoryWriteRequest(
+                user_id=user_id,
+                content=content,
+                topic=topic,
+                memory_type=new_type,
+                category=new_category.value,
+                space=found.space,
+                via=via,
+                replaces=memory_id,
+            )
+        )
+        if decision.action == REFUSE:
+            return MemoryWriteOutcome(REFUSED, memory_id, found.space, decision.reason)
+
+        metadata = dict(old_value.get("extra_metadata") or {})
+        metadata["origin"] = {**metadata.get("origin", {}), **self._origin(via, decision)}
         memory_data = MemoryData(
             content=content,
             memory_type=new_type,
@@ -903,12 +1130,23 @@ class AgentMemoryStoreService:
             session_id=session_id or old_value.get("session_id"),
             topic=topic,
             agent_name=old_value.get("agent_name"),
-            extra_metadata=old_value.get("extra_metadata") or {},
+            extra_metadata=metadata,
         )
         if isinstance(old_value.get("created_at"), str):
             memory_data.created_at = old_value["created_at"]
 
         namespace = found.space.namespace(user_id, new_category)
+        if decision.action == HOLD:
+            self._hold(
+                user_id,
+                new_category,
+                str(uuid.uuid4()),
+                memory_data,
+                found.space,
+                namespace,
+                replaces=memory_id,
+            )
+            return MemoryWriteOutcome(HELD, memory_id, found.space, decision.reason)
         self.store.put(
             namespace,
             memory_id,
@@ -1496,10 +1734,11 @@ class AgentMemoryStoreService:
                         if show_space and item.space is not None
                         else ""
                     )
-                    sections.append(
+                    line = (
                         f"  - {ts_label}{item.content}{type_label}{topic_label}"
                         f"{space_label}"
                     )
+                    sections.append(self.render_entry(item, line))
 
             render_cat_bucket("Recent (today)", buckets.get("today", []))
             render_cat_bucket("Yesterday", buckets.get("yesterday", []))
@@ -1895,6 +2134,18 @@ __all__ = [
     "AgentMemoryStoreService",
     "DEFAULT_CONTEXT_TYPES",
     "DELETED",
+    "HELD",
+    "HOLD",
+    "HOLD_PATH",
+    "MemoryWriteDecision",
+    "MemoryWritePolicy",
+    "MemoryWriteRefused",
+    "MemoryWriteRequest",
+    "REFUSE",
+    "REFUSED",
+    "SAVE",
+    "VIA_ANALYSIS",
+    "VIA_TOOL",
     "RecalledContext",
     "LocatedMemory",
     "MemoryCategory",

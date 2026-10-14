@@ -19,9 +19,11 @@ from pydantic import Field
 
 from inference_core.celery.async_utils import run_async_safely
 from inference_core.services.agent_memory_service import (
-    DELETED,
+    HELD,
     NOT_FOUND,
     READ_ONLY,
+    REFUSED,
+    VIA_TOOL,
     AgentMemoryStoreService,
     MemorySpaceError,
     MemoryType,
@@ -50,6 +52,13 @@ def _write_outcome_text(outcome: MemoryWriteOutcome, done: str) -> str:
         return (
             f"✗ Memory {memory_id} is in space '{space}', which you can only "
             "read. It was not changed."
+        )
+    if outcome.status == REFUSED:
+        return f"✗ Memory {memory_id} was not changed. {outcome.reason}".rstrip()
+    if outcome.status == HELD:
+        return (
+            f"✓ The change to memory {memory_id} is kept for the user's approval. "
+            "The memory stays as it was until they approve it."
         )
     return f"✓ {done} (id: {memory_id})"
 
@@ -147,6 +156,9 @@ Arguments:
     memory_service: Any = Field(exclude=True)
     user_id: Optional[str] = Field(default=None, exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
+    # Who writes through this tool: the model in its run, or the analysis
+    # after it. The write policy and the memory's origin are told.
+    via: str = Field(default=VIA_TOOL, exclude=True)
 
     def _run(
         self,
@@ -193,7 +205,7 @@ Arguments:
             validated_type = validate_memory_type(memory_type)
             resolved_cat = category or get_category_for_type(validated_type).value
             target = self.memory_service.space_for_write(resolved_cat, space)
-            memory_id = await self.memory_service.save_memory(
+            outcome = await self.memory_service.write_memory(
                 user_id=uid,
                 content=content,
                 memory_type=validated_type,
@@ -201,7 +213,16 @@ Arguments:
                 topic=topic,
                 category=category,
                 space=target.key,
+                via=self.via,
             )
+            if outcome.status == REFUSED:
+                return f"✗ Memory not saved. {outcome.reason}".rstrip()
+            memory_id = outcome.memory_id
+            if outcome.status == HELD:
+                return (
+                    f"✓ Memory kept for the user's approval (id: {memory_id[:8]}...). "
+                    "It is not used until the user approves it."
+                )
             where = (
                 f", space: {target.key}" if _shows_spaces(self.memory_service) else ""
             )
@@ -331,6 +352,11 @@ Arguments:
             if mem_topic:
                 mem_string += f"({mem_topic}) "
             mem_string += f"{score_str}: {mem.content}"
+            render = getattr(self.memory_service, "render_entry", None)
+            if callable(render) and hasattr(mem, "saved_at"):
+                rendered = render(mem, mem_string)
+                if isinstance(rendered, str):
+                    mem_string = rendered
             lines.append(mem_string)
         return "\n".join(lines)
 
@@ -355,6 +381,7 @@ Arguments:
     memory_service: Any = Field(exclude=True)
     user_id: Optional[str] = Field(default=None, exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
+    via: str = Field(default=VIA_TOOL, exclude=True)
 
     def _run(
         self,
@@ -408,6 +435,7 @@ Arguments:
                 topic=topic,
                 session_id=self.session_id,
                 category=category,
+                via=self.via,
             )
             return _write_outcome_text(outcome, "Memory updated successfully")
         except ValueError as exc:
