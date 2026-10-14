@@ -1788,22 +1788,87 @@ def _store_search(
         return store.search(prefix, limit=limit, offset=offset, filter=filter) or []
 
 
+@dataclass(frozen=True)
+class ParsedNamespace:
+    """What a memory's namespace says: its category and the space's path.
+
+    ``(user, category, *path)`` is the legacy layout (``category_first``);
+    ``(user, *path, category)`` is every space's. A namespace that is
+    neither has no category.
+    """
+
+    category: Optional[str]
+    path: Tuple[str, ...]
+    category_first: bool
+
+
+def parse_memory_namespace(namespace: Sequence[str]) -> ParsedNamespace:
+    parts = tuple(str(part) for part in namespace)
+    if len(parts) > 1 and parts[1] in MEMORY_CATEGORIES:
+        return ParsedNamespace(parts[1], parts[2:], len(parts) > 2)
+    if len(parts) > 1 and parts[-1] in MEMORY_CATEGORIES:
+        return ParsedNamespace(parts[-1], parts[1:-1], False)
+    return ParsedNamespace(None, parts[1:], False)
+
+
+def _all_user_items(store: Any, user_id: str) -> List[Any]:
+    """Every item of the user, in every space and in none."""
+    prefix = (str(user_id),)
+    raw: List[Any] = []
+    offset = 0
+    while True:
+        batch = _store_search(store, prefix, limit=_PURGE_BATCH_SIZE, offset=offset)
+        if not batch:
+            break
+        raw.extend(batch)
+        if len(batch) < _PURGE_BATCH_SIZE:
+            break
+        offset += _PURGE_BATCH_SIZE
+    return raw
+
+
+def _selected(
+    item: Any,
+    category: Optional[str],
+    space_path: Optional[Sequence[str]],
+    exclude_paths: Sequence[Sequence[str]],
+) -> bool:
+    parsed = parse_memory_namespace(getattr(item, "namespace", ()) or ())
+    if category is not None and parsed.category != category:
+        return False
+    if space_path is not None and (
+        parsed.category_first or parsed.path != tuple(space_path)
+    ):
+        return False
+    if not parsed.category_first and parsed.path in {
+        tuple(path) for path in exclude_paths
+    }:
+        return False
+    return True
+
+
 def purge_user_memories(
     store: Any,
     user_id: str,
     category: Optional[str] = None,
+    *,
+    space_path: Optional[Sequence[str]] = None,
+    exclude_paths: Sequence[Sequence[str]] = (),
 ) -> int:
     """Delete a user's long-term memories from *store*.
 
-    Deletes by each item's OWN namespace (not the search prefix), so per-agent
-    episodic/procedural entries stored under ``(user_id, category, agent_name)``
-    are removed correctly.
+    Deletes by each item's OWN namespace (not the search prefix), so memories
+    of every space are found: ``(user_id, category, agent_name)`` and
+    ``(user_id, *path, category)`` alike.
 
     Args:
         store: A LangGraph BaseStore-compatible instance.
         user_id: Owner of the memories.
         category: One of the CoALA categories (semantic/episodic/procedural).
             When ``None``, every category is purged.
+        space_path: Only the space with this path (``()`` is the space at the
+            root, ``(user_id, category)``).
+        exclude_paths: Spaces left alone (by path).
 
     Returns:
         Number of memory items deleted.
@@ -1811,78 +1876,101 @@ def purge_user_memories(
     uid = str(user_id)
     if category is not None:
         category = validate_memory_category(category)
-        prefix: Tuple[str, ...] = (uid, category)
-    else:
-        prefix = (uid,)
 
     if not hasattr(store, "delete"):
         logger.warning("Store does not support delete; cannot purge memories")
         return 0
 
     deleted = 0
-    for _ in range(_MAX_PURGE_BATCHES):
-        items = _store_search(store, prefix, limit=_PURGE_BATCH_SIZE)
-        if not items:
-            break
-        progressed = False
-        for item in items:
-            namespace = getattr(item, "namespace", None) or prefix
-            key = getattr(item, "key", getattr(item, "id", None))
-            if key is None:
-                continue
-            try:
-                store.delete(tuple(namespace), key)
-                deleted += 1
-                progressed = True
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.error("Failed to delete memory %s/%s: %s", namespace, key, exc)
-        if not progressed:
-            # Nothing could be deleted this round — avoid an infinite loop.
-            break
+    for item in _all_user_items(store, uid):
+        if not _selected(item, category, space_path, exclude_paths):
+            continue
+        namespace = tuple(getattr(item, "namespace", ()) or ())
+        key = getattr(item, "key", getattr(item, "id", None))
+        if key is None or not namespace:
+            continue
+        try:
+            store.delete(namespace, key)
+            deleted += 1
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to delete memory %s/%s: %s", namespace, key, exc)
 
     logger.info(
-        "Purged %d memories for user=%s, category=%s",
+        "Purged %d memories for user=%s, category=%s, space=%s",
         deleted,
         uid,
         category or "all",
+        "/".join(space_path) if space_path is not None else "all",
     )
     return deleted
 
 
-def count_user_memories(store: Any, user_id: str) -> Dict[str, int]:
-    """Count a user's stored memories per CoALA category.
+def purge_namespace_path(store: Any, user_id: str, path: Sequence[str]) -> int:
+    """Delete every memory of the space at *path*, in every category."""
+    return purge_user_memories(store, user_id, space_path=tuple(path))
+
+
+def count_user_memories(
+    store: Any,
+    user_id: str,
+    *,
+    exclude_paths: Sequence[Sequence[str]] = (),
+) -> Dict[str, int]:
+    """Count a user's stored memories per CoALA category, in every space.
 
     Returns a dict with ``semantic``, ``episodic``, ``procedural`` and ``total``.
     """
-    uid = str(user_id)
     counts: Dict[str, int] = {c: 0 for c in MEMORY_CATEGORIES}
-
-    for category in MEMORY_CATEGORIES:
-        prefix = (uid, category)
-        offset = 0
-        while True:
-            items = _store_search(store, prefix, limit=_PURGE_BATCH_SIZE, offset=offset)
-            counts[category] += len(items)
-            if len(items) < _PURGE_BATCH_SIZE:
-                break
-            offset += _PURGE_BATCH_SIZE
-
+    for item in _all_user_items(store, user_id):
+        if not _selected(item, None, None, exclude_paths):
+            continue
+        category = parse_memory_namespace(getattr(item, "namespace", ())).category
+        if category in counts:
+            counts[category] += 1
     counts["total"] = sum(counts[c] for c in MEMORY_CATEGORIES)
+    return counts
+
+
+def count_user_memories_by_space(
+    store: Any, user_id: str
+) -> Dict[Tuple[str, ...], Dict[str, int]]:
+    """Count a user's memories per space path and category.
+
+    Keys are space paths (``()`` for the root space). Memories in the legacy
+    layout ``(user_id, category, *path)`` are counted under ``("", *path)``
+    when they have a path, so they are never taken for a space's.
+    """
+    counts: Dict[Tuple[str, ...], Dict[str, int]] = {}
+    for item in _all_user_items(store, user_id):
+        parsed = parse_memory_namespace(getattr(item, "namespace", ()) or ())
+        if parsed.category is None:
+            continue
+        path = ("", *parsed.path) if parsed.category_first else parsed.path
+        bucket = counts.setdefault(path, {c: 0 for c in MEMORY_CATEGORIES})
+        bucket[parsed.category] += 1
+    for bucket in counts.values():
+        bucket["total"] = sum(bucket[c] for c in MEMORY_CATEGORIES)
     return counts
 
 
 def _memory_item_to_dict(item: Any) -> Dict[str, Any]:
     """Flatten a store SearchItem into a serializable memory record.
 
-    The CoALA category and agent are derived from the namespace tuple
-    (`(user_id, category[, agent_name])`), falling back to the stored value.
+    The CoALA category and space are derived from the namespace tuple
+    (see :func:`parse_memory_namespace`), falling back to the stored value.
+    ``agent_name`` is the agent of the legacy per-agent layout.
     """
     namespace = list(getattr(item, "namespace", ()) or ())
     value = getattr(item, "value", {}) or {}
     key = getattr(item, "key", getattr(item, "id", ""))
 
-    category = namespace[1] if len(namespace) > 1 else value.get("memory_category")
-    agent_name = namespace[2] if len(namespace) > 2 else value.get("agent_name")
+    parsed = parse_memory_namespace(namespace)
+    category = parsed.category or value.get("memory_category")
+    if parsed.category_first:
+        agent_name = parsed.path[0]
+    else:
+        agent_name = value.get("agent_name")
+    extra = value.get("extra_metadata") or {}
 
     def _iso(dt: Any) -> Optional[str]:
         if dt is None:
@@ -1906,7 +1994,10 @@ def _memory_item_to_dict(item: Any) -> Dict[str, Any]:
         "memory_category": category,
         "topic": dec_field(value.get("topic"), purpose="memory"),
         "agent_name": agent_name,
+        "space_path": list(parsed.path) if not parsed.category_first else None,
         "session_id": value.get("session_id"),
+        "origin": extra.get("origin") if isinstance(extra, dict) else None,
+        "held_for": value.get("held_for"),
         "created_at": created_at,
         "updated_at": updated_at,
     }
@@ -1921,34 +2012,27 @@ def list_user_memories(
     search: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    space_path: Optional[Sequence[str]] = None,
+    exclude_paths: Sequence[Sequence[str]] = (),
 ) -> Tuple[List[Dict[str, Any]], int]:
     """List a user's stored memories with filtering, sorting and pagination.
 
-    Loads every item under the namespace prefix (`(user_id,)` or
-    `(user_id, category)`), filters by ``memory_type`` and a case-insensitive
-    substring on content/topic, sorts newest-first, and slices for pagination.
-    Returns ``(page_items, total)`` where ``total`` is the filtered count.
-    Memory volume per user is small, so in-Python filtering/sort is acceptable.
+    Loads every item of the user, keeps those of *category* and of the space
+    at *space_path* (all spaces but *exclude_paths* without one), filters by
+    ``memory_type`` and a case-insensitive substring on content/topic, sorts
+    newest-first, and slices for pagination. Returns ``(page_items, total)``
+    where ``total`` is the filtered count. Memory volume per user is small,
+    so in-Python filtering/sort is acceptable.
     """
     uid = str(user_id)
     if category is not None:
         category = validate_memory_category(category)
-        prefix: Tuple[str, ...] = (uid, category)
-    else:
-        prefix = (uid,)
 
-    raw: List[Any] = []
-    search_offset = 0
-    while True:
-        batch = _store_search(
-            store, prefix, limit=_PURGE_BATCH_SIZE, offset=search_offset
-        )
-        if not batch:
-            break
-        raw.extend(batch)
-        if len(batch) < _PURGE_BATCH_SIZE:
-            break
-        search_offset += _PURGE_BATCH_SIZE
+    raw = [
+        item
+        for item in _all_user_items(store, uid)
+        if _selected(item, category, space_path, exclude_paths)
+    ]
 
     items = [_memory_item_to_dict(it) for it in raw]
 
@@ -2009,6 +2093,74 @@ def delete_user_memory_entries(
         if delete_user_memory_entry(store, user_id, namespace, key):
             deleted += 1
     return deleted
+
+
+def _owned(namespace: Sequence[str], user_id: str) -> bool:
+    return bool(namespace) and str(namespace[0]) == str(user_id)
+
+
+def move_user_memory_entry(
+    store: Any,
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+    to_namespace: Sequence[str],
+    *,
+    index: Any = None,
+) -> bool:
+    """Move a memory to another namespace of the same user, as it is.
+
+    The value is kept whole (its text, encrypted or not, and when it was
+    first saved); it is put anew where it goes, so a store with an index
+    embeds it there (*index* as ``store.put`` takes it; ``None`` = the
+    store's default fields, ``False`` = not searchable by meaning).
+    """
+    source, target = tuple(namespace), tuple(to_namespace)
+    if not (_owned(source, user_id) and _owned(target, user_id)):
+        logger.warning("Refusing to move memory outside user's namespace: %s", source)
+        return False
+    if source == target:
+        return False
+    item = store.get(source, key)
+    if item is None:
+        return False
+    value = dict(getattr(item, "value", None) or {})
+    if index is None:
+        store.put(target, key, value, index=INDEXED_FIELDS)
+    else:
+        store.put(target, key, value, index=index)
+    store.delete(source, key)
+    return True
+
+
+def edit_user_memory_entry(
+    store: Any,
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+    content: str,
+    topic: Optional[str] = None,
+) -> bool:
+    """Change the text of a memory where it lies; when it was saved stays."""
+    ns = tuple(namespace)
+    if not _owned(ns, user_id):
+        logger.warning("Refusing to edit memory outside user's namespace: %s", ns)
+        return False
+    item = store.get(ns, key)
+    if item is None:
+        return False
+    from inference_core.services.content_cipher import enc_field, memory_enc_enabled
+
+    value = dict(getattr(item, "value", None) or {})
+    value["content"] = enc_field(content, purpose="memory", enabled=memory_enc_enabled())
+    if topic is not None:
+        value["topic"] = (
+            enc_field(topic, purpose="memory", enabled=memory_enc_enabled())
+            if topic
+            else None
+        )
+    store.put(ns, key, value, index=INDEXED_FIELDS)
+    return True
 
 
 @contextmanager
@@ -2077,16 +2229,35 @@ def open_memory_store(*, with_index: bool = False) -> Iterator[Any]:
 def purge_user_long_term_memory(
     user_id: str,
     category: Optional[str] = None,
+    *,
+    space_path: Optional[Sequence[str]] = None,
+    exclude_paths: Sequence[Sequence[str]] = (),
 ) -> int:
     """Open the configured store and delete the user's memories. Returns count."""
     with open_memory_store() as store:
-        return purge_user_memories(store, user_id, category)
+        return purge_user_memories(
+            store,
+            user_id,
+            category,
+            space_path=space_path,
+            exclude_paths=exclude_paths,
+        )
 
 
-def count_user_long_term_memory(user_id: str) -> Dict[str, int]:
+def count_user_long_term_memory(
+    user_id: str, *, exclude_paths: Sequence[Sequence[str]] = ()
+) -> Dict[str, int]:
     """Open the configured store and count the user's memories per category."""
     with open_memory_store() as store:
-        return count_user_memories(store, user_id)
+        return count_user_memories(store, user_id, exclude_paths=exclude_paths)
+
+
+def count_user_long_term_memory_by_space(
+    user_id: str,
+) -> Dict[Tuple[str, ...], Dict[str, int]]:
+    """Open the configured store and count the user's memories per space."""
+    with open_memory_store() as store:
+        return count_user_memories_by_space(store, user_id)
 
 
 def list_user_long_term_memory(
@@ -2097,6 +2268,8 @@ def list_user_long_term_memory(
     search: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    space_path: Optional[Sequence[str]] = None,
+    exclude_paths: Sequence[Sequence[str]] = (),
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Open the configured store and list the user's memories. Returns (items, total)."""
     with open_memory_store() as store:
@@ -2108,7 +2281,36 @@ def list_user_long_term_memory(
             search=search,
             limit=limit,
             offset=offset,
+            space_path=space_path,
+            exclude_paths=exclude_paths,
         )
+
+
+def move_user_long_term_memory_entry(
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+    to_namespace: Sequence[str],
+    *,
+    index: Any = None,
+) -> bool:
+    """Open the configured store, with its index, and move one memory."""
+    with open_memory_store(with_index=True) as store:
+        return move_user_memory_entry(
+            store, user_id, namespace, key, to_namespace, index=index
+        )
+
+
+def edit_user_long_term_memory_entry(
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+    content: str,
+    topic: Optional[str] = None,
+) -> bool:
+    """Open the configured store, with its index, and change one memory's text."""
+    with open_memory_store(with_index=True) as store:
+        return edit_user_memory_entry(store, user_id, namespace, key, content, topic)
 
 
 def delete_user_long_term_memory_entry(
@@ -2132,6 +2334,15 @@ def delete_user_long_term_memory_entries(
 
 __all__ = [
     "AgentMemoryStoreService",
+    "ParsedNamespace",
+    "count_user_long_term_memory_by_space",
+    "count_user_memories_by_space",
+    "edit_user_long_term_memory_entry",
+    "edit_user_memory_entry",
+    "move_user_long_term_memory_entry",
+    "move_user_memory_entry",
+    "parse_memory_namespace",
+    "purge_namespace_path",
     "DEFAULT_CONTEXT_TYPES",
     "DELETED",
     "HELD",

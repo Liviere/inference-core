@@ -36,7 +36,16 @@ from inference_core.services.agent_memory_service import (
     MemoryWritePolicy,
     MemoryWriteRefused,
     MemoryWriteRequest,
+    ParsedNamespace,
     RecalledContext,
+    count_user_memories,
+    count_user_memories_by_space,
+    edit_user_memory_entry,
+    list_user_memories,
+    move_user_memory_entry,
+    parse_memory_namespace,
+    purge_namespace_path,
+    purge_user_memories,
     spaces_for_scope,
 )
 
@@ -423,6 +432,124 @@ async def test_the_renderer_turns_each_recalled_line(store):
     recalled = await service.recall_context("u1", "tea")
 
     assert "likes tea (type: preferences) <from general>" in recalled.text
+
+
+# --------------------------------------------------------------------------- #
+# What a person sees and does
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def seeded():
+    """A user's memories in every layout there is."""
+    s = InMemoryStore()
+    s.put(("u1", "semantic"), "general", {"content": "general fact", "memory_type": "facts"})
+    s.put(("u1", "semantic", "agentA"), "legacy", {"content": "legacy", "memory_type": "facts"})
+    s.put(("u1", "space:t1", "semantic"), "team", {"content": "team fact", "memory_type": "facts"})
+    s.put(
+        ("u1", "agent:a1", "procedural"),
+        "lesson",
+        {
+            "content": "check totals",
+            "memory_type": "skill",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "extra_metadata": {"origin": {"via": "tool"}},
+        },
+    )
+    s.put(
+        ("u1", "pending", "procedural"),
+        "held",
+        {"content": "held rule", "memory_type": "instructions", "held_for": {"space": "team"}},
+    )
+    s.put(("u2", "semantic"), "other", {"content": "someone else", "memory_type": "facts"})
+    return s
+
+
+def test_a_namespace_says_its_category_and_space():
+    assert parse_memory_namespace(("u", "semantic")) == ParsedNamespace("semantic", (), False)
+    assert parse_memory_namespace(("u", "episodic", "agentA")) == ParsedNamespace(
+        "episodic", ("agentA",), True
+    )
+    assert parse_memory_namespace(("u", "space:t1", "semantic")) == ParsedNamespace(
+        "semantic", ("space:t1",), False
+    )
+    assert parse_memory_namespace(("u", "memories")).category is None
+
+
+def test_counts_cover_every_space(seeded):
+    counts = count_user_memories(seeded, "u1")
+    assert counts == {"semantic": 3, "episodic": 0, "procedural": 2, "total": 5}
+
+    assert count_user_memories(seeded, "u1", exclude_paths=[("pending",)])["total"] == 4
+
+
+def test_counts_per_space(seeded):
+    counts = count_user_memories_by_space(seeded, "u1")
+
+    assert counts[()]["total"] == 1
+    assert counts[("", "agentA")]["semantic"] == 1
+    assert counts[("space:t1",)]["semantic"] == 1
+    assert counts[("agent:a1",)]["procedural"] == 1
+    assert counts[("pending",)]["procedural"] == 1
+
+
+def test_the_list_of_one_space(seeded):
+    root, total = list_user_memories(seeded, "u1", space_path=())
+    team, _ = list_user_memories(seeded, "u1", space_path=("space:t1",))
+
+    assert total == 1 and [d["content"] for d in root] == ["general fact"]
+    assert [d["content"] for d in team] == ["team fact"]
+
+
+def test_the_list_says_where_each_memory_is(seeded):
+    items, total = list_user_memories(seeded, "u1", exclude_paths=[("pending",)])
+
+    assert total == 4
+    by_content = {d["content"]: d for d in items}
+    assert by_content["legacy"]["agent_name"] == "agentA"
+    assert by_content["legacy"]["space_path"] is None
+    assert by_content["team fact"]["space_path"] == ["space:t1"]
+    assert by_content["check totals"]["memory_category"] == "procedural"
+    assert by_content["check totals"]["origin"] == {"via": "tool"}
+    held, _ = list_user_memories(seeded, "u1", space_path=("pending",))
+    assert held[0]["held_for"] == {"space": "team"}
+
+
+def test_clearing_a_category_clears_it_in_every_space(seeded):
+    deleted = purge_user_memories(seeded, "u1", "semantic")
+
+    assert deleted == 3
+    assert count_user_memories(seeded, "u1")["semantic"] == 0
+    assert seeded.get(("u2", "semantic"), "other") is not None
+
+
+def test_a_space_is_cleared_whole(seeded):
+    assert purge_namespace_path(seeded, "u1", ("agent:a1",)) == 1
+    assert seeded.get(("u1", "agent:a1", "procedural"), "lesson") is None
+    assert count_user_memories(seeded, "u1")["total"] == 4
+
+
+def test_a_memory_is_moved_as_it_is(seeded):
+    moved = move_user_memory_entry(
+        seeded, "u1", ("u1", "agent:a1", "procedural"), "lesson", ("u1", "space:t1", "procedural")
+    )
+
+    assert moved is True
+    assert seeded.get(("u1", "agent:a1", "procedural"), "lesson") is None
+    item = seeded.get(("u1", "space:t1", "procedural"), "lesson")
+    assert item.value["created_at"] == "2026-01-01T00:00:00+00:00"
+    assert move_user_memory_entry(
+        seeded, "u1", ("u1", "space:t1", "procedural"), "lesson", ("u2", "semantic")
+    ) is False
+
+
+def test_a_memory_is_edited_where_it_lies(seeded):
+    assert edit_user_memory_entry(seeded, "u1", ("u1", "semantic"), "general", "a better fact")
+
+    item = seeded.get(("u1", "semantic"), "general")
+    assert item.value["content"] == "a better fact"
+    assert item.value["memory_type"] == "facts"
+    assert edit_user_memory_entry(seeded, "u1", ("u2", "semantic"), "other", "x") is False
 
 
 def test_the_middleware_shows_the_policy_what_the_run_read(store):
