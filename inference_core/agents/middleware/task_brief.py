@@ -26,6 +26,7 @@ from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -246,17 +247,55 @@ def with_prompt(inner: BaseTool) -> BaseTool:
     )
 
 
+def handed_back(result: Any, keys: frozenset[str]) -> Any:
+    """What of a finished subagent's state the parent is given: its answer.
+
+    deepagents hands the parent the subagent's whole state but a few keys.
+    The rest is what the subagent's middleware kept about its own run
+    (counters, the last request it made, what it recalled). Given to the
+    parent, it overwrites the parent's record of its own run; and when two
+    subagents finish in the same step, both write a key that takes one value
+    per step and the run fails. So only ``messages`` and *keys* (state that
+    is the subagent's work, merged by a reducer) go back.
+    """
+    if not isinstance(result, Command) or not isinstance(result.update, dict):
+        return result
+    update = {
+        key: value
+        for key, value in result.update.items()
+        if key == "messages" or key in keys
+    }
+    if len(update) == len(result.update):
+        return result
+    return Command(
+        graph=result.graph, update=update, resume=result.resume, goto=result.goto
+    )
+
+
+# State a subagent hands back besides its messages: the files it wrote, which
+# deepagents merges with a reducer.
+RETURNED_STATE_KEYS = frozenset({"files"})
+
+
 class BriefedSubAgentMiddleware(SubAgentMiddleware):
     """``SubAgentMiddleware`` whose ``task`` takes a label and a required brief.
 
-    Takes what ``SubAgentMiddleware`` takes. The schema and the reading of a
-    call are one class on purpose: a tool that asks for ``prompt`` and a call
-    that is not read for where its brief is would refuse every call written
-    the way deepagents' own tool takes it.
+    Takes what ``SubAgentMiddleware`` takes, and ``returned_state_keys``: the
+    state, besides messages, a subagent hands back to the parent (see
+    :func:`handed_back`). The schema and the reading of a call are one class
+    on purpose: a tool that asks for ``prompt`` and a call that is not read
+    for where its brief is would refuse every call written the way
+    deepagents' own tool takes it.
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
+        self.returned_state_keys = frozenset(returned_state_keys)
         self._brief_the_tool()
 
     def _brief_the_tool(self) -> None:
@@ -302,7 +341,7 @@ class BriefedSubAgentMiddleware(SubAgentMiddleware):
         settled = self._settled(request)
         if isinstance(settled, ToolMessage):
             return settled
-        return handler(settled)
+        return self._answer(settled, handler(settled))
 
     async def awrap_tool_call(
         self,
@@ -312,15 +351,22 @@ class BriefedSubAgentMiddleware(SubAgentMiddleware):
         settled = self._settled(request)
         if isinstance(settled, ToolMessage):
             return settled
-        return await handler(settled)
+        return self._answer(settled, await handler(settled))
+
+    def _answer(self, request: ToolCallRequest, result: Any) -> Any:
+        if request.tool_call.get("name") != TASK_TOOL_NAME:
+            return result
+        return handed_back(result, self.returned_state_keys)
 
 
 __all__ = [
     "NO_BRIEF",
+    "RETURNED_STATE_KEYS",
     "TASK_TOOL_NAME",
     "BriefedSubAgentMiddleware",
     "TaskCall",
     "briefed",
+    "handed_back",
     "settle",
     "with_prompt",
 ]

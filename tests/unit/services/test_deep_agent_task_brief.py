@@ -17,12 +17,15 @@ from typing import Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from langgraph.types import Command
 from pydantic import Field
+from typing_extensions import NotRequired
 
 from inference_core.agents.middleware import BriefedSubAgentMiddleware
 from inference_core.agents.middleware.task_brief import (
@@ -33,7 +36,9 @@ from inference_core.agents.middleware.task_brief import (
     MISSING,
     MOVED,
     NO_BRIEF,
+    RETURNED_STATE_KEYS,
     briefed,
+    handed_back,
     settle,
     with_prompt,
 )
@@ -480,6 +485,111 @@ async def test_a_title_alone_starts_no_subagent_and_is_answered_in_words(sync):
     assert len(writer.seen) == 1
     assert _task_of(writer) == FINDINGS
     assert state["messages"][-1].content == "Here is the summary."
+
+
+# --------------------------------------------------------------------------- #
+# What a subagent hands back
+# --------------------------------------------------------------------------- #
+
+
+class _MarkState(AgentState):
+    mark: NotRequired[str]
+
+
+class _Mark(AgentMiddleware[_MarkState]):
+    """Keeps a note of its own about the run, as cost and memory middleware do:
+    a key that takes one value per step."""
+
+    state_schema = _MarkState
+
+    def __init__(self, mark: str) -> None:
+        super().__init__()
+        self.mark = mark
+
+    def before_agent(self, state: Any, runtime: Any) -> dict[str, Any]:
+        return {"mark": self.mark}
+
+
+def test_a_subagent_hands_back_its_messages_and_files_and_nothing_else():
+    answer = [ToolMessage(content="Three points.", tool_call_id="task-1")]
+    result = Command(
+        update={
+            "messages": answer,
+            "files": {"/notes.md": "..."},
+            "mark": "writer",
+            "accumulated_total_tokens": 120,
+        }
+    )
+
+    back = handed_back(result, RETURNED_STATE_KEYS)
+
+    assert back.update == {"messages": answer, "files": {"/notes.md": "..."}}
+
+
+def test_what_is_not_a_state_update_is_handed_back_as_it_is():
+    message = ToolMessage(content="Refused.", tool_call_id="task-1")
+
+    assert handed_back(message, RETURNED_STATE_KEYS) is message
+
+
+@pytest.mark.asyncio
+async def test_two_tasks_in_one_message_both_run_and_the_parent_keeps_its_own_state():
+    """Two subagents that finish in the same step each wrote ``mark``, which
+    takes one value per step, and the run failed with ``InvalidUpdateError``.
+    With one subagent, its note overwrote the parent's."""
+    writer = _Scripted(
+        replies=[AIMessage(content="First part."), AIMessage(content="Second part.")]
+    )
+    coordinator = _Scripted(
+        replies=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {
+                            "description": "First part",
+                            "prompt": FINDINGS,
+                            "subagent_type": "writer",
+                        },
+                        "id": "task-1",
+                    },
+                    {
+                        "name": "task",
+                        "args": {
+                            "description": "Second part",
+                            "prompt": FINDINGS,
+                            "subagent_type": "writer",
+                        },
+                        "id": "task-2",
+                    },
+                ],
+            ),
+            AIMessage(content="Here is the summary."),
+        ]
+    )
+    service = _deep_service(
+        coordinator,
+        middleware=[_Mark("coordinator")],
+        subagents=[
+            {
+                "name": "writer",
+                "description": "Writes summaries.",
+                "system_prompt": "You are the writer.",
+                "model": writer,
+                "tools": [],
+                "middleware": [_Mark("writer")],
+            }
+        ],
+    )
+    agent = await service.create_agent(system_prompt="You coordinate.")
+
+    state = await agent.ainvoke({"messages": [("user", "What is new?")]})
+
+    assert state["messages"][-1].content == "Here is the summary."
+    answers = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+    assert sorted(m.content for m in answers) == ["First part.", "Second part."]
+    assert state["mark"] == "coordinator"
 
 
 def test_rebuilding_the_tool_does_not_bring_the_old_arguments_back():
