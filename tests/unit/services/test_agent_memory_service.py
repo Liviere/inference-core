@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langgraph.store.memory import InMemoryStore
 
 from inference_core.services.agent_memory_service import (
     MEMORY_TYPE_TO_CATEGORY,
@@ -456,89 +457,144 @@ class TestSaveMemory:
         assert mock_store.put.call_args[0][1] == "custom-id-123"
 
 
+def _embed(texts: List[str]) -> List[List[float]]:
+    """Two dimensions: how much a text is about Python, and the rest."""
+    return [[1.0 if "python" in text.lower() else 0.0, 0.5] for text in texts]
+
+
+class _CountingStore(InMemoryStore):
+    """An in-memory store that counts the batches it was sent."""
+
+    batches: int = 0
+
+    def batch(self, ops):
+        type(self).batches += 1
+        return super().batch(ops)
+
+
+@pytest.fixture
+def real_store():
+    _CountingStore.batches = 0
+    return _CountingStore(index={"embed": _embed, "dims": 2, "fields": ["content"]})
+
+
+@pytest.fixture
+def agent_service(real_store):
+    return AgentMemoryStoreService(
+        store=real_store, agent_name="testbot", scope="dedicated"
+    )
+
+
 class TestRecallMemories:
-    """recall_memories searches correct namespaces and sorts results."""
+    """recall_memories searches the agent's own namespaces, in one batch."""
 
     @pytest.mark.asyncio
-    async def test_returns_empty_list_when_no_results(self, service):
-        result = await service.recall_memories(user_id="u1", query="anything")
+    async def test_returns_empty_list_when_no_results(self, agent_service):
+        result = await agent_service.recall_memories(user_id="u1", query="anything")
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_searches_all_categories_when_none_specified(
-        self, service, mock_store
+    async def test_every_category_is_searched_in_one_batch(
+        self, agent_service, real_store
     ):
-        await service.recall_memories(user_id="u1", query="test")
-        # Should call store.search once per MemoryCategory
-        assert mock_store.search.call_count == len(MemoryCategory)
+        for memory_type in ("facts", "context", "workflow"):
+            await agent_service.save_memory("u1", f"a {memory_type}", memory_type)
+        _CountingStore.batches = 0
+
+        docs = await agent_service.recall_memories(user_id="u1", query="test")
+
+        assert _CountingStore.batches == 1
+        assert sorted(d.memory_type for d in docs) == ["context", "facts", "workflow"]
 
     @pytest.mark.asyncio
-    async def test_searches_single_category(self, service, mock_store):
-        await service.recall_memories(user_id="u1", query="test", category="semantic")
-        assert mock_store.search.call_count == 1
+    async def test_searches_single_category(self, agent_service):
+        await agent_service.save_memory("u1", "a fact", "facts")
+        await agent_service.save_memory("u1", "a step", "workflow")
 
-    @pytest.mark.asyncio
-    async def test_auto_resolves_category_from_type(self, service, mock_store):
-        await service.recall_memories(
-            user_id="u1", query="test", memory_type="workflow"
-        )
-        # Only procedural namespace searched
-        assert mock_store.search.call_count == 1
-        ns_arg = mock_store.search.call_args[0][0]
-        assert "procedural" in ns_arg
-
-    @pytest.mark.asyncio
-    async def test_sort_by_score(self, service, mock_store):
-        """Default sort: highest score first."""
-        items = [
-            _make_store_item(key="low", score=0.3),
-            _make_store_item(key="high", score=0.9),
-        ]
-        mock_store.search.return_value = items
-
-        docs = await service.recall_memories(
+        docs = await agent_service.recall_memories(
             user_id="u1", query="test", category="semantic"
         )
-        assert docs[0].id == "high"
-        assert docs[1].id == "low"
+
+        assert [d.content for d in docs] == ["a fact"]
 
     @pytest.mark.asyncio
-    async def test_sort_by_time(self, service, mock_store):
-        """sort_by_time=True → newest created_at first."""
-        now = datetime.now(timezone.utc)
-        items = [
-            _make_store_item(key="old", created_at=now - timedelta(days=5)),
-            _make_store_item(key="new", created_at=now),
-        ]
-        mock_store.search.return_value = items
+    async def test_auto_resolves_category_from_type(self, agent_service):
+        await agent_service.save_memory("u1", "a fact", "facts")
+        await agent_service.save_memory("u1", "a step", "workflow")
 
-        docs = await service.recall_memories(
-            user_id="u1",
-            query="test",
-            category="semantic",
-            sort_by_time=True,
+        docs = await agent_service.recall_memories(
+            user_id="u1", query="test", memory_type="workflow"
         )
-        assert docs[0].id == "new"
+
+        assert [d.content for d in docs] == ["a step"]
+        assert docs[0].namespace == ("u1", "procedural", "testbot")
+
+    @pytest.mark.asyncio
+    async def test_sort_by_score(self, agent_service):
+        """Default sort: the closest first."""
+        await agent_service.save_memory("u1", "likes tea", "preferences")
+        await agent_service.save_memory("u1", "writes Python", "facts")
+
+        docs = await agent_service.recall_memories(
+            user_id="u1", query="python", category="semantic"
+        )
+
+        assert [d.content for d in docs] == ["writes Python", "likes tea"]
+
+    @pytest.mark.asyncio
+    async def test_sort_by_time(self, agent_service):
+        """sort_by_time=True → the latest saved first."""
+        now = datetime.now(timezone.utc)
+        old = await agent_service.save_memory("u1", "old", "facts")
+        await agent_service.save_memory("u1", "new", "facts")
+        item = agent_service.store.get(("u1", "semantic", "testbot"), old)
+        agent_service.store.put(
+            ("u1", "semantic", "testbot"),
+            old,
+            {**item.value, "created_at": (now - timedelta(days=5)).isoformat()},
+        )
+
+        docs = await agent_service.recall_memories(
+            user_id="u1", query="test", category="semantic", sort_by_time=True
+        )
+
+        assert [d.content for d in docs] == ["new", "old"]
+
+    @pytest.mark.asyncio
+    async def test_a_document_says_where_it_was_found(self, agent_service):
+        await agent_service.save_memory("u1", "a fact", "facts")
+
+        [doc] = await agent_service.recall_memories(user_id="u1", query="fact")
+
+        assert doc.space.key == "agent"
+        assert doc.space_key == "agent"
+        assert doc.namespace == ("u1", "semantic", "testbot")
 
 
 class TestDeleteMemory:
-    """delete_memory removes by id, with or without known category."""
+    """delete_memory deletes a memory where it lies, and says whether it did."""
 
     @pytest.mark.asyncio
-    async def test_delete_with_category(self, service, mock_store):
-        result = await service.delete_memory(
-            user_id="u1", memory_id="m1", category="semantic"
-        )
-        assert result is True
-        mock_store.delete.assert_called_once()
+    async def test_delete_with_category(self, agent_service):
+        mid = await agent_service.save_memory("u1", "a fact", "facts")
+
+        assert await agent_service.delete_memory("u1", mid, category="semantic")
+        assert await agent_service.recall_memories("u1", "fact") == []
 
     @pytest.mark.asyncio
-    async def test_delete_without_category_tries_all(self, service, mock_store):
-        """Iterates all namespaces until delete succeeds."""
-        result = await service.delete_memory(user_id="u1", memory_id="m1")
-        assert result is True
-        # First namespace call should succeed
-        assert mock_store.delete.call_count >= 1
+    async def test_an_episodic_memory_is_deleted_without_its_category(
+        self, agent_service
+    ):
+        """It used to report success after deleting from the semantic
+        namespace, where the memory was not, and leave it."""
+        mid = await agent_service.save_memory("u1", "met on Monday", "context")
+
+        assert await agent_service.delete_memory("u1", mid) is True
+        assert await agent_service.recall_memories("u1", "met") == []
+
+    @pytest.mark.asyncio
+    async def test_a_missing_id_is_not_reported_deleted(self, agent_service):
+        assert await agent_service.delete_memory("u1", "does-not-exist") is False
 
     @pytest.mark.asyncio
     async def test_delete_no_store_support(self, mock_store):
@@ -549,56 +605,55 @@ class TestDeleteMemory:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_delete_with_category_failure(self, service, mock_store):
-        """Exception during delete returns False."""
-        mock_store.delete.side_effect = RuntimeError("boom")
-        result = await service.delete_memory(
-            user_id="u1", memory_id="m1", category="semantic"
-        )
-        assert result is False
+    async def test_delete_failure(self, agent_service, real_store, monkeypatch):
+        """An exception during delete returns False."""
+        mid = await agent_service.save_memory("u1", "a fact", "facts")
 
-    @pytest.mark.asyncio
-    async def test_delete_without_category_all_fail(self, service, mock_store):
-        """All namespace attempts fail → returns False."""
-        mock_store.delete.side_effect = RuntimeError("not found")
-        result = await service.delete_memory(user_id="u1", memory_id="m1")
-        assert result is False
+        def boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(real_store, "delete", boom)
+        assert await agent_service.delete_memory("u1", mid) is False
 
 
 class TestDeleteUserMemories:
     """delete_user_memories bulk-deletes by type, category, or all."""
 
     @pytest.mark.asyncio
-    async def test_delete_by_type(self, service, mock_store):
-        mock_store.search.return_value = [_make_store_item(key="m1")]
-        count = await service.delete_user_memories(
+    async def test_delete_by_type(self, agent_service):
+        await agent_service.save_memory("u1", "likes tea", "preferences")
+        await agent_service.save_memory("u1", "lives in Krakow", "facts")
+
+        count = await agent_service.delete_user_memories(
             user_id="u1", memory_type="preferences"
         )
+
         assert count == 1
-        mock_store.delete.assert_called_once()
+        assert [d.content for d in await agent_service.recall_memories("u1", "x")] == [
+            "lives in Krakow"
+        ]
 
     @pytest.mark.asyncio
-    async def test_delete_all(self, service, mock_store):
-        mock_store.search.return_value = [_make_store_item(key="m1")]
-        count = await service.delete_user_memories(user_id="u1")
-        # Called once per category
-        assert count == len(MemoryCategory)
+    async def test_delete_all(self, agent_service):
+        for memory_type in ("facts", "context", "workflow"):
+            await agent_service.save_memory("u1", f"a {memory_type}", memory_type)
+
+        assert await agent_service.delete_user_memories(user_id="u1") == 3
+        assert await agent_service.recall_memories("u1", "x") == []
 
     @pytest.mark.asyncio
-    async def test_delete_type_error_fallback(self, service, mock_store):
-        """Falls back to query=None when TypeError is raised."""
-        call_count = 0
+    async def test_only_the_agents_own_memories_are_deleted(self, real_store):
+        shared = AgentMemoryStoreService(store=real_store, scope="shared")
+        own = AgentMemoryStoreService(
+            store=real_store, agent_name="testbot", scope="dedicated"
+        )
+        await shared.save_memory("u1", "everyone's fact", "facts")
+        await own.save_memory("u1", "own fact", "facts")
 
-        def _search_side_effect(ns, query=None, filter=None):
-            nonlocal call_count
-            call_count += 1
-            if query == "":
-                raise TypeError("bad query")
-            return [_make_store_item(key=f"m{call_count}")]
-
-        mock_store.search.side_effect = _search_side_effect
-        count = await service.delete_user_memories(user_id="u1")
-        assert count >= 1
+        assert await shared.delete_user_memories(user_id="u1") == 1
+        assert [d.content for d in await own.recall_memories("u1", "x")] == [
+            "own fact"
+        ]
 
 
 class TestBucketMemoriesByTime:
@@ -679,20 +734,10 @@ class TestFormatContextForPrompt:
         assert result == ""
 
     @pytest.mark.asyncio
-    async def test_returns_coala_xml_sections(self, service, mock_store):
+    async def test_returns_coala_xml_sections(self, agent_service):
         """Returned string contains category XML tags."""
-        now = datetime.now(timezone.utc)
-        mock_store.search.return_value = [
-            _make_store_item(
-                key="m1",
-                value={
-                    "content": "user likes Python",
-                    "memory_type": "preferences",
-                },
-                created_at=now,
-            ),
-        ]
-        result = await service.format_context_for_prompt(user_id="u1")
+        await agent_service.save_memory("u1", "user likes Python", "preferences")
+        result = await agent_service.format_context_for_prompt(user_id="u1")
         assert "<semantic_memory>" in result
         assert "</semantic_memory>" in result
         assert "user likes Python" in result

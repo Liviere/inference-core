@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
+from langgraph.store.memory import InMemoryStore
 
 from inference_core.services.agent_memory_service import (
     MEMORY_TYPE_TO_CATEGORY,
@@ -237,6 +238,15 @@ def _make_mock_store():
     return store
 
 
+def _real_store() -> InMemoryStore:
+    """An in-memory store whose search embeds: Python or not, and the rest."""
+
+    def embed(texts):
+        return [[1.0 if "python" in text.lower() else 0.0, 0.5] for text in texts]
+
+    return InMemoryStore(index={"embed": embed, "dims": 2, "fields": ["content"]})
+
+
 class TestAgentMemoryStoreServiceCoALA:
 
     @pytest.fixture
@@ -308,80 +318,72 @@ class TestAgentMemoryStoreServiceCoALA:
         value = call_args[0][2]
         assert value["memory_category"] == "semantic"
 
-    async def test_recall_all_categories(self, service, store):
-        """Recall without category should search all namespaces."""
-        await service.recall_memories(user_id="u1", query="test")
-        # Should call search 3 times (semantic, episodic, procedural)
-        assert store.search.call_count == 3
-
-    async def test_recall_single_category(self, service, store):
-        """Recall with category should search only that namespace."""
-        await service.recall_memories(
-            user_id="u1",
-            query="test",
-            category="semantic",
+    @pytest.fixture
+    def real(self):
+        """The same service on a real store, whose search embeds."""
+        return AgentMemoryStoreService(
+            store=_real_store(),
+            base_namespace=("agent_memory",),
+            agent_name="test_agent",
         )
-        assert store.search.call_count == 1
-        call_args = store.search.call_args
-        namespace = call_args[0][0]
-        assert namespace == ("u1", "semantic")
 
-    async def test_recall_auto_resolves_category_from_type(self, service, store):
+    async def test_recall_all_categories(self, real):
+        """Recall without category searches the namespace of every category."""
+        for memory_type in ("facts", "session_summary", "instructions"):
+            await real.save_memory("u1", f"a {memory_type}", memory_type)
+
+        docs = await real.recall_memories(user_id="u1", query="test")
+
+        assert sorted(d.namespace for d in docs) == [
+            ("u1", "episodic", "test_agent"),
+            ("u1", "procedural", "test_agent"),
+            ("u1", "semantic"),
+        ]
+
+    async def test_recall_single_category(self, real):
+        """Recall with category searches only that namespace."""
+        await real.save_memory("u1", "a fact", "facts")
+        await real.save_memory("u1", "a rule", "instructions")
+
+        docs = await real.recall_memories(
+            user_id="u1", query="test", category="semantic"
+        )
+
+        assert [d.namespace for d in docs] == [("u1", "semantic")]
+
+    async def test_recall_auto_resolves_category_from_type(self, real):
         """Recall with memory_type should auto-resolve category."""
-        await service.recall_memories(
-            user_id="u1",
-            query="test",
-            memory_type="instructions",
-        )
-        assert store.search.call_count == 1
-        call_args = store.search.call_args
-        namespace = call_args[0][0]
-        assert namespace == ("u1", "procedural", "test_agent")
+        await real.save_memory("u1", "a fact", "facts")
+        await real.save_memory("u1", "a rule", "instructions")
 
-    async def test_recall_merges_results_by_score(self, service, store):
-        """Multi-namespace recall should merge and sort by score."""
-        item1 = MagicMock(
-            key="k1", value={"content": "a", "memory_type": "facts"}, score=0.9
+        docs = await real.recall_memories(
+            user_id="u1", query="test", memory_type="instructions"
         )
-        item1.created_at = None
-        item1.updated_at = None
-        item2 = MagicMock(
-            key="k2", value={"content": "b", "memory_type": "context"}, score=0.7
-        )
-        item2.created_at = None
-        item2.updated_at = None
-        item3 = MagicMock(
-            key="k3", value={"content": "c", "memory_type": "instructions"}, score=0.95
-        )
-        item3.created_at = None
-        item3.updated_at = None
 
-        store.search.side_effect = [[item1], [item2], [item3]]
+        assert [d.namespace for d in docs] == [("u1", "procedural", "test_agent")]
 
-        docs = await service.recall_memories(user_id="u1", query="test", k=3)
-        assert len(docs) == 3
-        # Sorted by score descending
-        assert docs[0].id == "k3"
-        assert docs[1].id == "k1"
-        assert docs[2].id == "k2"
+    async def test_recall_merges_results_by_score(self, real):
+        """Multi-namespace recall merges and sorts by score."""
+        await real.save_memory("u1", "a fact", "facts")
+        await real.save_memory("u1", "python session", "context")
+        await real.save_memory("u1", "Python rules", "instructions")
 
-    async def test_delete_searches_all_namespaces(self, service, store):
-        """Delete without category should try all namespaces."""
-        store.delete.side_effect = [Exception("not found"), None]
-        result = await service.delete_memory(user_id="u1", memory_id="mid")
-        # Should have attempted delete on multiple namespaces
-        assert store.delete.call_count >= 1
+        docs = await real.recall_memories(user_id="u1", query="python", k=2)
 
-    async def test_delete_with_category(self, service, store):
-        """Delete with category should target specific namespace."""
-        await service.delete_memory(
-            user_id="u1",
-            memory_id="mid",
-            category="semantic",
-        )
-        call_args = store.delete.call_args
-        namespace = call_args[0][0]
-        assert namespace == ("u1", "semantic")
+        assert sorted(d.content for d in docs) == ["Python rules", "python session"]
+
+    async def test_delete_finds_the_namespace(self, real):
+        """Delete without category deletes where the memory lies."""
+        mid = await real.save_memory("u1", "a rule", "instructions")
+
+        assert await real.delete_memory(user_id="u1", memory_id=mid) is True
+        assert await real.recall_memories("u1", "rule") == []
+
+    async def test_delete_with_category(self, real):
+        mid = await real.save_memory("u1", "a fact", "facts")
+
+        assert await real.delete_memory("u1", mid, category="semantic") is True
+        assert await real.recall_memories("u1", "fact") == []
 
 
 # =============================================================================
@@ -464,17 +466,10 @@ class TestFormatContextCoALA:
         result = await service.format_context_for_prompt(user_id="u1")
         assert result == ""
 
-    async def test_coala_xml_tags_present(self, service, store):
+    async def test_coala_xml_tags_present(self):
         """Output should contain CoALA XML section tags."""
-        item = MagicMock(
-            key="k1",
-            value={"content": "likes Python", "memory_type": "preferences"},
-            score=0.9,
-        )
-        item.created_at = datetime(2025, 1, 15, 10, 0, tzinfo=timezone.utc)
-        item.updated_at = None
-
-        store.search.side_effect = [[item], [], []]
+        service = AgentMemoryStoreService(store=_real_store(), agent_name="test_agent")
+        await service.save_memory("u1", "likes Python", "preferences")
 
         result = await service.format_context_for_prompt(
             user_id="u1",

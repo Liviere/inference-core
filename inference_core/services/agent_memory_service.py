@@ -19,7 +19,7 @@ import logging
 import os
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -198,6 +198,130 @@ class MemoryNamespaceBuilder:
         return (str(user_id), MEMORIES_STORE_NAME)
 
 
+# =============================================================================
+# Memory spaces
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class MemorySpace:
+    """A set of memories an agent reads, and may write.
+
+    An agent reads every space it is given and writes only the writable ones.
+    A space is a namespace per CoALA category in the store:
+    ``(user_id, *path, category)``, or ``(user_id, category, *path)`` when
+    ``category_first`` (the layout of the ``dedicated`` and ``hybrid`` scopes).
+
+    The store searches by namespace *prefix*: ``(user_id, "semantic")`` also
+    finds what lies under ``(user_id, "semantic", "agent")``. A space reads
+    only its own namespaces (results are filtered on the exact namespace), but
+    an application gets no false sharing only when it keeps spaces from lying
+    under one another; the key of a space is never a prefix of another's.
+
+    Attributes:
+        key: The name the model uses for the space (in tools and prompts).
+        label: What the space is called where a person reads it.
+        description: What belongs in the space. It is part of the model's
+            instructions: it is how the model knows where to write what.
+        path: The namespace labels between the user id and the category.
+        category_first: Put the category before ``path`` (legacy layout).
+        categories: The CoALA categories the space holds; ``None`` = all.
+        writable: Whether the agent may save, update and delete here.
+    """
+
+    key: str
+    label: str = ""
+    description: str = ""
+    path: Tuple[str, ...] = ()
+    category_first: bool = False
+    categories: Optional[frozenset] = None
+    writable: bool = True
+
+    @property
+    def name(self) -> str:
+        return self.label or self.key
+
+    def holds(self, category: "MemoryCategory | str") -> bool:
+        value = MemoryCategory(category).value
+        return self.categories is None or value in self.categories
+
+    def namespace(
+        self, user_id: str, category: "MemoryCategory | str"
+    ) -> Tuple[str, ...]:
+        value = MemoryCategory(category).value
+        if self.category_first:
+            return (str(user_id), value, *self.path)
+        return (str(user_id), *self.path, value)
+
+
+SHARED_SPACE_KEY = "shared"
+AGENT_SPACE_KEY = "agent"
+
+
+def spaces_for_scope(scope: str, agent_name: Optional[str] = None) -> List[MemorySpace]:
+    """The spaces of a legacy scope: the same namespaces it has always used.
+
+    ``shared`` is one space ``(user_id, category)``; ``dedicated`` is one
+    space ``(user_id, category, agent_name)``; ``hybrid`` keeps semantic
+    memories shared and episodic and procedural ones per agent. Without an
+    agent name every scope is ``shared``, and an unknown scope is ``hybrid``,
+    as :class:`MemoryNamespaceBuilder` has it.
+    """
+    shared = MemorySpace(key=SHARED_SPACE_KEY, label="Shared memory")
+    if not agent_name:
+        return [shared]
+    own = MemorySpace(
+        key=AGENT_SPACE_KEY,
+        label=f"Memory of {agent_name}",
+        path=(agent_name,),
+        category_first=True,
+    )
+    if scope == "shared":
+        return [shared]
+    if scope == "dedicated":
+        return [own]
+    return [
+        replace(shared, categories=frozenset({MemoryCategory.SEMANTIC.value})),
+        replace(
+            own,
+            categories=frozenset(
+                {MemoryCategory.EPISODIC.value, MemoryCategory.PROCEDURAL.value}
+            ),
+        ),
+    ]
+
+
+class MemorySpaceError(ValueError):
+    """A write that no space the agent may write to can take."""
+
+
+# What became of a memory an agent asked to write, update or delete.
+SAVED = "saved"
+UPDATED = "updated"
+DELETED = "deleted"
+NOT_FOUND = "not_found"
+READ_ONLY = "read_only"
+
+
+@dataclass(frozen=True)
+class MemoryWriteOutcome:
+    """What became of a write, an update or a delete, and where."""
+
+    status: str
+    memory_id: Optional[str] = None
+    space: Optional[MemorySpace] = None
+
+
+@dataclass(frozen=True)
+class LocatedMemory:
+    """A memory found by its id, with the space and namespace it lies in."""
+
+    space: MemorySpace
+    category: MemoryCategory
+    namespace: Tuple[str, ...]
+    item: Any
+
+
 MEMORY_TYPES = [mt.value for mt in MemoryType]
 
 
@@ -355,6 +479,32 @@ class MemoryStoreDocument:
     score: Optional[float] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    namespace: Tuple[str, ...] = ()
+    space: Optional[MemorySpace] = None
+
+    @property
+    def space_key(self) -> Optional[str]:
+        return self.space.key if self.space else None
+
+    @property
+    def saved_at(self) -> Optional[datetime]:
+        """When the memory was first saved.
+
+        The item's own ``created_at`` is when it was put where it lies now: an
+        entry moved from one space to another is a new item there. The value
+        keeps the time it was saved, so that is read first.
+        """
+        stored = self.value.get("created_at")
+        if isinstance(stored, str):
+            try:
+                parsed = datetime.fromisoformat(stored)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed
+        return self.created_at
 
     @property
     def content(self) -> str:
@@ -419,9 +569,10 @@ class MemoryData:
 class AgentMemoryStoreService:
     """Store-backed memory service following CoALA architecture.
 
-    Uses MemoryNamespaceBuilder to route memories into category-specific
-    namespaces (semantic / episodic / procedural) while maintaining
-    backward compatibility with the flat namespace layout.
+    An agent's memory is a list of :class:`MemorySpace`: it reads all of them
+    and writes the writable ones. Without ``spaces`` the legacy ``scope`` and
+    ``agent_name`` say which (:func:`spaces_for_scope`), on the same
+    namespaces as before.
     """
 
     def __init__(
@@ -431,6 +582,8 @@ class AgentMemoryStoreService:
         max_results: int = 5,
         agent_name: Optional[str] = None,
         scope: str = "hybrid",
+        spaces: Optional[Sequence[MemorySpace]] = None,
+        default_write: Optional[str] = None,
     ) -> None:
         self.store = store
         self.base_namespace = tuple(base_namespace)
@@ -442,6 +595,13 @@ class AgentMemoryStoreService:
             agent_name=agent_name,
             scope=scope,
         )
+        self.spaces: Tuple[MemorySpace, ...] = tuple(
+            spaces if spaces is not None else spaces_for_scope(scope, agent_name)
+        )
+        keys = [space.key for space in self.spaces]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"Memory space keys must be unique, got {keys}")
+        self.default_write = default_write
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def _namespace(self, user_id: str) -> tuple:
@@ -449,50 +609,90 @@ class AgentMemoryStoreService:
 
         return (str(user_id), *self.base_namespace)
 
-    async def save_memory(
+    # -----------------------------------------------------------------
+    # Spaces
+    # -----------------------------------------------------------------
+
+    @property
+    def writable_spaces(self) -> Tuple[MemorySpace, ...]:
+        return tuple(space for space in self.spaces if space.writable)
+
+    def readable_spaces(
+        self, category: "MemoryCategory | str"
+    ) -> List[MemorySpace]:
+        return [space for space in self.spaces if space.holds(category)]
+
+    def space_for_write(
+        self, category: "MemoryCategory | str", space: Optional[str] = None
+    ) -> MemorySpace:
+        """The space a memory of *category* is written to.
+
+        *space* names one; without it, the default (``default_write``) when it
+        takes the category, else the first writable space that does.
+
+        Raises:
+            MemorySpaceError: when the named space is not one the agent may
+                write, or none it may write takes the category.
+        """
+        value = MemoryCategory(category).value
+        writable = [s for s in self.writable_spaces if s.holds(value)]
+        if space is not None:
+            for candidate in writable:
+                if candidate.key == space:
+                    return candidate
+            names = ", ".join(s.key for s in writable) or "none"
+            raise MemorySpaceError(
+                f"Cannot write a {value} memory to space '{space}'. "
+                f"Spaces it can be written to: {names}."
+            )
+        for candidate in writable:
+            if candidate.key == self.default_write:
+                return candidate
+        if writable:
+            return writable[0]
+        raise MemorySpaceError(
+            f"No memory space this agent may write takes {value} memories."
+        )
+
+    def _search_namespaces(
         self,
         user_id: str,
-        content: str,
-        memory_type: str = MemoryType.GENERAL.value,
-        session_id: Optional[str] = None,
-        topic: Optional[str] = None,
-        extra_metadata: Optional[Dict[str, Any]] = None,
-        memory_id: Optional[str] = None,
-        category: Optional[str] = None,
-    ) -> str:
-        """Persist a memory item, routed to the correct CoALA namespace.
+        categories: Sequence[MemoryCategory],
+    ) -> List[Tuple[MemorySpace, Tuple[str, ...]]]:
+        pairs: List[Tuple[MemorySpace, Tuple[str, ...]]] = []
+        seen: set = set()
+        for category in categories:
+            for space in self.readable_spaces(category):
+                namespace = space.namespace(user_id, category)
+                if namespace not in seen:
+                    seen.add(namespace)
+                    pairs.append((space, namespace))
+        return pairs
 
-        The category is auto-resolved from memory_type when not provided.
-        """
-
-        assert (
-            memory_type in MemoryType._value2member_map_
-        ), f"Invalid memory type: {memory_type}"
-
-        user_id = str(user_id)
-
-        # Resolve category
-        resolved_category = (
-            MemoryCategory(category) if category else get_category_for_type(memory_type)
-        )
-        namespace_for_memory = self.ns_builder.namespace_for(user_id, resolved_category)
-
-        if not extra_metadata:
-            extra_metadata = {}
-
-        if not memory_id:
-            memory_id = str(uuid.uuid4())
-
-        memory_data = MemoryData(
-            content=content,
-            memory_type=memory_type,
-            memory_category=resolved_category.value,
-            session_id=session_id,
-            topic=topic,
-            agent_name=self.agent_name,
-            extra_metadata=extra_metadata,
+    @staticmethod
+    def _document(
+        item: Any,
+        space: Optional[MemorySpace],
+        include_scores: bool = True,
+    ) -> MemoryStoreDocument:
+        value = getattr(item, "value", None) or {}
+        return MemoryStoreDocument(
+            id=getattr(item, "key", getattr(item, "id", "")),
+            value=value,
+            metadata=value.get("extra_metadata", {}) or {},
+            score=getattr(item, "score", None) if include_scores else None,
+            created_at=getattr(item, "created_at", None),
+            updated_at=getattr(item, "updated_at", None),
+            namespace=tuple(getattr(item, "namespace", ()) or ()),
+            space=space,
         )
 
+    # -----------------------------------------------------------------
+    # Writing
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _stored_value(memory_data: "MemoryData") -> Dict[str, Any]:
         # Encrypt content/topic at rest (flag-gated). Semantic indexing stays
         # correct because the embed_fn wrapped by
         # EmbeddingService.get_embed_fn() decrypts tokens before embedding —
@@ -511,15 +711,160 @@ class AgentMemoryStoreService:
             value["topic"] = enc_field(
                 value["topic"], purpose="memory", enabled=memory_enc_enabled()
             )
+        return value
+
+    async def save_memory(
+        self,
+        user_id: str,
+        content: str,
+        memory_type: str = MemoryType.GENERAL.value,
+        session_id: Optional[str] = None,
+        topic: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+        memory_id: Optional[str] = None,
+        category: Optional[str] = None,
+        space: Optional[str] = None,
+    ) -> str:
+        """Persist a memory item in a space the agent may write.
+
+        The category is auto-resolved from memory_type when not provided, and
+        the space is *space* or the default one (see :meth:`space_for_write`).
+        A given *memory_id* is written under that key in that space; to change
+        a memory wherever it lies, use :meth:`update_memory`.
+
+        Raises:
+            MemorySpaceError: when no writable space takes the memory.
+        """
+
+        assert (
+            memory_type in MemoryType._value2member_map_
+        ), f"Invalid memory type: {memory_type}"
+
+        user_id = str(user_id)
+
+        resolved_category = (
+            MemoryCategory(category) if category else get_category_for_type(memory_type)
+        )
+        target = self.space_for_write(resolved_category, space)
+
+        if not memory_id:
+            memory_id = str(uuid.uuid4())
+
+        memory_data = MemoryData(
+            content=content,
+            memory_type=memory_type,
+            memory_category=resolved_category.value,
+            session_id=session_id,
+            topic=topic,
+            agent_name=self.agent_name,
+            extra_metadata=extra_metadata or {},
+        )
 
         self.store.put(
-            namespace_for_memory,
+            target.namespace(user_id, resolved_category),
             memory_id,
-            value,
+            self._stored_value(memory_data),
             index=INDEXED_FIELDS,
         )
 
         return memory_id
+
+    async def find_memory(
+        self, user_id: str, memory_id: str
+    ) -> Optional[LocatedMemory]:
+        """Where a memory the agent can read lies, by its id; ``None`` if nowhere."""
+        from langgraph.store.base import GetOp
+
+        located = [
+            (space, category, space.namespace(user_id, category))
+            for category in MemoryCategory
+            for space in self.readable_spaces(category)
+        ]
+        if not located:
+            return None
+        items = self.store.batch(
+            [GetOp(namespace, memory_id) for _, _, namespace in located]
+        )
+        for (space, category, namespace), item in zip(located, items):
+            if item is not None:
+                return LocatedMemory(space, category, namespace, item)
+        return None
+
+    async def update_memory(
+        self,
+        user_id: str,
+        memory_id: str,
+        content: str,
+        memory_type: Optional[str] = None,
+        topic: Optional[str] = None,
+        session_id: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> MemoryWriteOutcome:
+        """Change a memory where it lies.
+
+        A memory in a space the agent only reads is not changed and not
+        copied: the outcome is ``read_only``. A new category moves the memory
+        within its space, to that category's namespace. The time it was first
+        saved stays.
+        """
+        user_id = str(user_id)
+        found = await self.find_memory(user_id, memory_id)
+        if found is None:
+            return MemoryWriteOutcome(NOT_FOUND, memory_id)
+        if not found.space.writable:
+            return MemoryWriteOutcome(READ_ONLY, memory_id, found.space)
+
+        old_value = getattr(found.item, "value", None) or {}
+        new_type = memory_type or old_value.get("memory_type") or MemoryType.GENERAL.value
+        validate_memory_type(new_type)
+        new_category = (
+            MemoryCategory(category) if category else get_category_for_type(new_type)
+        )
+        if not found.space.holds(new_category):
+            new_category = found.category
+
+        memory_data = MemoryData(
+            content=content,
+            memory_type=new_type,
+            memory_category=new_category.value,
+            session_id=session_id or old_value.get("session_id"),
+            topic=topic,
+            agent_name=old_value.get("agent_name"),
+            extra_metadata=old_value.get("extra_metadata") or {},
+        )
+        if isinstance(old_value.get("created_at"), str):
+            memory_data.created_at = old_value["created_at"]
+
+        namespace = found.space.namespace(user_id, new_category)
+        self.store.put(
+            namespace,
+            memory_id,
+            self._stored_value(memory_data),
+            index=INDEXED_FIELDS,
+        )
+        if namespace != found.namespace:
+            self.store.delete(found.namespace, memory_id)
+        return MemoryWriteOutcome(UPDATED, memory_id, found.space)
+
+    async def remove_memory(
+        self, user_id: str, memory_id: str
+    ) -> MemoryWriteOutcome:
+        """Delete a memory where it lies, if the agent may write there."""
+        if not hasattr(self.store, "delete"):
+            self.logger.warning("Store does not support delete; skipping")
+            return MemoryWriteOutcome(NOT_FOUND, memory_id)
+        found = await self.find_memory(str(user_id), memory_id)
+        if found is None:
+            return MemoryWriteOutcome(NOT_FOUND, memory_id)
+        if not found.space.writable:
+            return MemoryWriteOutcome(READ_ONLY, memory_id, found.space)
+        self.store.delete(found.namespace, memory_id)
+        self.logger.info("Deleted memory id=%s for user=%s", memory_id, user_id)
+        return MemoryWriteOutcome(DELETED, memory_id, found.space)
+
+    # -----------------------------------------------------------------
+    # Reading
+    # -----------------------------------------------------------------
 
     async def recall_memories(
         self,
@@ -531,83 +876,76 @@ class AgentMemoryStoreService:
         sort_by_time: bool = False,
         category: Optional[str] = None,
     ) -> List[MemoryStoreDocument]:
-        """Retrieve relevant memories from the store for the user.
+        """Retrieve relevant memories from every space the agent reads.
 
-        When category is specified, searches only that CoALA namespace.
+        When category is specified, searches only that CoALA category.
         When memory_type is specified, category is auto-resolved.
         When neither is specified, searches across all categories.
+
+        All the searches go to the store as one batch, so a store that embeds
+        the query does it once. Each keeps only its own namespace: the store
+        searches by prefix, and a search of ``(user_id, "semantic")`` also
+        finds what lies under it.
 
         Args:
             user_id: User identifier for namespace isolation.
             query: Semantic search query string.
-            k: Maximum number of results to return.
+            k: Maximum number of results to return, over all spaces.
             memory_type: Optional filter by memory type.
             include_scores: Whether to include relevance scores.
-            sort_by_time: If True, sort results by created_at descending (newest first).
+            sort_by_time: If True, newest first instead of most relevant.
             category: Optional CoALA category to search within.
 
         Returns:
-            List of MemoryStoreDocument with temporal metadata (created_at, updated_at).
+            List of MemoryStoreDocument with temporal metadata and the space
+            each was found in.
         """
+        from langgraph.store.base import SearchOp
+
         limit = k or self.max_results
+        user_id = str(user_id)
 
-        # Determine which namespaces to search
         if category:
-            cat = MemoryCategory(category)
-            namespaces = [self.ns_builder.namespace_for(user_id, cat)]
+            categories = [MemoryCategory(category)]
         elif memory_type:
-            cat = get_category_for_type(memory_type)
-            namespaces = [self.ns_builder.namespace_for(user_id, cat)]
+            categories = [get_category_for_type(memory_type)]
         else:
-            # Search all categories
-            namespaces = [
-                self.ns_builder.namespace_for(user_id, cat) for cat in MemoryCategory
-            ]
+            categories = list(MemoryCategory)
 
-        filters = {}
+        filters: Dict[str, Any] = {}
         if memory_type:
             filters["memory_type"] = memory_type
 
+        pairs = self._search_namespaces(user_id, categories)
+        if not pairs:
+            return []
+        # Twice the limit: entries under a space's namespace are found by the
+        # search and dropped here.
+        results = self.store.batch(
+            [
+                SearchOp(namespace, filter=filters or None, limit=limit * 2, query=query)
+                for _, namespace in pairs
+            ]
+        )
+
         documents: List[MemoryStoreDocument] = []
-        for ns in namespaces:
-            results = self.store.search(
-                ns,
-                query=query,
-                limit=limit,
-                filter=filters,
-            )
+        for (space, namespace), found in zip(pairs, results):
+            for item in found or []:
+                if tuple(getattr(item, "namespace", ()) or ()) != namespace:
+                    continue
+                documents.append(self._document(item, space, include_scores))
 
-            for item in results or []:
-                item_created_at = getattr(item, "created_at", None)
-                item_updated_at = getattr(item, "updated_at", None)
-
-                documents.append(
-                    MemoryStoreDocument(
-                        id=getattr(item, "key", getattr(item, "id", "")),
-                        value=getattr(item, "value", {}),
-                        metadata=getattr(item, "value", {}).get("extra_metadata", {}),
-                        score=getattr(item, "score", None) if include_scores else None,
-                        created_at=item_created_at,
-                        updated_at=item_updated_at,
-                    )
-                )
-
-        # Re-sort by score across namespaces when not sorting by time
         if not sort_by_time:
-            documents.sort(
-                key=lambda d: (d.score or 0.0),
-                reverse=True,
-            )
-            documents = documents[:limit]
+            documents.sort(key=lambda d: (d.score or 0.0), reverse=True)
         else:
             documents.sort(
                 key=lambda d: (
-                    d.created_at is not None,
-                    d.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                    d.saved_at is not None,
+                    d.saved_at or datetime.min.replace(tzinfo=timezone.utc),
                 ),
                 reverse=True,
             )
-            documents = documents[:limit]
+        documents = documents[:limit]
 
         self.logger.debug(
             "Recalled %d memories for user=%s, query='%s', sort_by_time=%s",
@@ -709,41 +1047,20 @@ class AgentMemoryStoreService:
         memory_id: str,
         category: Optional[str] = None,
     ) -> bool:
-        """Remove a specific memory key from the store.
+        """Delete a memory where it lies; True only when one was deleted.
 
-        When category is unknown, searches all namespaces to locate the key.
+        *category* is accepted for compatibility and not needed: the memory
+        is found by its id (see :meth:`remove_memory`). A memory in a space
+        the agent only reads, and an id found nowhere, are not deleted.
         """
-        if not hasattr(self.store, "delete"):
-            self.logger.warning("Store does not support delete; skipping")
+        try:
+            outcome = await self.remove_memory(user_id, memory_id)
+        except Exception as exc:
+            self.logger.error("Failed to delete memory id=%s: %s", memory_id, exc)
             return False
-
-        if category:
-            ns = self.ns_builder.namespace_for(user_id, MemoryCategory(category))
-            try:
-                self.store.delete(ns, memory_id)
-                self.logger.info("Deleted memory id=%s for user=%s", memory_id, user_id)
-                return True
-            except Exception as exc:
-                self.logger.error("Failed to delete memory id=%s: %s", memory_id, exc)
-                return False
-
-        # Category unknown – try all namespaces
-        for cat in MemoryCategory:
-            ns = self.ns_builder.namespace_for(user_id, cat)
-            try:
-                self.store.delete(ns, memory_id)
-                self.logger.info(
-                    "Deleted memory id=%s from %s for user=%s",
-                    memory_id,
-                    cat.value,
-                    user_id,
-                )
-                return True
-            except Exception:
-                continue
-
-        self.logger.warning("Memory id=%s not found in any namespace", memory_id)
-        return False
+        if outcome.status == NOT_FOUND:
+            self.logger.warning("Memory id=%s not found in any space", memory_id)
+        return outcome.status == DELETED
 
     async def delete_user_memories(
         self,
@@ -751,7 +1068,7 @@ class AgentMemoryStoreService:
         memory_type: Optional[str] = None,
         category: Optional[str] = None,
     ) -> int:
-        """Bulk-delete user memories by type, category, or all."""
+        """Bulk-delete memories by type, category, or all, in writable spaces."""
 
         if category:
             cats = [MemoryCategory(category)]
@@ -765,15 +1082,18 @@ class AgentMemoryStoreService:
             filters["memory_type"] = memory_type
 
         deleted = 0
-        for cat in cats:
-            ns = self.ns_builder.namespace_for(user_id, cat)
-            try:
-                results = self.store.search(ns, query="", filter=filters)
-            except TypeError:
-                results = self.store.search(ns, query=None, filter=filters)
+        user_id = str(user_id)
+        for space, ns in self._search_namespaces(user_id, cats):
+            if not space.writable:
+                continue
+            results = _store_search(
+                self.store, ns, limit=10_000, filter=filters or None
+            )
 
             if hasattr(self.store, "delete"):
                 for item in results or []:
+                    if tuple(getattr(item, "namespace", ns) or ns) != ns:
+                        continue
                     key = getattr(item, "key", getattr(item, "id", None))
                     if key is None:
                         continue
@@ -957,8 +1277,8 @@ class AgentMemoryStoreService:
         Returns:
             Date object or None if timestamp unavailable.
         """
-        if mem.created_at:
-            dt = mem.created_at
+        if mem.saved_at:
+            dt = mem.saved_at
             # Ensure timezone-aware
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
@@ -1112,6 +1432,7 @@ def _store_search(
     *,
     limit: int,
     offset: int = 0,
+    filter: Optional[Dict[str, Any]] = None,
 ) -> List[Any]:
     """Namespace-prefix listing that tolerates differing store search signatures.
 
@@ -1119,10 +1440,13 @@ def _store_search(
     even when the store was opened without an embedding index.
     """
     try:
-        return store.search(prefix, query=None, limit=limit, offset=offset) or []
+        return (
+            store.search(prefix, query=None, limit=limit, offset=offset, filter=filter)
+            or []
+        )
     except TypeError:
         # Older/alternate signature without keyword query support.
-        return store.search(prefix, limit=limit, offset=offset) or []
+        return store.search(prefix, limit=limit, offset=offset, filter=filter) or []
 
 
 def purge_user_memories(
@@ -1469,11 +1793,21 @@ def delete_user_long_term_memory_entries(
 
 __all__ = [
     "AgentMemoryStoreService",
+    "DELETED",
+    "LocatedMemory",
     "MemoryCategory",
     "MemoryData",
     "MemoryMetadata",
     "MemoryNamespaceBuilder",
+    "MemorySpace",
+    "MemorySpaceError",
     "MemoryStoreDocument",
+    "MemoryWriteOutcome",
+    "NOT_FOUND",
+    "READ_ONLY",
+    "SAVED",
+    "UPDATED",
+    "spaces_for_scope",
     "MemoryType",
     "MemoryTypeDescription",
     "MEMORY_CATEGORIES",
