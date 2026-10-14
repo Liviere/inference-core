@@ -822,6 +822,10 @@ class AgentService:
                 resolved_tools = self._resolve_memory_tools()
                 memory_instructions = generate_memory_tools_system_instructions(
                     active_tool_names=resolved_tools,
+                    spaces=getattr(self._memory_service, "spaces", None),
+                    default_write=self._memory_service.default_write_key()
+                    if hasattr(self._memory_service, "default_write_key")
+                    else None,
                 )
 
                 if memory_instructions:
