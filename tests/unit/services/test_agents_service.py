@@ -1294,9 +1294,11 @@ class TestBuildSystemPromptMemoryConfig:
             return_value="[INSTRUCTIONS]",
         ) as mock_gen:
             svc._build_system_prompt("Base.")
-            mock_gen.assert_called_once_with(
-                active_tool_names=["save_memory_store"],
-            )
+            mock_gen.assert_called_once()
+            kwargs = mock_gen.call_args.kwargs
+            assert kwargs["active_tool_names"] == ["save_memory_store"]
+            # The instructions describe the spaces the service reads.
+            assert kwargs["spaces"] is svc._memory_service.spaces
 
 
 class TestBuildMiddlewareMemoryConfig:

@@ -16,7 +16,17 @@ from inference_core.agents.tools.memory_tools import (
     generate_memory_tools_system_instructions,
     get_memory_tools,
 )
-from inference_core.services.agent_memory_service import MemoryType
+from inference_core.services.agent_memory_service import (
+    DELETED,
+    NOT_FOUND,
+    READ_ONLY,
+    SAVED,
+    UPDATED,
+    AgentMemoryStoreService,
+    MemorySpace,
+    MemoryType,
+    MemoryWriteOutcome,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -27,9 +37,20 @@ from inference_core.services.agent_memory_service import MemoryType
 def mock_memory_service():
     """Provide an AsyncMock AgentMemoryStoreService."""
     service = AsyncMock()
+    service.spaces = ()
+    service.space_for_write = MagicMock(return_value=MemorySpace(key="shared"))
     service.save_memory.return_value = "mem-12345678-abcd-1234"
     service.recall_memories.return_value = []
     service.delete_memory.return_value = True
+    service.update_memory.return_value = MemoryWriteOutcome(UPDATED, "mem-abc")
+    service.remove_memory.return_value = MemoryWriteOutcome(DELETED, "mem-del")
+
+    async def write_memory(**kwargs):
+        kwargs.pop("via", None)
+        memory_id = await service.save_memory(**kwargs)
+        return MemoryWriteOutcome(SAVED, memory_id, MemorySpace(key="shared"))
+
+    service.write_memory = AsyncMock(side_effect=write_memory)
     return service
 
 
@@ -41,10 +62,8 @@ def mock_memory_service():
 class TestSaveMemoryStoreTool:
     """Test SaveMemoryStoreTool._run and _arun."""
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_run_happy_path(self, mock_run_async, mock_memory_service):
+    def test_run_happy_path(self, mock_memory_service):
         """_run saves memory and returns success message."""
-        mock_run_async.return_value = "mem-12345678-abcd-1234"
         tool = SaveMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
@@ -55,10 +74,9 @@ class TestSaveMemoryStoreTool:
         )
         assert "✓ Memory saved" in result
         assert "mem-1234" in result
-        mock_run_async.assert_called_once()
+        mock_memory_service.save_memory.assert_awaited_once()
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_run_invalid_memory_type(self, mock_run_async, mock_memory_service):
+    def test_run_invalid_memory_type(self, mock_memory_service):
         """_run returns error for invalid memory type."""
         tool = SaveMemoryStoreTool(
             memory_service=mock_memory_service,
@@ -87,16 +105,64 @@ class TestSaveMemoryStoreTool:
         result = await tool._arun(content="test", memory_type="bogus")
         assert "✗" in result
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_run_with_category_override(self, mock_run_async, mock_memory_service):
+    def test_run_with_category_override(self, mock_memory_service):
         """_run respects explicit category override."""
-        mock_run_async.return_value = "mem-12345678-1234-5678"
         tool = SaveMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
         )
         result = tool._run(content="test", category="procedural")
         assert "procedural" in result
+
+
+class TestSavingToASpace:
+    """The save tool on a real service with several spaces."""
+
+    @pytest.fixture
+    def service(self):
+        from langgraph.store.memory import InMemoryStore
+
+        return AgentMemoryStoreService(
+            store=InMemoryStore(),
+            spaces=[
+                MemorySpace(key="general", description="About the user."),
+                MemorySpace(key="private", path=("agent:a1",), description="Own work."),
+                MemorySpace(key="team", path=("space:t1",), writable=False),
+            ],
+            default_write="private",
+        )
+
+    async def test_a_memory_goes_to_the_space_named(self, service):
+        tool = SaveMemoryStoreTool(memory_service=service, user_id="u1")
+
+        result = await tool._arun(content="Likes tea", space="general")
+
+        assert "space: general" in result
+        assert service.store.search(("u1", "semantic"))
+
+    async def test_without_a_name_it_goes_to_the_default_space(self, service):
+        tool = SaveMemoryStoreTool(memory_service=service, user_id="u1")
+
+        result = await tool._arun(content="Check the totals twice", memory_type="skill")
+
+        assert "space: private" in result
+        assert service.store.search(("u1", "agent:a1", "procedural"))
+
+    async def test_a_space_read_only_is_refused_in_words(self, service):
+        tool = SaveMemoryStoreTool(memory_service=service, user_id="u1")
+
+        result = await tool._arun(content="Team fact", space="team")
+
+        assert result.startswith("✗")
+        assert "general" in result and "private" in result
+        assert not service.store.search(("u1", "space:t1", "semantic"))
+
+    def test_the_tool_lists_the_spaces_it_can_save_to(self, service):
+        [save] = get_memory_tools(service, user_id="u1", include_tools=["save_memory_store"])
+
+        assert "- general: About the user." in save.description
+        assert "- private: Own work." in save.description
+        assert "- team" not in save.description
 
 
 # ===========================================================================
@@ -215,10 +281,8 @@ class TestRecallMemoryStoreTool:
 class TestUpdateMemoryStoreTool:
     """Test UpdateMemoryStoreTool._run and _arun."""
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_run_happy_path(self, mock_run_async, mock_memory_service):
+    def test_run_happy_path(self, mock_memory_service):
         """_run updates memory and returns success."""
-        mock_run_async.return_value = "mem-updated-id"
         tool = UpdateMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
@@ -226,8 +290,7 @@ class TestUpdateMemoryStoreTool:
         result = tool._run(memory_id="mem-abc", content="Updated content")
         assert "✓ Memory updated" in result
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_run_invalid_type(self, mock_run_async, mock_memory_service):
+    def test_run_invalid_type(self, mock_memory_service):
         """_run returns error for invalid memory type."""
         tool = UpdateMemoryStoreTool(
             memory_service=mock_memory_service,
@@ -237,14 +300,42 @@ class TestUpdateMemoryStoreTool:
         assert "✗" in result
 
     async def test_arun_happy_path(self, mock_memory_service):
-        """_arun awaits save_memory with memory_id."""
+        """_arun changes the memory where it lies, not by writing it again."""
         tool = UpdateMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
         )
         result = await tool._arun(memory_id="mem-abc", content="New content")
         assert "✓ Memory updated" in result
-        mock_memory_service.save_memory.assert_awaited_once()
+        mock_memory_service.update_memory.assert_awaited_once()
+        mock_memory_service.save_memory.assert_not_called()
+
+    async def test_a_memory_the_agent_only_reads_is_not_changed(
+        self, mock_memory_service
+    ):
+        mock_memory_service.update_memory.return_value = MemoryWriteOutcome(
+            READ_ONLY, "mem-abc", MemorySpace(key="team", writable=False)
+        )
+        tool = UpdateMemoryStoreTool(
+            memory_service=mock_memory_service, user_id="user-1"
+        )
+
+        result = await tool._arun(memory_id="mem-abc", content="New content")
+
+        assert result.startswith("✗")
+        assert "'team', which you can only read" in result
+
+    async def test_an_unknown_id_is_not_found(self, mock_memory_service):
+        mock_memory_service.update_memory.return_value = MemoryWriteOutcome(
+            NOT_FOUND, "nope"
+        )
+        tool = UpdateMemoryStoreTool(
+            memory_service=mock_memory_service, user_id="user-1"
+        )
+
+        result = await tool._arun(memory_id="nope", content="x")
+
+        assert result == "✗ Memory nope was not found."
 
 
 # ===========================================================================
@@ -255,10 +346,8 @@ class TestUpdateMemoryStoreTool:
 class TestDeleteMemoryStoreTool:
     """Test DeleteMemoryStoreTool._run and _arun."""
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_run_success(self, mock_run_async, mock_memory_service):
+    def test_run_success(self, mock_memory_service):
         """_run returns success message when deletion succeeds."""
-        mock_run_async.return_value = True
         tool = DeleteMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
@@ -266,10 +355,11 @@ class TestDeleteMemoryStoreTool:
         result = tool._run(memory_id="mem-to-delete")
         assert "✓ Memory deleted" in result
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_run_not_found(self, mock_run_async, mock_memory_service):
-        """_run returns failure when delete returns False."""
-        mock_run_async.return_value = False
+    def test_run_not_found(self, mock_memory_service):
+        """_run returns failure when the memory is nowhere."""
+        mock_memory_service.remove_memory.return_value = MemoryWriteOutcome(
+            NOT_FOUND, "nonexistent"
+        )
         tool = DeleteMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
@@ -279,17 +369,20 @@ class TestDeleteMemoryStoreTool:
         assert "not found" in result
 
     async def test_arun_success(self, mock_memory_service):
-        """_arun awaits delete_memory directly."""
+        """_arun deletes the memory where it lies."""
         tool = DeleteMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
         )
         result = await tool._arun(memory_id="mem-del")
         assert "✓ Memory deleted" in result
+        mock_memory_service.remove_memory.assert_awaited_once()
 
     async def test_arun_not_found(self, mock_memory_service):
         """_arun returns failure when not found."""
-        mock_memory_service.delete_memory.return_value = False
+        mock_memory_service.remove_memory.return_value = MemoryWriteOutcome(
+            NOT_FOUND, "nope"
+        )
         tool = DeleteMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id="user-1",
@@ -349,13 +442,11 @@ class TestGetMemoryTools:
 class TestDeferredUserId:
     """Verify tools resolve user_id from context var when user_id=None."""
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_save_tool_resolves_from_ctx(self, mock_run_async, mock_memory_service):
+    def test_save_tool_resolves_from_ctx(self, mock_memory_service):
         """SaveMemoryStoreTool._run resolves user_id from context var."""
         import uuid
 
         uid = uuid.uuid4()
-        mock_run_async.return_value = "mem-abcd1234"
         tool = SaveMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id=None,
@@ -398,10 +489,8 @@ class TestDeferredUserId:
             result = tool._run(query="what do I like?")
         assert "No relevant memories" in result
 
-    @patch("inference_core.agents.tools.memory_tools.run_async_safely")
-    def test_delete_tool_resolves_from_ctx(self, mock_run_async, mock_memory_service):
+    def test_delete_tool_resolves_from_ctx(self, mock_memory_service):
         """DeleteMemoryStoreTool._run resolves user_id from context var."""
-        mock_run_async.return_value = True
         tool = DeleteMemoryStoreTool(
             memory_service=mock_memory_service,
             user_id=None,
@@ -542,3 +631,26 @@ class TestGenerateMemoryToolsInstructions:
             active_tool_names=["nonexistent_tool"]
         )
         assert result == ""
+
+    def test_nothing_is_said_about_who_shares_a_category(self):
+        """It said semantic memory was shared across all agents and the rest
+        scoped per agent, which held for one layout only."""
+        result = generate_memory_tools_system_instructions(active_tool_names=None)
+        assert "Shared across all agents" not in result
+        assert "Scoped per agent" not in result
+        assert "### Memory spaces" not in result
+
+    def test_the_spaces_and_where_to_save_are_described(self):
+        result = generate_memory_tools_system_instructions(
+            active_tool_names=None,
+            spaces=[
+                MemorySpace(key="general", label="General", description="About the user."),
+                MemorySpace(key="private", label="Own", description="Own work."),
+                MemorySpace(key="team", label="Team", writable=False),
+            ],
+            default_write="private",
+        )
+        assert "### Memory spaces" in result
+        assert "- `general` (General, writable). About the user." in result
+        assert "- `team` (Team, read only)." in result
+        assert "Without `space`, a memory goes to `private`." in result

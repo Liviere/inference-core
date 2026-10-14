@@ -15,11 +15,28 @@ from inference_core.agents.middleware.memory import (
     _MemoryMiddlewareContext,
     create_memory_middleware,
 )
-from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
+from inference_core.services.agent_memory_service import (
+    SAVED,
+    UPDATED,
+    MemoryCategory,
+    MemorySpace,
+    MemoryStoreDocument,
+    MemoryType,
+    MemoryWriteOutcome,
+    RecalledContext,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _doc(content: str, memory_type: str) -> MemoryStoreDocument:
+    return MemoryStoreDocument(
+        id=content,
+        value={"content": content, "memory_type": memory_type},
+        metadata={},
+    )
 
 
 @pytest.fixture
@@ -28,6 +45,16 @@ def mock_memory_service():
     service = MagicMock()
     # recall_memories is used by _prefetch_existing_memories in post-run analysis
     service.recall_memories = AsyncMock(return_value=[])
+    service.spaces = ()
+    service.space_for_write = MagicMock(return_value=MemorySpace(key="shared"))
+
+    async def write_memory(**kwargs):
+        # The save tool writes through write_memory; tests set save_memory.
+        kwargs.pop("via", None)
+        memory_id = await service.save_memory(**kwargs)
+        return MemoryWriteOutcome(SAVED, memory_id, MemorySpace(key="shared"))
+
+    service.write_memory = write_memory
     return service
 
 
@@ -284,37 +311,32 @@ class TestRecallAndFormat:
     """Verify async memory recall via run_async_safely."""
 
     def test_returns_context_and_metrics(self, middleware, mock_memory_service):
-        """Successful recall returns formatted context and metrics dict."""
+        """Successful recall returns formatted context and metrics dict.
 
-        async def mock_format_context(**kwargs):
-            return "<semantic>facts here</semantic>"
-
-        async def mock_get_user_context(**kwargs):
-            return {
-                "preferences": [MagicMock(), MagicMock()],
-                "facts": [MagicMock()],
-            }
-
-        mock_memory_service.format_context_for_prompt = mock_format_context
-        mock_memory_service.get_user_context = mock_get_user_context
+        The metrics count the memories that were put in front of the model:
+        nothing is searched again to count them.
+        """
+        recalled = RecalledContext(
+            text="<semantic>facts here</semantic>",
+            documents=(
+                _doc("likes tea", "preferences"),
+                _doc("short answers", "preferences"),
+                _doc("lives in Krakow", "facts"),
+            ),
+        )
 
         with patch(
             "inference_core.agents.middleware.memory.run_async_safely"
         ) as mock_run:
-            mock_run.return_value = (
-                "<semantic>facts here</semantic>",
-                {"preferences": [1, 2], "facts": [3]},
-            )
-
-            with patch(
-                "inference_core.services.agent_memory_service.get_category_for_type",
-                return_value=MemoryCategory.SEMANTIC,
-            ):
-                context, metrics = middleware._recall_and_format("Tell me about X")
+            mock_run.return_value = recalled
+            context, metrics = middleware._recall_and_format("Tell me about X")
 
         assert context == "<semantic>facts here</semantic>"
-        assert metrics["count"] == 3  # 2 + 1
+        assert metrics["count"] == 3
+        assert metrics["types"] == ["preferences", "facts"]
+        assert metrics["categories"] == ["semantic"]
         assert "latency_ms" in metrics
+        mock_memory_service.get_user_context.assert_not_called()
 
     def test_returns_empty_on_timeout(self, middleware):
         """TimeoutError returns empty context and zero metrics."""
@@ -491,11 +513,11 @@ class TestAsyncRecallAndFormat:
 
     async def test_returns_context_and_metrics(self, mock_memory_service):
         """_arecall_and_format directly awaits memory service."""
-        mock_memory_service.format_context_for_prompt = AsyncMock(
-            return_value="<semantic>data</semantic>"
-        )
-        mock_memory_service.get_user_context = AsyncMock(
-            return_value={"facts": [MagicMock(), MagicMock()]}
+        mock_memory_service.recall_context = AsyncMock(
+            return_value=RecalledContext(
+                text="<semantic>data</semantic>",
+                documents=(_doc("a", "facts"), _doc("b", "facts")),
+            )
         )
 
         mw = MemoryMiddleware(
@@ -503,11 +525,7 @@ class TestAsyncRecallAndFormat:
             user_id="u-async",
         )
 
-        with patch(
-            "inference_core.services.agent_memory_service.get_category_for_type",
-            return_value=MemoryCategory.SEMANTIC,
-        ):
-            context, metrics = await mw._arecall_and_format("some query")
+        context, metrics = await mw._arecall_and_format("some query")
 
         assert context == "<semantic>data</semantic>"
         assert metrics["count"] == 2
@@ -515,7 +533,7 @@ class TestAsyncRecallAndFormat:
 
     async def test_returns_empty_on_error(self, mock_memory_service):
         """_arecall_and_format returns empty on exception."""
-        mock_memory_service.format_context_for_prompt = AsyncMock(
+        mock_memory_service.recall_context = AsyncMock(
             side_effect=RuntimeError("boom")
         )
 
@@ -530,8 +548,9 @@ class TestAsyncRecallAndFormat:
 
     async def test_uses_provided_user_id_over_self(self, mock_memory_service):
         """Explicit user_id param takes precedence over self.user_id."""
-        mock_memory_service.format_context_for_prompt = AsyncMock(return_value="")
-        mock_memory_service.get_user_context = AsyncMock(return_value={})
+        mock_memory_service.recall_context = AsyncMock(
+            return_value=RecalledContext(text="")
+        )
 
         mw = MemoryMiddleware(
             memory_service=mock_memory_service,
@@ -539,7 +558,7 @@ class TestAsyncRecallAndFormat:
         )
         await mw._arecall_and_format("q", user_id="override-uid")
 
-        call_kwargs = mock_memory_service.format_context_for_prompt.call_args[1]
+        call_kwargs = mock_memory_service.recall_context.call_args[1]
         assert call_kwargs["user_id"] == "override-uid"
 
 
@@ -964,7 +983,9 @@ class TestAnalyseViaToolCall:
         self, middleware, mock_memory_service
     ):
         """update_memory_store calls are counted the same as save calls."""
-        mock_memory_service.save_memory = AsyncMock(return_value="mem-id-updated")
+        mock_memory_service.update_memory = AsyncMock(
+            return_value=MemoryWriteOutcome(UPDATED, "abc")
+        )
         state = MemoryState(
             messages=[_make_human("my name is Jan"), _make_ai("Noted.")]
         )
@@ -984,7 +1005,8 @@ class TestAnalyseViaToolCall:
             state, model, None, "u1", False
         )
         assert result == 1
-        mock_memory_service.save_memory.assert_awaited_once()
+        mock_memory_service.update_memory.assert_awaited_once()
+        mock_memory_service.save_memory.assert_not_called()
 
     async def test_executes_recall_but_does_not_count_it(
         self, middleware, mock_memory_service

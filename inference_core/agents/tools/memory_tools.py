@@ -12,21 +12,71 @@ Source: CoALA whitepaper – arxiv:2309.02427
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from inference_core.celery.async_utils import run_async_safely
 from inference_core.services.agent_memory_service import (
+    HELD,
+    NOT_FOUND,
+    READ_ONLY,
+    REFUSED,
+    VIA_TOOL,
     AgentMemoryStoreService,
+    MemorySpaceError,
     MemoryType,
+    MemoryWriteOutcome,
     format_memory_types_for_description,
     get_category_for_type,
     validate_memory_type,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _shows_spaces(memory_service: Any) -> bool:
+    """Whether the model is told about spaces: when it has a choice of them."""
+    spaces = getattr(memory_service, "spaces", None) or ()
+    return len(spaces) > 1
+
+
+def _write_outcome_text(outcome: MemoryWriteOutcome, done: str) -> str:
+    """What the model is told became of an update or a delete."""
+    memory_id = outcome.memory_id
+    if outcome.status == NOT_FOUND:
+        return f"✗ Memory {memory_id} was not found."
+    if outcome.status == READ_ONLY:
+        space = outcome.space.key if outcome.space else "another space"
+        return (
+            f"✗ Memory {memory_id} is in space '{space}', which you can only "
+            "read. It was not changed."
+        )
+    if outcome.status == REFUSED:
+        return f"✗ Memory {memory_id} was not changed. {outcome.reason}".rstrip()
+    if outcome.status == HELD:
+        return (
+            f"✓ The change to memory {memory_id} is kept for the user's approval. "
+            "The memory stays as it was until they approve it."
+        )
+    return f"✓ {done} (id: {memory_id})"
+
+
+def _space_note(memory_service: Any) -> str:
+    """The writable spaces, for the save tool's description."""
+    spaces = [
+        space
+        for space in getattr(memory_service, "spaces", None) or ()
+        if space.writable
+    ]
+    if len(spaces) < 2:
+        return ""
+    lines = ["\nSpaces you can save to (argument `space`):"]
+    for space in spaces:
+        about = f": {space.description}" if space.description else ""
+        lines.append(f"  - {space.key}{about}")
+    return "\n".join(lines) + "\n"
 
 
 def _resolve_tool_user_id(user_id: Optional[str]) -> str:
@@ -97,6 +147,8 @@ Arguments:
   - topic (optional): Subject or theme tag for easier retrieval
   - category (optional): CoALA category override (semantic/episodic/procedural).
                          Auto-resolved from memory_type when omitted.
+  - space (optional): The memory space to save to, when you have more than one.
+                      Without it, the memory goes to your default space.
 
 {format_memory_types_for_description()}
 """
@@ -104,6 +156,9 @@ Arguments:
     memory_service: Any = Field(exclude=True)
     user_id: Optional[str] = Field(default=None, exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
+    # Who writes through this tool: the model in its run, or the analysis
+    # after it. The write policy and the memory's origin are told.
+    via: str = Field(default=VIA_TOOL, exclude=True)
 
     def _run(
         self,
@@ -111,28 +166,16 @@ Arguments:
         memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
         category: Optional[str] = None,
+        space: Optional[str] = None,
     ) -> str:
         try:
             uid = _resolve_tool_user_id(self.user_id)
-            validated_type = validate_memory_type(memory_type)
-            memory_id = run_async_safely(
-                self.memory_service.save_memory(
-                    user_id=uid,
-                    content=content,
-                    memory_type=validated_type,
-                    session_id=self.session_id,
-                    topic=topic,
-                    category=category,
-                )
-            )
-            resolved_cat = category or get_category_for_type(validated_type).value
-            return f"✓ Memory saved (id: {memory_id[:8]}..., category: {resolved_cat})"
-        except ValueError as exc:
-            logger.error("Invalid memory type: %s", exc)
-            return f"✗ {exc}"
         except Exception as exc:  # pragma: no cover
             logger.error("Failed to save memory: %s", exc)
             return f"✗ Failed to save memory: {exc}"
+        return run_async_safely(
+            self._save(uid, content, memory_type, topic, category, space)
+        )
 
     async def _arun(
         self,
@@ -140,20 +183,55 @@ Arguments:
         memory_type: MemoryType = MemoryType.GENERAL,
         topic: Optional[str] = None,
         category: Optional[str] = None,
+        space: Optional[str] = None,
     ) -> str:
         try:
             uid = _resolve_tool_user_id(self.user_id)
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to save memory: %s", exc)
+            return f"✗ Failed to save memory: {exc}"
+        return await self._save(uid, content, memory_type, topic, category, space)
+
+    async def _save(
+        self,
+        uid: str,
+        content: str,
+        memory_type: Any,
+        topic: Optional[str],
+        category: Optional[str],
+        space: Optional[str],
+    ) -> str:
+        try:
             validated_type = validate_memory_type(memory_type)
-            memory_id = await self.memory_service.save_memory(
+            resolved_cat = category or get_category_for_type(validated_type).value
+            target = self.memory_service.space_for_write(resolved_cat, space)
+            outcome = await self.memory_service.write_memory(
                 user_id=uid,
                 content=content,
                 memory_type=validated_type,
                 session_id=self.session_id,
                 topic=topic,
                 category=category,
+                space=target.key,
+                via=self.via,
             )
-            resolved_cat = category or get_category_for_type(validated_type).value
-            return f"✓ Memory saved (id: {memory_id[:8]}..., category: {resolved_cat})"
+            if outcome.status == REFUSED:
+                return f"✗ Memory not saved. {outcome.reason}".rstrip()
+            memory_id = outcome.memory_id
+            if outcome.status == HELD:
+                return (
+                    f"✓ Memory kept for the user's approval (id: {memory_id[:8]}...). "
+                    "It is not used until the user approves it."
+                )
+            where = (
+                f", space: {target.key}" if _shows_spaces(self.memory_service) else ""
+            )
+            return (
+                f"✓ Memory saved (id: {memory_id[:8]}..., category: {resolved_cat}"
+                f"{where})"
+            )
+        except MemorySpaceError as exc:
+            return f"✗ {exc}"
         except ValueError as exc:
             logger.error("Invalid memory type: %s", exc)
             return f"✗ {exc}"
@@ -262,12 +340,23 @@ Arguments:
                     created_str = f" [created: {created_at[:16]}]"
 
             cat_label = f" [{mem_cat}]" if mem_cat else ""
+            space_label = ""
+            space = getattr(mem, "space", None)
+            if space is not None and _shows_spaces(self.memory_service):
+                access = "" if space.writable else ", read only"
+                space_label = f" [space: {space.key}{access}]"
             mem_string = (
-                f"{idx}. [id: {mem_id}]{cat_label} [{mem_type}]{created_str} - "
+                f"{idx}. [id: {mem_id}]{cat_label} [{mem_type}]{space_label}"
+                f"{created_str} - "
             )
             if mem_topic:
                 mem_string += f"({mem_topic}) "
             mem_string += f"{score_str}: {mem.content}"
+            render = getattr(self.memory_service, "render_entry", None)
+            if callable(render) and hasattr(mem, "saved_at"):
+                rendered = render(mem, mem_string)
+                if isinstance(rendered, str):
+                    mem_string = rendered
             lines.append(mem_string)
         return "\n".join(lines)
 
@@ -292,6 +381,7 @@ Arguments:
     memory_service: Any = Field(exclude=True)
     user_id: Optional[str] = Field(default=None, exclude=True)
     session_id: Optional[str] = Field(default=None, exclude=True)
+    via: str = Field(default=VIA_TOOL, exclude=True)
 
     def _run(
         self,
@@ -303,25 +393,12 @@ Arguments:
     ) -> str:
         try:
             uid = _resolve_tool_user_id(self.user_id)
-            validated_type = validate_memory_type(memory_type)
-            updated_id = run_async_safely(
-                self.memory_service.save_memory(
-                    user_id=uid,
-                    content=content,
-                    memory_type=validated_type,
-                    session_id=self.session_id,
-                    topic=topic,
-                    memory_id=memory_id,
-                    category=category,
-                )
-            )
-            return f"✓ Memory updated successfully (id: {updated_id})"
-        except ValueError as exc:
-            logger.error("Invalid memory type: %s", exc)
-            return f"✗ {exc}"
         except Exception as exc:  # pragma: no cover
             logger.error("Failed to update memory: %s", exc)
             return f"✗ Failed to update memory: {exc}"
+        return run_async_safely(
+            self._update(uid, memory_id, content, memory_type, topic, category)
+        )
 
     async def _arun(
         self,
@@ -333,17 +410,34 @@ Arguments:
     ) -> str:
         try:
             uid = _resolve_tool_user_id(self.user_id)
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to update memory: %s", exc)
+            return f"✗ Failed to update memory: {exc}"
+        return await self._update(uid, memory_id, content, memory_type, topic, category)
+
+    async def _update(
+        self,
+        uid: str,
+        memory_id: str,
+        content: str,
+        memory_type: Any,
+        topic: Optional[str],
+        category: Optional[str],
+    ) -> str:
+        """Change the memory where it lies; never copy it elsewhere."""
+        try:
             validated_type = validate_memory_type(memory_type)
-            updated_id = await self.memory_service.save_memory(
+            outcome = await self.memory_service.update_memory(
                 user_id=uid,
+                memory_id=memory_id,
                 content=content,
                 memory_type=validated_type,
-                session_id=self.session_id,
                 topic=topic,
-                memory_id=memory_id,
+                session_id=self.session_id,
                 category=category,
+                via=self.via,
             )
-            return f"✓ Memory updated successfully (id: {updated_id})"
+            return _write_outcome_text(outcome, "Memory updated successfully")
         except ValueError as exc:
             logger.error("Invalid memory type: %s", exc)
             return f"✗ {exc}"
@@ -369,29 +463,26 @@ Arguments:
     def _run(self, memory_id: str) -> str:
         try:
             uid = _resolve_tool_user_id(self.user_id)
-            success = run_async_safely(
-                self.memory_service.delete_memory(
-                    user_id=uid,
-                    memory_id=memory_id,
-                )
-            )
-            if success:
-                return f"✓ Memory deleted successfully (id: {memory_id})"
-            return f"✗ Failed to delete memory (id: {memory_id} not found or error)"
         except Exception as exc:  # pragma: no cover
             logger.error("Failed to delete memory: %s", exc)
             return f"✗ Failed to delete memory: {exc}"
+        return run_async_safely(self._delete(uid, memory_id))
 
     async def _arun(self, memory_id: str) -> str:
         try:
             uid = _resolve_tool_user_id(self.user_id)
-            success = await self.memory_service.delete_memory(
-                user_id=uid,
-                memory_id=memory_id,
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to delete memory: %s", exc)
+            return f"✗ Failed to delete memory: {exc}"
+        return await self._delete(uid, memory_id)
+
+    async def _delete(self, uid: str, memory_id: str) -> str:
+        """Delete the memory where it lies, if the agent may write there."""
+        try:
+            outcome = await self.memory_service.remove_memory(
+                user_id=uid, memory_id=memory_id
             )
-            if success:
-                return f"✓ Memory deleted successfully (id: {memory_id})"
-            return f"✗ Failed to delete memory (id: {memory_id} not found or error)"
+            return _write_outcome_text(outcome, "Memory deleted successfully")
         except Exception as exc:  # pragma: no cover
             logger.error("Failed to delete memory: %s", exc)
             return f"✗ Failed to delete memory: {exc}"
@@ -418,12 +509,17 @@ def get_memory_tools(
         logger.debug("Memory tools disabled (include_tools=[])")
         return []
 
+    save_tool = SaveMemoryStoreTool(
+        memory_service=memory_service,
+        user_id=user_id,
+        session_id=session_id,
+    )
+    note = _space_note(memory_service)
+    if note:
+        save_tool.description = save_tool.description + note
+
     all_tools: dict[str, BaseTool] = {
-        "save_memory_store": SaveMemoryStoreTool(
-            memory_service=memory_service,
-            user_id=user_id,
-            session_id=session_id,
-        ),
+        "save_memory_store": save_tool,
         "recall_memories_store": RecallMemoryStoreTool(
             memory_service=memory_service,
             user_id=user_id,
@@ -455,8 +551,35 @@ def get_memory_tools(
     return selected
 
 
+def _spaces_block(
+    spaces: Optional[Sequence[Any]], default_write: Optional[str]
+) -> str:
+    """The memory spaces an agent has, when it has a choice of them.
+
+    A space's description is what tells the model where a memory belongs.
+    """
+    spaces = list(spaces or ())
+    if len(spaces) < 2:
+        return ""
+    lines = [
+        "### Memory spaces",
+        "Your memory is kept in spaces. You read all of them and save only to "
+        "the ones marked writable. Save each memory to the space whose "
+        "description fits it, with the `space` argument.",
+    ]
+    for space in spaces:
+        access = "writable" if space.writable else "read only"
+        about = f" {space.description}" if space.description else ""
+        lines.append(f"- `{space.key}` ({space.name}, {access}).{about}")
+    if default_write:
+        lines.append(f"Without `space`, a memory goes to `{default_write}`.")
+    return "\n".join(lines) + "\n"
+
+
 def generate_memory_tools_system_instructions(
     active_tool_names: Optional[List[str]] = None,
+    spaces: Optional[Sequence[Any]] = None,
+    default_write: Optional[str] = None,
 ) -> str:
     """Generate system prompt instructions explaining CoALA memory architecture.
 
@@ -468,6 +591,10 @@ def generate_memory_tools_system_instructions(
         active_tool_names: Names of memory tools currently exposed to the model.
             When ``None``, instructions for all four tools are generated.
             When empty, returns an empty string.
+        spaces: The agent's memory spaces (:class:`MemorySpace`). With more
+            than one, the instructions say what each holds and which are
+            writable.
+        default_write: The space a memory goes to when none is named.
 
     Returns:
         Formatted instructions or empty string when no tools are active.
@@ -569,6 +696,10 @@ Before finalizing your answer, ask yourself:
 This check must happen EVERY turn, not only when the user asks explicitly.
 """
 
+    spaces_block = _spaces_block(spaces, default_write)
+    if spaces_block:
+        spaces_block = "\n" + spaces_block
+
     return f"""## Memory Tools Usage (CoALA Architecture)
 
 ### Guiding principle
@@ -580,14 +711,14 @@ that?". The act of saving is invisible to the user.
 ### Memory categories
 
 **SEMANTIC MEMORY** — Stable facts about the world and the user.
-  Types: preferences, facts, goals, general.  Shared across all agents.
+  Types: preferences, facts, goals, general.
 
 **EPISODIC MEMORY** — Sequences of past experiences and interactions.
-  Types: context, session_summary, interaction.  Scoped per agent.
+  Types: context, session_summary, interaction.
 
 **PROCEDURAL MEMORY** — Operational rules, workflows, and skills.
-  Types: instructions, workflow, skill.  Scoped per agent.
-{save_triggers}
+  Types: instructions, workflow, skill.
+{spaces_block}{save_triggers}
 ### Tools
 
 {tools_block}

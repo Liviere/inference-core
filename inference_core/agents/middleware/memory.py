@@ -68,9 +68,27 @@ from inference_core.llm.model_identity import (
     provider_name,
 )
 from inference_core.services._cancel import AgentCancelled
-from inference_core.services.agent_memory_service import MemoryCategory, MemoryType
+from inference_core.services.agent_memory_service import (
+    DEFAULT_CONTEXT_TYPES,
+    VIA_ANALYSIS,
+    MemoryCategory,
+    MemoryType,
+    RecalledContext,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _default_write_key(memory_service: Any) -> Optional[str]:
+    """The space a memory goes to when none is named, if the service says."""
+    default = getattr(memory_service, "default_write_key", None)
+    if not callable(default):
+        return None
+    try:
+        key = default()
+    except Exception:
+        return None
+    return key if isinstance(key, str) else None
 
 
 def _is_one_model(value: Any) -> bool:
@@ -233,13 +251,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self._analysis_model = analysis_model
         # Set in wrap_model_call / awrap_model_call; used by after_agent.
         self._captured_model: Optional[Any] = None
-        self.include_memory_types = include_memory_types or [
-            MemoryType.PREFERENCES.value,
-            MemoryType.FACTS.value,
-            MemoryType.INSTRUCTION.value,
-            MemoryType.GOALS.value,
-            MemoryType.CONTEXT.value,
-        ]
+        self.include_memory_types = include_memory_types or list(
+            DEFAULT_CONTEXT_TYPES
+        )
         self.include_categories = include_categories or [
             MemoryCategory.SEMANTIC.value,
             MemoryCategory.EPISODIC.value,
@@ -250,6 +264,33 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self._ctx: Optional[_MemoryMiddlewareContext] = None
         # Cached memory context for injection into system prompt
         self._cached_memory_context: Optional[str] = None
+
+    def copy_for_subagent(self) -> "MemoryMiddleware":
+        """The same memory for a subagent, in an object of its own.
+
+        The middleware keeps per-run state (what it recalled, the model it
+        saw). A subagent sharing the parent's object overwrote it: the
+        parent's later model calls were given what the subagent recalled.
+        The copy reads and writes the same spaces and runs no analysis after
+        each task.
+        """
+        return MemoryMiddleware(
+            memory_service=self.memory_service,
+            user_id=self.user_id,
+            auto_recall=self.auto_recall,
+            max_recall_results=self.max_recall_results,
+            include_memory_types=list(self.include_memory_types),
+            include_categories=list(self.include_categories),
+            postrun_analysis=False,
+            postrun_analysis_model=self.postrun_analysis_model,
+            tool_instructions_enabled=self.tool_instructions_enabled,
+            active_tool_names=self.active_tool_names,
+            memory_model=self.memory_model,
+            memory_model_override=self.memory_model_override,
+            session_id=self.session_id,
+            request_id=self.request_id,
+            analysis_model=self._analysis_model,
+        )
 
     # -------------------------------------------------------------------------
     # Deferred user_id resolution
@@ -417,6 +458,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
             instructions = generate_memory_tools_system_instructions(
                 active_tool_names=self.active_tool_names,
+                spaces=getattr(self.memory_service, "spaces", None),
+                default_write=_default_write_key(self.memory_service),
             )
             if instructions:
                 blocks.append(
@@ -443,6 +486,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             ModelResponse from the handler
         """
         self._captured_model = getattr(request, "model", None)
+        self._observe(getattr(request, "messages", None))
 
         injection_blocks = self._build_injection_blocks()
         if not injection_blocks:
@@ -476,6 +520,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     ) -> ModelResponse:
         """Async version of wrap_model_call for use with astream."""
         self._captured_model = getattr(request, "model", None)
+        self._observe(getattr(request, "messages", None))
 
         injection_blocks = self._build_injection_blocks()
         if not injection_blocks:
@@ -497,6 +542,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     # -------------------------------------------------------------------------
     # Helper methods
     # -------------------------------------------------------------------------
+
+    def _observe(self, messages: Any) -> None:
+        """Show the memory service's write policy what the run has read.
+
+        Called before every model call, so a memory the model saves after it
+        is decided on with all it had seen, and before the analysis.
+        """
+        policy = getattr(self.memory_service, "write_policy", None)
+        observe = getattr(policy, "observe", None)
+        if not callable(observe) or not messages:
+            return
+        try:
+            observe(list(messages))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Memory write policy failed to observe the run: %s", exc)
 
     def _extract_user_input(self, state: MemoryState) -> Optional[str]:
         """Extract the latest user input from state messages.
@@ -550,24 +610,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         uid = user_id or self.user_id
         start_time = time.monotonic()
 
-        async def _async_recall():
+        async def _async_recall() -> RecalledContext:
             """Async function to perform CoALA multi-category recall."""
-            context = await self.memory_service.format_context_for_prompt(
+            return await self.memory_service.recall_context(
                 user_id=uid,
                 query=user_input,
                 include_types=self.include_memory_types,
                 include_categories=self.include_categories,
             )
 
-            memories_by_type = await self.memory_service.get_user_context(
-                user_id=uid,
-                memory_types=self.include_memory_types,
-            )
-
-            return context, memories_by_type
-
         try:
-            context, memories_by_type = run_async_safely(_async_recall(), timeout=10.0)
+            recalled = run_async_safely(_async_recall(), timeout=10.0)
         except TimeoutError:
             logger.error("Memory recall timed out after 10 seconds")
             return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
@@ -575,7 +628,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             logger.error("Memory recall failed: %s", e)
             return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
 
-        return self._build_recall_metrics(context, memories_by_type, start_time)
+        return self._build_recall_metrics(recalled, start_time)
 
     async def _arecall_and_format(
         self,
@@ -594,16 +647,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         start_time = time.monotonic()
 
         try:
-            context = await self.memory_service.format_context_for_prompt(
+            recalled = await self.memory_service.recall_context(
                 user_id=uid,
                 query=user_input,
                 include_types=self.include_memory_types,
                 include_categories=self.include_categories,
-            )
-
-            memories_by_type = await self.memory_service.get_user_context(
-                user_id=uid,
-                memory_types=self.include_memory_types,
             )
         except TimeoutError:
             logger.error("Memory recall timed out (async)")
@@ -612,35 +660,30 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             logger.error("Memory recall failed (async): %s", e)
             return "", {"count": 0, "latency_ms": 0, "types": [], "categories": []}
 
-        return self._build_recall_metrics(context, memories_by_type, start_time)
+        return self._build_recall_metrics(recalled, start_time)
 
     def _build_recall_metrics(
         self,
-        context: str,
-        memories_by_type: Dict[str, Any],
+        recalled: RecalledContext,
         start_time: float,
     ) -> tuple[str, Dict[str, Any]]:
-        """Shared metrics builder for sync and async recall paths."""
+        """Shared metrics builder for sync and async recall paths.
+
+        Counts the memories that were put in front of the model.
+        """
         latency_ms = (time.monotonic() - start_time) * 1000
-
-        total_count = sum(len(mems) for mems in memories_by_type.values())
-        types_with_memories = [t for t, mems in memories_by_type.items() if mems]
-
-        # Determine which categories had results
-        from inference_core.services.agent_memory_service import get_category_for_type
-
-        categories_with_memories = list(
-            {get_category_for_type(t).value for t in types_with_memories}
+        documents = list(recalled.documents)
+        types = list(dict.fromkeys(d.memory_type for d in documents if d.memory_type))
+        categories = list(
+            dict.fromkeys(d.memory_category for d in documents if d.memory_category)
         )
-
         metrics = {
-            "count": total_count,
+            "count": len(documents),
             "latency_ms": latency_ms,
-            "types": types_with_memories,
-            "categories": categories_with_memories,
+            "types": types,
+            "categories": categories,
         }
-
-        return context, metrics
+        return recalled.text, metrics
 
     # -------------------------------------------------------------------------
     # Post-run analysis helpers
@@ -872,6 +915,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         "- Project or task context useful beyond this session\n\n"
         "Do NOT save: single-question factual lookups, greetings, or generic "
         "exchanges with no personal or durable context.\n\n"
+        "{spaces_section}"
         "{existing_memories_section}"
         "DEDUPLICATION RULES:\n"
         "1. The existing memories above were retrieved by SEMANTIC SIMILARITY, not exact "
@@ -890,6 +934,31 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         "{already_saved_note}"
         "Conversation:\n\n{transcript}"
     )
+
+    def _spaces_section(self) -> str:
+        """Where the analysis may save, when it has a choice.
+
+        Each space's description says what belongs in it; the model picks
+        one per memory and names it in ``save_memory_store``.
+        """
+        spaces = [
+            space
+            for space in getattr(self.memory_service, "spaces", None) or ()
+            if space.writable
+        ]
+        if len(spaces) < 2:
+            return ""
+        lines = [
+            "MEMORY SPACES you can save to. Pass the one that fits each memory "
+            "as `space` to save_memory_store:"
+        ]
+        for space in spaces:
+            about = f": {space.description}" if space.description else ""
+            lines.append(f"- {space.key} ({space.name}){about}")
+        default = _default_write_key(self.memory_service)
+        if default:
+            lines.append(f"Without `space`, a memory goes to {default}.")
+        return "\n".join(lines) + "\n\n"
 
     async def _prefetch_existing_memories(self, transcript: str, user_id: str) -> str:
         """Retrieve memories semantically similar to the conversation transcript.
@@ -935,9 +1004,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                     created_str = f" [created: {created_at[:16]}]"
             cat_str = f" [{mem_cat}]" if mem_cat else ""
             topic_str = f" ({mem_topic})" if mem_topic else ""
+            space = getattr(mem, "space", None)
+            space_str = ""
+            if space is not None:
+                access = "" if space.writable else ", read only"
+                space_str = f" [space: {space.key}{access}]"
             lines.append(
-                f"{idx}. [id: {mem_id}]{cat_str} [{mem_type}]{topic_str}{created_str}:"
-                f" {mem.content}"
+                f"{idx}. [id: {mem_id}]{cat_str} [{mem_type}]{topic_str}{space_str}"
+                f"{created_str}: {mem.content}"
             )
         return "\n".join(lines)
 
@@ -1001,19 +1075,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             else ""
         )
         prompt = self._TOOL_ANALYSIS_PROMPT.format(
+            spaces_section=self._spaces_section(),
             existing_memories_section=existing_memories_section,
             already_saved_note=already_saved_note,
             transcript=transcript,
         )
 
+        self._observe(messages)
         save_tool = SaveMemoryStoreTool(
-            memory_service=self.memory_service, user_id=user_id
+            memory_service=self.memory_service, user_id=user_id, via=VIA_ANALYSIS
         )
         recall_tool = RecallMemoryStoreTool(
             memory_service=self.memory_service, user_id=user_id
         )
         update_tool = UpdateMemoryStoreTool(
-            memory_service=self.memory_service, user_id=user_id
+            memory_service=self.memory_service, user_id=user_id, via=VIA_ANALYSIS
         )
         tools = [save_tool, recall_tool, update_tool]
         bound_model: Any = None
