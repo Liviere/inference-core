@@ -265,6 +265,33 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         # Cached memory context for injection into system prompt
         self._cached_memory_context: Optional[str] = None
 
+    def copy_for_subagent(self) -> "MemoryMiddleware":
+        """The same memory for a subagent, in an object of its own.
+
+        The middleware keeps per-run state (what it recalled, the model it
+        saw). A subagent sharing the parent's object overwrote it: the
+        parent's later model calls were given what the subagent recalled.
+        The copy reads and writes the same spaces and runs no analysis after
+        each task.
+        """
+        return MemoryMiddleware(
+            memory_service=self.memory_service,
+            user_id=self.user_id,
+            auto_recall=self.auto_recall,
+            max_recall_results=self.max_recall_results,
+            include_memory_types=list(self.include_memory_types),
+            include_categories=list(self.include_categories),
+            postrun_analysis=False,
+            postrun_analysis_model=self.postrun_analysis_model,
+            tool_instructions_enabled=self.tool_instructions_enabled,
+            active_tool_names=self.active_tool_names,
+            memory_model=self.memory_model,
+            memory_model_override=self.memory_model_override,
+            session_id=self.session_id,
+            request_id=self.request_id,
+            analysis_model=self._analysis_model,
+        )
+
     # -------------------------------------------------------------------------
     # Deferred user_id resolution
     # -------------------------------------------------------------------------

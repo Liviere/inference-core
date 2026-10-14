@@ -47,7 +47,10 @@ from inference_core.llm.emulation import activate_emulation_session
 from inference_core.llm.models import LLMModelFactory, get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 from inference_core.services._cancel import AgentCancelled
-from inference_core.services.agent_memory_service import AgentMemoryStoreService
+from inference_core.services.agent_memory_service import (
+    AgentMemoryStoreService,
+    MemoryOptions,
+)
 from inference_core.services.agent_snapshot_service import (
     AgentRunSnapshot,
     AgentSnapshotMatcher,
@@ -248,6 +251,7 @@ class AgentService:
         response_format_override: Optional[Any] = None,
         enable_snapshots: bool = True,
         memory_analysis_model: Optional[Any] = None,
+        memory_options: Optional[MemoryOptions] = None,
     ):
         """Initialize the AgentService.
 
@@ -311,6 +315,9 @@ class AgentService:
                 input must stay where the run puts it: capture writes the input
                 to the snapshot store, and replay sends it to the embedding
                 service to find a similar recorded run.
+            memory_options: The memory spaces the agent reads and writes, and
+                the write policy, origin and rendering of its memories. With
+                spaces, they replace ``memory_scope``.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -383,6 +390,7 @@ class AgentService:
         self._memory_postrun_analysis = memory_postrun_analysis
         self._memory_postrun_model = memory_postrun_model
         self._memory_analysis_model = memory_analysis_model
+        self._memory_options = memory_options
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -1310,19 +1318,33 @@ class AgentService:
         if not self._memory_store_service:
             try:
                 base_namespace = (settings.agent_memory_collection,)
-                # ``dedicated`` scope isolates every category by this agent's
-                # identity; ``shared`` scope drops the agent_name so all
-                # categories resolve to the user-global namespace.
-                scope_agent_name = (
-                    self.display_name if self._memory_scope == "dedicated" else None
-                )
-                self._memory_store_service = AgentMemoryStoreService(
-                    store=self.memory_store,
-                    base_namespace=base_namespace,
-                    max_results=settings.agent_memory_max_results,
-                    agent_name=scope_agent_name,
-                    scope=self._memory_scope,
-                )
+                if self._memory_options is not None and self._memory_options.spaces:
+                    self._memory_store_service = self._memory_options.service(
+                        self.memory_store,
+                        max_results=settings.agent_memory_max_results,
+                        base_namespace=base_namespace,
+                    )
+                else:
+                    # ``dedicated`` scope isolates every category by this
+                    # agent's identity; ``shared`` scope drops the agent_name
+                    # so all categories resolve to the user-global namespace.
+                    scope_agent_name = (
+                        self.display_name
+                        if self._memory_scope == "dedicated"
+                        else None
+                    )
+                    options = self._memory_options
+                    self._memory_store_service = AgentMemoryStoreService(
+                        store=self.memory_store,
+                        base_namespace=base_namespace,
+                        max_results=settings.agent_memory_max_results,
+                        agent_name=scope_agent_name,
+                        scope=self._memory_scope,
+                        write_policy=options.write_policy if options else None,
+                        origin=options.origin if options else None,
+                        entry_renderer=options.entry_renderer if options else None,
+                        **({"hold_path": options.hold_path} if options else {}),
+                    )
             except Exception as exc:
                 logging.error(
                     "Failed to initialize AgentMemoryStoreService: %s",
@@ -1373,6 +1395,67 @@ class AgentService:
             checkpointer.setup()
 
         return checkpointer
+
+    def ensure_memory_store(self) -> Any:
+        """The run's memory store, opened if the agent itself has no memory.
+
+        A subagent with memory of its own keeps it in the same store as its
+        parent's run.
+        """
+        if self.memory_store is None:
+            self.memory_store = self._initialize_memory_store()
+        return self.memory_store
+
+    def build_memory_kit(
+        self,
+        options: MemoryOptions,
+        *,
+        tool_names: Optional[list[str]] = None,
+        postrun_analysis: bool = False,
+    ) -> tuple[AgentMemoryStoreService, MemoryMiddleware, list[Any]]:
+        """A memory of its own for an agent built outside this service.
+
+        For a subagent handed over as a spec: the service on its spaces, a
+        MemoryMiddleware that recalls into its prompt and tells it about its
+        memory tools, and those tools. Put the middleware in the spec's
+        middleware and the parent's is not added; put the tools in its tools.
+
+        Args:
+            options: The subagent's spaces and how its memories are written.
+            tool_names: Which memory tools it gets; ``None`` = all four.
+            postrun_analysis: Whether its runs end with the memory analysis
+                (an extra model call each time it is handed a task).
+        """
+        settings = get_settings()
+        service = options.service(
+            self.ensure_memory_store(),
+            max_results=settings.agent_memory_max_results,
+            base_namespace=(settings.agent_memory_collection,),
+        )
+        tools = get_memory_tools(
+            memory_service=service,
+            user_id=str(self._user_id) if self._user_id else None,
+            session_id=self._session_id,
+            max_recall_results=settings.agent_memory_max_results,
+            include_tools=tool_names,
+        )
+        middleware = MemoryMiddleware(
+            memory_service=service,
+            user_id=str(self._user_id) if self._user_id else None,
+            auto_recall=self._resolve_memory_session_context_enabled(),
+            max_recall_results=settings.agent_memory_max_results,
+            postrun_analysis=postrun_analysis,
+            postrun_analysis_model=(
+                self._memory_postrun_model
+                or settings.agent_memory_postrun_analysis_model
+            ),
+            memory_model=settings.agent_memory_model,
+            session_id=self._session_id,
+            request_id=self._request_id,
+            analysis_model=self._memory_analysis_model,
+            active_tool_names=[tool.name for tool in tools],
+        )
+        return service, middleware, tools
 
     def get_memory_store(self):
         """Return the initialized memory store."""
@@ -2602,6 +2685,21 @@ _SUBAGENT_USER_SKILLS_KEY = "user_skills"
 # per subagent, apart from the parent's own under ``/skills/``.
 SUBAGENT_SKILLS_ROOT = "/subagent_skills/"
 
+# A declarative subagent spec with ``inherit_memory: False`` gets no memory
+# from its parent. A spec with a MemoryMiddleware of its own keeps that one.
+INHERIT_MEMORY_KEY = "inherit_memory"
+
+
+def _for_subagent(middleware: Any) -> Any:
+    """The parent's middleware as a subagent is given it.
+
+    MemoryMiddleware keeps per-run state, so each subagent gets its own copy
+    (the same spaces, no analysis after each task); the rest is shared.
+    """
+    if isinstance(middleware, MemoryMiddleware):
+        return middleware.copy_for_subagent()
+    return middleware
+
 
 class DeepAgentService(AgentService):
     """Service for creating agents with sub-agent orchestration via SubAgentMiddleware.
@@ -2646,6 +2744,7 @@ class DeepAgentService(AgentService):
         memory_scope: str = "shared",
         _visited_agents: Optional[set[str]] = None,
         memory_analysis_model: Optional[Any] = None,
+        memory_options: Optional[MemoryOptions] = None,
     ):
         """Initialize the DeepAgentService.
 
@@ -2680,6 +2779,8 @@ class DeepAgentService(AgentService):
             memory_analysis_model: The chat model post-run memory analysis runs
                 on, already built, or several to try in order (see
                 ``AgentService``).
+            memory_options: The agent's memory spaces and how its memories
+                are written (see ``AgentService``).
         """
         super().__init__(
             agent_name,
@@ -2700,6 +2801,7 @@ class DeepAgentService(AgentService):
             user_skills=user_skills,
             memory_scope=memory_scope,
             memory_analysis_model=memory_analysis_model,
+            memory_options=memory_options,
         )
         self._explicit_subagents = subagents or []
 
@@ -3119,16 +3221,21 @@ class DeepAgentService(AgentService):
                 return None
 
             tools = subagent.get("tools", [])
-            middleware = subagent.get("middleware", [])
+            middleware = list(subagent.get("middleware", []))
+            # A spec with a memory of its own (its MemoryMiddleware) keeps it;
+            # inherit_memory=False gives it none, not its parent's.
+            inherit_memory = subagent.get(INHERIT_MEMORY_KEY, True) is not False
 
             # Combine inherited middleware
             if inherited_middleware:
                 for m in inherited_middleware:
+                    if isinstance(m, MemoryMiddleware) and not inherit_memory:
+                        continue
                     # Avoid duplicates by type
                     if not any(
                         isinstance(existing, type(m)) for existing in middleware
                     ):
-                        middleware.append(m)
+                        middleware.append(_for_subagent(m))
 
             # CostTracking must be last so it runs first in after_model
             self._ensure_cost_tracking_last(middleware)
@@ -3198,7 +3305,7 @@ class DeepAgentService(AgentService):
 
         middleware = []
         if inherited_middleware:
-            middleware.extend(inherited_middleware)
+            middleware.extend(_for_subagent(m) for m in inherited_middleware)
 
         # Add subagent's own tool-call limits from its YAML config
         from inference_core.llm.config import ToolCallLimitsConfig as _TCL

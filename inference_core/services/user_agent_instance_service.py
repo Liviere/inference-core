@@ -6,7 +6,7 @@ Handles validation, default management, and template listing.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
 from sqlalchemy import and_, select, update
@@ -26,6 +26,58 @@ logger = logging.getLogger(__name__)
 INSTANCE_LOAD_OPTIONS = (
     selectinload(UserAgentInstance.subagents).selectinload(UserAgentInstance.subagents),
 )
+
+
+# What an application adds to the life of an instance: checks of its own on
+# config_overrides, and work to do once an instance is deleted (what it kept
+# elsewhere under its id).
+OverridesValidator = Callable[[AsyncSession, UUID, Dict[str, Any]], Awaitable[None]]
+InstanceDeletedHook = Callable[[UUID, UUID], Awaitable[None]]
+
+_overrides_validators: List[OverridesValidator] = []
+_instance_deleted_hooks: List[InstanceDeletedHook] = []
+
+
+def register_config_overrides_validator(validator: OverridesValidator) -> None:
+    """Check ``config_overrides`` when an instance is created or changed.
+
+    ``validator(db, user_id, overrides)`` raises ``ValueError`` to refuse;
+    the message reaches the caller as it is.
+    """
+    if validator not in _overrides_validators:
+        _overrides_validators.append(validator)
+
+
+def register_instance_deleted_hook(hook: InstanceDeletedHook) -> None:
+    """Call ``hook(user_id, instance_id)`` after an instance is deleted.
+
+    It runs after the commit, so a failure cannot keep the instance; it is
+    logged and the others still run.
+    """
+    if hook not in _instance_deleted_hooks:
+        _instance_deleted_hooks.append(hook)
+
+
+async def _run_overrides_validators(
+    db: AsyncSession, user_id: UUID, overrides: Optional[Dict[str, Any]]
+) -> None:
+    for validator in list(_overrides_validators):
+        await validator(db, user_id, dict(overrides or {}))
+
+
+async def run_instance_deleted_hooks(user_id: UUID, instance_id: UUID) -> None:
+    """Run what was registered for a deleted instance; for any place that deletes one."""
+    for hook in list(_instance_deleted_hooks):
+        try:
+            await hook(user_id, instance_id)
+        except Exception as exc:
+            logger.error(
+                "Instance-deleted hook %r failed for instance %s: %s",
+                hook,
+                instance_id,
+                exc,
+                exc_info=True,
+            )
 
 
 class UserAgentInstanceService:
@@ -192,6 +244,7 @@ class UserAgentInstanceService:
             config_overrides,
             resolved.available_models,
         )
+        await _run_overrides_validators(self.db, user_id, config_overrides)
 
         # Check uniqueness
         existing = await self.get_instance_by_name(user_id, instance_name)
@@ -322,6 +375,9 @@ class UserAgentInstanceService:
                 updates["config_overrides"],
                 resolved.available_models,
             )
+            await _run_overrides_validators(
+                self.db, user_id, updates["config_overrides"]
+            )
 
         # Handle default flag
         if updates.get("is_default") is True and not instance.is_default:
@@ -389,6 +445,7 @@ class UserAgentInstanceService:
             f"Deleted agent instance '{instance.instance_name}' "
             f"(id={instance_id}) for user {user_id}"
         )
+        await run_instance_deleted_hooks(user_id, instance_id)
         return True
 
     # =========================================================

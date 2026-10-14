@@ -393,6 +393,36 @@ HOLD_PATH: Tuple[str, ...] = ("held",)
 
 
 @dataclass(frozen=True)
+class MemoryOptions:
+    """How an agent's memory service is made, beyond the store and the user.
+
+    See :class:`AgentMemoryStoreService` for each field.
+    """
+
+    spaces: Tuple["MemorySpace", ...] = ()
+    default_write: Optional[str] = None
+    write_policy: Optional[MemoryWritePolicy] = None
+    origin: Dict[str, Any] = field(default_factory=dict)
+    hold_path: Tuple[str, ...] = HOLD_PATH
+    entry_renderer: Optional[Callable[["MemoryStoreDocument", str], str]] = None
+
+    def service(
+        self, store: Any, *, max_results: int = 5, base_namespace: Sequence[str] = ()
+    ) -> "AgentMemoryStoreService":
+        return AgentMemoryStoreService(
+            store=store,
+            base_namespace=tuple(base_namespace) or (MEMORIES_STORE_NAME,),
+            max_results=max_results,
+            spaces=list(self.spaces),
+            default_write=self.default_write,
+            write_policy=self.write_policy,
+            origin=self.origin,
+            hold_path=self.hold_path,
+            entry_renderer=self.entry_renderer,
+        )
+
+
+@dataclass(frozen=True)
 class RecalledContext:
     """Memories recalled for a model, and the text that puts them before it."""
 
@@ -2334,6 +2364,7 @@ def delete_user_long_term_memory_entries(
 
 __all__ = [
     "AgentMemoryStoreService",
+    "MemoryOptions",
     "ParsedNamespace",
     "count_user_long_term_memory_by_space",
     "count_user_memories_by_space",
