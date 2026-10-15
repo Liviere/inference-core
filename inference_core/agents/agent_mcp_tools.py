@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -5,10 +6,21 @@ from langchain_core.tools import BaseTool
 from langchain_core.tools.structured import StructuredTool
 
 from inference_core.celery.async_utils import run_async_safely
-from inference_core.core.resource_lifecycle import close_resource
 from inference_core.llm.config import get_llm_config
 
 logger = logging.getLogger(__name__)
+
+
+def _call_payload(args: tuple, kwargs: dict) -> Any:
+    """What the wrapped tool is invoked with, from the wrapper's own arguments."""
+    if kwargs:
+        return kwargs
+    if len(args) == 1:
+        return args[0]
+    if not args:
+        # A tool that takes no arguments: an empty list is no valid tool input.
+        return {}
+    return list(args)
 
 
 def _wrap_tool_for_sync(tool: BaseTool) -> BaseTool:
@@ -16,10 +28,18 @@ def _wrap_tool_for_sync(tool: BaseTool) -> BaseTool:
 
     Uses run_async_safely() to reuse the Celery worker loop when available,
     avoiding creation of conflicting event loops in nested tool calls.
+
+    A failed call is handled by the wrapper, not by the wrapped tool: the
+    wrapped tool is invoked without a tool call id, so the error output it
+    would make for itself reaches the agent as an ordinary result. Raised to
+    the wrapper instead, the agent's tool message keeps ``status="error"``.
     """
 
     if not isinstance(tool, StructuredTool):
         return tool
+
+    error_handler = tool.handle_tool_error
+    tool.handle_tool_error = False
 
     def _normalize_result(result: Any, response_format: str) -> Any:
         """Ensure output matches declared response format to avoid runtime errors."""
@@ -37,14 +57,16 @@ def _wrap_tool_for_sync(tool: BaseTool) -> BaseTool:
         return_direct: bool = getattr(tool, "return_direct", False)
         response_format: str = getattr(tool, "response_format", "content")
         extras: Any = getattr(tool, "extras", None)
+        metadata: Any = getattr(tool, "metadata", None)
+        handle_tool_error: Any = error_handler
 
         def _run(self, *args, **kwargs):
-            payload = kwargs if kwargs else (args[0] if len(args) == 1 else list(args))
+            payload = _call_payload(args, kwargs)
             result = run_async_safely(tool.ainvoke(payload))
             return _normalize_result(result, self.response_format)
 
         async def _arun(self, *args, **kwargs):
-            payload = kwargs if kwargs else (args[0] if len(args) == 1 else list(args))
+            payload = _call_payload(args, kwargs)
             result = await tool.ainvoke(payload)
             return _normalize_result(result, self.response_format)
 
@@ -54,11 +76,15 @@ def _wrap_tool_for_sync(tool: BaseTool) -> BaseTool:
 class AgentMCPToolManager:
     """
     Manages MCP tools for Agents using the new LangChain MCP adapters.
+
+    No client is kept between calls: a client holds only the connections of a
+    profile, and every tool opens a session of its own when it is called. A
+    client per call keeps whatever a caller passes to one from reaching any
+    other caller.
     """
 
     def __init__(self):
         self.config = get_llm_config()
-        self._clients: Dict[str, Any] = {}  # Cache clients by profile name
 
     def __filter_tools(self, tools: List[Any], profile, profile_name: str) -> List[Any]:
         """
@@ -89,12 +115,17 @@ class AgentMCPToolManager:
                 wrapped.append(t)
         return wrapped
 
-    async def get_tools_for_profile(self, profile_name: str) -> List[Any]:
+    async def get_tools_for_profile(
+        self, profile_name: str, *, agent_type: Optional[str] = None
+    ) -> List[Any]:
         """
         Get LangChain-compatible tools for a specific MCP profile.
 
         Args:
             profile_name: The name of the MCP profile to load tools for.
+            agent_type: The agent type the tools are for. When given, a profile
+                that is not available to that type loads nothing. Who may
+                select a profile is checked when it is saved, not here.
 
         Returns:
             List of LangChain tools.
@@ -108,62 +139,64 @@ class AgentMCPToolManager:
             logger.warning(f"MCP profile '{profile_name}' not found.")
             return []
 
-        # Check if we already have a client for this profile
-        if profile_name in self._clients:
-            try:
-                # In the new adapter, we might need to ensure connection is active
-                # But typically get_tools() handles it or we assume it's persistent/stateless enough
-                tools = await self._clients[profile_name].get_tools()
-                tools = self.__filter_tools(tools, profile, profile_name)
-                logger.info(
-                    f"Loaded {len(tools)} MCP tools from cache for profile '{profile_name}'"
+        if agent_type is not None:
+            problem = self.config.mcp_profile_problem(
+                profile_name, agent_type, is_superuser=True
+            )
+            if problem:
+                logger.warning(
+                    "Not loading MCP tools for agent type '%s': %s",
+                    agent_type,
+                    problem,
                 )
-                return tools
-            except Exception as e:
-                logger.error(
-                    f"Error getting tools from cached client for profile '{profile_name}': {e}"
-                )
-                # If cached client fails, try to recreate it
-                stale_client = self._clients.pop(profile_name)
-                await close_resource(
-                    stale_client,
-                    label=f"agent_mcp_client.{profile_name}",
-                )
+                return []
 
-        # Create new client
-        client = await self._create_client_for_profile(profile_name, profile.servers)
+        connections = self._server_connections(profile_name, profile.servers)
+        if not connections:
+            logger.warning(
+                f"No valid server configurations found for profile '{profile_name}'"
+            )
+            return []
+        client = self._new_client(profile_name, connections)
         if not client:
             return []
 
-        self._clients[profile_name] = client
+        # Each server is listed on its own, so one that fails or hangs does
+        # not take the others' tools with it.
+        per_server = await asyncio.gather(
+            *(
+                self._load_server_tools(
+                    client, server_name, profile_name, profile.load_timeout_seconds
+                )
+                for server_name in connections
+            )
+        )
+        tools = [tool for server_tools in per_server for tool in server_tools]
+        tools = self.__filter_tools(tools, profile, profile_name)
+        logger.info(f"Loaded {len(tools)} MCP tools for profile '{profile_name}'")
+        return tools
 
+    async def _load_server_tools(
+        self, client: Any, server_name: str, profile_name: str, timeout: float
+    ) -> List[Any]:
         try:
-            tools = await client.get_tools()
-            tools = self.__filter_tools(tools, profile, profile_name)
-            logger.info(f"Loaded {len(tools)} MCP tools for profile '{profile_name}'")
-            return tools
+            return await asyncio.wait_for(
+                client.get_tools(server_name=server_name), timeout=timeout
+            )
         except Exception as e:
-            logger.error(f"Error getting tools for profile '{profile_name}': {e}")
-            stale_client = self._clients.pop(profile_name, client)
-            await close_resource(
-                stale_client,
-                label=f"agent_mcp_client.{profile_name}",
+            logger.error(
+                "Error getting tools from MCP server '%s' (profile '%s'): %s",
+                server_name,
+                profile_name,
+                e,
             )
             return []
 
-    async def _create_client_for_profile(
+    def _server_connections(
         self, profile_name: str, server_names: List[str]
-    ) -> Optional[Any]:
-        """Create a MultiServerMCPClient for a specific set of servers."""
-        try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
-        except ImportError:
-            logger.error(
-                "langchain-mcp-adapters not installed. Run: pip install langchain-mcp-adapters mcp"
-            )
-            return None
-
-        server_configs = {}
+    ) -> Dict[str, Dict[str, Any]]:
+        """The adapter's connection settings for each usable server of a profile."""
+        server_configs: Dict[str, Dict[str, Any]] = {}
 
         for server_name in server_names:
             server_config = self.config.mcp_config.servers.get(server_name)
@@ -173,7 +206,7 @@ class AgentMCPToolManager:
                 )
                 continue
 
-            config_dict = {
+            config_dict: Dict[str, Any] = {
                 "transport": server_config.transport,
             }
 
@@ -187,7 +220,13 @@ class AgentMCPToolManager:
                 if server_config.cwd:
                     config_dict["cwd"] = server_config.cwd
 
-            elif server_config.transport in ["streamable_http", "sse", "websocket"]:
+            elif server_config.transport == "websocket":
+                # A websocket session takes the address and nothing else.
+                if not server_config.url:
+                    continue
+                config_dict["url"] = server_config.url
+
+            elif server_config.transport in ["streamable_http", "sse"]:
                 if not server_config.url:
                     continue
                 config_dict["url"] = server_config.url
@@ -197,25 +236,34 @@ class AgentMCPToolManager:
                     config_dict["timeout"] = float(
                         server_config.timeouts.connect_seconds
                     )
-                    if server_config.transport in ["streamable_http", "sse"]:
-                        config_dict["sse_read_timeout"] = float(
-                            server_config.timeouts.read_seconds
-                        )
-                if server_config.terminate_on_close:
+                    config_dict["sse_read_timeout"] = float(
+                        server_config.timeouts.read_seconds
+                    )
+                # Only a streamable HTTP session ends the server's session on close.
+                if (
+                    server_config.transport == "streamable_http"
+                    and server_config.terminate_on_close
+                ):
                     config_dict["terminate_on_close"] = True
 
             server_configs[server_name] = config_dict
 
-        if not server_configs:
-            logger.warning(
-                f"No valid server configurations found for profile '{profile_name}'"
+        return server_configs
+
+    def _new_client(
+        self, profile_name: str, connections: Dict[str, Dict[str, Any]]
+    ) -> Optional[Any]:
+        """A MultiServerMCPClient for these connections."""
+        try:
+            from langchain_mcp_adapters.client import MultiServerMCPClient
+        except ImportError:
+            logger.error(
+                "langchain-mcp-adapters not installed. Run: pip install langchain-mcp-adapters mcp"
             )
             return None
 
         try:
-            # Initialize the multi-server client
-            client = MultiServerMCPClient(server_configs)
-            return client
+            return MultiServerMCPClient(connections)
         except Exception as e:
             logger.error(
                 f"Failed to initialize MCP client for profile '{profile_name}': {e}"
@@ -223,12 +271,7 @@ class AgentMCPToolManager:
             return None
 
     async def close(self):
-        """Close all managed clients."""
-        await close_resource(
-            list(self._clients.values()),
-            label="agent_mcp_clients",
-        )
-        self._clients.clear()
+        """Release what the manager holds. No client is kept, so nothing is."""
 
 
 # Global instance

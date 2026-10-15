@@ -223,6 +223,39 @@ class InstanceContext:
     subagent_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+def _tool_name(tool: Any) -> Optional[str]:
+    return getattr(tool, "name", None) or getattr(tool, "__name__", None)
+
+
+def _drop_repeated_tools(tools: list[Any], middleware: list[Any]) -> list[Any]:
+    """The tools to give the agent, each name once.
+
+    An agent built with two tools of one name runs only one of them, so a
+    repeated name silently replaces a tool. Middleware keeps the names of its
+    own tools, and of the agent's tools the first of a name stays.
+    """
+    taken = {
+        name
+        for item in middleware
+        for tool in (getattr(item, "tools", None) or [])
+        if (name := _tool_name(tool))
+    }
+    kept = []
+    for tool in tools:
+        name = _tool_name(tool)
+        if name is not None:
+            if name in taken:
+                logging.error(
+                    "Tool '%s' is given to the agent more than once; "
+                    "only the first one is kept",
+                    name,
+                )
+                continue
+            taken.add(name)
+        kept.append(tool)
+    return kept
+
+
 class AgentService:
     def __init__(
         self,
@@ -535,6 +568,10 @@ class AgentService:
         4. Creates the agent with all configurations
         5. Appends memory tools instructions to system_prompt if memory is enabled
 
+        Tools already on ``self.tools`` when it is called are kept, ahead of
+        the ones it loads: a caller adds tools of its own by putting them
+        there first. Of two tools with one name the first stays.
+
         Args:
             system_prompt: Optional system prompt/instructions for the agent.
                           If memory is enabled, memory tools usage instructions
@@ -589,6 +626,8 @@ class AgentService:
         self._resolved_middleware = middleware
         self._resolved_response_format = response_format
 
+        # In place: a caller may hold this list.
+        self.tools[:] = _drop_repeated_tools(self.tools, middleware)
         self.agent = create_agent(
             self.model,
             tools=self.tools,
@@ -1259,7 +1298,12 @@ class AgentService:
         return bool(getattr(model_cfg, "multimodal", False))
 
     async def _load_mcp_tools(self) -> None:
-        """Load tools from MCP if configured for this agent."""
+        """Load tools from MCP if configured for this agent.
+
+        The profile must be one the agent's type may use, and the agent's
+        ``allowed_tools``, when set, applies to MCP tools as it does to every
+        other tool: an agent allowed no tools gets none from MCP either.
+        """
         if not self.agent_config.mcp_profile:
             return
 
@@ -1268,8 +1312,13 @@ class AgentService:
 
             manager = get_agent_mcp_manager()
             mcp_tools = await manager.get_tools_for_profile(
-                self.agent_config.mcp_profile
+                self.agent_config.mcp_profile, agent_type=self.agent_name
             )
+
+            allowed = self.agent_config.allowed_tools
+            if allowed is not None:
+                allowed_names = set(allowed)
+                mcp_tools = [t for t in mcp_tools if t.name in allowed_names]
 
             if mcp_tools:
                 logging.info(
@@ -2835,6 +2884,9 @@ class DeepAgentService(AgentService):
         4. Optionally inject SkillsMiddleware
         5. Call langchain create_agent (NOT create_deep_agent)
 
+        Tools already on ``self.tools`` when it is called are kept, as in
+        :meth:`AgentService.create_agent`.
+
         Args:
             system_prompt: System prompt for the parent agent.
             **kwargs: Forwarded to ``create_agent``.
@@ -2932,6 +2984,8 @@ class DeepAgentService(AgentService):
         if response_format is not None and "response_format" not in kwargs:
             kwargs["response_format"] = response_format
 
+        # In place: a caller may hold this list.
+        self.tools[:] = _drop_repeated_tools(self.tools, middleware)
         self.agent = create_agent(
             self.model,
             tools=self.tools,

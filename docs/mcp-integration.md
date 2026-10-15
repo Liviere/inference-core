@@ -17,17 +17,28 @@ This integration uses:
 
 ## Security & Isolation
 
-⚠️ **IMPORTANT**: MCP tool access is **disabled by default** and **requires superuser permissions** for security.
+⚠️ **IMPORTANT**: MCP tool access is **disabled by default** (`mcp.enabled: false`).
+
+### What agents enforce
+
+An agent gets MCP tools through `AgentMCPToolManager` (`inference_core/agents/agent_mcp_tools.py`). On that path:
+
+1. **Default OFF**: nothing loads while `mcp.enabled` is false (`MCP_ENABLED` overrides it).
+2. **A profile belongs to agent types**: an agent type uses the profile its configuration names (`mcp_profile`). An agent instance may select another profile only when that profile lists the type under `agents`. The check runs when an instance is created or changed (`UserAgentInstanceService`, also when only its base agent changes) and again when an agent starts.
+3. **Superusers select profiles**: selecting a profile for an instance takes a superuser where the profile's `require_superuser`, or else the global `mcp.require_superuser`, says so. The tools of the profile an agent type names load for every user of that type.
+4. **Tool allowlists**: a profile's `include_tools` limits its tools, and an agent's `allowed_tools`, when set, applies to MCP tools as to any other tool.
+5. **No shared clients**: every agent start lists the tools anew, and every tool call opens a session of its own.
+6. **Load timeout**: each server's tools are listed within the profile's `load_timeout_seconds` (default 15). A server that fails or does not answer is left out of that run; the other servers' tools still load.
+7. **One tool per name**: when two tools share a name, the first one stays and the repeat is dropped with an error in the log. Middleware tools keep their names.
+
+`allowlist_hosts`, `rate_limits`, `max_run_seconds`, `max_steps` and `tool_retry_attempts` are read only by the older `MCPToolManager` (`inference_core/llm/mcp_tools.py`), not by agents. Restrict where MCP servers may connect in the deployment (isolated containers, an egress proxy).
 
 ### Security Best Practices
 
-1. **Default OFF**: MCP is disabled by default (`mcp.enabled: false`)
-2. **Superuser Only**: Requires `is_superuser: true` by default (`mcp.require_superuser: true`)
-3. **Isolated Execution**: Run risky MCP servers (like Playwright) in isolated containers
-4. **Hostname Allowlists**: Restrict network access via `allowlist_hosts`
-5. **Rate Limits**: Configure `requests_per_minute` and `tokens_per_minute`
-6. **Timeouts**: Hard limits via `max_run_seconds` per request
-7. **Step Limits**: Control agent reasoning via `max_steps`
+1. **Keep it off** unless an agent type needs it, and name profiles only on the types that should have them.
+2. **Isolated Execution**: Run risky MCP servers (like Playwright) in isolated containers.
+3. **Limit tools** with `include_tools` to what the agents need.
+4. **Treat tool output as untrusted**: an MCP server's answers reach the model as they are.
 
 ### Recommended Isolation for Risky Servers
 
@@ -203,6 +214,20 @@ agents:
     mcp_profile: 'local-tools' # Link to MCP profile
 ```
 
+Who else may use a profile, and how long listing its tools may take, is set on the profile:
+
+```yaml
+mcp:
+  profiles:
+    local-tools:
+      servers: ['math']
+      agents: ['assistant_agent'] # instances of these types may select it too
+      require_superuser: true # only a superuser selects it for an instance
+      load_timeout_seconds: 15 # per server, when an agent starts
+```
+
+An agent instance selects a profile with `config_overrides.mcp_profile`. A profile the instance's type may not use is refused when the instance is saved, and loads nothing at run time.
+
 ## Environment Variables
 
 Use environment variables for secrets:
@@ -343,11 +368,16 @@ logger.error(f"Error loading MCP tools: {e}")
 ### MCP not loading tools
 
 1. Check `mcp.enabled: true` in config
-2. Verify user has `is_superuser: true` (or set `require_superuser: false`)
-3. Check server configuration (command, url, etc.)
-4. Review logs for error messages
+2. Check that the agent's type names the profile, or that the profile lists the type under `agents`
+3. Check that the agent's `allowed_tools`, when set, names the MCP tools
+4. Check server configuration (command, url, etc.)
+5. Review logs for error messages ("Not loading MCP tools for agent type …", "Error getting tools from MCP server …")
 
 ### Permission Denied
+
+Saving an agent instance answers `MCP profile '…' can only be selected by a superuser` or `… is not available to agent type '…'` when the instance may not select that profile (see "What agents enforce").
+
+The older `MCPToolManager` raises:
 
 ```python
 PermissionError: User does not have permission to use MCP tools
