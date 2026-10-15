@@ -35,7 +35,9 @@ def _config(**mcp):
 
 
 def _manager(config):
-    with patch("inference_core.agents.agent_mcp_tools.get_llm_config", return_value=config):
+    with patch(
+        "inference_core.agents.agent_mcp_tools.get_llm_config", return_value=config
+    ):
         return AgentMCPToolManager()
 
 
@@ -188,7 +190,12 @@ def _remote_tool(coroutine, *, args_schema=None, metadata=None):
 
 
 def _call(arguments=None):
-    return {"name": "remote", "args": arguments or {}, "id": "call-1", "type": "tool_call"}
+    return {
+        "name": "remote",
+        "args": arguments or {},
+        "id": "call-1",
+        "type": "tool_call",
+    }
 
 
 @pytest.mark.asyncio

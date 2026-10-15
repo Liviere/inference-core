@@ -41,7 +41,10 @@ def test_nothing_is_available_while_mcp_is_off():
 
 def test_an_unknown_profile_is_named():
     problem = _mcp().profile_problem(
-        "nowhere", agent_type="assistant_agent", type_profile="nowhere", is_superuser=True
+        "nowhere",
+        agent_type="assistant_agent",
+        type_profile="nowhere",
+        is_superuser=True,
     )
     assert problem == "MCP profile 'nowhere' does not exist"
 

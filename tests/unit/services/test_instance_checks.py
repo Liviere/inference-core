@@ -89,7 +89,9 @@ def _instance(base="assistant_agent", overrides=None):
 
 async def _create(service, overrides, *, base="assistant_agent", superuser=None):
     # Refusals come before the uniqueness check, which needs the database.
-    with patch.object(service, "get_instance_by_name", AsyncMock(return_value=object())):
+    with patch.object(
+        service, "get_instance_by_name", AsyncMock(return_value=object())
+    ):
         await service.create_instance(
             user_id=USER,
             instance_name="x",
