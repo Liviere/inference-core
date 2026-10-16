@@ -770,6 +770,53 @@ class TestDeepAgentServiceHelpers:
         assert DeepAgentService._collect_spec_names([]) == set()
 
 
+class TestLoadToolsForSubagent:
+    """Which model decides whether a subagent keeps its multimodal tools."""
+
+    @staticmethod
+    def _load(agent_service, **kwargs):
+        factory = agent_service._mock_model_factory
+        factory.get_agent_model_name.return_value = "text-only"
+        factory.config.get_model_config.side_effect = lambda name: SimpleNamespace(
+            multimodal=name == "sees-images"
+        )
+        sub_config = SimpleNamespace(
+            local_tool_providers=["browser"],
+            allowed_tools=None,
+            on_missing_capability="skip",
+        )
+        with (
+            patch(
+                "inference_core.services.agents_service.get_registered_providers",
+                return_value={"browser": object()},
+            ),
+            patch(
+                "inference_core.services.agents_service.load_tools_for_agent",
+                new=AsyncMock(return_value=["tool"]),
+            ) as loader,
+        ):
+            asyncio.run(
+                DeepAgentService._load_tools_for_subagent(
+                    agent_service, "browser_agent", sub_config, **kwargs
+                )
+            )
+        return loader.call_args
+
+    def test_the_model_configured_for_the_agent_by_default(self, agent_service):
+        call = self._load(agent_service)
+
+        agent_service._mock_model_factory.get_agent_model_name.assert_called_with(
+            "browser_agent"
+        )
+        assert call.kwargs["model_multimodal"] is False
+
+    def test_a_model_of_its_own_when_given(self, agent_service):
+        call = self._load(agent_service, model_name="sees-images")
+
+        assert call.args[0] == "browser_agent"
+        assert call.kwargs["model_multimodal"] is True
+
+
 # ---------------------------------------------------------------------------
 # InstanceContext
 # ---------------------------------------------------------------------------

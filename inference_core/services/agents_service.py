@@ -3564,7 +3564,11 @@ class DeepAgentService(AgentService):
     # ------------------------------------------------------------------
 
     async def _load_tools_for_subagent(
-        self, agent_name: str, agent_config: Any
+        self,
+        agent_name: str,
+        agent_config: Any,
+        *,
+        model_name: Optional[str] = None,
     ) -> list[Any]:
         """Load tools from registered providers for a config-based subagent.
 
@@ -3573,6 +3577,10 @@ class DeepAgentService(AgentService):
         user context (user_id, session_id, request_id) is forwarded so that
         user-scoped providers (e.g. email tools) can resolve per-user
         resources.
+
+        ``model_name`` is the model the subagent runs on when it is not the
+        one configured for ``agent_name`` (an instance with a model of its
+        own); tools that need a multimodal model are kept or skipped by it.
         """
         configured_providers = agent_config.local_tool_providers or []
         if not configured_providers:
@@ -3591,7 +3599,9 @@ class DeepAgentService(AgentService):
 
         # Resolve multimodal capability for the subagent's primary model so
         # the loader can filter/delegate tools consistently.
-        sub_model_name = self.model_factory.get_agent_model_name(agent_name)
+        sub_model_name = model_name or self.model_factory.get_agent_model_name(
+            agent_name
+        )
         sub_model_cfg = (
             self.model_factory.config.get_model_config(sub_model_name)
             if sub_model_name
