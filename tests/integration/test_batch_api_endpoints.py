@@ -12,10 +12,18 @@ from fastapi import status
 from httpx import AsyncClient
 
 from inference_core.database.sql.models.batch import BatchItemStatus, BatchJobStatus
+from tests.fixtures.batch_llm_config import (  # noqa: F401 - fixture import
+    BATCH_CHAT_MODEL,
+    DEEPINFRA_MODEL,
+    GEMINI_MODEL,
+    NON_BATCH_MODEL,
+    batch_llm_config,
+)
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+@pytest.mark.usefixtures("batch_llm_config")
 class TestBatchAPIEndpoints:
     """Test batch API endpoints"""
 
@@ -55,7 +63,7 @@ class TestBatchAPIEndpoints:
         """Test creating batch job without authentication"""
         request_data = {
             "provider": "openai",
-            "model": "gpt-5-mini",
+            "model": BATCH_CHAT_MODEL,
             "items": [
                 {
                     "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -75,7 +83,7 @@ class TestBatchAPIEndpoints:
 
         request_data = {
             "provider": "openai",
-            "model": "gpt-5-mini",
+            "model": BATCH_CHAT_MODEL,
             "items": [
                 {
                     "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -118,7 +126,7 @@ class TestBatchAPIEndpoints:
         # Test empty items
         response = await async_test_client.post(
             "/api/v1/llm/batch/",
-            json={"provider": "openai", "model": "gpt-4o-mini", "items": []},
+            json={"provider": "openai", "model": BATCH_CHAT_MODEL, "items": []},
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -142,7 +150,7 @@ class TestBatchAPIEndpoints:
         auth_token = await self.get_auth_token(async_test_client)
         create_payload = {
             "provider": "openai",
-            "model": "gpt-5-mini",
+            "model": BATCH_CHAT_MODEL,
             "items": [
                 {
                     "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -174,7 +182,7 @@ class TestBatchAPIEndpoints:
         data = response.json()
         assert data["id"] == job_id
         assert data["provider"] == "openai"
-        assert data["model"] == "gpt-5-mini"
+        assert data["model"] == BATCH_CHAT_MODEL
         assert data["status"] == "created"
         assert data["request_count"] == 2
         assert data["success_count"] == 0
@@ -211,7 +219,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -269,7 +277,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -314,7 +322,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -366,7 +374,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -416,7 +424,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -481,7 +489,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -515,7 +523,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -548,7 +556,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [
                     {
                         "input": {"messages": [{"role": "user", "content": "Hello"}]},
@@ -590,7 +598,11 @@ class TestBatchAPIEndpoints:
 
         response = await async_test_client.post(
             "/api/v1/llm/batch/",
-            json={"provider": "openai", "model": "gpt-4o-mini", "items": large_items},
+            json={
+                "provider": "openai",
+                "model": BATCH_CHAT_MODEL,
+                "items": large_items,
+            },
             headers={"Authorization": f"Bearer {auth_token}"},
         )
 
@@ -627,7 +639,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "nope",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -657,7 +669,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gemini-2.5-flash",
+                "model": GEMINI_MODEL,
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -673,7 +685,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "deepinfra",
-                "model": "deepseek-ai/DeepSeek-V3.2",
+                "model": DEEPINFRA_MODEL,
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -689,7 +701,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5",
+                "model": NON_BATCH_MODEL,
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -703,7 +715,7 @@ class TestBatchAPIEndpoints:
             "/api/v1/llm/batch/",
             json={
                 "provider": "openai",
-                "model": "gpt-5-mini",
+                "model": BATCH_CHAT_MODEL,
                 "items": [{"input": {"messages": [{"role": "user", "content": "Hi"}]}}],
                 "params": {"mode": "embedding"},
             },
