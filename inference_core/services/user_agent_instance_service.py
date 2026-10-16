@@ -6,6 +6,7 @@ Handles validation, default management, and template listing.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from inference_core.agents.middleware.model_fallback import (
     canonicalize_fallback_overrides,
 )
 from inference_core.database.sql.models.user_agent_instance import UserAgentInstance
+from inference_core.llm.config import get_llm_config
 from inference_core.schemas.agent_prompt_limits import validate_agent_prompt_lengths
 from inference_core.services.llm_config_service import LLMConfigService
 
@@ -28,13 +30,45 @@ INSTANCE_LOAD_OPTIONS = (
 )
 
 
+@dataclass(frozen=True)
+class InstanceCheck:
+    """What an instance is about to become, for the checks an application adds.
+
+    ``instance_id``, ``previous_base_agent_name`` and ``previous_overrides``
+    are None when the instance is being created. ``actor_is_superuser`` is
+    None when the caller did not say who is acting.
+    """
+
+    user_id: UUID
+    instance_id: Optional[UUID]
+    base_agent_name: str
+    config_overrides: Dict[str, Any]
+    previous_base_agent_name: Optional[str]
+    previous_overrides: Optional[Dict[str, Any]]
+    actor_is_superuser: Optional[bool]
+
+    def changed(self, key: str) -> bool:
+        """Whether ``key`` of config_overrides is new, changed or removed."""
+        previous = self.previous_overrides or {}
+        return self.config_overrides.get(key) != previous.get(key)
+
+    @property
+    def type_changed(self) -> bool:
+        return (
+            self.previous_base_agent_name is not None
+            and self.base_agent_name != self.previous_base_agent_name
+        )
+
+
 # What an application adds to the life of an instance: checks of its own on
 # config_overrides, and work to do once an instance is deleted (what it kept
 # elsewhere under its id).
 OverridesValidator = Callable[[AsyncSession, UUID, Dict[str, Any]], Awaitable[None]]
+InstanceValidator = Callable[[AsyncSession, InstanceCheck], Awaitable[None]]
 InstanceDeletedHook = Callable[[UUID, UUID], Awaitable[None]]
 
 _overrides_validators: List[OverridesValidator] = []
+_instance_validators: List[InstanceValidator] = []
 _instance_deleted_hooks: List[InstanceDeletedHook] = []
 
 
@@ -46,6 +80,17 @@ def register_config_overrides_validator(validator: OverridesValidator) -> None:
     """
     if validator not in _overrides_validators:
         _overrides_validators.append(validator)
+
+
+def register_instance_validator(validator: InstanceValidator) -> None:
+    """Check an instance when it is created, or when its config_overrides or
+    its base agent changes.
+
+    ``validator(db, check)`` gets the :class:`InstanceCheck` and raises
+    ``ValueError`` to refuse; the message reaches the caller as it is.
+    """
+    if validator not in _instance_validators:
+        _instance_validators.append(validator)
 
 
 def register_instance_deleted_hook(hook: InstanceDeletedHook) -> None:
@@ -63,6 +108,32 @@ async def _run_overrides_validators(
 ) -> None:
     for validator in list(_overrides_validators):
         await validator(db, user_id, dict(overrides or {}))
+
+
+def _check_mcp_profile(check: InstanceCheck) -> None:
+    """Refuse an MCP profile the instance may not use.
+
+    Asked only when the profile is set and it, or the base agent, changes: an
+    instance keeps a profile that was allowed when it was saved.
+    """
+    profile = check.config_overrides.get("mcp_profile")
+    if not profile:
+        return
+    if not isinstance(profile, str):
+        raise ValueError("config_overrides.mcp_profile must be a profile name")
+    if not (check.changed("mcp_profile") or check.type_changed):
+        return
+    problem = get_llm_config().mcp_profile_problem(
+        profile, check.base_agent_name, is_superuser=check.actor_is_superuser
+    )
+    if problem:
+        raise ValueError(problem)
+
+
+async def _run_instance_checks(db: AsyncSession, check: InstanceCheck) -> None:
+    _check_mcp_profile(check)
+    for validator in list(_instance_validators):
+        await validator(db, check)
 
 
 async def run_instance_deleted_hooks(user_id: UUID, instance_id: UUID) -> None:
@@ -196,6 +267,7 @@ class UserAgentInstanceService:
         is_default: bool = False,
         is_deepagent: bool = False,
         subagent_ids: Optional[List[UUID]] = None,
+        actor_is_superuser: Optional[bool] = None,
     ) -> UserAgentInstance:
         """Create a new agent instance for a user.
 
@@ -204,8 +276,11 @@ class UserAgentInstanceService:
         - primary_model (if provided) exists in available models from resolved config
         - instance_name is unique for this user
         - subagent_ids (if provided) exist and belong to the user
+        - an MCP profile in config_overrides is one the instance may use
 
-        If is_default=True, clears any existing default for the user.
+        ``actor_is_superuser`` says whether whoever acts is a superuser; None
+        counts as not one. If is_default=True, clears any existing default
+        for the user.
         """
         validate_agent_prompt_lengths(
             system_prompt_override=system_prompt_override,
@@ -245,6 +320,18 @@ class UserAgentInstanceService:
             resolved.available_models,
         )
         await _run_overrides_validators(self.db, user_id, config_overrides)
+        await _run_instance_checks(
+            self.db,
+            InstanceCheck(
+                user_id=user_id,
+                instance_id=None,
+                base_agent_name=base_agent_name,
+                config_overrides=dict(config_overrides or {}),
+                previous_base_agent_name=None,
+                previous_overrides=None,
+                actor_is_superuser=actor_is_superuser,
+            ),
+        )
 
         # Check uniqueness
         existing = await self.get_instance_by_name(user_id, instance_name)
@@ -312,11 +399,15 @@ class UserAgentInstanceService:
         self,
         user_id: UUID,
         instance_id: UUID,
+        *,
+        actor_is_superuser: Optional[bool] = None,
         **updates: Any,
     ) -> Optional[UserAgentInstance]:
         """Update an existing agent instance.
 
-        Validates model names and manages default flag.
+        Validates model names and manages default flag. The instance checks
+        run again when config_overrides or the base agent changes, with
+        ``actor_is_superuser`` as in :meth:`create_instance`.
         """
         validate_agent_prompt_lengths(
             system_prompt_override=updates.get("system_prompt_override"),
@@ -369,7 +460,10 @@ class UserAgentInstanceService:
                     f"Base agent '{new_base}' is not available for user " "instances"
                 )
 
-        if "config_overrides" in updates and updates["config_overrides"] is not None:
+        overrides_change = (
+            "config_overrides" in updates and updates["config_overrides"] is not None
+        )
+        if overrides_change:
             resolved = await self.llm_config_service.get_resolved_config(user_id)
             updates["config_overrides"] = self._normalize_and_validate_config_overrides(
                 updates["config_overrides"],
@@ -377,6 +471,26 @@ class UserAgentInstanceService:
             )
             await _run_overrides_validators(
                 self.db, user_id, updates["config_overrides"]
+            )
+
+        new_base = updates.get("base_agent_name") or instance.base_agent_name
+        if overrides_change or new_base != instance.base_agent_name:
+            previous_overrides = dict(instance.config_overrides or {})
+            await _run_instance_checks(
+                self.db,
+                InstanceCheck(
+                    user_id=user_id,
+                    instance_id=instance.id,
+                    base_agent_name=new_base,
+                    config_overrides=dict(
+                        updates["config_overrides"]
+                        if overrides_change
+                        else previous_overrides
+                    ),
+                    previous_base_agent_name=instance.base_agent_name,
+                    previous_overrides=previous_overrides,
+                    actor_is_superuser=actor_is_superuser,
+                ),
             )
 
         # Handle default flag

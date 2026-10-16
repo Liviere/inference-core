@@ -227,6 +227,7 @@ async def create_agent_instance(
             is_default=data.is_default,
             is_deepagent=data.is_deepagent,
             subagent_ids=data.subagent_ids,
+            actor_is_superuser=bool(current_user.get("is_superuser")),
         )
     except ValueError as e:
         raise HTTPException(
@@ -289,6 +290,7 @@ async def update_agent_instance(
         instance = await service.update_instance(
             user_id=user_id,
             instance_id=instance_id,
+            actor_is_superuser=bool(current_user.get("is_superuser")),
             **updates,
         )
     except ValueError as e:

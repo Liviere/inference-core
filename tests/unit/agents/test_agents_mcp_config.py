@@ -85,8 +85,11 @@ class TestAgentMCPToolManager:
             assert len(tools) == 1
             assert tools[0].name == "tool1"
 
-            # Verify client was cached
-            assert "test" in manager._clients
+            # Listed server by server, and no client is kept for the next call
+            mock_client_instance.get_tools.assert_awaited_once_with(
+                server_name="test_server"
+            )
+            assert not hasattr(manager, "_clients")
 
     @pytest.mark.asyncio
     async def test_get_tools_with_filtering(self, mock_config):
@@ -127,53 +130,54 @@ class TestAgentMCPToolManager:
             assert tools[0].name == "tool1"
 
     @pytest.mark.asyncio
-    async def test_get_tools_cached_client_error(self, mock_config):
-        """Test recovery when cached client fails"""
+    async def test_a_failing_server_keeps_the_other_servers_tools(self, mock_config):
+        """One server that cannot be listed does not drop the profile."""
+        mock_config.mcp_config.enabled = True
+        profile = MCPProfileConfig(description="test", servers=["up", "down"])
+        mock_config.mcp_config.get_profile.return_value = profile
+        mock_config.mcp_config.servers = {
+            "up": MCPServerConfig(transport="stdio", command="python"),
+            "down": MCPServerConfig(transport="stdio", command="python"),
+        }
+        tool = MagicMock()
+        tool.name = "tool1"
+
+        async def get_tools(*, server_name):
+            if server_name == "down":
+                raise Exception("Connection lost")
+            return [tool]
+
+        with patch("langchain_mcp_adapters.client.MultiServerMCPClient") as MockClient:
+            MockClient.return_value.get_tools = get_tools
+            tools = await AgentMCPToolManager().get_tools_for_profile("test")
+
+        assert tools == [tool]
+
+    @pytest.mark.asyncio
+    async def test_each_call_gets_a_client_of_its_own(self, mock_config):
+        """Nothing a caller passes to a client can reach another caller."""
         mock_config.mcp_config.enabled = True
         profile = MCPProfileConfig(description="test", servers=["test_server"])
         mock_config.mcp_config.get_profile.return_value = profile
         mock_config.mcp_config.servers = {
             "test_server": MCPServerConfig(transport="stdio", command="python")
         }
-
         manager = AgentMCPToolManager()
 
-        # Pre-populate cache with a broken client
-        broken_client = AsyncMock()
-        broken_client.get_tools.side_effect = Exception("Connection lost")
-        manager._clients["test"] = broken_client
-
-        # Mock MultiServerMCPClient for the NEW client
         with patch("langchain_mcp_adapters.client.MultiServerMCPClient") as MockClient:
-            new_client = AsyncMock()
-            new_client.get_tools.return_value = []
-            MockClient.return_value = new_client
-
-            # Should catch exception, remove from cache, and create new one
+            MockClient.side_effect = lambda connections: AsyncMock(
+                get_tools=AsyncMock(return_value=[])
+            )
+            await manager.get_tools_for_profile("test")
             await manager.get_tools_for_profile("test")
 
-            # Verify new client was created
-            assert MockClient.called
+        assert MockClient.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_close_closes_cached_clients(self, mock_config):
-        """close() releases all cached profile clients."""
-
-        class FakeClient:
-            def __init__(self):
-                self.closed = False
-
-            async def aclose(self):
-                self.closed = True
-
+    async def test_close_is_safe_with_nothing_to_close(self, mock_config):
         manager = AgentMCPToolManager()
-        client = FakeClient()
-        manager._clients["test"] = client
-
         await manager.close()
-
-        assert client.closed is True
-        assert manager._clients == {}
+        await manager.close()
 
 
 class TestAgentServiceMCP:
@@ -193,6 +197,7 @@ class TestAgentServiceMCP:
             agent_config = MagicMock()
             agent_config.mcp_profile = None
             agent_config.local_tool_providers = []
+            agent_config.allowed_tools = None
             factory.config.get_specific_agent_config.return_value = agent_config
 
             mock_get.return_value = factory
@@ -308,8 +313,10 @@ class TestAgentServiceMCP:
             assert len(service.tools) == 1
             assert service.tools[0] == tool
 
-            # Verify manager was called with correct profile
-            manager.get_tools_for_profile.assert_called_with("web")
+            # Verify manager was called with correct profile, for the agent's type
+            manager.get_tools_for_profile.assert_called_with(
+                "web", agent_type="test_agent"
+            )
 
     @pytest.mark.asyncio
     async def test_load_mcp_tools_error_handling(self, mock_model_factory):

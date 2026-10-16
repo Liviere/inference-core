@@ -499,6 +499,29 @@ class MCPProfileConfig(BaseModel):
     rate_limits: Optional[MCPRateLimits] = Field(
         default=None, description="Optional rate limiting"
     )
+    load_timeout_seconds: int = Field(
+        default=15,
+        ge=1,
+        le=120,
+        description=(
+            "How long listing one server's tools may take when an agent starts. "
+            "A server that does not answer in time is left out of that run."
+        ),
+    )
+    agents: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Agent types whose instances may select this profile, besides the "
+            "types whose own configuration names it."
+        ),
+    )
+    require_superuser: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether only a superuser may select this profile for an agent "
+            "instance. Unset: the global mcp.require_superuser applies."
+        ),
+    )
 
 
 class MCPConfig(BaseModel):
@@ -527,6 +550,40 @@ class MCPConfig(BaseModel):
     def is_profile_enabled(self, profile_name: str) -> bool:
         """Check if a profile exists and is valid"""
         return profile_name in self.profiles
+
+    def profile_problem(
+        self,
+        profile_name: str,
+        *,
+        agent_type: str,
+        type_profile: Optional[str],
+        is_superuser: Optional[bool],
+    ) -> Optional[str]:
+        """Why an instance of ``agent_type`` may not use ``profile_name``, or None.
+
+        A profile is available to the types whose own configuration names it
+        (``type_profile``) and to the types it lists in ``agents``. Selecting
+        one for an instance takes a superuser where the profile, or else the
+        global flag, requires it; ``is_superuser=None`` counts as not one.
+        """
+        if not self.enabled:
+            return "MCP is disabled"
+        profile = self.profiles.get(profile_name)
+        if profile is None:
+            return f"MCP profile '{profile_name}' does not exist"
+        if profile_name != type_profile and agent_type not in (profile.agents or ()):
+            return (
+                f"MCP profile '{profile_name}' is not available to agent type "
+                f"'{agent_type}'"
+            )
+        needs_superuser = (
+            profile.require_superuser
+            if profile.require_superuser is not None
+            else self.require_superuser
+        )
+        if needs_superuser and not is_superuser:
+            return f"MCP profile '{profile_name}' can only be selected by a superuser"
+        return None
 
 
 class ToolLimits(BaseModel):
@@ -1453,6 +1510,18 @@ class LLMConfig:
                     logging.warning(
                         f"Invalid MCP profile configuration for {profile_name}: {e}"
                     )
+                    continue
+                unknown = [
+                    name
+                    for name in profiles[profile_name].servers
+                    if name not in resolved_servers
+                ]
+                if unknown:
+                    logging.warning(
+                        "MCP profile '%s' names servers that are not configured: %s",
+                        profile_name,
+                        unknown,
+                    )
 
             self.mcp_config = MCPConfig(
                 enabled=mcp_data.get("enabled", False),
@@ -1803,6 +1872,26 @@ class LLMConfig:
     def get_specific_agent_config(self, agent_name: str) -> Optional[AgentConfig]:
         """Get full configuration for a specific agent"""
         return self.agent_configs.get(agent_name)
+
+    def mcp_profile_problem(
+        self,
+        profile_name: str,
+        agent_type: str,
+        *,
+        is_superuser: Optional[bool] = None,
+    ) -> Optional[str]:
+        """Why an instance of ``agent_type`` may not use ``profile_name``, or None.
+
+        Ask the configuration as it was loaded, not one with an instance's
+        overrides applied: the profile an agent type names is read from it.
+        """
+        agent_config = self.agent_configs.get(agent_type)
+        return self.mcp_config.profile_problem(
+            profile_name,
+            agent_type=agent_type,
+            type_profile=agent_config.mcp_profile if agent_config else None,
+            is_superuser=is_superuser,
+        )
 
     def with_overrides(
         self,
