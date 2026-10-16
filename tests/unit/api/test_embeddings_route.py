@@ -30,9 +30,18 @@ class FailingEmbeddingService:
 
 
 @pytest.mark.anyio
-async def test_generate_success(async_test_client_factory, monkeypatch):
+async def test_generate_success(
+    async_test_client_factory, monkeypatch, clear_settings_cache
+):
+    """The response reports the backend the settings resolve to.
+
+    WHY: the default backend depends on ENVIRONMENT (testing defaults to
+    ``fake``), so the test sets ``EMBEDDING_BACKEND`` explicitly to a value
+    that is neither default and checks the endpoint echoes it.
+    """
     from inference_core.api.v1.routes import embeddings as embed_module
 
+    monkeypatch.setenv("EMBEDDING_BACKEND", "remote")
     svc = FakeEmbeddingService()
     monkeypatch.setattr(embed_module, "get_embedding_service", lambda: svc)
 
@@ -47,7 +56,7 @@ async def test_generate_success(async_test_client_factory, monkeypatch):
     assert data["count"] == 2
     assert data["dimension"] == 3
     assert len(data["embeddings"]) == 2
-    assert data["backend"] == "local"  # default
+    assert data["backend"] == "remote"
 
 
 @pytest.mark.anyio
