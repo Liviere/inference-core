@@ -979,6 +979,20 @@ class TestAnalyseViaToolCall:
             or "are data" in middleware._TOOL_ANALYSIS_SYSTEM_PROMPT.lower()
         )
 
+    async def test_analysis_prompt_forbids_what_the_system_records_about_a_run(
+        self, middleware
+    ):
+        """A scheduled run must not remember its own event id, run time or task."""
+        prompt = middleware._TOOL_ANALYSIS_PROMPT
+        assert (
+            "Do NOT save what the system already records about the run itself"
+            in prompt
+        )
+        assert "ids of events" in prompt
+        assert "that a scheduled task ran" in prompt
+        assert "your own scheduled task" in prompt
+        assert "how the user wants something done, not that it was done" in prompt
+
     async def test_counts_update_memory_store_calls(
         self, middleware, mock_memory_service
     ):

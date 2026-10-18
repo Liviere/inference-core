@@ -407,7 +407,9 @@ parameters from `llm_config.yaml` are applied. The middleware asks the model to
 inspect semantically similar memories first and then call `save_memory_store`,
 `update_memory_store`, or `recall_memories_store` as needed. It executes those
 tool calls and can save multiple memories in one pass when the conversation
-contains several durable facts, preferences, or corrections.
+contains several durable facts, preferences, or corrections. It is told not to
+save what the system records about the run itself: ids of events or runs, when
+a run took place or is next due, or the agent's own scheduled task.
 
 An agent that runs on a schedule sees the same kind of turn every time, and the
 analysis would write nearly the same memory each time. With
