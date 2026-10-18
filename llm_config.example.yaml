@@ -504,6 +504,29 @@ models:
       rounding:
         decimals: 6
 
+  # Mistral Small served from the EU endpoint (data processed in the EU, about
+  # 10% dearer). A model entry's base_url overrides its provider's. The key is
+  # the dated name of the model that mistral-small-latest points to, since an
+  # entry's key is the name the provider is asked for.
+  mistral-small-2603:
+    provider: 'mistral'
+    base_url: 'https://api.eu.mistral.ai/v1'
+    display_name: 'Mistral Small (EU)'
+    description: 'Mistral Small on the EU endpoint'
+    max_tokens: 8192
+    temperature: 0.7
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 0.165 # $0.15 per 1M tokens, +10% on the EU endpoint
+      output:
+        cost_per_1m: 0.66 # $0.60 per 1M tokens, +10% on the EU endpoint
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+      rounding:
+        decimals: 6
+
   # Public preview since 2026-10-06, sold at half price during the launch. The
   # entry carries the list price; the sale price is 0.68 input / 2.09 output.
   mistral-large-4:

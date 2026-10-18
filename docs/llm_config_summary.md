@@ -18,6 +18,7 @@
 
 - **`models`**: each named entry becomes a `ModelConfig` in `LLMConfig.models`.
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
+  - `base_url` on a model entry overrides its provider's, so one provider can serve a model from another endpoint (for example a regional one). The entry's key is still the model's name at the provider, so a model served from two endpoints needs two names for it (a dated version and an alias, say).
   - `multimodal: true|false` declares whether the model can accept multimodal inputs. Tool loading uses this flag to decide whether tools that declare `requires_multimodal = True` are exposed directly, skipped, or retained for delegation.
   - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
   - `reasoning_config` can store provider-specific nested kwargs for reasoning / thinking models (for example OpenAI reasoning, Claude thinking, or Gemini thought settings).

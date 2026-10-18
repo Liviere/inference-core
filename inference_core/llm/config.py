@@ -1192,8 +1192,9 @@ class LLMConfig:
                 if api_key_env:
                     api_key = os.getenv(api_key_env)
 
-            # Get base URL for OpenAI-compatible models
-            base_url = provider_config.base_url
+            # The provider's base URL, unless the model names its own: one
+            # provider may serve a model from another endpoint (a region).
+            base_url = model_data.get("base_url") or provider_config.base_url
             if (
                 provider_config.openai_compatible
                 and provider_name != ModelProvider.OPENAI.value
