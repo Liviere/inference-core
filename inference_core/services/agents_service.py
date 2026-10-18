@@ -2740,13 +2740,34 @@ SUBAGENT_SKILLS_ROOT = "/subagent_skills/"
 INHERIT_MEMORY_KEY = "inherit_memory"
 
 
+def _copies_for_subagent(middleware: Any) -> bool:
+    """Whether a middleware says what a subagent is to be given of it.
+
+    Looked up on the class, so that a mock's made-up attribute does not count.
+    """
+    return callable(getattr(type(middleware), "copy_for_subagent", None))
+
+
+def _propagates_to_subagents(middleware: Any) -> bool:
+    """Whether a parent's middleware is handed on to its subagents.
+
+    Cost tracking and memory are, and so is any middleware with a
+    ``copy_for_subagent()`` of its own: an application's guard over what its
+    tools return has to watch a subagent's tools as much as the parent's.
+    """
+    return isinstance(
+        middleware, (CostTrackingMiddleware, MemoryMiddleware)
+    ) or _copies_for_subagent(middleware)
+
+
 def _for_subagent(middleware: Any) -> Any:
     """The parent's middleware as a subagent is given it.
 
+    A middleware with ``copy_for_subagent()`` is given as what that returns:
     MemoryMiddleware keeps per-run state, so each subagent gets its own copy
-    (the same spaces, no analysis after each task); the rest is shared.
+    (the same spaces, no analysis after each task). The rest is shared.
     """
-    if isinstance(middleware, MemoryMiddleware):
+    if _copies_for_subagent(middleware):
         return middleware.copy_for_subagent()
     return middleware
 
@@ -2909,12 +2930,9 @@ class DeepAgentService(AgentService):
         # 3. Build base middleware (cost tracking, memory, tool-model switch)
         middleware = self._build_middleware()
 
-        # Extract CostTrackingMiddleware and MemoryMiddleware to propagate to subagents
-        propagated_middleware = [
-            m
-            for m in middleware
-            if isinstance(m, (CostTrackingMiddleware, MemoryMiddleware))
-        ]
+        # Cost tracking, memory and what copies itself for a subagent are
+        # handed on to the subagents
+        propagated_middleware = [m for m in middleware if _propagates_to_subagents(m)]
 
         # 4. Build subagent specs
         subagent_specs = await self._build_subagent_specs(
