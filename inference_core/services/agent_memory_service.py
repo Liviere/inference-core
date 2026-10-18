@@ -21,6 +21,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -313,6 +314,7 @@ NOT_FOUND = "not_found"
 READ_ONLY = "read_only"
 HELD = "held"
 REFUSED = "refused"
+REPEATED = "repeated"
 
 
 @dataclass(frozen=True)
@@ -391,6 +393,21 @@ class MemoryWritePolicy:
 # A held memory lies in (user_id, *HOLD_PATH, category): no space reads it.
 HOLD_PATH: Tuple[str, ...] = ("held",)
 
+# How many memories of one namespace, and how many held for it, a write from
+# the analysis is compared with (the newest ones), so that the check stays
+# cheap however much a user has stored.
+REPEAT_SCAN_LIMIT = 200
+# Why a memory was not written as a repeat, by where the one it repeats lies.
+REPEATED_REASONS = {
+    SAVED: "It nearly repeats a memory that is already saved.",
+    HELD: "It nearly repeats a memory that waits for approval.",
+}
+
+
+def _comparable(text: Any) -> str:
+    """A memory's text as it is compared: lower case, whitespace collapsed."""
+    return " ".join(str(text or "").lower().split())
+
 
 @dataclass(frozen=True)
 class MemoryOptions:
@@ -405,6 +422,7 @@ class MemoryOptions:
     origin: Dict[str, Any] = field(default_factory=dict)
     hold_path: Tuple[str, ...] = HOLD_PATH
     entry_renderer: Optional[Callable[["MemoryStoreDocument", str], str]] = None
+    repeat_threshold: Optional[float] = None
 
     def service(
         self, store: Any, *, max_results: int = 5, base_namespace: Sequence[str] = ()
@@ -419,6 +437,7 @@ class MemoryOptions:
             origin=self.origin,
             hold_path=self.hold_path,
             entry_renderer=self.entry_renderer,
+            repeat_threshold=self.repeat_threshold,
         )
 
 
@@ -730,6 +749,7 @@ class AgentMemoryStoreService:
         entry_renderer: Optional[
             Callable[["MemoryStoreDocument", str], str]
         ] = None,
+        repeat_threshold: Optional[float] = None,
     ) -> None:
         """
         Args:
@@ -744,6 +764,12 @@ class AgentMemoryStoreService:
                 category. It must not lie under any space's namespace.
             entry_renderer: Turns a recalled memory's line into what the
                 model is shown (``(document, line) -> line``).
+            repeat_threshold: A memory the analysis after a run writes is not
+                written when its text is at least this alike to a memory of
+                its namespace or one held for it, by
+                :class:`difflib.SequenceMatcher`'s ratio on both texts in
+                lower case with whitespace collapsed (from 0 to 1). ``None``
+                writes every one.
         """
         self.store = store
         self.base_namespace = tuple(base_namespace)
@@ -766,6 +792,7 @@ class AgentMemoryStoreService:
         self.origin = dict(origin or {})
         self.hold_path = tuple(hold_path)
         self.entry_renderer = entry_renderer
+        self.repeat_threshold = repeat_threshold
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def render_entry(self, document: "MemoryStoreDocument", line: str) -> str:
@@ -959,8 +986,11 @@ class AgentMemoryStoreService:
         The category is auto-resolved from memory_type when not provided, and
         the space is *space* or the default one (see :meth:`space_for_write`).
         The write policy may save it (``saved``), hold it where no agent reads
-        it (``held``), or refuse it (``refused``). A given *memory_id* is
-        written under that key; to change a memory wherever it lies, use
+        it (``held``), or refuse it (``refused``). With ``repeat_threshold``,
+        a memory from the analysis after a run that nearly repeats one already
+        there or held for that namespace is not written (``repeated``, with
+        the id of the one it repeats). A given *memory_id* is written under
+        that key; to change a memory wherever it lies, use
         :meth:`update_memory`.
 
         Raises:
@@ -995,6 +1025,15 @@ class AgentMemoryStoreService:
         if decision.action == REFUSE:
             return MemoryWriteOutcome(REFUSED, None, target, decision.reason)
 
+        namespace = target.namespace(user_id, resolved_category)
+        if via == VIA_ANALYSIS and self.repeat_threshold is not None:
+            repeated = self._repeat_of(user_id, content, resolved_category, namespace)
+            if repeated is not None:
+                repeated_id, where = repeated
+                return MemoryWriteOutcome(
+                    REPEATED, repeated_id, target, REPEATED_REASONS[where]
+                )
+
         metadata = dict(extra_metadata or {})
         metadata["origin"] = {**metadata.get("origin", {}), **self._origin(via, decision)}
         memory_data = MemoryData(
@@ -1006,7 +1045,6 @@ class AgentMemoryStoreService:
             agent_name=self.agent_name,
             extra_metadata=metadata,
         )
-        namespace = target.namespace(user_id, resolved_category)
 
         if decision.action == HOLD:
             self._hold(user_id, resolved_category, memory_id, memory_data, target, namespace)
@@ -1042,6 +1080,61 @@ class AgentMemoryStoreService:
         }
         self.store.put(self.hold_namespace(user_id, category), memory_id, value, index=False)
 
+    def _repeat_of(
+        self,
+        user_id: str,
+        content: str,
+        category: MemoryCategory,
+        namespace: Tuple[str, ...],
+    ) -> Optional[Tuple[str, str]]:
+        """The id of a memory *content* nearly repeats, and whether it is
+        ``saved`` or ``held``; ``None`` when it repeats none.
+
+        It is compared with the newest memories of *namespace* and the newest
+        held for it (:data:`REPEAT_SCAN_LIMIT` of each), never with other
+        spaces: what is held for another space may yet go there.
+        """
+        from langgraph.store.base import SearchOp
+
+        from inference_core.services.content_cipher import dec_field
+
+        saved, held = self.store.batch(
+            [
+                SearchOp(namespace, limit=REPEAT_SCAN_LIMIT),
+                SearchOp(
+                    self.hold_namespace(user_id, category), limit=REPEAT_SCAN_LIMIT
+                ),
+            ]
+        )
+        candidates = [
+            (item, SAVED)
+            for item in saved or []
+            if tuple(getattr(item, "namespace", ()) or ()) == namespace
+        ] + [
+            (item, HELD)
+            for item in held or []
+            if ((item.value or {}).get("held_for") or {}).get("namespace")
+            == list(namespace)
+        ]
+        matcher = SequenceMatcher(None, autojunk=True)
+        matcher.set_seq2(_comparable(content))
+        for item, where in candidates:
+            text = dec_field((item.value or {}).get("content"), purpose="memory")
+            matcher.set_seq1(_comparable(text))
+            if (
+                matcher.real_quick_ratio() >= self.repeat_threshold
+                and matcher.quick_ratio() >= self.repeat_threshold
+                and matcher.ratio() >= self.repeat_threshold
+            ):
+                self.logger.info(
+                    "Memory not written: it nearly repeats %s memory %s in %s",
+                    where,
+                    item.key,
+                    "/".join(namespace),
+                )
+                return item.key, where
+        return None
+
     async def save_memory(
         self,
         user_id: str,
@@ -1057,7 +1150,9 @@ class AgentMemoryStoreService:
     ) -> str:
         """Persist a memory item; its id. See :meth:`write_memory`.
 
-        A held memory's id is returned as well: it is kept, for approval.
+        A held memory's id is returned as well: it is kept, for approval. For
+        a memory that was not written as a repeat, the id of the one it
+        repeats.
 
         Raises:
             MemorySpaceError: when no writable space takes the memory.
@@ -2385,6 +2480,8 @@ __all__ = [
     "MemoryWriteRequest",
     "REFUSE",
     "REFUSED",
+    "REPEATED",
+    "REPEATED_REASONS",
     "SAVE",
     "VIA_ANALYSIS",
     "VIA_TOOL",

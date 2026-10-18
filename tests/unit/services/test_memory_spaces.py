@@ -13,6 +13,7 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from inference_core.agents.middleware.memory import MemoryMiddleware
+from inference_core.agents.tools.memory_tools import SaveMemoryStoreTool
 from inference_core.services.agent_memory_service import (
     AGENT_SPACE_KEY,
     DELETED,
@@ -22,6 +23,9 @@ from inference_core.services.agent_memory_service import (
     READ_ONLY,
     REFUSE,
     REFUSED,
+    REPEAT_SCAN_LIMIT,
+    REPEATED,
+    REPEATED_REASONS,
     SAVE,
     SAVED,
     SHARED_SPACE_KEY,
@@ -418,6 +422,218 @@ async def test_a_held_change_leaves_the_memory_as_it_was(store):
     [held] = store.search(("u1", "pending", "procedural"))
     assert held.value["content"] == "Reply never"
     assert held.value["held_for"]["replaces"] == mid
+
+
+# --------------------------------------------------------------------------- #
+# Repeats from the analysis
+# --------------------------------------------------------------------------- #
+
+DAILY = (
+    "When reporting the EUR/PLN rate, give it as a short table with the change "
+    "since yesterday."
+)
+DAILY_AGAIN = (
+    "When reporting the EUR/PLN rate, give it as a short table, with the change "
+    "since yesterday"
+)
+
+
+def _repeats(store, policy=None, *spaces, threshold=0.9):
+    return AgentMemoryStoreService(
+        store=store,
+        spaces=list(spaces or [GENERAL]),
+        write_policy=policy,
+        hold_path=("pending",),
+        repeat_threshold=threshold,
+    )
+
+
+def _untrusted() -> _Policy:
+    policy = _Policy()
+    policy.observe(["[BEGIN UNTRUSTED PAGE] EUR/PLN 4.25"])
+    return policy
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_of_a_saved_memory_is_not_written_again(store):
+    service = _repeats(store)
+    first = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    again = await service.write_memory(
+        "u1", f"  {DAILY_AGAIN.upper()} ", "instructions", via=VIA_ANALYSIS
+    )
+
+    assert again.status == REPEATED
+    assert again.memory_id == first.memory_id
+    assert again.reason == REPEATED_REASONS[SAVED]
+    assert len(store.search(("u1", "procedural"))) == 1
+    assert store.search(("u1", "pending", "procedural")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_of_a_held_memory_is_not_held_again(store):
+    service = _repeats(store, _untrusted())
+    first = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+    assert first.status == HELD
+
+    again = await service.write_memory(
+        "u1", DAILY_AGAIN, "instructions", via=VIA_ANALYSIS
+    )
+
+    assert again.status == REPEATED
+    assert again.memory_id == first.memory_id
+    assert again.reason == REPEATED_REASONS[HELD]
+    assert len(store.search(("u1", "pending", "procedural"))) == 1
+    assert store.search(("u1", "procedural")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_of_a_saved_memory_is_not_held_either(store):
+    await _repeats(store).write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    again = await _repeats(store, _untrusted()).write_memory(
+        "u1", DAILY_AGAIN, "instructions", via=VIA_ANALYSIS
+    )
+
+    assert again.status == REPEATED
+    assert store.search(("u1", "pending", "procedural")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_different_short_fact_is_still_written(store):
+    service = _repeats(store)
+    await service.write_memory(
+        "u1", "User prefers tea in the morning", "preferences", via=VIA_ANALYSIS
+    )
+
+    # 0.80 alike: two facts, not one twice.
+    outcome = await service.write_memory(
+        "u1", "User prefers coffee in the evening", "preferences", via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == SAVED
+    assert len(store.search(("u1", "semantic"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_memory_held_for_another_space_is_no_repeat(store):
+    # Another agent's private space has the same key and another path.
+    other = MemorySpace(
+        key="private", label="Own", description="Own work.", path=("agent:a2",)
+    )
+    await _repeats(store, _untrusted(), other).write_memory(
+        "u1", DAILY, "instructions", via=VIA_ANALYSIS
+    )
+
+    outcome = await _repeats(store, _untrusted(), PRIVATE).write_memory(
+        "u1", DAILY, "instructions", via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == HELD
+    held = store.search(("u1", "pending", "procedural"))
+    assert sorted(h.value["held_for"]["namespace"][1] for h in held) == [
+        "agent:a1",
+        "agent:a2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_memory_of_another_space_or_category_is_no_repeat(store):
+    service = _repeats(store, None, GENERAL, TEAM)
+    await service.write_memory(
+        "u1", DAILY, "instructions", space="team", via=VIA_ANALYSIS
+    )
+    await service.write_memory("u1", DAILY, "facts", via=VIA_ANALYSIS)
+
+    outcome = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    assert outcome.status == SAVED
+
+
+@pytest.mark.asyncio
+async def test_only_the_analysis_is_checked_for_repeats(store):
+    service = _repeats(store)
+    await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    outcome = await service.write_memory("u1", DAILY, "instructions")
+
+    assert outcome.status == SAVED
+
+
+@pytest.mark.asyncio
+async def test_without_a_threshold_a_repeat_is_written(store):
+    service = _repeats(store, threshold=None)
+    await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    outcome = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    assert outcome.status == SAVED
+    assert len(store.search(("u1", "procedural"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_stays_a_refusal(store):
+    service = _repeats(store, _Policy())
+
+    outcome = await service.write_memory(
+        "u1", "a forbidden thing", "facts", via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == REFUSED
+
+
+class _SearchRecordingStore(InMemoryStore):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.searches: list = []
+
+    def batch(self, ops):
+        self.searches.extend(
+            (op.namespace_prefix, op.query, op.limit)
+            for op in ops
+            if hasattr(op, "namespace_prefix")
+        )
+        return super().batch(ops)
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_is_looked_for_in_its_namespace_and_what_is_held_for_it_only():
+    store = _SearchRecordingStore()
+    service = _repeats(store, None, GENERAL, TEAM)
+
+    await service.write_memory(
+        "u1", DAILY, "instructions", space="team", via=VIA_ANALYSIS
+    )
+
+    assert store.searches == [
+        (("u1", "space:t1", "procedural"), None, REPEAT_SCAN_LIMIT),
+        (("u1", "pending", "procedural"), None, REPEAT_SCAN_LIMIT),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_is_told_what_its_save_repeats(store):
+    service = _repeats(store)
+    first = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+    tool = SaveMemoryStoreTool(memory_service=service, user_id="u1", via=VIA_ANALYSIS)
+
+    text = await tool._arun(content=DAILY_AGAIN, memory_type="instructions")
+
+    assert text.startswith("✓ Not saved again.")
+    assert first.memory_id in text
+    assert "update_memory_store" in text
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_is_told_its_save_repeats_one_held(store):
+    service = _repeats(store, _untrusted())
+    await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+    tool = SaveMemoryStoreTool(memory_service=service, user_id="u1", via=VIA_ANALYSIS)
+
+    text = await tool._arun(content=DAILY_AGAIN, memory_type="instructions")
+
+    assert REPEATED_REASONS[HELD] in text
+    assert "update_memory_store" not in text
 
 
 @pytest.mark.asyncio

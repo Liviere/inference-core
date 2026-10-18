@@ -409,6 +409,16 @@ inspect semantically similar memories first and then call `save_memory_store`,
 tool calls and can save multiple memories in one pass when the conversation
 contains several durable facts, preferences, or corrections.
 
+An agent that runs on a schedule sees the same kind of turn every time, and the
+analysis would write nearly the same memory each time. With
+`MemoryOptions(repeat_threshold=...)` a memory the analysis saves is not
+written when its text is at least that alike (`difflib.SequenceMatcher`'s ratio
+on lower-case text with whitespace collapsed, 0 to 1) to one of the newest
+`REPEAT_SCAN_LIMIT` memories of its namespace, or of those held for that
+namespace by the write policy. The outcome is `repeated`, with the id of the
+memory it repeats, and the model is told so. A save the agent makes with the
+tool during the run is not checked, and without a threshold nothing is.
+
 ### Memory LLM Cost Attribution
 
 Memory-handling LLM calls (post-run analysis) are billed to the triggering

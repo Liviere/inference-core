@@ -23,6 +23,9 @@ from inference_core.services.agent_memory_service import (
     NOT_FOUND,
     READ_ONLY,
     REFUSED,
+    REPEATED,
+    REPEATED_REASONS,
+    SAVED,
     VIA_TOOL,
     AgentMemoryStoreService,
     MemorySpaceError,
@@ -218,6 +221,14 @@ Arguments:
             if outcome.status == REFUSED:
                 return f"✗ Memory not saved. {outcome.reason}".rstrip()
             memory_id = outcome.memory_id
+            if outcome.status == REPEATED:
+                text = f"✓ Not saved again. {outcome.reason} (id: {memory_id})"
+                if outcome.reason == REPEATED_REASONS[SAVED]:
+                    text += (
+                        " If what you meant to save changes what it says, call "
+                        "update_memory_store with that id."
+                    )
+                return text
             if outcome.status == HELD:
                 return (
                     f"✓ Memory kept for the user's approval (id: {memory_id[:8]}...). "
