@@ -9,16 +9,27 @@
 - **Dynamic Resolution:** `LLMConfigService` merges YAML config with database-backed overrides (Admin/User). See [Dynamic Configuration](dynamic-configuration.md) for details.
 - **Fallback:** when the file is missing or YAML parsing fails, `_load_fallback_config()` is used to set default models and settings.
 
+**Regional endpoints**
+
+Some providers process a request in a given region only on a regional endpoint, and price it differently. For Mistral, `https://api.eu.mistral.ai/v1` (EU/EFTA) and `https://api.us.mistral.ai/v1` cost 1.1× the list price and serve only the models hosted in the region, while the global `https://api.mistral.ai/v1` does not commit to a location. To use one:
+
+- `base_url` under the provider sends every call of its models there: chat models and the model catalog's listing alike.
+- `price_multiplier: 1.1` under the provider keeps the costs right while `pricing` stays the list price.
+- `base_url` and `price_multiplier` on a model entry do the same for one model, next to the provider's global endpoint.
+- Regional endpoints may lack APIs the global one has (for Mistral: Batch, Files and Agents). inference-core's batch providers are OpenAI, Claude and Gemini, and it calls no files or agents API of a model provider.
+
 **YAML sections → what they configure**
 
 - **`providers`**: raw provider definitions (e.g. `openai`, `custom_openai_compatible`, `gemini`, `claude`). Mapped to `LLMConfig.providers` and validated via `ProviderConfig` when needed. Used for:
   - resolving env vars for API keys (`api_key_env`),
   - supplying `base_url`,
   - indicating whether the provider requires an API key (`requires_api_key`).
+  - `price_multiplier` (default 1.0): what the provider charges against the list prices written in its models' `pricing`, for example 1.1 for an endpoint that costs 10% more. A model's pricing is scaled by it when the config is loaded, so every cost computed from it (usage logs, cost tracking, pricing snapshots) includes it.
 
 - **`models`**: each named entry becomes a `ModelConfig` in `LLMConfig.models`.
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
   - `base_url` on a model entry overrides its provider's, so one provider can serve a model from another endpoint (for example a regional one). The entry's key is still the model's name at the provider, so a model served from two endpoints needs two names for it (a dated version and an alias, say).
+  - `price_multiplier` on a model entry overrides its provider's, for a model on an endpoint that is priced differently from the provider's.
   - `multimodal: true|false` declares whether the model can accept multimodal inputs. Tool loading uses this flag to decide whether tools that declare `requires_multimodal = True` are exposed directly, skipped, or retained for delegation.
   - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
   - `reasoning_config` can store provider-specific nested kwargs for reasoning / thinking models (for example OpenAI reasoning, Claude thinking, or Gemini thought settings).

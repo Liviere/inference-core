@@ -71,7 +71,18 @@ providers:
     openai_compatible: false
     # Optional endpoint override (self-hosted / regional deployments).
     # Unset uses https://api.mistral.ai/v1 (or MISTRAL_BASE_URL when exported).
-    # base_url: 'https://api.mistral.ai/v1'
+    # The global endpoint does not commit to where a request is processed;
+    # the regional ones do: https://api.eu.mistral.ai/v1 (EU/EFTA) and
+    # https://api.us.mistral.ai/v1. A regional endpoint serves only the models
+    # hosted in its region, costs 1.1x the list price, and has no Batch, Files
+    # or Agents API (inference-core calls none of them for Mistral). The model
+    # catalog reads the listing of this same endpoint.
+    # Source: https://docs.mistral.ai/inference/regional-inference
+    # base_url: 'https://api.eu.mistral.ai/v1'
+    # What the provider charges against the list prices in its models'
+    # `pricing` (default 1.0). Every cost computed for its models is scaled by
+    # it, so the prices below stay the list prices.
+    # price_multiplier: 1.1
 
 # Available Models Configuration
 #
@@ -504,13 +515,17 @@ models:
       rounding:
         decimals: 6
 
-  # Mistral Small served from the EU endpoint (data processed in the EU, about
-  # 10% dearer). A model entry's base_url overrides its provider's. The key is
-  # the dated name of the model that mistral-small-latest points to, since an
-  # entry's key is the name the provider is asked for.
+  # Mistral Small served from the EU endpoint (data processed in the EU, 10%
+  # dearer). A model entry's base_url and price_multiplier override its
+  # provider's; the pricing stays the list price. The key is the dated name of
+  # the model that mistral-small-latest points to, since an entry's key is the
+  # name the provider is asked for. With the whole provider on the EU endpoint
+  # (base_url and price_multiplier under `providers: mistral:`) no such
+  # second entry is needed.
   mistral-small-2603:
     provider: 'mistral'
     base_url: 'https://api.eu.mistral.ai/v1'
+    price_multiplier: 1.1
     display_name: 'Mistral Small (EU)'
     description: 'Mistral Small on the EU endpoint'
     max_tokens: 8192
@@ -518,9 +533,9 @@ models:
     pricing:
       currency: USD
       input:
-        cost_per_1m: 0.165 # $0.15 per 1M tokens, +10% on the EU endpoint
+        cost_per_1m: 0.15 # $0.15 per 1M tokens (list price)
       output:
-        cost_per_1m: 0.66 # $0.60 per 1M tokens, +10% on the EU endpoint
+        cost_per_1m: 0.6 # $0.60 per 1M tokens (list price)
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens

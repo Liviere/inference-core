@@ -41,6 +41,8 @@ Providers do not say the same things about their models:
 
 No provider notifies about changes, so the catalog asks on a schedule.
 
+A provider is asked where its models are called: at its `base_url`, or at the lister's default address without one. A model entry with a `base_url` of its own (a regional endpoint, for example) is asked about at that address instead, by its listing and then by id, because another endpoint may serve other models. What the provider's own endpoint lists under that model's name does not count for it, and the rest of the other endpoint's listing is not stored.
+
 ## Switching it on
 
 | Variable                                     | Default | Description                                                                                             |

@@ -73,6 +73,29 @@ class ProviderConfig(BaseModel):
     application layer may override every model of this provider with a
     user-supplied key at request time. Has no effect on the global config.
     """
+    price_multiplier: float = Field(default=1.0, gt=0.0)
+    """What the provider charges against the list prices in its models'
+    ``pricing``: 1.1 where it charges 10% more, as some providers do for a
+    regional endpoint. Every cost computed for its models is scaled by it. A
+    model entry's own ``price_multiplier`` overrides it (a model on another
+    endpoint than its provider's). The default, 1.0, leaves the prices as
+    they are written.
+    """
+
+
+def _price_multiplier(
+    model_name: str, model_data: Dict[str, Any], provider_config: ProviderConfig
+) -> float:
+    """The model entry's ``price_multiplier``, or its provider's."""
+    value = model_data.get("price_multiplier")
+    if value is None:
+        return provider_config.price_multiplier
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError(
+            f"Model '{model_name}': price_multiplier must be a positive number, "
+            f"not {value!r}"
+        )
+    return float(value)
 
 
 class ProviderCatalogConfig(BaseModel):
@@ -305,6 +328,24 @@ class PricingConfig(BaseModel):
     extras_policy: ExtrasPolicy = Field(
         default_factory=ExtrasPolicy, description="Policy for handling extra dimensions"
     )
+
+    def scaled(self, multiplier: float) -> "PricingConfig":
+        """These prices times ``multiplier``, every token dimension of them."""
+        if multiplier == 1.0:
+            return self
+
+        def times(price: DimensionPrice) -> DimensionPrice:
+            return price.model_copy(
+                update={"cost_per_1k": price.cost_per_1k * multiplier}
+            )
+
+        return self.model_copy(
+            update={
+                "input": times(self.input),
+                "output": times(self.output),
+                "extras": {name: times(price) for name, price in self.extras.items()},
+            }
+        )
 
 
 class UsageLoggingConfig(BaseModel):
@@ -1246,6 +1287,14 @@ class LLMConfig:
                 except Exception as e:
                     logging.error(f"Error parsing pricing config for {model_name}: {e}")
 
+            # The pricing is written at list prices; what the provider (or the
+            # model's own endpoint) charges on top of them is applied here, so
+            # every cost computed from the model's pricing includes it.
+            if pricing_config is not None:
+                pricing_config = pricing_config.scaled(
+                    _price_multiplier(model_name, model_data, provider_config)
+                )
+
             # Prepare initialization data, excluding fields we construct manually
             init_data = model_data.copy()
             init_data.pop("provider", None)
@@ -1253,6 +1302,7 @@ class LLMConfig:
             init_data.pop("api_key", None)
             init_data.pop("base_url", None)
             init_data.pop("pricing", None)
+            init_data.pop("price_multiplier", None)
 
             self.models[model_name] = ModelConfig(
                 name=model_name,

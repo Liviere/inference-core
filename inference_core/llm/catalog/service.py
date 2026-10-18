@@ -6,6 +6,10 @@ those providers, one listing each plus one request for every configured model
 the listing does not show (an alias, a model of another account, a model that
 was retired), and stores what :mod:`reconcile` makes of it.
 
+Each model is read where it is called: a provider at its ``base_url``, and a
+model entry with a ``base_url`` of its own (a regional endpoint, say) at that
+one, since another endpoint may not serve the same models.
+
 A reading that fails changes nothing but the provider's state: the models
 stay as they were, and the failure is there to be seen.
 
@@ -55,6 +59,8 @@ class ProviderPlan:
     provider: str
     configured: Tuple[str, ...]
     skip_reason: Optional[str] = None
+    # Configured models with a base_url of their own, and that base_url.
+    own_endpoints: Tuple[Tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,9 +105,31 @@ def plan_providers(config: LLMConfig) -> List[ProviderPlan]:
                 provider=provider,
                 configured=tuple(configured[provider]),
                 skip_reason=_skip_reason(config, provider),
+                own_endpoints=_own_endpoints(config, provider, configured[provider]),
             )
         )
     return plans
+
+
+def _endpoint(url: Any) -> Optional[str]:
+    if not isinstance(url, str) or not url.strip():
+        return None
+    return url.strip().rstrip("/")
+
+
+def _own_endpoints(
+    config: LLMConfig, provider: str, models: Sequence[str]
+) -> Tuple[Tuple[str, str], ...]:
+    """The models whose ``base_url`` is not their provider's, with it."""
+    provider_endpoint = _endpoint(
+        config.get_provider_runtime_config(provider).get("base_url")
+    )
+    own = []
+    for name in models:
+        endpoint = _endpoint(config.models[name].base_url)
+        if endpoint and endpoint != provider_endpoint:
+            own.append((name, endpoint))
+    return tuple(own)
 
 
 def _skip_reason(config: LLMConfig, provider: str) -> Optional[str]:
@@ -148,13 +176,32 @@ def _is_due(
     return now - last_success >= interval
 
 
+def _as_configured(found: DiscoveredModel, model_id: str) -> DiscoveredModel:
+    """``found`` under the id the config uses, with what it stands for."""
+    if found.model_id == model_id:
+        return found
+    return replace(
+        found,
+        model_id=model_id,
+        attributes={**found.attributes, "resolves_to": found.model_id},
+    )
+
+
 async def _read_provider(
     lister: ModelLister,
     runtime: Dict[str, Any],
     configured: Sequence[str],
     client: httpx.AsyncClient,
+    own_endpoints: Optional[Dict[str, str]] = None,
 ) -> _Reading:
-    listed = await lister.list_models(runtime, client)
+    own_endpoints = own_endpoints or {}
+    # What the provider's endpoint says of a model that is called elsewhere
+    # does not count for it.
+    listed = [
+        model
+        for model in await lister.list_models(runtime, client)
+        if model.model_id not in own_endpoints
+    ]
     known = {model.model_id for model in listed}
     for model in listed:
         known.update(model.aliases)
@@ -163,21 +210,40 @@ async def _read_provider(
     not_found: Set[str] = set()
     if lister.get_model is not None:
         for model_id in configured:
-            if model_id in known:
+            if model_id in known or model_id in own_endpoints:
                 continue
             found = await lister.get_model(runtime, client, model_id)
             if found is None:
                 not_found.add(model_id)
                 continue
-            if found.model_id != model_id:
-                # Kept under the id the config uses, with what it stands for.
-                found = replace(
-                    found,
-                    model_id=model_id,
-                    attributes={**found.attributes, "resolves_to": found.model_id},
-                )
-            looked_up.append(found)
+            looked_up.append(_as_configured(found, model_id))
+
+    by_endpoint: Dict[str, List[str]] = {}
+    for model_id, endpoint in own_endpoints.items():
+        by_endpoint.setdefault(endpoint, []).append(model_id)
+    for endpoint, model_ids in sorted(by_endpoint.items()):
+        reading = await _read_provider(
+            lister, {**runtime, "base_url": endpoint}, model_ids, client
+        )
+        looked_up.extend(_configured_of(reading, model_ids))
+        not_found.update(reading.not_found)
     return _Reading(listed=listed, looked_up=looked_up, not_found=not_found)
+
+
+def _configured_of(
+    reading: _Reading, model_ids: Sequence[str]
+) -> List[DiscoveredModel]:
+    """The models ``model_ids`` name in a reading of their own endpoint.
+
+    Only those: the rest of that endpoint's listing is not the provider's.
+    """
+    found: List[DiscoveredModel] = list(reading.looked_up)
+    wanted = set(model_ids) - {model.model_id for model in found}
+    for model in reading.listed:
+        for model_id in sorted(wanted & ({model.model_id} | set(model.aliases))):
+            found.append(_as_configured(model, model_id))
+            wanted.discard(model_id)
+    return found
 
 
 async def _store_reading(
@@ -309,6 +375,7 @@ async def refresh(
                         config.get_provider_runtime_config(plan.provider),
                         plan.configured,
                         http,
+                        dict(plan.own_endpoints),
                     ),
                     PROVIDER_TIMEOUT_SECONDS,
                 )
