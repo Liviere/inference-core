@@ -820,6 +820,132 @@ def test_the_options_make_a_service_that_supersedes_held_changes(store):
     )
 
 
+# --------------------------------------------------------------------------- #
+# Memories of earlier runs like this one
+# --------------------------------------------------------------------------- #
+
+JOB = {"job": "daily-rate"}
+
+
+def _job_service(store, related=None, *spaces, origin=None):
+    return AgentMemoryStoreService(
+        store=store,
+        spaces=list(spaces or [GENERAL, PRIVATE]),
+        default_write="private",
+        origin=origin if origin is not None else JOB,
+        related_origin=related,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_memories_of_earlier_runs_are_found_by_their_origin(store):
+    earlier = _job_service(store)
+    first = await earlier.save_memory("u1", "Rate as a table", "instructions")
+    second = await earlier.save_memory(
+        "u1", "The user follows EUR/PLN", "facts", space="general"
+    )
+    other = _job_service(store, origin={"job": "weather"})
+    await other.save_memory("u1", "Weather in the morning", "instructions")
+    await _job_service(store, origin={}).save_memory("u1", "Likes tea", "preferences")
+
+    found = await _job_service(store, JOB).related_memories("u1")
+
+    assert sorted(doc.id for doc in found) == sorted([first, second])
+    assert {doc.space_key for doc in found} == {"general", "private"}
+
+
+@pytest.mark.asyncio
+async def test_only_spaces_the_agent_writes_are_looked_through(store):
+    await _job_service(store, None, TEAM).save_memory("u1", "Team rate", "facts")
+    read_only = MemorySpace(
+        key="team",
+        label="Team",
+        description="The team.",
+        path=("space:t1",),
+        writable=False,
+    )
+
+    found = await _job_service(store, JOB, GENERAL, read_only).related_memories("u1")
+
+    assert found == []
+
+
+@pytest.mark.asyncio
+async def test_without_a_related_origin_none_are_looked_for(store):
+    await _job_service(store).save_memory("u1", "Rate as a table", "instructions")
+    recording = _SearchRecordingStore()
+
+    assert await _job_service(store).related_memories("u1") == []
+    assert await _job_service(recording).related_memories("u1") == []
+    assert recording.searches == []
+
+
+def test_the_options_make_a_service_that_finds_related_memories(store):
+    from inference_core.services.agent_memory_service import MemoryOptions
+
+    assert MemoryOptions().service(store).related_origin == {}
+    assert MemoryOptions(related_origin=JOB).service(store).related_origin == JOB
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_is_shown_the_memories_of_earlier_runs_first(store):
+    earlier = _job_service(store)
+    mid = await earlier.save_memory("u1", "Rate as a table", "instructions")
+    service = _job_service(store, JOB)
+    middleware = MemoryMiddleware(memory_service=service, user_id="u1")
+
+    text, ids = await middleware._prefetch_related_memories("u1")
+    similar = await middleware._prefetch_existing_memories(
+        "Rate as a table", "u1", exclude=ids
+    )
+
+    assert ids == [mid]
+    assert f"[id: {mid}]" in text and "Rate as a table" in text
+    assert mid not in similar
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_puts_the_earlier_runs_first(store):
+    mid = await _job_service(store).save_memory("u1", "Rate as a table", "instructions")
+    middleware = MemoryMiddleware(memory_service=_job_service(store, JOB), user_id="u1")
+    seen = {}
+
+    async def first_answer(model, tools, messages):
+        seen["prompt"] = messages[-1]["content"]
+        return None
+
+    async def bill(*args, **kwargs):
+        return None
+
+    middleware._first_answer = first_answer
+    middleware._bill_memory_usage = bill
+    state = {"messages": [MagicMock(type="human", content="What is the rate?")]}
+
+    await middleware._analyse_via_tool_call(state, MagicMock(), "m", "u1", False)
+
+    prompt = seen["prompt"]
+    assert "MEMORIES FROM EARLIER RUNS LIKE THIS ONE" in prompt
+    assert f"[id: {mid}]" in prompt
+    assert prompt.index("MEMORIES FROM EARLIER RUNS") < prompt.index("Conversation:")
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_is_shown_memories_as_the_renderer_turns_them(store):
+    service = AgentMemoryStoreService(
+        store=store,
+        spaces=[GENERAL],
+        origin=JOB,
+        related_origin=JOB,
+        entry_renderer=lambda doc, line: f"{line} <rendered>",
+    )
+    await service.save_memory("u1", "Rate as a table", "instructions")
+    middleware = MemoryMiddleware(memory_service=service, user_id="u1")
+
+    related, _ = await middleware._prefetch_related_memories("u1")
+
+    assert related.endswith("<rendered>")
+
+
 @pytest.mark.asyncio
 async def test_the_renderer_turns_each_recalled_line(store):
     service = AgentMemoryStoreService(

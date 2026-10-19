@@ -424,6 +424,15 @@ says, and the change keeps its category, it is neither written nor held. A
 save or a change the agent makes with the tool during the run is not checked,
 and without a threshold nothing is.
 
+The memories the analysis is shown first go through the service's
+`entry_renderer`, like recalled ones. With `MemoryOptions(related_origin=...)`
+it is also shown, before them and with their ids, the memories of the spaces
+it writes whose recorded origin holds every one of those values (for instance
+the job that starts the run, which the application puts in `origin` too), and
+it is asked to change the one about the same thing rather than save a new one.
+The newest `REPEAT_SCAN_LIMIT` of each namespace are looked through, without a
+query; without `related_origin` none are.
+
 A held change to a memory waits next to the changes to it already held. With
 `MemoryOptions(supersede_held_changes=True)` it takes their place, so that one
 change at most waits per memory; held new memories are left as they are.

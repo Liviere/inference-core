@@ -406,6 +406,13 @@ REPEATED_REASONS = {
 UNCHANGED_REASON = "The new text nearly repeats what the memory already says."
 
 
+def _origin_has(origin: Any, wanted: Dict[str, Any]) -> bool:
+    """Whether a memory's recorded *origin* holds every value of *wanted*."""
+    if not isinstance(origin, dict):
+        return False
+    return all(origin.get(key) == value for key, value in wanted.items())
+
+
 def _comparable(text: Any) -> str:
     """A memory's text as it is compared: lower case, whitespace collapsed."""
     return " ".join(str(text or "").lower().split())
@@ -426,6 +433,7 @@ class MemoryOptions:
     entry_renderer: Optional[Callable[["MemoryStoreDocument", str], str]] = None
     repeat_threshold: Optional[float] = None
     supersede_held_changes: bool = False
+    related_origin: Dict[str, Any] = field(default_factory=dict)
 
     def service(
         self, store: Any, *, max_results: int = 5, base_namespace: Sequence[str] = ()
@@ -442,6 +450,7 @@ class MemoryOptions:
             entry_renderer=self.entry_renderer,
             repeat_threshold=self.repeat_threshold,
             supersede_held_changes=self.supersede_held_changes,
+            related_origin=self.related_origin,
         )
 
 
@@ -755,6 +764,7 @@ class AgentMemoryStoreService:
         ] = None,
         repeat_threshold: Optional[float] = None,
         supersede_held_changes: bool = False,
+        related_origin: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Args:
@@ -779,6 +789,11 @@ class AgentMemoryStoreService:
             supersede_held_changes: A held change to a memory takes the place
                 of the changes to it already held, so that one at most waits
                 per memory. ``False`` keeps them all.
+            related_origin: What the memories of runs like this one record in
+                their origin (for instance the job that starts them). The
+                analysis after the run is shown those first, with their ids
+                (:meth:`related_memories`), so that it changes them rather
+                than writing new ones. Empty shows none.
         """
         self.store = store
         self.base_namespace = tuple(base_namespace)
@@ -803,6 +818,7 @@ class AgentMemoryStoreService:
         self.entry_renderer = entry_renderer
         self.repeat_threshold = repeat_threshold
         self.supersede_held_changes = supersede_held_changes
+        self.related_origin = dict(related_origin or {})
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def render_entry(self, document: "MemoryStoreDocument", line: str) -> str:
@@ -1462,6 +1478,38 @@ class AgentMemoryStoreService:
             query[:50] + "..." if len(query) > 50 else query,
             sort_by_time,
         )
+        return documents
+
+    async def related_memories(self, user_id: str) -> List[MemoryStoreDocument]:
+        """The memories of the spaces the agent writes whose origin records
+        every value of ``related_origin``, newest first.
+
+        The newest :data:`REPEAT_SCAN_LIMIT` of each namespace are looked
+        through, in one batch, without a query: what they have in common is
+        where they came from, not what they say. Empty without
+        ``related_origin``.
+        """
+        if not self.related_origin:
+            return []
+        user_id = str(user_id)
+        searches = []
+        seen: set = set()
+        for category in MemoryCategory:
+            for space in self.writable_spaces:
+                if not space.holds(category):
+                    continue
+                namespace = space.namespace(user_id, category)
+                if namespace not in seen:
+                    seen.add(namespace)
+                    searches.append((space, namespace, None, None, REPEAT_SCAN_LIMIT))
+        found = self._run_searches(searches, include_scores=False)
+        documents = [
+            doc
+            for docs in found
+            for doc in docs
+            if _origin_has(doc.metadata.get("origin"), self.related_origin)
+        ]
+        documents.sort(key=_newest_first, reverse=True)
         return documents
 
     async def recall_by_category(

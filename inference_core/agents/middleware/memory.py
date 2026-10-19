@@ -19,7 +19,16 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+)
 
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -967,12 +976,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             lines.append(f"Without `space`, a memory goes to {default}.")
         return "\n".join(lines) + "\n\n"
 
-    async def _prefetch_existing_memories(self, transcript: str, user_id: str) -> str:
+    async def _prefetch_existing_memories(
+        self, transcript: str, user_id: str, exclude: Sequence[str] = ()
+    ) -> str:
         """Retrieve memories semantically similar to the conversation transcript.
 
         WHY: Providing pre-fetched similar memories in the analysis prompt lets the
         model call update_memory_store instead of save_memory_store when the content
         is already captured, preventing near-duplicate accumulation across sessions.
+        Memories whose ids are in *exclude* (shown already) are left out.
 
         Returns:
             Plain-text formatted memory list, or empty string if nothing found or
@@ -991,36 +1003,72 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         # Only surface memories that are genuinely similar (score threshold prevents
         # loosely-related entries from polluting the deduplication context).
-        memories = [m for m in memories if (getattr(m, "score", None) or 0.0) >= 0.60]
+        shown = set(exclude)
+        memories = [
+            m
+            for m in memories
+            if (getattr(m, "score", None) or 0.0) >= 0.60
+            and getattr(m, "id", None) not in shown
+        ]
 
         if not memories:
             return ""
 
         lines: list[str] = [f"Found {len(memories)} potentially related memories:"]
-        for idx, mem in enumerate(memories, 1):
-            mem_id = getattr(mem, "id", "unknown")
-            mem_type = getattr(mem, "memory_type", None) or "general"
-            mem_cat = getattr(mem, "memory_category", None) or ""
-            mem_topic = getattr(mem, "topic", None) or ""
-            created_at = getattr(mem, "created_at", None)
-            created_str = ""
-            if created_at:
-                if hasattr(created_at, "strftime"):
-                    created_str = f" [created: {created_at.strftime('%Y-%m-%d %H:%M')}]"
-                elif isinstance(created_at, str):
-                    created_str = f" [created: {created_at[:16]}]"
-            cat_str = f" [{mem_cat}]" if mem_cat else ""
-            topic_str = f" ({mem_topic})" if mem_topic else ""
-            space = getattr(mem, "space", None)
-            space_str = ""
-            if space is not None:
-                access = "" if space.writable else ", read only"
-                space_str = f" [space: {space.key}{access}]"
-            lines.append(
-                f"{idx}. [id: {mem_id}]{cat_str} [{mem_type}]{topic_str}{space_str}"
-                f"{created_str}: {mem.content}"
-            )
+        lines.extend(
+            self._prefetched_line(idx, mem) for idx, mem in enumerate(memories, 1)
+        )
         return "\n".join(lines)
+
+    async def _prefetch_related_memories(self, user_id: str) -> tuple[str, list[str]]:
+        """The memories of earlier runs like this one (``related_memories``),
+        as a list for the prompt, and their ids; ``("", [])`` without any."""
+        related = getattr(self.memory_service, "related_memories", None)
+        if not callable(related):
+            return "", []
+        try:
+            memories = list(await related(user_id))[:12]
+        except Exception as e:
+            logger.debug("Related memories for post-run analysis failed: %s", e)
+            return "", []
+        if not memories:
+            return "", []
+        lines = [
+            self._prefetched_line(idx, mem) for idx, mem in enumerate(memories, 1)
+        ]
+        return "\n".join(lines), [getattr(mem, "id", "") for mem in memories]
+
+    def _prefetched_line(self, idx: int, mem: Any) -> str:
+        """One memory as the analysis is shown it, through the service's
+        renderer like any recalled memory."""
+        mem_id = getattr(mem, "id", "unknown")
+        mem_type = getattr(mem, "memory_type", None) or "general"
+        mem_cat = getattr(mem, "memory_category", None) or ""
+        mem_topic = getattr(mem, "topic", None) or ""
+        created_at = getattr(mem, "created_at", None)
+        created_str = ""
+        if created_at:
+            if hasattr(created_at, "strftime"):
+                created_str = f" [created: {created_at.strftime('%Y-%m-%d %H:%M')}]"
+            elif isinstance(created_at, str):
+                created_str = f" [created: {created_at[:16]}]"
+        cat_str = f" [{mem_cat}]" if mem_cat else ""
+        topic_str = f" ({mem_topic})" if mem_topic else ""
+        space = getattr(mem, "space", None)
+        space_str = ""
+        if space is not None:
+            access = "" if space.writable else ", read only"
+            space_str = f" [space: {space.key}{access}]"
+        line = (
+            f"{idx}. [id: {mem_id}]{cat_str} [{mem_type}]{topic_str}{space_str}"
+            f"{created_str}: {mem.content}"
+        )
+        render = getattr(self.memory_service, "render_entry", None)
+        if callable(render) and hasattr(mem, "saved_at"):
+            rendered = render(mem, line)
+            if isinstance(rendered, str):
+                return rendered
+        return line
 
     async def _analyse_via_tool_call(
         self,
@@ -1065,15 +1113,27 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         # Pre-fetch semantically similar memories to give the model a head-start
         # on deduplication without requiring a recall round-trip first.
-        existing_text = await self._prefetch_existing_memories(transcript, user_id)
+        related_text, related_ids = await self._prefetch_related_memories(user_id)
+        existing_text = await self._prefetch_existing_memories(
+            transcript, user_id, exclude=related_ids
+        )
+        existing_memories_section = ""
+        if related_text:
+            existing_memories_section += (
+                "MEMORIES FROM EARLIER RUNS LIKE THIS ONE\n"
+                "========================================\n"
+                f"{related_text}\n"
+                "They were written in earlier runs started the same way as this "
+                "one. When the conversation is about the same thing, change the "
+                "one that covers it with `update_memory_store` and its id instead "
+                "of saving a new memory about it.\n\n"
+            )
         if existing_text:
-            existing_memories_section = (
+            existing_memories_section += (
                 "EXISTING MEMORIES (retrieved by semantic similarity to this conversation)\n"
                 "=========================================================================\n"
                 f"{existing_text}\n\n"
             )
-        else:
-            existing_memories_section = ""
 
         already_saved_note = (
             "Note: the agent already saved some memories during this session. "

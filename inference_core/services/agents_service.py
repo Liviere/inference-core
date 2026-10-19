@@ -1396,6 +1396,7 @@ class AgentService:
                         supersede_held_changes=(
                             options.supersede_held_changes if options else False
                         ),
+                        related_origin=options.related_origin if options else None,
                         **({"hold_path": options.hold_path} if options else {}),
                     )
             except Exception as exc:
