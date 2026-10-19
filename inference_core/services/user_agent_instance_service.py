@@ -7,7 +7,18 @@ Handles validation, default management, and template listing.
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Collection,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+)
 from uuid import UUID
 
 from sqlalchemy import and_, select, update
@@ -37,6 +48,11 @@ class InstanceCheck:
     ``instance_id``, ``previous_base_agent_name`` and ``previous_overrides``
     are None when the instance is being created. ``actor_is_superuser`` is
     None when the caller did not say who is acting.
+
+    ``primary_model``, ``is_deepagent``, ``skills`` and ``subagent_ids`` are
+    what the instance will have once saved: the new value where it changes,
+    the stored one where it does not. ``previous_primary_model`` is None when
+    the instance is being created.
     """
 
     user_id: UUID
@@ -46,6 +62,11 @@ class InstanceCheck:
     previous_base_agent_name: Optional[str]
     previous_overrides: Optional[Dict[str, Any]]
     actor_is_superuser: Optional[bool]
+    primary_model: Optional[str] = None
+    previous_primary_model: Optional[str] = None
+    is_deepagent: bool = False
+    skills: Optional[Tuple[Dict[str, str], ...]] = None
+    subagent_ids: Tuple[UUID, ...] = ()
 
     def changed(self, key: str) -> bool:
         """Whether ``key`` of config_overrides is new, changed or removed."""
@@ -61,15 +82,25 @@ class InstanceCheck:
 
 
 # What an application adds to the life of an instance: checks of its own on
-# config_overrides, and work to do once an instance is deleted (what it kept
+# config_overrides, models it lets a user's instances name besides the
+# configured ones, and work to do once an instance is deleted (what it kept
 # elsewhere under its id).
 OverridesValidator = Callable[[AsyncSession, UUID, Dict[str, Any]], Awaitable[None]]
 InstanceValidator = Callable[[AsyncSession, InstanceCheck], Awaitable[None]]
 InstanceDeletedHook = Callable[[UUID, UUID], Awaitable[None]]
+ExtraModelsSource = Callable[[AsyncSession, UUID], Awaitable[Collection[str]]]
+
+#: What else, besides config_overrides and the base agent, may make an
+#: instance validator run again (see :func:`register_instance_validator`).
+INSTANCE_CHANGES: FrozenSet[str] = frozenset(
+    {"primary_model", "is_deepagent", "skills", "subagents"}
+)
 
 _overrides_validators: List[OverridesValidator] = []
 _instance_validators: List[InstanceValidator] = []
+_instance_validator_triggers: Dict[InstanceValidator, FrozenSet[str]] = {}
 _instance_deleted_hooks: List[InstanceDeletedHook] = []
+_extra_models_sources: List[ExtraModelsSource] = []
 
 
 def register_config_overrides_validator(validator: OverridesValidator) -> None:
@@ -82,15 +113,39 @@ def register_config_overrides_validator(validator: OverridesValidator) -> None:
         _overrides_validators.append(validator)
 
 
-def register_instance_validator(validator: InstanceValidator) -> None:
+def register_instance_validator(
+    validator: InstanceValidator, *, also_on: Iterable[str] = ()
+) -> None:
     """Check an instance when it is created, or when its config_overrides or
     its base agent changes.
 
     ``validator(db, check)`` gets the :class:`InstanceCheck` and raises
     ``ValueError`` to refuse; the message reaches the caller as it is.
+
+    ``also_on`` names other changes that run it too, from
+    :data:`INSTANCE_CHANGES`: ``primary_model``, ``is_deepagent``, ``skills``
+    and ``subagents``. By default a change of those alone runs no check.
     """
+    triggers = frozenset(also_on)
+    unknown = triggers - INSTANCE_CHANGES
+    if unknown:
+        raise ValueError(f"Unknown instance changes: {sorted(unknown)}")
     if validator not in _instance_validators:
         _instance_validators.append(validator)
+    _instance_validator_triggers[validator] = triggers
+
+
+def register_extra_models_source(source: ExtraModelsSource) -> None:
+    """Let a user's instances name models the configuration does not list.
+
+    ``source(db, user_id)`` returns the model names that user's instances may
+    have as their primary model besides the available ones, e.g. models the
+    application registers for that user at run time. It is asked only for a
+    model the configuration does not have. Which instance may use which model
+    is for an instance validator to say (``also_on={"primary_model"}``).
+    """
+    if source not in _extra_models_sources:
+        _extra_models_sources.append(source)
 
 
 def register_instance_deleted_hook(hook: InstanceDeletedHook) -> None:
@@ -130,10 +185,37 @@ def _check_mcp_profile(check: InstanceCheck) -> None:
         raise ValueError(problem)
 
 
-async def _run_instance_checks(db: AsyncSession, check: InstanceCheck) -> None:
-    _check_mcp_profile(check)
+async def _run_instance_checks(
+    db: AsyncSession,
+    check: InstanceCheck,
+    only_on: Optional[FrozenSet[str]] = None,
+) -> None:
+    """Run the checks on what an instance is about to become.
+
+    ``only_on`` is set when nothing changes but some of
+    :data:`INSTANCE_CHANGES`: then only the validators registered for one of
+    those run.
+    """
+    if only_on is None:
+        _check_mcp_profile(check)
     for validator in list(_instance_validators):
+        if only_on is not None and not (
+            _instance_validator_triggers.get(validator, frozenset()) & only_on
+        ):
+            continue
         await validator(db, check)
+
+
+async def _model_is_admitted(
+    db: AsyncSession, user_id: UUID, model: str, available: Collection[str]
+) -> bool:
+    """Whether ``user_id``'s instance may name ``model`` as its primary model."""
+    if model in available:
+        return True
+    for source in list(_extra_models_sources):
+        if model in set(await source(db, user_id)):
+            return True
+    return False
 
 
 async def run_instance_deleted_hooks(user_id: UUID, instance_id: UUID) -> None:
@@ -309,7 +391,9 @@ class UserAgentInstanceService:
             )
 
         # Validate primary model if provided
-        if primary_model and primary_model not in resolved.available_models:
+        if primary_model and not await _model_is_admitted(
+            self.db, user_id, primary_model, resolved.available_models
+        ):
             available = resolved.available_models
             raise ValueError(
                 f"Model '{primary_model}' not found. " f"Available models: {available}"
@@ -330,6 +414,12 @@ class UserAgentInstanceService:
                 previous_base_agent_name=None,
                 previous_overrides=None,
                 actor_is_superuser=actor_is_superuser,
+                primary_model=primary_model,
+                is_deepagent=bool(is_deepagent),
+                skills=tuple(skills) if skills is not None else None,
+                subagent_ids=(
+                    tuple(subagent_ids) if is_deepagent and subagent_ids else ()
+                ),
             ),
         )
 
@@ -407,7 +497,8 @@ class UserAgentInstanceService:
 
         Validates model names and manages default flag. The instance checks
         run again when config_overrides or the base agent changes, with
-        ``actor_is_superuser`` as in :meth:`create_instance`.
+        ``actor_is_superuser`` as in :meth:`create_instance`; a validator
+        registered ``also_on`` other changes runs on those too.
         """
         validate_agent_prompt_lengths(
             system_prompt_override=updates.get("system_prompt_override"),
@@ -434,7 +525,9 @@ class UserAgentInstanceService:
         # Validate primary_model if being updated
         if "primary_model" in updates and updates["primary_model"] is not None:
             resolved = await self.llm_config_service.get_resolved_config(user_id)
-            if updates["primary_model"] not in resolved.available_models:
+            if not await _model_is_admitted(
+                self.db, user_id, updates["primary_model"], resolved.available_models
+            ):
                 available = resolved.available_models
                 raise ValueError(
                     f"Model '{updates['primary_model']}' not found. "
@@ -474,7 +567,31 @@ class UserAgentInstanceService:
             )
 
         new_base = updates.get("base_agent_name") or instance.base_agent_name
-        if overrides_change or new_base != instance.base_agent_name:
+        # What else changes, for the validators registered ``also_on`` it.
+        # A value of None leaves a field as it is (see "Apply updates").
+        new_model = updates.get("primary_model") or instance.primary_model
+        new_deep = updates.get("is_deepagent")
+        new_deep = instance.is_deepagent if new_deep is None else new_deep
+        new_skills = updates.get("skills")
+        new_skills = instance.skills if new_skills is None else new_skills
+        current_subagent_ids = tuple(sub.id for sub in instance.subagents or [])
+        new_subagent_ids = (
+            tuple(updates["subagent_ids"])
+            if updates.get("subagent_ids")
+            else current_subagent_ids
+        )
+        other_changes = frozenset(
+            name
+            for name, changed in (
+                ("primary_model", new_model != instance.primary_model),
+                ("is_deepagent", bool(new_deep) != bool(instance.is_deepagent)),
+                ("skills", new_skills != instance.skills),
+                ("subagents", new_subagent_ids != current_subagent_ids),
+            )
+            if changed
+        )
+        main_change = overrides_change or new_base != instance.base_agent_name
+        if main_change or other_changes:
             previous_overrides = dict(instance.config_overrides or {})
             await _run_instance_checks(
                 self.db,
@@ -490,7 +607,13 @@ class UserAgentInstanceService:
                     previous_base_agent_name=instance.base_agent_name,
                     previous_overrides=previous_overrides,
                     actor_is_superuser=actor_is_superuser,
+                    primary_model=new_model,
+                    previous_primary_model=instance.primary_model,
+                    is_deepagent=bool(new_deep),
+                    skills=tuple(new_skills) if new_skills is not None else None,
+                    subagent_ids=new_subagent_ids,
                 ),
+                only_on=None if main_change else other_changes,
             )
 
         # Handle default flag

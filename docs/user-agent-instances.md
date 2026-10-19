@@ -82,6 +82,30 @@ Example payload fragment:
 }
 ```
 
+## Checks an Application Adds
+
+`inference_core.services.user_agent_instance_service` lets a consuming
+application take part in what an instance may be. Without registrations the
+service behaves as described above.
+
+- `register_config_overrides_validator(fn)`: `fn(db, user_id, overrides)`
+  raises `ValueError` to refuse `config_overrides`.
+- `register_instance_validator(fn, also_on=())`: `fn(db, check)` gets an
+  `InstanceCheck` (what the instance is about to become: its base agent,
+  `config_overrides`, `primary_model`, `is_deepagent`, `skills`,
+  `subagent_ids`, and the previous values where it is changed) and raises
+  `ValueError` to refuse. It runs when an instance is created, and when its
+  `config_overrides` or base agent changes. `also_on` adds other changes that
+  run it: any of `primary_model`, `is_deepagent`, `skills`, `subagents`.
+- `register_extra_models_source(fn)`: `fn(db, user_id)` returns model names
+  that user's instances may set as `primary_model` although the resolved
+  configuration does not list them, e.g. models the application registers for
+  that user at run time. It is asked only for a model the configuration does
+  not have; which base agent may use such a model is for an instance validator
+  with `also_on={"primary_model"}` to decide.
+- `register_instance_deleted_hook(fn)`: `fn(user_id, instance_id)` runs after
+  an instance is deleted.
+
 ## API Usage
 
 ### Managing Instances
