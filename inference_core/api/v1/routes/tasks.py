@@ -3,12 +3,23 @@ Task Management Router
 
 API endpoints for managing asynchronous tasks.
 Provides endpoints for task status checking, cancellation, and monitoring.
+
+The endpoints are split into two routers so the application factory can guard
+them separately (``tasks_api_access_mode``):
+
+* ``read_router``: status and result of one task, which its submitter polls;
+* ``admin_router``: cancellation and the endpoints that are not about one
+  task (active tasks, worker stats, task health).
+
+``router`` holds both, unguarded, as before.
 """
 
+import inspect
 import logging
-from typing import Annotated, Optional
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
 from inference_core.schemas.tasks_responses import (
     ActiveTasksResponse,
@@ -20,7 +31,11 @@ from inference_core.services.task_service import TaskService, get_task_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/tasks", tags=["Task Management"])
+TASKS_PREFIX = "/tasks"
+TASKS_TAGS = ["Task Management"]
+
+read_router = APIRouter()
+admin_router = APIRouter()
 
 TASK_INSPECT_TIMEOUT_SECONDS = 1.0
 TASK_HEALTH_CACHE_TTL_SECONDS = 5.0
@@ -37,8 +52,42 @@ TaskIdPath = Annotated[
     ),
 ]
 
+TaskAccessChecker = Callable[
+    [str, Optional[dict[str, Any]]], Union[bool, Awaitable[bool]]
+]
+"""Decide whether a caller may see one task: ``(task_id, user) -> bool``.
 
-@router.get("/{task_id}/status", response_model=TaskStatusResponse)
+``user`` is the authenticated user's dict, or None when the caller is
+anonymous. May be sync or async.
+"""
+
+
+def task_visibility_dependency(
+    checker: TaskAccessChecker,
+    user_dependency: Callable[..., Any],
+) -> Callable[..., Awaitable[None]]:
+    """Build a dependency that hides the tasks ``checker`` refuses.
+
+    A refusal answers 404, the same as for a task that does not exist, so the
+    answer does not tell whether a task id is in use.
+    """
+
+    async def _require_visible_task(
+        task_id: TaskIdPath,
+        current_user: Optional[dict[str, Any]] = Depends(user_dependency),
+    ) -> None:
+        allowed = checker(task_id, current_user)
+        if inspect.isawaitable(allowed):
+            allowed = await allowed
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+            )
+
+    return _require_visible_task
+
+
+@read_router.get("/{task_id}/status", response_model=TaskStatusResponse)
 async def get_task_status(
     task_id: TaskIdPath, task_service: TaskService = Depends(get_task_service)
 ):
@@ -48,16 +97,16 @@ async def get_task_status(
     Returns detailed information about task state, result, and any errors.
     """
     try:
-        status = await task_service.get_task_status_async(task_id)
+        task_status = await task_service.get_task_status_async(task_id)
 
         return TaskStatusResponse(
             task_id=task_id,
-            status=status["status"],
-            result=status["result"],
-            info=status["info"],
-            traceback=status["traceback"],
-            successful=status["successful"],
-            failed=status["failed"],
+            status=task_status["status"],
+            result=task_status["result"],
+            info=task_status["info"],
+            traceback=task_status["traceback"],
+            successful=task_status["successful"],
+            failed=task_status["failed"],
         )
 
     except Exception as e:
@@ -67,7 +116,7 @@ async def get_task_status(
         )
 
 
-@router.get("/{task_id}/result")
+@read_router.get("/{task_id}/result")
 async def get_task_result(
     task_id: TaskIdPath,
     timeout: Optional[float] = Query(default=None, description="Timeout in seconds"),
@@ -90,7 +139,7 @@ async def get_task_result(
         )
 
 
-@router.delete("/{task_id}", response_model=TaskCancelResponse)
+@admin_router.delete("/{task_id}", response_model=TaskCancelResponse)
 async def cancel_task(
     task_id: TaskIdPath, task_service: TaskService = Depends(get_task_service)
 ):
@@ -115,7 +164,7 @@ async def cancel_task(
         raise HTTPException(status_code=500, detail=f"Failed to cancel task: {str(e)}")
 
 
-@router.get("/active", response_model=ActiveTasksResponse)
+@admin_router.get("/active", response_model=ActiveTasksResponse)
 async def get_active_tasks(task_service: TaskService = Depends(get_task_service)):
     """
     Get information about currently active tasks.
@@ -142,7 +191,7 @@ async def get_active_tasks(task_service: TaskService = Depends(get_task_service)
         )
 
 
-@router.get("/workers/stats", response_model=WorkerStatsResponse)
+@admin_router.get("/workers/stats", response_model=WorkerStatsResponse)
 async def get_worker_stats(task_service: TaskService = Depends(get_task_service)):
     """
     Get statistics about Celery workers.
@@ -169,7 +218,7 @@ async def get_worker_stats(task_service: TaskService = Depends(get_task_service)
         )
 
 
-@router.get("/health")
+@admin_router.get("/health")
 async def health_check(task_service: TaskService = Depends(get_task_service)):
     """
     Check the health of the task system.
@@ -214,3 +263,9 @@ async def health_check(task_service: TaskService = Depends(get_task_service)):
             "message": f"Celery unavailable: {str(e)}",
             "celery_available": False,
         }
+
+
+# The unguarded router, in the order the endpoints have always been registered.
+router = APIRouter(prefix=TASKS_PREFIX, tags=TASKS_TAGS)
+router.include_router(read_router)
+router.include_router(admin_router)

@@ -339,6 +339,21 @@ class Settings(BaseSettings):
         description="Access control mode for LLM API endpoints. 'public' allows no authentication, 'user' requires authenticated active users, 'superuser' requires superuser privileges. Default: 'superuser' for security.",
     )
 
+    # Task API Access Control
+    tasks_api_access_mode: Literal["public", "user", "superuser"] = Field(
+        default="public",
+        description=(
+            "Access control mode for the /api/v1/tasks endpoints. 'public' "
+            "leaves them open (no authentication). 'user' requires an "
+            "authenticated active user for task status and result; 'superuser' "
+            "requires a superuser for them. Outside 'public', the endpoints "
+            "that are not about one task (active tasks, worker stats, task "
+            "health) and cancellation always require an active superuser. "
+            "To limit status and result to the task's owner, pass "
+            "task_access_checker to create_application()."
+        ),
+    )
+
     ###################################
     #       LLM EMULATION             #
     ###################################

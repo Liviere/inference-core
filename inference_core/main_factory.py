@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,11 @@ from .api.v1.routes import (
     vector,
 )
 from .core.config import Settings, get_settings
-from .core.dependecies import get_current_active_user, get_current_superuser
+from .core.dependecies import (
+    get_current_active_user,
+    get_current_superuser,
+    get_optional_current_user,
+)
 from .core.lifecycle import init_resources, shutdown_resources
 from .core.logging_config import setup_logging, shutdown_logging
 
@@ -116,9 +120,17 @@ def create_application(
     custom_settings: Settings = None,
     external_on_startup=None,
     external_on_shutdown=None,
+    task_access_checker: Optional[tasks.TaskAccessChecker] = None,
 ) -> FastAPI:
     """
     Create and configure FastAPI application
+
+    Args:
+        task_access_checker: Optional ``(task_id, user) -> bool`` (sync or
+            async) asked before a task's status or result is returned. A
+            refusal answers 404. ``user`` is None for an anonymous caller.
+            Without it, any caller allowed by ``tasks_api_access_mode`` may
+            read any task.
 
     Returns:
         Configured FastAPI application
@@ -149,7 +161,7 @@ def create_application(
     ###################################
 
     # Configure API routers explicitly
-    setup_routers(app, settings, external_routers)
+    setup_routers(app, settings, external_routers, task_access_checker)
 
     # Add root endpoint
     @app.get("/", tags=["Root"])
@@ -170,14 +182,70 @@ def create_application(
     return app
 
 
+def _include_task_routers(
+    api_v1: APIRouter,
+    settings: Settings,
+    task_access_checker: Optional[tasks.TaskAccessChecker],
+) -> None:
+    """Include the task endpoints with the access ``tasks_api_access_mode`` asks.
+
+    WHY one setting for both groups: the admin endpoints (cancel, active
+    tasks, worker stats, task health) are not about a task of the caller's own
+    — active tasks lists every task with its arguments, cancel stops anyone's
+    task. Opening them to every user would undo the guard on status and
+    result, so outside 'public' they always require an active superuser.
+    """
+    mode = settings.tasks_api_access_mode
+    if mode == "public" and task_access_checker is None:
+        api_v1.include_router(tasks.router)
+        return
+
+    if mode == "public":
+        read_user = get_optional_current_user
+        read_deps = []
+    elif mode == "user":
+        read_user = get_current_active_user
+        read_deps = [Depends(get_current_active_user)]
+    else:
+        read_user = get_current_superuser
+        read_deps = [Depends(get_current_active_user), Depends(get_current_superuser)]
+    if task_access_checker is not None:
+        read_deps.append(
+            Depends(tasks.task_visibility_dependency(task_access_checker, read_user))
+        )
+
+    admin_deps = (
+        []
+        if mode == "public"
+        else [Depends(get_current_active_user), Depends(get_current_superuser)]
+    )
+
+    api_v1.include_router(
+        tasks.read_router,
+        prefix=tasks.TASKS_PREFIX,
+        tags=tasks.TASKS_TAGS,
+        dependencies=read_deps,
+    )
+    api_v1.include_router(
+        tasks.admin_router,
+        prefix=tasks.TASKS_PREFIX,
+        tags=tasks.TASKS_TAGS,
+        dependencies=admin_deps,
+    )
+
+
 def setup_routers(
-    app: FastAPI, settings: Settings, external_routers: Dict[str, APIRouter] = None
+    app: FastAPI,
+    settings: Settings,
+    external_routers: Dict[str, APIRouter] = None,
+    task_access_checker: Optional[tasks.TaskAccessChecker] = None,
 ) -> None:
     """
     Setup all application routers explicitly
 
     Args:
         app: FastAPI application
+        task_access_checker: see ``create_application``
     """
     # Create API v1 router
     api_v1 = APIRouter(prefix="/api/v1")
@@ -199,7 +267,7 @@ def setup_routers(
     # Include all v1 endpoints with explicit configuration
     api_v1.include_router(health.router)
     api_v1.include_router(auth.router)
-    api_v1.include_router(tasks.router)
+    _include_task_routers(api_v1, settings, task_access_checker)
     api_v1.include_router(config.router)  # LLM configuration management
     api_v1.include_router(agent_instances.router)  # User agent instance management
     # Apply same access control to batch endpoints (public/user/superuser) derived from settings

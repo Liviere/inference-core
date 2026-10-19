@@ -98,6 +98,40 @@ Explicit environment variables or dotenv entries still win, so you can opt back 
 
 Docker compose uses a split worker topology by default: the threads worker handles I/O-bound queues, while the prefork embeddings worker isolates local SentenceTransformer jobs.
 
+### Task API Access Control
+
+The task endpoints (`/api/v1/tasks/*`) are open by default, as they always were. A deployment that serves more than one user should guard them: status and result return whatever the task returned, and `/active` lists every queued task with its arguments.
+
+| Variable                | Default | Description                                                   |
+| ----------------------- | ------- | ------------------------------------------------------------- |
+| `TASKS_API_ACCESS_MODE` | public  | Access mode for the task endpoints: public / user / superuser |
+
+| Endpoints                                                                                  | `public` | `user`           | `superuser`      |
+| ------------------------------------------------------------------------------------------ | -------- | ---------------- | ---------------- |
+| `GET /tasks/{id}/status`, `GET /tasks/{id}/result`                                         | open     | active user      | active superuser |
+| `DELETE /tasks/{id}`, `GET /tasks/active`, `GET /tasks/workers/stats`, `GET /tasks/health` | open     | active superuser | active superuser |
+
+The endpoints that are not about one task (and cancellation, which stops any task) always take a superuser outside `public`: in `user` mode every user could otherwise list and cancel everyone's tasks. Without a token the guarded endpoints answer 401, a user on a superuser endpoint gets 403.
+
+**Only the task's owner.** In `user` mode any signed-in user can still read any task whose id they know. To limit status and result to the user who submitted the task, record who submitted it and pass a checker to `create_application`:
+
+```python
+from inference_core.main_factory import create_application
+
+async def can_see_task(task_id: str, user: dict | None) -> bool:
+    # user is None for an anonymous caller (public mode only)
+    if user is None:
+        return False
+    owner = await redis.get(f"task_owner:{task_id}")  # written when the task was submitted
+    return owner == user["id"]
+
+app = create_application(task_access_checker=can_see_task)
+```
+
+The checker may be sync or async and runs before the task is read. A refusal answers 404 with the same body as an unknown task, so a caller cannot tell whether an id is in use. Without a checker every caller the mode lets in can read every task.
+
+Task results are read with the Celery result serializer of `inference_core/celery/config.py` (`json`, and only `json` is accepted), so a stored result is never unpickled into objects. A failed task's error is re-created only as an exception class (Celery refuses any other type).
+
 ## LLM & Access Control
 
 | Variable                    | Default   | Description                            |

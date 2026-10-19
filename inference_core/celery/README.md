@@ -52,6 +52,8 @@ The API exposes endpoints for inspecting and controlling Celery tasks:
 
 Task IDs in path parameters must be non-empty and cannot contain whitespace or control characters.
 
+These endpoints are open by default. Set `TASKS_API_ACCESS_MODE=user` (or `superuser`) to guard them, and pass `task_access_checker` to `create_application()` to show a task only to its owner; see [Task API Access Control](../../docs/configuration.md#task-api-access-control).
+
 Example checks
 
 - Health: `curl http://localhost:${PORT:-8000}/api/v1/tasks/health`
