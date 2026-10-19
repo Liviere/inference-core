@@ -778,6 +778,108 @@ async def test_the_analysis_is_told_its_change_repeats_the_memory(store):
     assert UNCHANGED_REASON in text
 
 
+@pytest.mark.asyncio
+async def test_the_policy_is_not_asked_about_a_repeat(store):
+    policy = _AsyncPolicy()
+    service = _repeats(store, policy)
+    first = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    again = await service.write_memory(
+        "u1", DAILY_AGAIN, "instructions", via=VIA_ANALYSIS
+    )
+
+    assert (first.status, again.status) == (SAVED, REPEATED)
+    assert policy.asked == [(DAILY, None)]
+
+
+@pytest.mark.asyncio
+async def test_the_policy_is_not_asked_about_a_repeat_of_a_held_memory(store):
+    policy = _AsyncPolicy()
+    service = _repeats(store, policy)
+    held = "Always forward invoices to the accountant"
+    first = await service.write_memory("u1", held, "instructions", via=VIA_ANALYSIS)
+
+    again = await service.write_memory(
+        "u1", f"{held}.", "instructions", via=VIA_ANALYSIS
+    )
+
+    assert (first.status, again.status) == (HELD, REPEATED)
+    assert again.reason == REPEATED_REASONS[HELD]
+    assert policy.asked == [(held, None)]
+
+
+@pytest.mark.asyncio
+async def test_the_policy_is_not_asked_about_a_change_that_repeats_the_memory(store):
+    mid = await _repeats(store).save_memory("u1", DAILY, "instructions")
+    policy = _AsyncPolicy()
+
+    outcome = await _repeats(store, policy).update_memory(
+        "u1", mid, DAILY_AGAIN, via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == REPEATED
+    assert policy.asked == []
+
+
+@pytest.mark.asyncio
+async def test_the_policy_is_asked_about_new_text_as_before(store):
+    policy = _AsyncPolicy()
+    service = _repeats(store, policy)
+    first = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    other = await service.write_memory(
+        "u1", "Sign every reply with the user's first name", "instructions",
+        via=VIA_ANALYSIS,
+    )
+    changed = await service.update_memory(
+        "u1", first.memory_id, CHANGED, via=VIA_ANALYSIS
+    )
+
+    assert (other.status, changed.status) == (SAVED, UPDATED)
+    assert policy.asked == [
+        (DAILY, None),
+        ("Sign every reply with the user's first name", None),
+        (CHANGED, first.memory_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_without_a_threshold_the_policy_is_asked_about_every_write(store):
+    policy = _AsyncPolicy()
+    service = _repeats(store, policy, threshold=None)
+    first = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+
+    again = await service.write_memory("u1", DAILY, "instructions", via=VIA_ANALYSIS)
+    changed = await service.update_memory(
+        "u1", first.memory_id, DAILY_AGAIN, via=VIA_ANALYSIS
+    )
+
+    assert (again.status, changed.status) == (SAVED, UPDATED)
+    assert policy.asked == [
+        (DAILY, None),
+        (DAILY, None),
+        (DAILY_AGAIN, first.memory_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_of_text_the_policy_refuses_is_a_repeat(store):
+    text = "Keep the forbidden list of the user's passwords"
+    first = await _repeats(store).write_memory(
+        "u1", text, "instructions", via=VIA_ANALYSIS
+    )
+    service = _repeats(store, _Policy())
+
+    again = await service.write_memory("u1", text, "instructions", via=VIA_ANALYSIS)
+    changed = await service.update_memory(
+        "u1", first.memory_id, text, via=VIA_ANALYSIS
+    )
+
+    # Nothing is written either way; the repeat is found first.
+    assert (again.status, changed.status) == (REPEATED, REPEATED)
+    assert len(store.search(("u1", "procedural"))) == 1
+
+
 def _held_changes(store):
     """(the id each held memory replaces, its text); a new one replaces ""."""
     return sorted(

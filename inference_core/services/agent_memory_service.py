@@ -792,7 +792,9 @@ class AgentMemoryStoreService:
                 :class:`difflib.SequenceMatcher`'s ratio on both texts in
                 lower case with whitespace collapsed (from 0 to 1); nor is a
                 change it makes to a memory, when the new text is that alike
-                to what the memory says. ``None`` writes every one.
+                to what the memory says. A repeat is found before the write
+                policy is asked, so the policy is never asked about one.
+                ``None`` writes every one.
             supersede_held_changes: A held change to a memory takes the place
                 of the changes to it already held, so that one at most waits
                 per memory. ``False`` keeps them all.
@@ -1025,9 +1027,9 @@ class AgentMemoryStoreService:
         it (``held``), or refuse it (``refused``). With ``repeat_threshold``,
         a memory from the analysis after a run that nearly repeats one already
         there or held for that namespace is not written (``repeated``, with
-        the id of the one it repeats). A given *memory_id* is written under
-        that key; to change a memory wherever it lies, use
-        :meth:`update_memory`.
+        the id of the one it repeats), and the policy is not asked about it.
+        A given *memory_id* is written under that key; to change a memory
+        wherever it lies, use :meth:`update_memory`.
 
         Raises:
             MemorySpaceError: when no writable space takes the memory.
@@ -1047,6 +1049,17 @@ class AgentMemoryStoreService:
         if not memory_id:
             memory_id = str(uuid.uuid4())
 
+        # A repeat is looked for before the policy is asked: it is not written
+        # whatever the policy says, and asking may cost a call.
+        namespace = target.namespace(user_id, resolved_category)
+        if via == VIA_ANALYSIS and self.repeat_threshold is not None:
+            repeated = self._repeat_of(user_id, content, resolved_category, namespace)
+            if repeated is not None:
+                repeated_id, where = repeated
+                return MemoryWriteOutcome(
+                    REPEATED, repeated_id, target, REPEATED_REASONS[where]
+                )
+
         decision = await self._decide(
             MemoryWriteRequest(
                 user_id=user_id,
@@ -1060,15 +1073,6 @@ class AgentMemoryStoreService:
         )
         if decision.action == REFUSE:
             return MemoryWriteOutcome(REFUSED, None, target, decision.reason)
-
-        namespace = target.namespace(user_id, resolved_category)
-        if via == VIA_ANALYSIS and self.repeat_threshold is not None:
-            repeated = self._repeat_of(user_id, content, resolved_category, namespace)
-            if repeated is not None:
-                repeated_id, where = repeated
-                return MemoryWriteOutcome(
-                    REPEATED, repeated_id, target, REPEATED_REASONS[where]
-                )
 
         metadata = dict(extra_metadata or {})
         metadata["origin"] = {**metadata.get("origin", {}), **self._origin(via, decision)}
@@ -1304,7 +1308,8 @@ class AgentMemoryStoreService:
         it is to replace, for approval. With ``repeat_threshold``, a change
         from the analysis after a run whose text nearly repeats what the
         memory says, in the same category, is neither written nor held
-        (``repeated``, with the memory's id).
+        (``repeated``, with the memory's id), and the policy is not asked
+        about it.
         """
         user_id = str(user_id)
         found = await self.find_memory(user_id, memory_id)
@@ -1322,20 +1327,7 @@ class AgentMemoryStoreService:
         if not found.space.holds(new_category):
             new_category = found.category
 
-        decision = await self._decide(
-            MemoryWriteRequest(
-                user_id=user_id,
-                content=content,
-                topic=topic,
-                memory_type=new_type,
-                category=new_category.value,
-                space=found.space,
-                via=via,
-                replaces=memory_id,
-            )
-        )
-        if decision.action == REFUSE:
-            return MemoryWriteOutcome(REFUSED, memory_id, found.space, decision.reason)
+        # As for a new memory, a repeat is looked for before the policy is asked.
         if (
             via == VIA_ANALYSIS
             and self.repeat_threshold is not None
@@ -1350,6 +1342,21 @@ class AgentMemoryStoreService:
             return MemoryWriteOutcome(
                 REPEATED, memory_id, found.space, UNCHANGED_REASON
             )
+
+        decision = await self._decide(
+            MemoryWriteRequest(
+                user_id=user_id,
+                content=content,
+                topic=topic,
+                memory_type=new_type,
+                category=new_category.value,
+                space=found.space,
+                via=via,
+                replaces=memory_id,
+            )
+        )
+        if decision.action == REFUSE:
+            return MemoryWriteOutcome(REFUSED, memory_id, found.space, decision.reason)
 
         metadata = dict(old_value.get("extra_metadata") or {})
         metadata["origin"] = {**metadata.get("origin", {}), **self._origin(via, decision)}

@@ -424,6 +424,11 @@ says, and the change keeps its category, it is neither written nor held. A
 save or a change the agent makes with the tool during the run is not checked,
 and without a threshold nothing is.
 
+The repeat is looked for before the write policy is asked, so a policy that
+waits for something costly (a model call, say) is not asked about a memory
+that would not be written anyway. A repeat of text the policy would refuse is
+therefore `repeated`, not `refused`; neither is written.
+
 The memories the analysis is shown first go through the service's
 `entry_renderer`, like recalled ones. With `MemoryOptions(related_origin=...)`
 it is also shown, before them and with their ids, the memories of the spaces
