@@ -993,6 +993,17 @@ class TestAnalyseViaToolCall:
         assert "your own scheduled task" in prompt
         assert "how the user wants something done, not that it was done" in prompt
 
+    async def test_the_analysis_does_not_enrich_a_memory_with_run_details(
+        self, middleware
+    ):
+        """A new date or a note that a task ran is no detail to add to a memory."""
+        prompt = middleware._TOOL_ANALYSIS_PROMPT
+        assert (
+            "A date, an id, or a note that a task ran or succeeded is NOT a new "
+            "detail" in prompt
+        )
+        assert "never add one to an existing memory" in prompt
+
     async def test_counts_update_memory_store_calls(
         self, middleware, mock_memory_service
     ):

@@ -418,8 +418,15 @@ written when its text is at least that alike (`difflib.SequenceMatcher`'s ratio
 on lower-case text with whitespace collapsed, 0 to 1) to one of the newest
 `REPEAT_SCAN_LIMIT` memories of its namespace, or of those held for that
 namespace by the write policy. The outcome is `repeated`, with the id of the
-memory it repeats, and the model is told so. A save the agent makes with the
-tool during the run is not checked, and without a threshold nothing is.
+memory it repeats, and the model is told so. The same holds for a change the
+analysis makes to a memory: when the new text is that alike to what the memory
+says, and the change keeps its category, it is neither written nor held. A
+save or a change the agent makes with the tool during the run is not checked,
+and without a threshold nothing is.
+
+A held change to a memory waits next to the changes to it already held. With
+`MemoryOptions(supersede_held_changes=True)` it takes their place, so that one
+change at most waits per memory; held new memories are left as they are.
 
 ### Memory LLM Cost Attribution
 

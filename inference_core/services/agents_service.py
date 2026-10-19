@@ -1393,6 +1393,9 @@ class AgentService:
                         origin=options.origin if options else None,
                         entry_renderer=options.entry_renderer if options else None,
                         repeat_threshold=options.repeat_threshold if options else None,
+                        supersede_held_changes=(
+                            options.supersede_held_changes if options else False
+                        ),
                         **({"hold_path": options.hold_path} if options else {}),
                     )
             except Exception as exc:

@@ -13,7 +13,10 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from inference_core.agents.middleware.memory import MemoryMiddleware
-from inference_core.agents.tools.memory_tools import SaveMemoryStoreTool
+from inference_core.agents.tools.memory_tools import (
+    SaveMemoryStoreTool,
+    UpdateMemoryStoreTool,
+)
 from inference_core.services.agent_memory_service import (
     AGENT_SPACE_KEY,
     DELETED,
@@ -29,6 +32,7 @@ from inference_core.services.agent_memory_service import (
     SAVE,
     SAVED,
     SHARED_SPACE_KEY,
+    UNCHANGED_REASON,
     UPDATED,
     VIA_ANALYSIS,
     AgentMemoryStoreService,
@@ -438,13 +442,14 @@ DAILY_AGAIN = (
 )
 
 
-def _repeats(store, policy=None, *spaces, threshold=0.9):
+def _repeats(store, policy=None, *spaces, threshold=0.9, supersede=False):
     return AgentMemoryStoreService(
         store=store,
         spaces=list(spaces or [GENERAL]),
         write_policy=policy,
         hold_path=("pending",),
         repeat_threshold=threshold,
+        supersede_held_changes=supersede,
     )
 
 
@@ -634,6 +639,185 @@ async def test_the_analysis_is_told_its_save_repeats_one_held(store):
 
     assert REPEATED_REASONS[HELD] in text
     assert "update_memory_store" not in text
+
+
+CHANGED = (
+    "When reporting the EUR/PLN rate, give it in a sentence and leave the "
+    "change since yesterday out."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("untrusted", [False, True])
+async def test_a_change_that_repeats_the_memory_is_neither_written_nor_held(
+    store, untrusted
+):
+    mid = await _repeats(store).save_memory("u1", DAILY, "instructions")
+    before = store.get(("u1", "procedural"), mid).value
+    service = _repeats(store, _untrusted() if untrusted else _Policy())
+
+    outcome = await service.update_memory("u1", mid, DAILY_AGAIN, via=VIA_ANALYSIS)
+
+    assert outcome.status == REPEATED
+    assert outcome.memory_id == mid
+    assert outcome.reason == UNCHANGED_REASON
+    assert store.get(("u1", "procedural"), mid).value == before
+    assert store.search(("u1", "pending", "procedural")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "untrusted, status", [(False, UPDATED), (True, HELD)]
+)
+async def test_a_change_with_new_text_goes_through(store, untrusted, status):
+    mid = await _repeats(store).save_memory("u1", DAILY, "instructions")
+    service = _repeats(store, _untrusted() if untrusted else _Policy())
+
+    outcome = await service.update_memory("u1", mid, CHANGED, via=VIA_ANALYSIS)
+
+    assert outcome.status == status
+
+
+@pytest.mark.asyncio
+async def test_a_change_that_moves_the_memory_is_no_repeat(store):
+    service = _repeats(store)
+    mid = await service.save_memory("u1", DAILY, "instructions")
+
+    outcome = await service.update_memory(
+        "u1", mid, DAILY, category="semantic", via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == UPDATED
+    assert store.get(("u1", "semantic"), mid) is not None
+
+
+@pytest.mark.asyncio
+async def test_only_the_analysis_is_checked_for_repeated_changes(store):
+    service = _repeats(store)
+    mid = await service.save_memory("u1", DAILY, "instructions")
+
+    outcome = await service.update_memory("u1", mid, DAILY_AGAIN)
+
+    assert outcome.status == UPDATED
+    assert store.get(("u1", "procedural"), mid).value["content"] == DAILY_AGAIN
+
+
+@pytest.mark.asyncio
+async def test_without_a_threshold_a_repeated_change_is_written(store):
+    service = _repeats(store, threshold=None)
+    mid = await service.save_memory("u1", DAILY, "instructions")
+
+    outcome = await service.update_memory("u1", mid, DAILY_AGAIN, via=VIA_ANALYSIS)
+
+    assert outcome.status == UPDATED
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_is_told_its_change_repeats_the_memory(store):
+    service = _repeats(store)
+    mid = await service.save_memory("u1", DAILY, "instructions")
+    tool = UpdateMemoryStoreTool(
+        memory_service=service, user_id="u1", via=VIA_ANALYSIS
+    )
+
+    text = await tool._arun(
+        memory_id=mid, content=DAILY_AGAIN, memory_type="instructions"
+    )
+
+    assert text.startswith(f"✓ Memory {mid} was not changed.")
+    assert UNCHANGED_REASON in text
+
+
+def _held_changes(store):
+    """(the id each held memory replaces, its text); a new one replaces ""."""
+    return sorted(
+        (h.value["held_for"]["replaces"] or "", h.value["content"])
+        for category in ("semantic", "procedural")
+        for h in store.search(("u1", "pending", category), limit=100)
+        if h.namespace == ("u1", "pending", category)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_held_change_takes_the_place_of_one_already_held(store):
+    mid = await _repeats(store).save_memory("u1", DAILY, "instructions")
+    other = await _repeats(store).save_memory("u1", "Sign mail as Ann", "instructions")
+    service = _repeats(store, _untrusted(), supersede=True)
+    await service.update_memory("u1", mid, CHANGED)
+    await service.update_memory("u1", other, "Sign mail as Ann Smith")
+    new = await service.write_memory("u1", "Answer in Polish", "instructions")
+
+    outcome = await service.update_memory("u1", mid, "Report the rate only on Mondays")
+
+    assert outcome.status == HELD
+    assert _held_changes(store) == sorted(
+        [
+            ("", "Answer in Polish"),
+            (mid, "Report the rate only on Mondays"),
+            (other, "Sign mail as Ann Smith"),
+        ]
+    )
+    assert store.get(("u1", "pending", "procedural"), new.memory_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_change_held_under_another_category_is_superseded_too(store):
+    mid = await _repeats(store).save_memory("u1", DAILY, "instructions")
+    service = _repeats(store, _untrusted(), supersede=True)
+    await service.update_memory("u1", mid, CHANGED)
+
+    # Moved to facts: held under semantic, the earlier change under procedural.
+    policy = _untrusted()
+    policy.decide = lambda request: MemoryWriteDecision(HOLD, {}, "Kept.")
+    moving = _repeats(store, policy, supersede=True)
+    await moving.update_memory(
+        "u1", mid, "The rate is reported daily", category="semantic"
+    )
+
+    assert _held_changes(store) == [(mid, "The rate is reported daily")]
+
+
+@pytest.mark.asyncio
+async def test_every_held_change_is_superseded_however_many_wait(store, monkeypatch):
+    import inference_core.services.agent_memory_service as module
+
+    monkeypatch.setattr(module, "REPEAT_SCAN_LIMIT", 2)
+    mid = await _repeats(store).save_memory("u1", DAILY, "instructions")
+    piled = _repeats(store, _untrusted())
+    for n in range(5):
+        await piled.update_memory("u1", mid, f"Change number {n}")
+        await piled.write_memory("u1", f"New procedure {n}", "instructions")
+
+    await _repeats(store, _untrusted(), supersede=True).update_memory(
+        "u1", mid, "The last change"
+    )
+
+    held = _held_changes(store)
+    assert [text for replaces, text in held if replaces == mid] == ["The last change"]
+    assert len([text for replaces, text in held if not replaces]) == 5
+
+
+@pytest.mark.asyncio
+async def test_without_the_option_held_changes_wait_side_by_side(store):
+    mid = await _repeats(store).save_memory("u1", DAILY, "instructions")
+    service = _repeats(store, _untrusted())
+    await service.update_memory("u1", mid, CHANGED)
+
+    await service.update_memory("u1", mid, "Report the rate only on Mondays")
+
+    assert _held_changes(store) == sorted(
+        [(mid, CHANGED), (mid, "Report the rate only on Mondays")]
+    )
+
+
+def test_the_options_make_a_service_that_supersedes_held_changes(store):
+    from inference_core.services.agent_memory_service import MemoryOptions
+
+    assert MemoryOptions().service(store).supersede_held_changes is False
+    assert (
+        MemoryOptions(supersede_held_changes=True).service(store).supersede_held_changes
+        is True
+    )
 
 
 @pytest.mark.asyncio

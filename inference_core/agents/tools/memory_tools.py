@@ -63,6 +63,8 @@ def _write_outcome_text(outcome: MemoryWriteOutcome, done: str) -> str:
             f"✓ The change to memory {memory_id} is kept for the user's approval. "
             "The memory stays as it was until they approve it."
         )
+    if outcome.status == REPEATED:
+        return f"✓ Memory {memory_id} was not changed. {outcome.reason}".rstrip()
     return f"✓ {done} (id: {memory_id})"
 
 

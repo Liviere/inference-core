@@ -402,6 +402,8 @@ REPEATED_REASONS = {
     SAVED: "It nearly repeats a memory that is already saved.",
     HELD: "It nearly repeats a memory that waits for approval.",
 }
+# Why a change from the analysis was not written as a repeat.
+UNCHANGED_REASON = "The new text nearly repeats what the memory already says."
 
 
 def _comparable(text: Any) -> str:
@@ -423,6 +425,7 @@ class MemoryOptions:
     hold_path: Tuple[str, ...] = HOLD_PATH
     entry_renderer: Optional[Callable[["MemoryStoreDocument", str], str]] = None
     repeat_threshold: Optional[float] = None
+    supersede_held_changes: bool = False
 
     def service(
         self, store: Any, *, max_results: int = 5, base_namespace: Sequence[str] = ()
@@ -438,6 +441,7 @@ class MemoryOptions:
             hold_path=self.hold_path,
             entry_renderer=self.entry_renderer,
             repeat_threshold=self.repeat_threshold,
+            supersede_held_changes=self.supersede_held_changes,
         )
 
 
@@ -750,6 +754,7 @@ class AgentMemoryStoreService:
             Callable[["MemoryStoreDocument", str], str]
         ] = None,
         repeat_threshold: Optional[float] = None,
+        supersede_held_changes: bool = False,
     ) -> None:
         """
         Args:
@@ -768,8 +773,12 @@ class AgentMemoryStoreService:
                 written when its text is at least this alike to a memory of
                 its namespace or one held for it, by
                 :class:`difflib.SequenceMatcher`'s ratio on both texts in
-                lower case with whitespace collapsed (from 0 to 1). ``None``
-                writes every one.
+                lower case with whitespace collapsed (from 0 to 1); nor is a
+                change it makes to a memory, when the new text is that alike
+                to what the memory says. ``None`` writes every one.
+            supersede_held_changes: A held change to a memory takes the place
+                of the changes to it already held, so that one at most waits
+                per memory. ``False`` keeps them all.
         """
         self.store = store
         self.base_namespace = tuple(base_namespace)
@@ -793,6 +802,7 @@ class AgentMemoryStoreService:
         self.hold_path = tuple(hold_path)
         self.entry_renderer = entry_renderer
         self.repeat_threshold = repeat_threshold
+        self.supersede_held_changes = supersede_held_changes
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def render_entry(self, document: "MemoryStoreDocument", line: str) -> str:
@@ -1071,6 +1081,8 @@ class AgentMemoryStoreService:
         """Put a memory where no agent reads it, with where it was meant to go.
 
         Not indexed: a held memory is never found by a search with a query.
+        With ``supersede_held_changes``, a held change to a memory (*replaces*)
+        takes the place of the changes to it already held.
         """
         value = self._stored_value(memory_data)
         value["held_for"] = {
@@ -1078,7 +1090,52 @@ class AgentMemoryStoreService:
             "namespace": list(namespace),
             "replaces": replaces,
         }
+        if replaces and self.supersede_held_changes:
+            self._drop_held_changes(user_id, replaces)
         self.store.put(self.hold_namespace(user_id, category), memory_id, value, index=False)
+
+    def _drop_held_changes(self, user_id: str, replaces: str) -> None:
+        """Delete the held changes to memory *replaces*, in every category.
+
+        A change may be held under another category than the memory's, when
+        it moves the memory. Each category's held memories are scanned in full:
+        a change left behind would wait next to the one that took its place.
+        """
+        from langgraph.store.base import SearchOp
+
+        namespaces = [
+            self.hold_namespace(user_id, category) for category in MemoryCategory
+        ]
+        found: List[Any] = []
+        offsets = [0] * len(namespaces)
+        pending = list(range(len(namespaces)))
+        while pending:
+            results = self.store.batch(
+                [
+                    SearchOp(namespaces[i], limit=REPEAT_SCAN_LIMIT, offset=offsets[i])
+                    for i in pending
+                ]
+            )
+            still = []
+            for i, items in zip(pending, results):
+                items = list(items or [])
+                found.extend(
+                    item
+                    for item in items
+                    if tuple(getattr(item, "namespace", ()) or ()) == namespaces[i]
+                )
+                if len(items) == REPEAT_SCAN_LIMIT:
+                    offsets[i] += REPEAT_SCAN_LIMIT
+                    still.append(i)
+            pending = still
+        for item in found:
+            if ((item.value or {}).get("held_for") or {}).get("replaces") == replaces:
+                self.store.delete(tuple(item.namespace), item.key)
+                self.logger.info(
+                    "Held change %s to memory %s superseded by a newer one",
+                    item.key,
+                    replaces,
+                )
 
     def _repeat_of(
         self,
@@ -1120,12 +1177,7 @@ class AgentMemoryStoreService:
         matcher.set_seq2(_comparable(content))
         for item, where in candidates:
             text = dec_field((item.value or {}).get("content"), purpose="memory")
-            matcher.set_seq1(_comparable(text))
-            if (
-                matcher.real_quick_ratio() >= self.repeat_threshold
-                and matcher.quick_ratio() >= self.repeat_threshold
-                and matcher.ratio() >= self.repeat_threshold
-            ):
+            if self._alike(matcher, text):
                 self.logger.info(
                     "Memory not written: it nearly repeats %s memory %s in %s",
                     where,
@@ -1134,6 +1186,16 @@ class AgentMemoryStoreService:
                 )
                 return item.key, where
         return None
+
+    def _alike(self, matcher: SequenceMatcher, text: Any) -> bool:
+        """Whether *text* is at least ``repeat_threshold`` alike to the text
+        *matcher* holds as its second sequence (the cheap bounds first)."""
+        matcher.set_seq1(_comparable(text))
+        return (
+            matcher.real_quick_ratio() >= self.repeat_threshold
+            and matcher.quick_ratio() >= self.repeat_threshold
+            and matcher.ratio() >= self.repeat_threshold
+        )
 
     async def save_memory(
         self,
@@ -1213,7 +1275,10 @@ class AgentMemoryStoreService:
         within its space, to that category's namespace. The time it was first
         saved stays. The write policy decides as for a new memory; a held
         change leaves the memory as it is and keeps the new text, with the id
-        it is to replace, for approval.
+        it is to replace, for approval. With ``repeat_threshold``, a change
+        from the analysis after a run whose text nearly repeats what the
+        memory says, in the same category, is neither written nor held
+        (``repeated``, with the memory's id).
         """
         user_id = str(user_id)
         found = await self.find_memory(user_id, memory_id)
@@ -1245,6 +1310,20 @@ class AgentMemoryStoreService:
         )
         if decision.action == REFUSE:
             return MemoryWriteOutcome(REFUSED, memory_id, found.space, decision.reason)
+        if (
+            via == VIA_ANALYSIS
+            and self.repeat_threshold is not None
+            and new_category == found.category
+            and self._unchanged(old_value, content)
+        ):
+            self.logger.info(
+                "Memory not changed: the change nearly repeats memory %s in %s",
+                memory_id,
+                "/".join(found.namespace),
+            )
+            return MemoryWriteOutcome(
+                REPEATED, memory_id, found.space, UNCHANGED_REASON
+            )
 
         metadata = dict(old_value.get("extra_metadata") or {})
         metadata["origin"] = {**metadata.get("origin", {}), **self._origin(via, decision)}
@@ -1281,6 +1360,16 @@ class AgentMemoryStoreService:
         if namespace != found.namespace:
             self.store.delete(found.namespace, memory_id)
         return MemoryWriteOutcome(UPDATED, memory_id, found.space)
+
+    def _unchanged(self, old_value: Dict[str, Any], content: str) -> bool:
+        """Whether *content* nearly repeats a stored memory's text."""
+        from inference_core.services.content_cipher import dec_field
+
+        matcher = SequenceMatcher(None, autojunk=True)
+        matcher.set_seq2(_comparable(content))
+        return self._alike(
+            matcher, dec_field(old_value.get("content"), purpose="memory")
+        )
 
     async def remove_memory(
         self, user_id: str, memory_id: str
@@ -2482,6 +2571,7 @@ __all__ = [
     "REFUSED",
     "REPEATED",
     "REPEATED_REASONS",
+    "UNCHANGED_REASON",
     "SAVE",
     "VIA_ANALYSIS",
     "VIA_TOOL",
