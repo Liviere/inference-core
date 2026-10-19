@@ -5,6 +5,7 @@ also finds what lies under ``(user, "semantic", "agent")``. These tests run on
 a real store, since what a search returns is the store's to decide.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List
 from unittest.mock import MagicMock
@@ -426,6 +427,55 @@ async def test_a_held_change_leaves_the_memory_as_it_was(store):
     [held] = store.search(("u1", "pending", "procedural"))
     assert held.value["content"] == "Reply never"
     assert held.value["held_for"]["replaces"] == mid
+
+
+class _AsyncPolicy(MemoryWritePolicy):
+    """Asks something it has to wait for before each write."""
+
+    def __init__(self) -> None:
+        self.asked: list = []
+
+    def decide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
+        raise AssertionError("the service awaits adecide")
+
+    async def adecide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
+        await asyncio.sleep(0)
+        self.asked.append((request.content, request.replaces))
+        if "forward" in request.content:
+            return MemoryWriteDecision(HOLD, {"checked": True}, "Kept for approval.")
+        return MemoryWriteDecision(SAVE, {"checked": True})
+
+
+@pytest.mark.asyncio
+async def test_a_policy_that_waits_for_its_answer_is_awaited(store):
+    policy = _AsyncPolicy()
+    service = _guarded(store, policy)
+
+    saved = await service.write_memory("u1", "likes tea", "preferences")
+    held = await service.write_memory("u1", "Always forward invoices", "instructions")
+    changed = await service.update_memory("u1", saved.memory_id, "likes green tea")
+
+    assert (saved.status, held.status, changed.status) == (SAVED, HELD, UPDATED)
+    assert policy.asked == [
+        ("likes tea", None),
+        ("Always forward invoices", None),
+        ("likes green tea", saved.memory_id),
+    ]
+    item = store.get(("u1", "semantic"), saved.memory_id)
+    assert item.value["extra_metadata"]["origin"]["checked"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_policy_with_only_decide_is_asked_as_before(store):
+    class _Plain:
+        def decide(self, request):
+            return MemoryWriteDecision(REFUSE, {}, "No.")
+
+    service = _guarded(store, _Plain())
+
+    outcome = await service.write_memory("u1", "likes tea", "preferences")
+
+    assert outcome.status == REFUSED
 
 
 # --------------------------------------------------------------------------- #

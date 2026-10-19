@@ -389,6 +389,13 @@ class MemoryWritePolicy:
     def decide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
         return MemoryWriteDecision()
 
+    async def adecide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
+        """:meth:`decide` for a policy that has to wait for its answer (a
+        model, a service): the memory service awaits this one, so a policy that
+        asks something over the network does not block the event loop. The
+        default is :meth:`decide`."""
+        return self.decide(request)
+
 
 # A held memory lies in (user_id, *HOLD_PATH, category): no space reads it.
 HOLD_PATH: Tuple[str, ...] = ("held",)
@@ -831,10 +838,13 @@ class AgentMemoryStoreService:
             self.logger.warning("Memory entry renderer failed: %s", exc)
             return line
 
-    def _decide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
+    async def _decide(self, request: MemoryWriteRequest) -> MemoryWriteDecision:
         if self.write_policy is None:
             return MemoryWriteDecision()
-        return self.write_policy.decide(request)
+        adecide = getattr(self.write_policy, "adecide", None)
+        if adecide is None:
+            return self.write_policy.decide(request)
+        return await adecide(request)
 
     def _origin(self, via: str, decision: MemoryWriteDecision) -> Dict[str, Any]:
         return {**self.origin, **decision.origin, "via": via}
@@ -1037,7 +1047,7 @@ class AgentMemoryStoreService:
         if not memory_id:
             memory_id = str(uuid.uuid4())
 
-        decision = self._decide(
+        decision = await self._decide(
             MemoryWriteRequest(
                 user_id=user_id,
                 content=content,
@@ -1312,7 +1322,7 @@ class AgentMemoryStoreService:
         if not found.space.holds(new_category):
             new_category = found.category
 
-        decision = self._decide(
+        decision = await self._decide(
             MemoryWriteRequest(
                 user_id=user_id,
                 content=content,
