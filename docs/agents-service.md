@@ -442,6 +442,22 @@ A held change to a memory waits next to the changes to it already held. With
 `MemoryOptions(supersede_held_changes=True)` it takes their place, so that one
 change at most waits per memory; held new memories are left as they are.
 
+What the service records about a run in `origin` (a job's id, say) need not be
+written into a memory's text as well, and an analysis that copies it there
+anyway can be stopped. With `MemoryOptions(origin_kept_out=(...))`, a memory
+the analysis saves, or a change it makes, whose text or topic holds the value
+of one of those `origin` keys is refused (`refused`), and the model is told
+which key it was and asked to write the memory again without it. The value is
+looked for without regard to case and to anything but letters and digits, so
+an identifier is found with or without its dashes. `labels_kept_out` adds
+regular expressions, matched without regard to case, of labels refused the
+same way (a label followed by its value, for instance). Nothing is cut out of
+the text. The check comes after the repeat check and before the write policy
+is asked; the policy is told of each refusal through
+`MemoryWritePolicy.observe_kept_out`, which does nothing by default. A save
+or a change the agent makes with the tool during the run is not checked, and
+with both options empty (the default) nothing is.
+
 ### Memory LLM Cost Attribution
 
 Memory-handling LLM calls (post-run analysis) are billed to the triggering

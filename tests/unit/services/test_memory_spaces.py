@@ -23,6 +23,9 @@ from inference_core.services.agent_memory_service import (
     DELETED,
     HELD,
     HOLD,
+    KEPT_OUT_LABEL,
+    KEPT_OUT_ORIGIN,
+    KEPT_OUT_REASONS,
     NOT_FOUND,
     READ_ONLY,
     REFUSE,
@@ -1241,3 +1244,249 @@ def test_the_middleware_shows_the_policy_what_the_run_read(store):
     middleware.wrap_model_call(request, lambda r: "answer")
 
     assert policy.untrusted is True
+
+
+# --------------------------------------------------------------------------- #
+# What the origin records, kept out of the text
+# --------------------------------------------------------------------------- #
+
+RUN_ID = "0f8e2b7a-4c1d-4e9b-9a3f-6d5c2e1b0a97"
+RUN_LABEL = r"\brun[\s_-]*id\b\s*(?:[:=#]|[0-9a-f]{8})"
+
+
+class _ObservingPolicy(_AsyncPolicy):
+    """Notes each write the service refused for what it keeps out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kept_out: list = []
+
+    def observe_kept_out(self, request, kind, matched):
+        self.kept_out.append((request.content, request.replaces, kind, matched))
+
+
+def _kept_out_service(store, policy=None, *, keys=("run",), labels=(), threshold=None):
+    return AgentMemoryStoreService(
+        store=store,
+        spaces=[GENERAL],
+        write_policy=policy,
+        origin={"run": RUN_ID, "agent": "reporter"},
+        hold_path=("pending",),
+        repeat_threshold=threshold,
+        origin_kept_out=keys,
+        labels_kept_out=labels,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "written",
+    [
+        RUN_ID,
+        RUN_ID.upper(),
+        RUN_ID.replace("-", ""),
+        "{" + RUN_ID.replace("-", " ") + "}",
+    ],
+)
+async def test_a_memory_holding_a_kept_out_origin_value_is_refused(store, written):
+    policy = _ObservingPolicy()
+    service = _kept_out_service(store, policy)
+
+    outcome = await service.write_memory(
+        "u1", f"Report the rate as a table (run {written}).", "instructions",
+        via=VIA_ANALYSIS,
+    )
+
+    assert outcome.status == REFUSED
+    assert outcome.memory_id is None
+    assert outcome.reason == KEPT_OUT_REASONS[KEPT_OUT_ORIGIN].format(matched="run")
+    assert store.search(("u1", "procedural")) == []
+    assert store.search(("u1", "pending", "procedural")) == []
+    assert policy.asked == []
+    assert policy.kept_out[0][2:] == (KEPT_OUT_ORIGIN, "run")
+
+
+@pytest.mark.asyncio
+async def test_a_kept_out_value_in_the_topic_is_refused_too(store):
+    outcome = await _kept_out_service(store).write_memory(
+        "u1", "Report the rate as a table", "instructions",
+        topic=f"run {RUN_ID}", via=VIA_ANALYSIS,
+    )
+
+    assert outcome.status == REFUSED
+
+
+@pytest.mark.asyncio
+async def test_a_change_holding_a_kept_out_origin_value_is_refused(store):
+    mid = await _kept_out_service(store).save_memory("u1", DAILY, "instructions")
+    before = store.get(("u1", "procedural"), mid).value
+    policy = _ObservingPolicy()
+    service = _kept_out_service(store, policy)
+
+    outcome = await service.update_memory(
+        "u1", mid, f"{CHANGED}. Noted in run {RUN_ID}.", via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == REFUSED
+    assert outcome.memory_id == mid
+    assert store.get(("u1", "procedural"), mid).value == before
+    assert store.search(("u1", "pending", "procedural")) == []
+    assert policy.asked == []
+    assert policy.kept_out == [
+        (f"{CHANGED}. Noted in run {RUN_ID}.", mid, KEPT_OUT_ORIGIN, "run")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_same_change_without_the_value_goes_through(store):
+    mid = await _kept_out_service(store).save_memory("u1", DAILY, "instructions")
+    policy = _ObservingPolicy()
+
+    outcome = await _kept_out_service(store, policy).update_memory(
+        "u1", mid, CHANGED, via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == UPDATED
+    assert store.get(("u1", "procedural"), mid).value["content"] == CHANGED
+    assert policy.asked == [(CHANGED, mid)]
+    assert policy.kept_out == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Report the rate as a table. Run ID: 7c2d…",
+        "Report the rate as a table (run id 1a2b3c4d5e6f).",
+        "Report the rate as a table. RUN_ID=abc",
+    ],
+)
+async def test_a_kept_out_label_is_refused(store, text):
+    policy = _ObservingPolicy()
+    service = _kept_out_service(store, policy, keys=(), labels=(RUN_LABEL,))
+
+    outcome = await service.write_memory("u1", text, "instructions", via=VIA_ANALYSIS)
+
+    assert outcome.status == REFUSED
+    assert outcome.reason.startswith("The text holds '")
+    assert policy.kept_out[0][2:] == (KEPT_OUT_LABEL, RUN_LABEL)
+    assert policy.asked == []
+
+
+@pytest.mark.asyncio
+async def test_the_label_alone_is_no_refusal(store):
+    service = _kept_out_service(store, keys=(), labels=(RUN_LABEL,))
+
+    outcome = await service.write_memory(
+        "u1", "To cancel a job, pass the run id from the job list", "instructions",
+        via=VIA_ANALYSIS,
+    )
+
+    assert outcome.status == SAVED
+
+
+@pytest.mark.asyncio
+async def test_another_identifier_is_no_refusal(store):
+    service = _kept_out_service(store)
+
+    outcome = await service.write_memory(
+        "u1", "Order 6b1f0c2e-8d7a-4f3b-b2c1-0e9d8a7f6c5b is to be paid", "facts",
+        via=VIA_ANALYSIS,
+    )
+
+    assert outcome.status == SAVED
+
+
+@pytest.mark.asyncio
+async def test_only_the_analysis_is_checked_for_what_is_kept_out(store):
+    service = _kept_out_service(store, labels=(RUN_LABEL,))
+    text = f"Report the rate as a table. Run ID: {RUN_ID}"
+
+    saved = await service.write_memory("u1", text, "instructions")
+    changed = await service.update_memory("u1", saved.memory_id, f"{text}.")
+
+    assert (saved.status, changed.status) == (SAVED, UPDATED)
+
+
+@pytest.mark.asyncio
+async def test_without_keys_or_labels_nothing_is_kept_out(store):
+    policy = _ObservingPolicy()
+    service = _kept_out_service(store, policy, keys=(), labels=())
+    text = f"Report the rate as a table. Run ID: {RUN_ID}"
+
+    saved = await service.write_memory("u1", text, "instructions", via=VIA_ANALYSIS)
+    changed = await service.update_memory(
+        "u1", saved.memory_id, f"{text}.", via=VIA_ANALYSIS
+    )
+
+    assert (saved.status, changed.status) == (SAVED, UPDATED)
+    assert policy.kept_out == []
+    assert len(policy.asked) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_key_the_origin_lacks_keeps_nothing_out(store):
+    service = _kept_out_service(store, keys=("job",))
+
+    outcome = await service.write_memory(
+        "u1", f"Report the rate (run {RUN_ID})", "instructions", via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == SAVED
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_is_found_before_what_is_kept_out(store):
+    old = f"{DAILY} Run {RUN_ID}"
+    mid = await _kept_out_service(store).save_memory("u1", old, "instructions")
+    policy = _ObservingPolicy()
+    service = _kept_out_service(store, policy, threshold=0.9)
+
+    outcome = await service.update_memory("u1", mid, f"{old}.", via=VIA_ANALYSIS)
+
+    assert outcome.status == REPEATED
+    assert policy.kept_out == []
+
+
+@pytest.mark.asyncio
+async def test_a_policy_without_the_hook_is_still_refused_for_it(store):
+    service = _kept_out_service(store, _Policy())
+
+    outcome = await service.write_memory(
+        "u1", f"Rate (run {RUN_ID})", "instructions", via=VIA_ANALYSIS
+    )
+
+    assert outcome.status == REFUSED
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_is_told_why_and_asked_to_write_it_again(store):
+    mid = await _kept_out_service(store).save_memory("u1", DAILY, "instructions")
+    service = _kept_out_service(store)
+    save = SaveMemoryStoreTool(memory_service=service, user_id="u1", via=VIA_ANALYSIS)
+    update = UpdateMemoryStoreTool(
+        memory_service=service, user_id="u1", via=VIA_ANALYSIS
+    )
+
+    saved = await save._arun(content=f"Rate (run {RUN_ID})", memory_type="instructions")
+    changed = await update._arun(
+        memory_id=mid, content=f"{CHANGED} (run {RUN_ID})", memory_type="instructions"
+    )
+
+    assert saved.startswith("✗ Memory not saved.")
+    assert changed.startswith(f"✗ Memory {mid} was not changed.")
+    for text in (saved, changed):
+        assert "run" in text and "Write it again without it." in text
+        assert RUN_ID not in text
+
+
+def test_the_options_make_a_service_that_keeps_origin_values_out(store):
+    from inference_core.services.agent_memory_service import MemoryOptions
+
+    default = MemoryOptions().service(store)
+    assert (default.origin_kept_out, default.labels_kept_out) == ((), ())
+    service = MemoryOptions(
+        origin_kept_out=("run",), labels_kept_out=(RUN_LABEL,)
+    ).service(store)
+    assert service.origin_kept_out == ("run",)
+    assert [pattern.pattern for pattern in service.labels_kept_out] == [RUN_LABEL]

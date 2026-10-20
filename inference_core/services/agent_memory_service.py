@@ -17,6 +17,7 @@ Source: CoALA whitepaper – arxiv:2309.02427
 
 import logging
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -396,6 +397,15 @@ class MemoryWritePolicy:
         default is :meth:`decide`."""
         return self.decide(request)
 
+    def observe_kept_out(
+        self, request: MemoryWriteRequest, kind: str, matched: str
+    ) -> None:
+        """A write the service refused without asking :meth:`decide`, since
+        its text holds what the service keeps out of memories. *kind* is
+        ``origin`` (*matched* is the key of ``origin_kept_out`` whose value it
+        holds) or ``label`` (*matched* is the pattern of ``labels_kept_out``
+        it matched). The default does nothing."""
+
 
 # A held memory lies in (user_id, *HOLD_PATH, category): no space reads it.
 HOLD_PATH: Tuple[str, ...] = ("held",)
@@ -411,6 +421,20 @@ REPEATED_REASONS = {
 }
 # Why a change from the analysis was not written as a repeat.
 UNCHANGED_REASON = "The new text nearly repeats what the memory already says."
+# What a write from the analysis was refused for holding: a value of the
+# service's origin, or a label.
+KEPT_OUT_ORIGIN = "origin"
+KEPT_OUT_LABEL = "label"
+KEPT_OUT_REASONS = {
+    KEPT_OUT_ORIGIN: (
+        "The text holds this run's {matched}, which the memory records on its "
+        "own. Write it again without it."
+    ),
+    KEPT_OUT_LABEL: (
+        "The text holds '{matched}', a label of what the memory records on its "
+        "own. Write it again without the label and what follows it."
+    ),
+}
 
 
 def _origin_has(origin: Any, wanted: Dict[str, Any]) -> bool:
@@ -423,6 +447,13 @@ def _origin_has(origin: Any, wanted: Dict[str, Any]) -> bool:
 def _comparable(text: Any) -> str:
     """A memory's text as it is compared: lower case, whitespace collapsed."""
     return " ".join(str(text or "").lower().split())
+
+
+def _letters_and_digits(text: Any) -> str:
+    """*text* in lower case with all but its letters and digits dropped, so
+    that an identifier is found however it is written out (with or without
+    dashes, in either case)."""
+    return "".join(char for char in str(text or "").lower() if char.isalnum())
 
 
 @dataclass(frozen=True)
@@ -441,6 +472,8 @@ class MemoryOptions:
     repeat_threshold: Optional[float] = None
     supersede_held_changes: bool = False
     related_origin: Dict[str, Any] = field(default_factory=dict)
+    origin_kept_out: Tuple[str, ...] = ()
+    labels_kept_out: Tuple[str, ...] = ()
 
     def service(
         self, store: Any, *, max_results: int = 5, base_namespace: Sequence[str] = ()
@@ -458,6 +491,8 @@ class MemoryOptions:
             repeat_threshold=self.repeat_threshold,
             supersede_held_changes=self.supersede_held_changes,
             related_origin=self.related_origin,
+            origin_kept_out=self.origin_kept_out,
+            labels_kept_out=self.labels_kept_out,
         )
 
 
@@ -772,6 +807,8 @@ class AgentMemoryStoreService:
         repeat_threshold: Optional[float] = None,
         supersede_held_changes: bool = False,
         related_origin: Optional[Dict[str, Any]] = None,
+        origin_kept_out: Sequence[str] = (),
+        labels_kept_out: Sequence[str] = (),
     ) -> None:
         """
         Args:
@@ -803,6 +840,20 @@ class AgentMemoryStoreService:
                 analysis after the run is shown those first, with their ids
                 (:meth:`related_memories`), so that it changes them rather
                 than writing new ones. Empty shows none.
+            origin_kept_out: Keys of *origin* whose values a memory the
+                analysis after a run writes, or a change it makes, may not
+                hold in its text or topic: the memory records them in its
+                origin already. Case and everything but letters and digits are
+                ignored, so the keys suit identifiers. Such a write is refused
+                (``refused``) with a reason that asks for the text without
+                the value, after the repeat check and before the write policy
+                is asked; the policy is told (``observe_kept_out``). A write
+                the agent makes with a tool during its run is not checked.
+                Empty checks nothing.
+            labels_kept_out: Regular expressions, matched without regard to
+                case, of labels such a write may not hold either (a label
+                followed by its value, say), with the same outcome. Empty
+                checks nothing.
         """
         self.store = store
         self.base_namespace = tuple(base_namespace)
@@ -828,6 +879,10 @@ class AgentMemoryStoreService:
         self.repeat_threshold = repeat_threshold
         self.supersede_held_changes = supersede_held_changes
         self.related_origin = dict(related_origin or {})
+        self.origin_kept_out = tuple(origin_kept_out)
+        self.labels_kept_out = tuple(
+            re.compile(pattern, re.IGNORECASE) for pattern in labels_kept_out
+        )
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def render_entry(self, document: "MemoryStoreDocument", line: str) -> str:
@@ -850,6 +905,47 @@ class AgentMemoryStoreService:
 
     def _origin(self, via: str, decision: MemoryWriteDecision) -> Dict[str, Any]:
         return {**self.origin, **decision.origin, "via": via}
+
+    def _kept_out(self, text: str) -> Optional[Tuple[str, str, str]]:
+        """What of ``origin_kept_out`` and ``labels_kept_out`` *text* holds:
+        ``(kind, key or pattern, what the model is shown)``, or ``None``."""
+        if self.origin_kept_out:
+            comparable = _letters_and_digits(text)
+            for key in self.origin_kept_out:
+                value = _letters_and_digits(self.origin.get(key))
+                if value and value in comparable:
+                    return KEPT_OUT_ORIGIN, key, key
+        for pattern in self.labels_kept_out:
+            found = pattern.search(text)
+            if found:
+                return KEPT_OUT_LABEL, pattern.pattern, found.group(0).strip()
+        return None
+
+    def _kept_out_reason(self, request: MemoryWriteRequest) -> Optional[str]:
+        """Why a write from the analysis is refused for holding what is kept
+        out of memories; ``None`` when it is not. The policy is told."""
+        if request.via != VIA_ANALYSIS or not (
+            self.origin_kept_out or self.labels_kept_out
+        ):
+            return None
+        found = self._kept_out(
+            " ".join(filter(None, [request.topic, request.content]))
+        )
+        if found is None:
+            return None
+        kind, matched, shown = found
+        self.logger.info(
+            "Memory write refused: its text holds a kept-out %s (%s)", kind, matched
+        )
+        observe = getattr(self.write_policy, "observe_kept_out", None)
+        if observe is not None:
+            try:
+                observe(request, kind, matched)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.warning(
+                    "Write policy failed to observe a refusal: %s", exc
+                )
+        return KEPT_OUT_REASONS[kind].format(matched=shown)
 
     def hold_namespace(self, user_id: str, category: "MemoryCategory | str") -> Tuple[str, ...]:
         return (str(user_id), *self.hold_path, MemoryCategory(category).value)
@@ -1028,6 +1124,8 @@ class AgentMemoryStoreService:
         a memory from the analysis after a run that nearly repeats one already
         there or held for that namespace is not written (``repeated``, with
         the id of the one it repeats), and the policy is not asked about it.
+        With ``origin_kept_out`` or ``labels_kept_out``, such a memory whose
+        text holds what they keep out is refused, before the policy is asked.
         A given *memory_id* is written under that key; to change a memory
         wherever it lies, use :meth:`update_memory`.
 
@@ -1060,17 +1158,20 @@ class AgentMemoryStoreService:
                     REPEATED, repeated_id, target, REPEATED_REASONS[where]
                 )
 
-        decision = await self._decide(
-            MemoryWriteRequest(
-                user_id=user_id,
-                content=content,
-                topic=topic,
-                memory_type=memory_type,
-                category=resolved_category.value,
-                space=target,
-                via=via,
-            )
+        request = MemoryWriteRequest(
+            user_id=user_id,
+            content=content,
+            topic=topic,
+            memory_type=memory_type,
+            category=resolved_category.value,
+            space=target,
+            via=via,
         )
+        kept_out = self._kept_out_reason(request)
+        if kept_out:
+            return MemoryWriteOutcome(REFUSED, None, target, kept_out)
+
+        decision = await self._decide(request)
         if decision.action == REFUSE:
             return MemoryWriteOutcome(REFUSED, None, target, decision.reason)
 
@@ -1309,7 +1410,9 @@ class AgentMemoryStoreService:
         from the analysis after a run whose text nearly repeats what the
         memory says, in the same category, is neither written nor held
         (``repeated``, with the memory's id), and the policy is not asked
-        about it.
+        about it. With ``origin_kept_out`` or ``labels_kept_out``, such a
+        change whose text holds what they keep out is refused (``refused``),
+        before the policy is asked.
         """
         user_id = str(user_id)
         found = await self.find_memory(user_id, memory_id)
@@ -1343,18 +1446,21 @@ class AgentMemoryStoreService:
                 REPEATED, memory_id, found.space, UNCHANGED_REASON
             )
 
-        decision = await self._decide(
-            MemoryWriteRequest(
-                user_id=user_id,
-                content=content,
-                topic=topic,
-                memory_type=new_type,
-                category=new_category.value,
-                space=found.space,
-                via=via,
-                replaces=memory_id,
-            )
+        request = MemoryWriteRequest(
+            user_id=user_id,
+            content=content,
+            topic=topic,
+            memory_type=new_type,
+            category=new_category.value,
+            space=found.space,
+            via=via,
+            replaces=memory_id,
         )
+        kept_out = self._kept_out_reason(request)
+        if kept_out:
+            return MemoryWriteOutcome(REFUSED, memory_id, found.space, kept_out)
+
+        decision = await self._decide(request)
         if decision.action == REFUSE:
             return MemoryWriteOutcome(REFUSED, memory_id, found.space, decision.reason)
 
@@ -2637,6 +2743,9 @@ __all__ = [
     "REPEATED",
     "REPEATED_REASONS",
     "UNCHANGED_REASON",
+    "KEPT_OUT_LABEL",
+    "KEPT_OUT_ORIGIN",
+    "KEPT_OUT_REASONS",
     "SAVE",
     "VIA_ANALYSIS",
     "VIA_TOOL",
