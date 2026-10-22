@@ -8,12 +8,14 @@ project's ``LLMModelFactory``.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from langchain.agents.middleware import ModelFallbackMiddleware
 from langgraph.errors import GraphInterrupt
 
+from inference_core.llm.model_identity import get_model_identity
 from inference_core.services._cancel import AgentCancelled
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,73 @@ def failed_answer_reason(response: Any) -> str | None:
     return None
 
 
+# A provider's error type is a word like ``invalid_request_error``; anything
+# else may be text from the request and is left out.
+_ERROR_TYPE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
+
+
+def _model_label(model: Any) -> str:
+    """The name a model is known by, for a log line."""
+    if model is None:
+        return "the primary model"
+    identity = get_model_identity(model)
+    if identity is not None and identity.name:
+        return identity.name
+    for attr in ("model_name", "model", "model_id"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return type(model).__name__
+
+
+def _provider_error_type(exc: BaseException) -> str | None:
+    """The provider's own name for the error (``invalid_request_error``), if any."""
+    candidates: list[Any] = []
+    body = getattr(exc, "body", None)
+    if isinstance(body, Mapping):
+        error = body.get("error", body)
+        if isinstance(error, Mapping):
+            candidates += [error.get("type"), error.get("code")]
+    candidates += [getattr(exc, "type", None), getattr(exc, "code", None)]
+    for value in candidates:
+        if isinstance(value, str) and _ERROR_TYPE.fullmatch(value):
+            return value
+    return None
+
+
+def describe_failure(exc: BaseException) -> str:
+    """What a failed model call was, without what it said.
+
+    The exception's class, the HTTP status and the provider's error type.
+    Never the message: a provider's error can quote the request it refused.
+    """
+    parts = [type(exc).__name__]
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        parts.append(f"HTTP {status}")
+    error_type = _provider_error_type(exc)
+    if error_type:
+        parts.append(error_type)
+    return ", ".join(parts)
+
+
+def _log_fallback(failed_model: Any, exc: BaseException, next_model: Any) -> None:
+    """Say that a model failed and which one takes over.
+
+    Without this a model that never works (a wrong key, a missing model)
+    looks healthy in the logs: every call is answered by a fallback, and
+    every call pays for the failed attempt first.
+    """
+    logger.warning(
+        "Model %s failed (%s); falling back to %s",
+        _model_label(failed_model),
+        describe_failure(exc),
+        _model_label(next_model),
+    )
+
+
 class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
     """``ModelFallbackMiddleware`` that never swallows cancellation/interrupts.
 
@@ -87,6 +156,11 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
     It also takes a failure that a provider delivered as an answer for what
     it is (:func:`failed_answer_reason`) and tries the next model, where the
     stock middleware would hand the empty message on as the model's reply.
+
+    Each switch to the next model is logged as a warning, with the failed
+    call's class, HTTP status and the provider's error type, never its text
+    (:func:`describe_failure`). Which model answered in the end is not
+    changed.
 
     ``cancel_check`` is populated by ``AgentService.set_cancel_check``,
     which assigns the callback to every middleware exposing the attribute.
@@ -131,8 +205,11 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
                 return response
             last_exception = ModelAnswerFailed(failure)
 
+        failed_model = request.model
         for fallback_model in self.models:
             self._raise_if_cancelled()
+            _log_fallback(failed_model, last_exception, fallback_model)
+            failed_model = fallback_model
             try:
                 response = handler(request.override(model=fallback_model))
             except GraphInterrupt, AgentCancelled:
@@ -166,8 +243,11 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
                 return response
             last_exception = ModelAnswerFailed(failure)
 
+        failed_model = request.model
         for fallback_model in self.models:
             self._raise_if_cancelled()
+            _log_fallback(failed_model, last_exception, fallback_model)
+            failed_model = fallback_model
             try:
                 response = await handler(request.override(model=fallback_model))
             except GraphInterrupt, AgentCancelled:

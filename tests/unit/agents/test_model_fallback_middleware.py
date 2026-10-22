@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from typing import Any, List, Optional
 from unittest.mock import patch
@@ -19,6 +20,7 @@ from inference_core.agents.middleware.model_fallback import (
     ModelAnswerFailed,
     build_model_fallback_middleware,
     canonicalize_fallback_overrides,
+    describe_failure,
     failed_answer_reason,
     fallback_models_from_mapping,
     normalize_fallback_model_names,
@@ -521,3 +523,165 @@ def test_a_reply_cut_off_by_an_error_is_made_again_by_the_fallback() -> None:
 
     ai_messages = [m for m in state["messages"] if m.type == "ai"]
     assert [m.content for m in ai_messages] == ["answer"]
+
+
+# ---------------------------------------------------------------------------
+# A switch to a fallback is logged, without what the provider said
+# ---------------------------------------------------------------------------
+
+
+class _ProviderError(Exception):
+    """Shaped like an SDK's API error: a status, a body and a quoting message."""
+
+    def __init__(self, message: str, status_code: int, body: dict) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
+def _named(name: str) -> FakeListChatModel:
+    model = FakeListChatModel(responses=["ok"])
+    tag_model_identity(model, name=name)
+    return model
+
+
+def _fallback_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == "inference_core.agents.middleware.model_fallback"
+    ]
+
+
+def test_a_failed_primary_is_logged_with_its_kind_and_not_its_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    middleware = CancelAwareModelFallbackMiddleware(_named("nemotron-ultra"))
+    error = _ProviderError(
+        "This API key is not scoped to a workspace; your prompt was: secret plan",
+        400,
+        {"type": "error", "error": {"type": "invalid_request_error", "message": "x"}},
+    )
+    calls: list[object] = []
+
+    def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        if len(calls) == 1:
+            raise error
+        return "fallback-response"
+
+    with caplog.at_level(logging.WARNING):
+        result = middleware.wrap_model_call(
+            _FakeRequest(model=_named("claude-haiku-5-5")), handler
+        )
+
+    assert result == "fallback-response"
+    [record] = _fallback_lines(caplog)
+    assert record.levelno == logging.WARNING
+    assert record.getMessage() == (
+        "Model claude-haiku-5-5 failed (_ProviderError, HTTP 400, "
+        "invalid_request_error); falling back to nemotron-ultra"
+    )
+    assert "secret plan" not in caplog.text
+    assert "workspace" not in caplog.text
+
+
+def test_each_failed_fallback_is_logged_in_turn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    middleware = CancelAwareModelFallbackMiddleware(
+        _named("model-b"), _named("model-c")
+    )
+    calls: list[object] = []
+
+    def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        if len(calls) < 3:
+            raise RuntimeError("provider down: quoted input")
+        return "third"
+
+    with caplog.at_level(logging.WARNING):
+        assert (
+            middleware.wrap_model_call(_FakeRequest(model=_named("model-a")), handler)
+            == "third"
+        )
+
+    assert [r.getMessage() for r in _fallback_lines(caplog)] == [
+        "Model model-a failed (RuntimeError); falling back to model-b",
+        "Model model-b failed (RuntimeError); falling back to model-c",
+    ]
+    assert "quoted input" not in caplog.text
+
+
+def test_a_working_primary_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    middleware = _build_middleware(num_fallbacks=1)
+
+    with caplog.at_level(logging.DEBUG):
+        assert middleware.wrap_model_call(_FakeRequest(), lambda request: "ok") == "ok"
+
+    assert _fallback_lines(caplog) == []
+
+
+def test_a_failed_answer_is_logged_as_one(caplog: pytest.LogCaptureFixture) -> None:
+    middleware = CancelAwareModelFallbackMiddleware(_named("model-b"))
+    failed = AIMessage(content="", response_metadata={"finish_reason": "error"})
+    calls: list[object] = []
+
+    def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        return failed if len(calls) == 1 else "fallback-response"
+
+    with caplog.at_level(logging.WARNING):
+        middleware.wrap_model_call(_FakeRequest(model=_named("model-a")), handler)
+
+    [record] = _fallback_lines(caplog)
+    assert record.getMessage() == (
+        "Model model-a failed (ModelAnswerFailed); falling back to model-b"
+    )
+
+
+def test_async_switch_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    middleware = CancelAwareModelFallbackMiddleware(_named("model-b"))
+    calls: list[object] = []
+
+    async def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        if len(calls) == 1:
+            raise _ProviderError(
+                "quoted", 401, {"error": {"type": "authentication_error"}}
+            )
+        return "fallback-response"
+
+    async def run() -> object:
+        return await middleware.awrap_model_call(
+            _FakeRequest(model=_named("model-a")), handler
+        )
+
+    with caplog.at_level(logging.WARNING):
+        assert asyncio.run(run()) == "fallback-response"
+
+    [record] = _fallback_lines(caplog)
+    assert record.getMessage() == (
+        "Model model-a failed (_ProviderError, HTTP 401, authentication_error); "
+        "falling back to model-b"
+    )
+
+
+def test_a_cancelled_run_does_not_announce_a_fallback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    middleware = _build_middleware(num_fallbacks=1)
+    middleware.cancel_check = lambda: True
+
+    def handler(request: _FakeRequest) -> object:
+        raise RuntimeError("provider down")
+
+    with caplog.at_level(logging.WARNING), pytest.raises(AgentCancelled):
+        middleware.wrap_model_call(_FakeRequest(), handler)
+
+    assert _fallback_lines(caplog) == []
+
+
+def test_describe_failure_leaves_out_text_shaped_error_types() -> None:
+    error = _ProviderError("x", 500, {"error": {"type": "Your prompt: hello there"}})
+    assert describe_failure(error) == "_ProviderError, HTTP 500"
