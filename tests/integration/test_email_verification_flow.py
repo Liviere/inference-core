@@ -133,6 +133,15 @@ async def test_login_verified_required_setting(async_test_client_factory):
 @pytest.mark.asyncio
 async def test_email_verification_endpoints(async_test_client):
     """Test email verification request and confirmation endpoints"""
+    # The send is queued as a Celery task; it is not published from a test.
+    with patch("inference_core.services.auth_service.send_email_async") as send:
+        await _request_verification_emails(async_test_client)
+
+    send.assert_called_once()
+    assert send.call_args.kwargs["to"] == "verifyuser@example.com"
+
+
+async def _request_verification_emails(async_test_client):
     # Register user
     await async_test_client.post(
         "/api/v1/auth/register",

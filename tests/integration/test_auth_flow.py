@@ -2,6 +2,8 @@
 Integration tests for authentication flow: register, login, refresh, logout.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 
@@ -232,13 +234,17 @@ async def test_forgot_password_success(async_test_client):
     assert res_unknown.status_code == 200
     assert res_unknown.json()["success"] is True
 
-    # Known email returns success
-    res_known = await async_test_client.post(
-        "/api/v1/auth/forgot-password",
-        json={"email": "eric@example.com"},
-    )
+    # Known email returns success. The send is queued as a Celery task; it is
+    # not published from a test.
+    with patch("inference_core.services.auth_service.send_email_async") as send:
+        res_known = await async_test_client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "eric@example.com"},
+        )
     assert res_known.status_code == 200
     assert res_known.json()["success"] is True
+    send.assert_called_once()
+    assert send.call_args.kwargs["to"] == "eric@example.com"
 
 
 @pytest.mark.asyncio
