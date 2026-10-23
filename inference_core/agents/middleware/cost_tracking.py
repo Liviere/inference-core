@@ -199,9 +199,16 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         logging_config: Usage logging configuration
         task_type: Task type for logging (default: "agent")
         request_mode: Request mode for logging (default: "sync")
+        log_tool_error_text: Whether the warning logged for a tool's error
+            carries the exception's text (the default). A consumer whose
+            tools' errors can quote what they read (a page, a document) sets
+            it to ``False`` on the class: the warning then names the tool,
+            the exception's type and the tool call's id. The model still gets
+            the text as the tool's result.
     """
 
     state_schema = CostTrackingState
+    log_tool_error_text: bool = True
 
     def __init__(
         self,
@@ -641,10 +648,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             raise
 
         except Exception as e:
-            logger.warning(f"Tool call error ({tool_name}): {e}")
             tool_call_id = (
                 request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
             )
+            self._log_tool_error("", tool_name, e, tool_call_id)
             return ToolMessage(content=f"Error: {str(e)}", tool_call_id=tool_call_id)
         # Tool timing is not persisted; no context tracking needed here.
 
@@ -681,15 +688,29 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             raise
 
         except Exception as e:
-            logger.warning(f"Tool call error (async, {tool_name}): {e}")
             tool_call_id = (
                 request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
             )
+            self._log_tool_error("async, ", tool_name, e, tool_call_id)
             return ToolMessage(content=f"Error: {str(e)}", tool_call_id=tool_call_id)
 
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+
+    def _log_tool_error(
+        self, mode: str, tool_name: str, error: Exception, tool_call_id: str
+    ) -> None:
+        """The warning for a tool's error turned into its result."""
+        if self.log_tool_error_text:
+            logger.warning(f"Tool call error ({mode}{tool_name}): {error}")
+        else:
+            logger.warning(
+                "Tool call %s failed (%s) for tool call %s",
+                tool_name,
+                type(error).__name__,
+                tool_call_id,
+            )
 
     @staticmethod
     def _reported_model_name(response_metadata: Dict[str, Any]) -> Optional[str]:

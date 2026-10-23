@@ -5,6 +5,7 @@ _detect_provider) and the lifecycle hooks (before_agent, after_model,
 wrap_model_call, wrap_tool_call).
 """
 
+import logging
 import time
 import uuid
 from unittest.mock import MagicMock, patch
@@ -359,6 +360,44 @@ class TestToolCallStops:
             await middleware.awrap_tool_call(_tool_request(), handler)
 
         assert calls == []
+
+
+class TestToolErrorLog:
+    """What the warning for a tool's error carries."""
+
+    def _warnings(self, caplog):
+        return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_by_default_it_carries_the_text(self, middleware, caplog):
+        handler = MagicMock(side_effect=RuntimeError("Account 4711 not found"))
+
+        with caplog.at_level(logging.WARNING):
+            middleware.wrap_tool_call(_tool_request(), handler)
+
+        assert self._warnings(caplog) == [
+            "Tool call error (slow_tool): Account 4711 not found"
+        ]
+
+    async def test_without_the_text_it_names_tool_kind_and_call(
+        self, middleware, caplog, monkeypatch
+    ):
+        monkeypatch.setattr(CostTrackingMiddleware, "log_tool_error_text", False)
+
+        async def handler(request):
+            raise RuntimeError("Account 4711 not found")
+
+        with caplog.at_level(logging.WARNING):
+            result = await middleware.awrap_tool_call(_tool_request(), handler)
+        middleware.wrap_tool_call(
+            _tool_request(call_id="tool-call-2"),
+            MagicMock(side_effect=ValueError("Account 4711")),
+        )
+
+        assert result.content == "Error: Account 4711 not found"
+        assert self._warnings(caplog) == [
+            "Tool call slow_tool failed (RuntimeError) for tool call tool-call-1",
+            "Tool call slow_tool failed (ValueError) for tool call tool-call-2",
+        ]
 
 
 class _CallingModel(BaseChatModel):
