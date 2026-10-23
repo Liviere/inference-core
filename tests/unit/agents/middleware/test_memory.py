@@ -8,6 +8,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langgraph.errors import GraphInterrupt
 
 from inference_core.agents.middleware.memory import (
     MemoryMiddleware,
@@ -25,6 +26,7 @@ from inference_core.services.agent_memory_service import (
     MemoryWriteOutcome,
     RecalledContext,
 )
+from inference_core.services._cancel import AgentCancelled
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -300,6 +302,84 @@ class TestWrapModelCall:
         # Handler should be called with original request
         handler.assert_called_once_with(request)
         assert result is response
+
+
+_MODEL_CALL_ERRORS = [
+    pytest.param(lambda: GraphInterrupt(()), id="interrupt"),
+    pytest.param(lambda: AgentCancelled(), id="cancelled"),
+    pytest.param(lambda: RuntimeError("provider is down"), id="provider-error"),
+]
+
+
+class TestModelCallErrors:
+    """An error of the model call itself is not a failed injection: it goes
+    on up, and the model is not called a second time."""
+
+    @staticmethod
+    def _request():
+        request = MagicMock()
+        request.system_message.content_blocks = [{"type": "text", "text": "Hi."}]
+        return request
+
+    @pytest.mark.parametrize("make_error", _MODEL_CALL_ERRORS)
+    def test_sync_error_goes_up_after_one_call(self, middleware, make_error, caplog):
+        middleware._cached_memory_context = "User likes Python"
+        error = make_error()
+        handler = MagicMock(side_effect=error)
+
+        with caplog.at_level("ERROR"), pytest.raises(type(error)):
+            middleware.wrap_model_call(self._request(), handler)
+
+        assert handler.call_count == 1
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("make_error", _MODEL_CALL_ERRORS)
+    async def test_async_error_goes_up_after_one_call(
+        self, middleware, make_error, caplog
+    ):
+        middleware._cached_memory_context = "User likes Python"
+        error = make_error()
+        handler = AsyncMock(side_effect=error)
+
+        with caplog.at_level("ERROR"), pytest.raises(type(error)):
+            await middleware.awrap_model_call(self._request(), handler)
+
+        assert handler.await_count == 1
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    @pytest.mark.asyncio
+    async def test_async_injection_error_calls_once_without_memory(
+        self, middleware, caplog
+    ):
+        middleware._cached_memory_context = "some context"
+        request = MagicMock()
+        request.system_message = None
+        response = MagicMock()
+        handler = AsyncMock(return_value=response)
+
+        with caplog.at_level("ERROR"):
+            result = await middleware.awrap_model_call(request, handler)
+
+        handler.assert_awaited_once_with(request)
+        assert result is response
+        assert any(
+            "Failed to inject memory context" in r.getMessage() for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_injects_memory(self, middleware):
+        middleware._cached_memory_context = "User likes Python"
+        request = self._request()
+        injected = MagicMock()
+        request.override.return_value = injected
+        handler = AsyncMock(return_value="answer")
+
+        assert await middleware.awrap_model_call(request, handler) == "answer"
+
+        handler.assert_awaited_once_with(injected)
+        blocks = request.override.call_args.kwargs["system_message"].content
+        assert "User likes Python" in blocks[-1]["text"]
 
 
 # ---------------------------------------------------------------------------

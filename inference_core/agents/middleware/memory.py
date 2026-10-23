@@ -501,26 +501,19 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         if not injection_blocks:
             return handler(request)
 
-        try:
-            current_blocks = list(request.system_message.content_blocks)
-            new_content = current_blocks + injection_blocks
-            new_system_message = SystemMessage(content=new_content)
-
-            logger.debug(
-                "Injected %d memory blocks into system prompt for user=%s",
-                len(injection_blocks),
-                self._resolve_user_id(),
-            )
-
-            return handler(request.override(system_message=new_system_message))
-
-        except Exception as e:
-            logger.error(
-                "Failed to inject memory context into system prompt: %s",
-                e,
-                exc_info=True,
-            )
+        injected = self._with_injection(request, injection_blocks)
+        if injected is None:
             return handler(request)
+
+        logger.debug(
+            "Injected %d memory blocks into system prompt for user=%s",
+            len(injection_blocks),
+            self._resolve_user_id(),
+        )
+        # The call is made outside ``_with_injection``: an error of the model
+        # (or an interrupt of the run) is not a failed injection, goes on up,
+        # and the model is called once.
+        return handler(injected)
 
     async def awrap_model_call(
         self,
@@ -535,18 +528,33 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         if not injection_blocks:
             return await handler(request)
 
+        injected = self._with_injection(request, injection_blocks)
+        if injected is None:
+            return await handler(request)
+        return await handler(injected)
+
+    @staticmethod
+    def _with_injection(
+        request: ModelRequest, injection_blocks: list
+    ) -> Optional[ModelRequest]:
+        """``request`` with the memory blocks after its system prompt.
+
+        ``None`` when they cannot be added; the model is then called without
+        them.
+        """
         try:
             current_blocks = list(request.system_message.content_blocks)
-            new_content = current_blocks + injection_blocks
-            new_system_message = SystemMessage(content=new_content)
-            return await handler(request.override(system_message=new_system_message))
+            new_system_message = SystemMessage(
+                content=current_blocks + injection_blocks
+            )
+            return request.override(system_message=new_system_message)
         except Exception as e:
             logger.error(
-                "Failed to inject memory context into system prompt (async): %s",
+                "Failed to inject memory context into system prompt: %s",
                 e,
                 exc_info=True,
             )
-            return await handler(request)
+            return None
 
     # -------------------------------------------------------------------------
     # Helper methods
