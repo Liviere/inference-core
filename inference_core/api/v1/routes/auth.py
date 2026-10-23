@@ -20,6 +20,7 @@ from inference_core.core.security import (
     create_refresh_token,
     verify_password,
 )
+from inference_core.database.sql.connection import get_async_session
 from inference_core.schemas.auth import (
     AccessToken,
     EmailVerificationConfirm,
@@ -362,6 +363,13 @@ async def reset_password(
     )
 
 
+async def _user_is_active(user_id: str) -> bool:
+    """Whether the refresh token's user still exists and is active."""
+    async with get_async_session() as db:
+        user = await AuthService(db).get_user_by_id(user_id)
+        return user is not None and bool(user.is_active)
+
+
 @router.post("/refresh", response_model=AccessToken)
 async def refresh_tokens(
     request: Request,
@@ -370,6 +378,10 @@ async def refresh_tokens(
 ) -> AccessToken:
     """
     Exchange a refresh token (from cookie) for a new access token and rotated refresh token.
+
+    With ``auth_refresh_require_active`` the user is read from the database
+    first: a deleted or inactive user's session is revoked and refused. With
+    it off, refreshing does not touch the database at all.
     """
     store = RefreshSessionStore()
 
@@ -408,6 +420,14 @@ async def refresh_tokens(
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
+
+    if settings.auth_refresh_require_active and not await _user_is_active(sub):
+        # Raised outside the session's block, so it is not logged as a
+        # database error.
+        await store.revoke(jti)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked"
         )
 
     # Rotate: revoke old, issue new refresh, store session

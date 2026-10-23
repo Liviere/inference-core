@@ -47,6 +47,22 @@ class RefreshSessionStore:
         except Exception:
             return
 
+    async def revoke_user_sessions(self, user_id: str) -> int:
+        """Revoke every refresh session of *user_id*; returns how many.
+
+        Sessions are keyed by jti with no index by user, so this walks the
+        prefix with SCAN. Meant for ending all of a user's sessions at once
+        (an account closed or blocked), not for a hot path. Unlike the
+        best-effort methods above it raises on Redis errors: the caller has
+        to know that sessions may still be alive.
+        """
+        subject = str(user_id)
+        revoked = 0
+        async for key in self.redis.scan_iter(match=f"{self.prefix}*", count=500):
+            if await self.redis.hget(key, "sub") == subject:
+                revoked += await self.redis.delete(key)
+        return revoked
+
     async def get_subject(self, jti: str) -> Optional[str]:
         try:
             data = await self.redis.hgetall(self._key(jti))

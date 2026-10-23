@@ -482,3 +482,74 @@ class TestRefreshSessionStoreIntegration:
         assert mock_redis.exists.called
         assert mock_redis.hgetall.called
         assert mock_redis.delete.called
+
+
+class _FakeRedis:
+    """Hashes by key, with the SCAN, HGET and DELETE the store uses."""
+
+    def __init__(self, hashes):
+        self.hashes = dict(hashes)
+
+    async def scan_iter(self, match=None, count=None):
+        prefix = (match or "*").rstrip("*")
+        for key in list(self.hashes):
+            if key.startswith(prefix):
+                yield key
+
+    async def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
+
+    async def delete(self, *keys):
+        return sum(1 for key in keys if self.hashes.pop(key, None) is not None)
+
+
+class TestRevokeUserSessions:
+    """revoke_user_sessions ends every session of one user, and only those."""
+
+    def _store(self, redis):
+        with patch(
+            "inference_core.services.refresh_session_store.get_settings"
+        ) as mock_get_settings, patch(
+            "inference_core.services.refresh_session_store.get_redis",
+            return_value=redis,
+        ):
+            mock_get_settings.return_value = MagicMock(
+                redis_refresh_prefix="auth:refresh:"
+            )
+            return RefreshSessionStore()
+
+    @pytest.mark.asyncio
+    async def test_revokes_the_users_sessions_only(self):
+        redis = _FakeRedis(
+            {
+                "auth:refresh:a": {"sub": "user-1", "exp": "1"},
+                "auth:refresh:b": {"sub": "user-1", "exp": "1"},
+                "auth:refresh:c": {"sub": "user-2", "exp": "1"},
+                "other:key": {"sub": "user-1"},
+            }
+        )
+
+        revoked = await self._store(redis).revoke_user_sessions("user-1")
+
+        assert revoked == 2
+        assert set(redis.hashes) == {"auth:refresh:c", "other:key"}
+
+    @pytest.mark.asyncio
+    async def test_a_user_without_sessions_revokes_nothing(self):
+        redis = _FakeRedis({"auth:refresh:c": {"sub": "user-2", "exp": "1"}})
+
+        assert await self._store(redis).revoke_user_sessions("user-1") == 0
+        assert set(redis.hashes) == {"auth:refresh:c"}
+
+    @pytest.mark.asyncio
+    async def test_a_redis_error_is_raised(self):
+        redis = MagicMock()
+
+        async def _broken(*_args, **_kwargs):
+            raise ConnectionError("down")
+            yield  # pragma: no cover
+
+        redis.scan_iter = _broken
+
+        with pytest.raises(ConnectionError):
+            await self._store(redis).revoke_user_sessions("user-1")
