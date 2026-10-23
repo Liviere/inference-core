@@ -1,9 +1,19 @@
 """Tests for the Sentry PII scrubbing hooks (privacy Faza 0)."""
 
+import sys
+
+import pytest
+
 from inference_core.observability.sentry_scrubbing import (
+    clear_expected_failures,
+    clear_transaction_rules,
     privacy_sentry_options,
+    register_expected_failures,
+    register_span_data_kept_out,
+    register_url_queries_kept_out,
     scrub_breadcrumb,
     scrub_event,
+    scrub_transaction,
 )
 
 
@@ -214,6 +224,7 @@ class TestPrivacyOptions:
         assert opts["max_request_body_size"] == "never"
         assert opts["before_send"] is scrub_event
         assert opts["before_breadcrumb"] is scrub_breadcrumb
+        assert opts["before_send_transaction"] is scrub_transaction
 
     def test_options_accepted_by_sentry_sdk(self):
         # Guard against option-name drift across sentry-sdk upgrades.
@@ -221,3 +232,157 @@ class TestPrivacyOptions:
 
         for key in privacy_sentry_options():
             assert key in DEFAULT_OPTIONS, f"unknown sentry_sdk option: {key}"
+
+
+# ---------------------------------------------------------------------------
+# Expected failures: off until a product registers them
+# ---------------------------------------------------------------------------
+
+
+class _Refusal(Exception):
+    pass
+
+
+def _reported(error: BaseException, mechanism: str) -> tuple:
+    """An event as an integration reports ``error``, with its hint."""
+    try:
+        raise error
+    except BaseException:
+        exc_info = sys.exc_info()
+    event = {
+        "level": "error",
+        "exception": {
+            "values": [
+                {
+                    "type": type(error).__name__,
+                    "value": str(error),
+                    "mechanism": {"type": mechanism, "handled": False},
+                }
+            ]
+        },
+    }
+    return event, {"exc_info": exc_info}
+
+
+@pytest.fixture
+def registries():
+    clear_expected_failures()
+    clear_transaction_rules()
+    yield
+    clear_expected_failures()
+    clear_transaction_rules()
+
+
+class TestExpectedFailures:
+    def test_nothing_registered_sends_the_event(self, registries):
+        event, hint = _reported(_Refusal("no"), "langchain")
+        assert scrub_event(event, hint) is not None
+
+    def test_a_registered_failure_of_its_mechanism_is_dropped(self, registries):
+        register_expected_failures("langchain", [_Refusal])
+        event, hint = _reported(_Refusal("no"), "langchain")
+        assert scrub_event(event, hint) is None
+
+    def test_a_subclass_is_dropped_too(self, registries):
+        class _Specific(_Refusal):
+            pass
+
+        register_expected_failures("mcp", [_Refusal])
+        event, hint = _reported(_Specific("no"), "mcp")
+        assert scrub_event(event, hint) is None
+
+    def test_the_same_failure_through_another_mechanism_is_sent(self, registries):
+        register_expected_failures("mcp", [_Refusal])
+        event, hint = _reported(_Refusal("no"), "celery")
+        assert scrub_event(event, hint) is not None
+
+    def test_another_failure_of_the_mechanism_is_sent(self, registries):
+        register_expected_failures("langchain", [_Refusal])
+        event, hint = _reported(RuntimeError("bug"), "langchain")
+        assert scrub_event(event, hint) is not None
+
+    def test_registering_twice_keeps_one(self, registries):
+        register_expected_failures("langchain", [_Refusal])
+        register_expected_failures("langchain", [_Refusal, KeyError])
+        event, hint = _reported(KeyError("k"), "langchain")
+        assert scrub_event(event, hint) is None
+
+
+# ---------------------------------------------------------------------------
+# Transaction scrubbing: off until a product registers it
+# ---------------------------------------------------------------------------
+
+
+def _transaction() -> dict:
+    return {
+        "type": "transaction",
+        "transaction": "/api/v1/settings/user/memory/entries",
+        "request": {
+            "url": "https://api.example.com/api/v1/settings/user/memory/entries?query=Anna",
+            "method": "GET",
+            "query_string": "query=Anna",
+        },
+        "contexts": {"trace": {"op": "http.server", "data": {"thread.name": "main"}}},
+        "spans": [
+            {
+                "op": "mcp.server",
+                "description": "tools/call propose_assistant",
+                "data": {
+                    "mcp.tool.name": "propose_assistant",
+                    "mcp.request.argument.display_name": "Anna's helper",
+                    "mcp.request.argument.prompt": "You answer Anna's mail.",
+                },
+            },
+            {
+                "op": "http.client",
+                "description": "GET https://api.tavily.com/search?q=Anna+Kowalska",
+                "data": {
+                    "url": "https://api.tavily.com/search",
+                    "http.query": "q=Anna+Kowalska",
+                    "http.method": "GET",
+                },
+            },
+            {
+                "op": "http.server",
+                "description": "GET /api/v1/notifications/stream",
+                "data": {
+                    "url.full": "https://api.example.com/stream?token=eyJ.abc.def"
+                },
+            },
+        ],
+    }
+
+
+class TestTransactionScrubbing:
+    def test_nothing_registered_leaves_it_as_it_is(self, registries):
+        assert scrub_transaction(_transaction()) == _transaction()
+
+    def test_span_data_under_a_registered_prefix_is_removed(self, registries):
+        register_span_data_kept_out(["mcp.request.argument."])
+
+        event = scrub_transaction(_transaction())
+
+        assert event["spans"][0]["data"] == {"mcp.tool.name": "propose_assistant"}
+        assert event["spans"][1]["data"]["http.query"] == "q=Anna+Kowalska"
+        assert event["request"]["query_string"] == "query=Anna"
+
+    def test_url_queries_are_removed(self, registries):
+        register_url_queries_kept_out()
+
+        event = scrub_transaction(_transaction())
+
+        assert "query_string" not in event["request"]
+        assert event["request"]["url"] == (
+            "https://api.example.com/api/v1/settings/user/memory/entries"
+        )
+        client = event["spans"][1]
+        assert client["description"] == "GET https://api.tavily.com/search"
+        assert "http.query" not in client["data"]
+        assert client["data"]["http.method"] == "GET"
+        assert event["spans"][2]["data"]["url.full"] == "https://api.example.com/stream"
+        assert "query=Anna" not in str(event)
+        assert "Kowalska" not in str(event)
+        assert "eyJ" not in str(event)
+        # Names and operations stay.
+        assert event["transaction"] == "/api/v1/settings/user/memory/entries"
+        assert event["spans"][0]["data"]["mcp.tool.name"] == "propose_assistant"

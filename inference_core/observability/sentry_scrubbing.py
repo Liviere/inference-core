@@ -19,6 +19,17 @@ What gets scrubbed:
 
 Everything here is fail-soft: a scrubbing error must never lose an event or
 crash the caller, so hooks fall back to a minimal safe subset on failure.
+
+Two more seams are off until a product registers what they apply to:
+
+* expected failures (:func:`register_expected_failures`): an exception an
+  integration reports as unhandled (LangChain's tool callbacks, MCP tool
+  handlers) although the product handles it, such as a tool's refusal. Its
+  event is dropped;
+* transaction scrubbing (:func:`register_span_data_kept_out`,
+  :func:`register_url_queries_kept_out`): span data under given key prefixes
+  (an integration that records a tool's arguments), and the query part of
+  addresses in transactions and spans.
 """
 
 import logging
@@ -167,6 +178,74 @@ def _apply_extra_detectors(text: str) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# Expected failures and transaction scrubbing (product-registered, off by default)
+# ---------------------------------------------------------------------------
+
+_EXPECTED_FAILURES: "Dict[str, tuple]" = {}
+_SPAN_DATA_KEPT_OUT: "set[str]" = set()
+_URL_QUERIES_KEPT_OUT = False
+
+
+def register_expected_failures(mechanism: str, types: Iterable[type]) -> None:
+    """Drop events of ``types`` reported through the integration ``mechanism``.
+
+    An integration such as LangChain's (mechanism ``"langchain"``) or MCP's
+    (``"mcp"``) reports every exception of a tool as unhandled, although the
+    product handles some of them: a refusal, a device that is offline. An
+    event whose exception is an instance of a type registered for its
+    mechanism is not sent; the same exception raised elsewhere still is.
+    Idempotent; adds to what was registered.
+    """
+    known = _EXPECTED_FAILURES.get(mechanism, ())
+    _EXPECTED_FAILURES[mechanism] = known + tuple(t for t in types if t not in known)
+
+
+def clear_expected_failures() -> None:
+    """Remove all registered expected failures (test hook)."""
+    _EXPECTED_FAILURES.clear()
+
+
+def register_span_data_kept_out(prefixes: Iterable[str]) -> None:
+    """Remove span data whose key starts with one of ``prefixes`` from
+    transactions (``mcp.request.argument.`` keeps a tool's arguments out)."""
+    _SPAN_DATA_KEPT_OUT.update(prefixes)
+
+
+def register_url_queries_kept_out() -> None:
+    """Remove the query part of addresses from transactions and their spans
+    (the request's ``query_string``, ``http.query``, URLs in span data and
+    descriptions): a query can carry a search text or a token."""
+    global _URL_QUERIES_KEPT_OUT
+    _URL_QUERIES_KEPT_OUT = True
+
+
+def clear_transaction_rules() -> None:
+    """Remove all registered transaction scrubbing (test hook)."""
+    global _URL_QUERIES_KEPT_OUT
+    _SPAN_DATA_KEPT_OUT.clear()
+    _URL_QUERIES_KEPT_OUT = False
+
+
+def _is_expected_failure(event: Dict[str, Any], hint: Optional[Dict[str, Any]]) -> bool:
+    if not _EXPECTED_FAILURES or not hint:
+        return False
+    exc_info = hint.get("exc_info")
+    error = exc_info[1] if isinstance(exc_info, tuple) and len(exc_info) > 1 else None
+    if error is None:
+        return False
+    for entry in (event.get("exception") or {}).get("values") or []:
+        mechanism = (
+            (entry.get("mechanism") or {}).get("type")
+            if isinstance(entry, dict)
+            else None
+        )
+        types = _EXPECTED_FAILURES.get(mechanism or "")
+        if types and isinstance(error, types):
+            return True
+    return False
+
+
 # Generic, locale-neutral patterns usable for structured span extraction
 # (label, in application order). Callable-only injected detectors yield no spans.
 _GENERIC_SPAN_PATTERNS = [
@@ -275,8 +354,11 @@ def _scrub_user(user: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def scrub_event(event: Dict[str, Any], hint: Optional[Dict[str, Any]] = None):
-    """``before_send`` hook: strip PII from an outgoing Sentry event."""
+    """``before_send`` hook: strip PII from an outgoing Sentry event, or drop
+    it when it reports a registered expected failure."""
     try:
+        if _is_expected_failure(event, hint):
+            return None
         if "request" in event and isinstance(event["request"], dict):
             event["request"] = _scrub_request(event["request"])
         if "user" in event and isinstance(event["user"], dict):
@@ -338,6 +420,58 @@ def scrub_breadcrumb(crumb: Dict[str, Any], hint: Optional[Dict[str, Any]] = Non
     return crumb
 
 
+_URL_QUERY_RE = re.compile(r"(\b(?:https?|wss?)://[^\s?#\"']*)\?[^\s#\"']*")
+
+
+def _without_url_query(text: str) -> str:
+    return _URL_QUERY_RE.sub(r"\1", text)
+
+
+def _scrub_span(span: Dict[str, Any]) -> None:
+    data = span.get("data")
+    if isinstance(data, dict):
+        for key in list(data):
+            if any(key.startswith(prefix) for prefix in _SPAN_DATA_KEPT_OUT):
+                del data[key]
+            elif _URL_QUERIES_KEPT_OUT:
+                if key == "http.query":
+                    del data[key]
+                elif isinstance(data[key], str):
+                    data[key] = _without_url_query(data[key])
+    if _URL_QUERIES_KEPT_OUT:
+        for key in ("description", "name"):
+            if isinstance(span.get(key), str):
+                span[key] = _without_url_query(span[key])
+
+
+def scrub_transaction(event: Dict[str, Any], hint: Optional[Dict[str, Any]] = None):
+    """``before_send_transaction`` hook: the registered transaction scrubbing.
+
+    Without anything registered the transaction goes as it is. A failure
+    drops it: a transaction is not worth sending what was to be kept out.
+    """
+    if not _SPAN_DATA_KEPT_OUT and not _URL_QUERIES_KEPT_OUT:
+        return event
+    try:
+        trace = (event.get("contexts") or {}).get("trace")
+        if isinstance(trace, dict):
+            _scrub_span(trace)
+        for span in event.get("spans") or []:
+            if isinstance(span, dict):
+                _scrub_span(span)
+        request = event.get("request")
+        if _URL_QUERIES_KEPT_OUT and isinstance(request, dict):
+            request.pop("query_string", None)
+            if isinstance(request.get("url"), str):
+                request["url"] = request["url"].split("?", 1)[0]
+        if _URL_QUERIES_KEPT_OUT and isinstance(event.get("transaction"), str):
+            event["transaction"] = _without_url_query(event["transaction"])
+    except Exception:  # pragma: no cover - never send what was to be kept out
+        logger.debug("Sentry transaction scrubbing failed; dropping it", exc_info=True)
+        return None
+    return event
+
+
 def privacy_sentry_options() -> Dict[str, Any]:
     """Privacy-hardened kwargs shared by every ``sentry_sdk.init`` call site.
 
@@ -347,6 +481,8 @@ def privacy_sentry_options() -> Dict[str, Any]:
     - ``include_local_variables=False`` — stack-frame locals (which can hold
       raw message/email content) never leave the process;
     - ``before_send`` / ``before_breadcrumb`` — content scrubbing above;
+    - ``before_send_transaction`` — the transaction scrubbing a product
+      registers (nothing changes without it);
     - ``max_request_body_size='never'`` — request bodies are never attached.
     """
     return {
@@ -355,4 +491,5 @@ def privacy_sentry_options() -> Dict[str, Any]:
         "max_request_body_size": "never",
         "before_send": scrub_event,
         "before_breadcrumb": scrub_breadcrumb,
+        "before_send_transaction": scrub_transaction,
     }
