@@ -10,6 +10,7 @@ import os
 os.environ.setdefault("ENVIRONMENT", "testing")
 from typing import AsyncGenerator
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -157,3 +158,72 @@ def async_test_client_factory():
         await engine.dispose()
 
     return _factory
+
+
+# -- No test publishes to a real broker ---------------------------------------
+#
+# The test environment points Celery at a real Redis (``CELERY_BROKER_URL`` in
+# ``.env.test``), and a task left there waits for ever in a queue other test
+# runs share. A Celery app made with ``broker="memory://"`` still publishes to
+# that Redis, because Celery prefers the environment's broker. Every publish
+# ends in kombu's ``Producer.publish``, so that is where a test is stopped:
+# through ``send_task``, ``apply_async`` and ``delay`` alike. The in-memory
+# transport is allowed; a test that has to reach a real broker says so with
+# ``@pytest.mark.real_broker``.
+
+REAL_BROKER_MARK = "real_broker"
+_real_broker_allowed = False
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        f"{REAL_BROKER_MARK}: the test may publish Celery tasks to a real broker",
+    )
+
+
+def _transport_of(producer) -> str:
+    connection = producer.__connection__ or producer.connection
+    transport = getattr(connection, "transport_cls", None)
+    if isinstance(transport, str):
+        return transport
+    return getattr(transport, "driver_type", None) or repr(transport)
+
+
+class RealBrokerPublish(RuntimeError):
+    """A test published a task to a real broker."""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_real_broker_publish():
+    from kombu.messaging import Producer
+
+    publish = Producer.publish
+
+    def guarded(self, body, routing_key=None, *args, **kwargs):
+        transport = _transport_of(self)
+        if transport != "memory" and not _real_broker_allowed:
+            headers = kwargs.get("headers") or {}
+            raise RealBrokerPublish(
+                f"{os.environ.get('PYTEST_CURRENT_TEST', 'A test')} published "
+                f"Celery task {headers.get('task', '?')!r} to queue "
+                f"{routing_key!r} of a real broker ({transport}). Mock the "
+                f"send, or mark the test with @pytest.mark.{REAL_BROKER_MARK}."
+            )
+        return publish(self, body, routing_key, *args, **kwargs)
+
+    Producer.publish = guarded
+    try:
+        yield
+    finally:
+        Producer.publish = publish
+
+
+@pytest.fixture(autouse=True)
+def real_broker_mark(request):
+    global _real_broker_allowed
+    _real_broker_allowed = request.node.get_closest_marker(REAL_BROKER_MARK) is not None
+    try:
+        yield
+    finally:
+        _real_broker_allowed = False
