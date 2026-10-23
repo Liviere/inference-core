@@ -7,6 +7,7 @@ read the user at all.
 import pytest
 from sqlalchemy import delete, update
 
+from inference_core.api.v1.routes import auth as auth_routes
 from inference_core.core.dependecies import get_db
 from inference_core.database.sql.models.user import User
 from inference_core.services import refresh_session_store as rss
@@ -120,3 +121,26 @@ async def test_with_the_option_off_refresh_does_not_read_the_user(
         ref = await client.post("/api/v1/auth/refresh", cookies={"refresh_token": cookie})
 
         assert ref.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_with_the_option_off_refresh_opens_no_database_session(
+    async_test_client_factory, sessions, monkeypatch
+):
+    def no_database():
+        raise AssertionError("refresh opened a database session")
+
+    async for client in async_test_client_factory(auth_register_default_active=True):
+        cookie = await _signed_in(client, "frank")
+        app = client._transport.app
+
+        def no_db_dependency():
+            raise AssertionError("refresh asked for a database session")
+
+        app.dependency_overrides[get_db] = no_db_dependency
+        monkeypatch.setattr(auth_routes, "get_async_session", no_database)
+
+        ref = await client.post("/api/v1/auth/refresh", cookies={"refresh_token": cookie})
+
+        assert ref.status_code == 200
+        assert ref.cookies["refresh_token"] != cookie
