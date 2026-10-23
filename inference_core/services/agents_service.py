@@ -285,6 +285,7 @@ class AgentService:
         enable_snapshots: bool = True,
         memory_analysis_model: Optional[Any] = None,
         memory_options: Optional[MemoryOptions] = None,
+        tool_call_token_type: Literal["reasoning", "tool_call"] = "reasoning",
     ):
         """Initialize the AgentService.
 
@@ -351,6 +352,11 @@ class AgentService:
             memory_options: The memory spaces the agent reads and writes, and
                 the write policy, origin and rendering of its memories. With
                 spaces, they replace ``memory_scope``.
+            tool_call_token_type: How ``on_token`` gets the streamed chunks of
+                a tool call. ``"reasoning"`` (default): a ``calling `name```
+                line with ``type: "reasoning"``, shown among the reasoning.
+                ``"tool_call"``: the tool's name with ``type: "tool_call"`` and
+                ``tool_name``, for a client that shows tool calls on its own.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -424,6 +430,7 @@ class AgentService:
         self._memory_postrun_model = memory_postrun_model
         self._memory_analysis_model = memory_analysis_model
         self._memory_options = memory_options
+        self._tool_call_token_type = tool_call_token_type
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -1900,7 +1907,14 @@ class AgentService:
             if on_token:
                 token, meta = chunk["data"]
                 try:
-                    self._process_message_chunk(token, meta, on_token)
+                    self._process_message_chunk(
+                        token,
+                        meta,
+                        on_token,
+                        tool_call_type=getattr(
+                            self, "_tool_call_token_type", "reasoning"
+                        ),
+                    )
                 except Exception:
                     pass  # best-effort
         elif chunk_type == "custom":
@@ -1917,6 +1931,7 @@ class AgentService:
         token: Any,
         metadata: dict[str, Any],
         on_token: Callable[[str, dict[str, Any]], None],
+        tool_call_type: str = "reasoning",
     ) -> None:
         """Extract text/reasoning from a ``messages`` stream chunk and forward to *on_token*.
 
@@ -1932,15 +1947,23 @@ class AgentService:
         * ``node`` – the LangGraph node name that produced the token
         * ``agent_name`` – agent name if available (for sub-agent disambiguation)
         """
-        for text, meta in AgentService._extract_message_segments(token, metadata):
+        for text, meta in AgentService._extract_message_segments(
+            token, metadata, tool_call_type=tool_call_type
+        ):
             on_token(text, meta)
 
     @staticmethod
     def _extract_message_segments(
         token: Any,
         metadata: dict[str, Any],
+        tool_call_type: str = "reasoning",
     ) -> list[tuple[str, dict[str, Any]]]:
-        """Return normalized text segments extracted from one message chunk."""
+        """Return normalized text segments extracted from one message chunk.
+
+        A chunk of a tool call gives its tool's name: as a ``calling `name```
+        reasoning line (``tool_call_type="reasoning"``, the default), or as a
+        segment of its own type (``"tool_call"``, with ``tool_name``).
+        """
 
         if not isinstance(token, AIMessageChunk):
             return []
@@ -1980,7 +2003,18 @@ class AgentService:
                     # Raw args are dropped to prevent them from leaking
                     # into the chat bubble as visible text.
                     name = block.get("name")
-                    if name:
+                    if name and tool_call_type == "tool_call":
+                        segments.append(
+                            (
+                                name,
+                                {
+                                    **base_meta,
+                                    "type": "tool_call",
+                                    "tool_name": name,
+                                },
+                            )
+                        )
+                    elif name:
                         segments.append(
                             (
                                 f"calling `{name}`\n",
@@ -2090,7 +2124,11 @@ class AgentService:
                     text=text,
                     metadata=serialize_snapshot_value(meta),
                 )
-                for text, meta in self._extract_message_segments(token, metadata or {})
+                for text, meta in self._extract_message_segments(
+                    token,
+                    metadata or {},
+                    tool_call_type=getattr(self, "_tool_call_token_type", "reasoning"),
+                )
             ]
             if segments:
                 trace_events.append(
@@ -2820,6 +2858,7 @@ class DeepAgentService(AgentService):
         _visited_agents: Optional[set[str]] = None,
         memory_analysis_model: Optional[Any] = None,
         memory_options: Optional[MemoryOptions] = None,
+        tool_call_token_type: Literal["reasoning", "tool_call"] = "reasoning",
     ):
         """Initialize the DeepAgentService.
 
@@ -2856,6 +2895,8 @@ class DeepAgentService(AgentService):
                 ``AgentService``).
             memory_options: The agent's memory spaces and how its memories
                 are written (see ``AgentService``).
+            tool_call_token_type: How streamed tool-call chunks reach
+                ``on_token`` (see ``AgentService``).
         """
         super().__init__(
             agent_name,
@@ -2877,6 +2918,7 @@ class DeepAgentService(AgentService):
             memory_scope=memory_scope,
             memory_analysis_model=memory_analysis_model,
             memory_options=memory_options,
+            tool_call_token_type=tool_call_token_type,
         )
         self._explicit_subagents = subagents or []
 

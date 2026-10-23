@@ -255,6 +255,14 @@ is the streamed fragment and `meta` contains:
 
 This makes it possible to stream normal answer tokens, reasoning blocks, and
 partial tool-call arguments without losing the existing step/update stream.
+
+A streamed chunk of a tool call never carries its arguments; it gives the
+tool's name. By default it is a reasoning line, `calling \`name\``, with
+`type: "reasoning"`, so a client that shows reasoning shows which tool the
+model is calling. A client that shows tool calls on their own (from the
+`updates` stream) passes `tool_call_token_type="tool_call"` to
+`AgentService` or `DeepAgentService`: the chunk then has `type: "tool_call"`,
+`tool_name`, and the name as its text, and the reasoning stays the model's.
 Tokens emitted by middleware nodes are filtered out, so UI integrations only
 receive the main agent/model output.
 
