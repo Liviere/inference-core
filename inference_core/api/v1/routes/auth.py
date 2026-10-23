@@ -367,9 +367,13 @@ async def refresh_tokens(
     request: Request,
     response: Response,
     settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_db),
 ) -> AccessToken:
     """
     Exchange a refresh token (from cookie) for a new access token and rotated refresh token.
+
+    With ``auth_refresh_require_active`` the user is read from the database
+    first: a deleted or inactive user's session is revoked and refused.
     """
     store = RefreshSessionStore()
 
@@ -409,6 +413,14 @@ async def refresh_tokens(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
         )
+
+    if settings.auth_refresh_require_active:
+        user = await AuthService(db).get_user_by_id(sub)
+        if user is None or not user.is_active:
+            await store.revoke(jti)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked"
+            )
 
     # Rotate: revoke old, issue new refresh, store session
     await store.revoke(jti)

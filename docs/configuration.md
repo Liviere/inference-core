@@ -77,6 +77,7 @@ Explicit environment variables or dotenv entries still win, so you can opt back 
 | `AUTH_SEND_VERIFICATION_EMAIL_ON_REGISTER`  | false                   | Auto send verification mail           |
 | `AUTH_LOGIN_REQUIRE_ACTIVE`                 | true                    | Require active for login              |
 | `AUTH_LOGIN_REQUIRE_VERIFIED`               | false                   | Require verified email for login      |
+| `AUTH_REFRESH_REQUIRE_ACTIVE`               | false                   | Refresh refused for a gone or inactive user (session revoked) |
 | `AUTH_EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | 60                      | Verification token TTL                |
 | `AUTH_EMAIL_VERIFICATION_URL_BASE`          | null                    | Base URL for email verification links |
 

@@ -771,6 +771,15 @@ class Settings(BaseSettings):
     auth_login_require_verified: bool = Field(
         default=False, description="If true, login is denied for unverified users"
     )
+    auth_refresh_require_active: bool = Field(
+        default=False,
+        description=(
+            "If true, POST /auth/refresh reads the user from the database and "
+            "refuses (revoking the session) when the user is gone or inactive. "
+            "Off, a refresh session outlives a deactivated account until it "
+            "expires or is revoked."
+        ),
+    )
     auth_email_verification_token_ttl_minutes: int = Field(
         default=60, description="Token lifetime for email verification links in minutes"
     )
