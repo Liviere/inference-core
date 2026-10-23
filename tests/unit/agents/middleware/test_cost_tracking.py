@@ -10,9 +10,15 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents import create_agent
 from langchain.messages import ToolMessage
-
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import tool as lc_tool
+from langgraph.errors import GraphInterrupt, ParentCommand
+from langgraph.types import Command
 
 from inference_core.agents.middleware.cost_tracking import (
     CostTrackingMiddleware,
@@ -290,6 +296,110 @@ class TestWrapToolCall:
         assert isinstance(result, ToolMessage)
         assert result.content == "Error: boom"
         assert result.tool_call_id == "tool-call-1"
+
+
+def _tool_request(name="slow_tool", call_id="tool-call-1"):
+    request = MagicMock()
+    request.tool_call = {"name": name, "id": call_id}
+    return request
+
+
+_STOPS = [
+    pytest.param(
+        lambda: AgentCancelled("Agent execution cancelled by user"), id="cancelled"
+    ),
+    pytest.param(lambda: GraphInterrupt(()), id="interrupt"),
+    pytest.param(
+        lambda: ParentCommand(Command(graph=Command.PARENT)), id="parent-command"
+    ),
+]
+
+
+class TestToolCallStops:
+    """A cancelled run, an interrupt and a command for the parent graph end the
+    step: they are not turned into the tool's result, as a tool's own error is."""
+
+    @pytest.mark.parametrize("make_stop", _STOPS)
+    def test_sync_lets_it_through(self, middleware, make_stop):
+        stop = make_stop()
+        handler = MagicMock(side_effect=stop)
+
+        with pytest.raises(type(stop)):
+            middleware.wrap_tool_call(_tool_request(), handler)
+
+        handler.assert_called_once()
+
+    @pytest.mark.parametrize("make_stop", _STOPS)
+    async def test_async_lets_it_through(self, middleware, make_stop):
+        stop = make_stop()
+
+        async def handler(request):
+            raise stop
+
+        with pytest.raises(type(stop)):
+            await middleware.awrap_tool_call(_tool_request(), handler)
+
+    async def test_async_tool_error_is_still_the_result(self, middleware):
+        async def handler(request):
+            raise RuntimeError("boom")
+
+        result = await middleware.awrap_tool_call(_tool_request(), handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == "Error: boom"
+
+    async def test_async_checks_for_a_stop_before_the_tool(self, middleware):
+        middleware.cancel_check = lambda: True
+        calls = []
+
+        async def handler(request):
+            calls.append(request)
+
+        with pytest.raises(AgentCancelled):
+            await middleware.awrap_tool_call(_tool_request(), handler)
+
+        assert calls == []
+
+
+class _CallingModel(BaseChatModel):
+    """Calls ``slow_tool`` first, then answers; counts its calls."""
+
+    calls: list = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake-calling"
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls.append(len(messages))
+        if len(self.calls) == 1:
+            reply = AIMessage(
+                "", tool_calls=[{"name": "slow_tool", "args": {}, "id": "call-1"}]
+            )
+        else:
+            reply = AIMessage("Done.")
+        return ChatResult(generations=[ChatGeneration(message=reply)])
+
+
+@lc_tool
+def slow_tool() -> str:
+    """A tool the person stops while it runs."""
+    raise AgentCancelled("Agent execution cancelled by user")
+
+
+def test_a_stop_during_a_tool_ends_the_run(middleware):
+    """The model is not called again with the stop as the tool's result."""
+    model = _CallingModel(calls=[])
+    agent = create_agent(model, tools=[slow_tool], middleware=[middleware])
+
+    with patch.object(CostTrackingMiddleware, "_persist_from_response"):
+        with pytest.raises(AgentCancelled):
+            agent.invoke({"messages": [{"role": "user", "content": "Go."}]})
+
+    assert len(model.calls) == 1
 
 
 # ---------------------------------------------------------------------------

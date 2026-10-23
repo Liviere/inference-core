@@ -45,7 +45,7 @@ from langchain.agents.middleware import (
 )
 from langchain.messages import ToolMessage
 from langchain.tools.tool_node import ToolCallRequest
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphBubbleUp
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import NotRequired
@@ -634,8 +634,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             logger.debug(f"Tool call end: {tool_name}")
             return result
 
-        except GraphInterrupt as gi:
-            logger.debug(f"Tool call interrupted by GraphInterrupt ({tool_name}): {gi}")
+        except (GraphBubbleUp, AgentCancelled) as stop:
+            # An interrupt, a command for the parent graph or a cancelled run
+            # is not the tool's failure: it ends the step, not the tool call.
+            logger.debug(f"Tool call stopped by {type(stop).__name__} ({tool_name})")
             raise
 
         except Exception as e:
@@ -652,6 +654,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         handler: Callable[[ToolCallRequest], Any],
     ) -> ToolMessage | Command:
         """Async version of wrap_tool_call for use with astream."""
+        if self.cancel_check:
+            try:
+                if self.cancel_check():
+                    raise AgentCancelled("Agent execution cancelled by user")
+            except AgentCancelled:
+                raise
+            except Exception:
+                pass
+
         tool_name = (
             request.tool_call.get("name", "<unknown>")
             if hasattr(request, "tool_call")
@@ -663,8 +674,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             logger.debug(f"Tool call end (async): {tool_name}")
             return result
 
-        except GraphInterrupt as gi:
-            logger.debug(f"Tool call interrupted by GraphInterrupt ({tool_name}): {gi}")
+        except (GraphBubbleUp, AgentCancelled) as stop:
+            logger.debug(
+                f"Tool call stopped by {type(stop).__name__} (async, {tool_name})"
+            )
             raise
 
         except Exception as e:
