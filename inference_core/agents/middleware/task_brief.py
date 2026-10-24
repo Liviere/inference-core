@@ -276,26 +276,56 @@ def handed_back(result: Any, keys: frozenset[str]) -> Any:
 # deepagents merges with a reducer.
 RETURNED_STATE_KEYS = frozenset({"files"})
 
+# The custom stream event that says which ``task`` call a subagent runs for.
+SUBAGENT_RUN = "subagent_run"
+
+
+def announced_subagent_run(data: Any) -> tuple[str, str] | None:
+    """``(checkpoint_ns, tool_call_id)`` of a :data:`SUBAGENT_RUN` event.
+
+    ``checkpoint_ns`` is the namespace of the ``task`` tool's own run
+    (``tools:<task id>``, or longer for a subagent's own call). A stream read
+    with ``subgraphs=True`` gives every event of that call's subagent a
+    namespace that starts with it, split at ``|``. LangGraph does not say
+    which tool call a namespace belongs to, so the tool says it.
+    """
+    if not isinstance(data, Mapping):
+        return None
+    run = data.get(SUBAGENT_RUN)
+    if not isinstance(run, Mapping):
+        return None
+    checkpoint_ns, call_id = run.get("checkpoint_ns"), run.get("tool_call_id")
+    if not isinstance(checkpoint_ns, str) or not isinstance(call_id, str):
+        return None
+    return checkpoint_ns, call_id
+
 
 class BriefedSubAgentMiddleware(SubAgentMiddleware):
     """``SubAgentMiddleware`` whose ``task`` takes a label and a required brief.
 
-    Takes what ``SubAgentMiddleware`` takes, and ``returned_state_keys``: the
+    Takes what ``SubAgentMiddleware`` takes, ``returned_state_keys``: the
     state, besides messages, a subagent hands back to the parent (see
-    :func:`handed_back`). The schema and the reading of a call are one class
+    :func:`handed_back`), and ``announce_runs``: whether a call that starts a
+    subagent first writes a :data:`SUBAGENT_RUN` event to the stream, so a
+    caller reading the subagent's events can tell which call they belong to
+    (off by default). The schema and the reading of a call are one class
     on purpose: a tool that asks for ``prompt`` and a call that is not read
     for where its brief is would refuse every call written the way
     deepagents' own tool takes it.
     """
 
+    announce_runs: bool = False
+
     def __init__(
         self,
         *,
         returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
+        announce_runs: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.returned_state_keys = frozenset(returned_state_keys)
+        self.announce_runs = announce_runs
         self._brief_the_tool()
 
     def _brief_the_tool(self) -> None:
@@ -341,6 +371,7 @@ class BriefedSubAgentMiddleware(SubAgentMiddleware):
         settled = self._settled(request)
         if isinstance(settled, ToolMessage):
             return settled
+        self._announce(settled)
         return self._answer(settled, handler(settled))
 
     async def awrap_tool_call(
@@ -351,7 +382,30 @@ class BriefedSubAgentMiddleware(SubAgentMiddleware):
         settled = self._settled(request)
         if isinstance(settled, ToolMessage):
             return settled
+        self._announce(settled)
         return self._answer(settled, await handler(settled))
+
+    def _announce(self, request: ToolCallRequest) -> None:
+        if not self.announce_runs or request.tool_call.get("name") != TASK_TOOL_NAME:
+            return
+        runtime = request.runtime
+        config = getattr(runtime, "config", None) or {}
+        checkpoint_ns = (config.get("configurable") or {}).get("checkpoint_ns")
+        call_id = request.tool_call.get("id")
+        writer = getattr(runtime, "stream_writer", None)
+        if not checkpoint_ns or not call_id or writer is None:
+            return
+        try:
+            writer(
+                {
+                    SUBAGENT_RUN: {
+                        "tool_call_id": call_id,
+                        "checkpoint_ns": checkpoint_ns,
+                    }
+                }
+            )
+        except Exception:
+            logger.debug("could not announce the subagent of a task call")
 
     def _answer(self, request: ToolCallRequest, result: Any) -> Any:
         if request.tool_call.get("name") != TASK_TOOL_NAME:
@@ -362,9 +416,11 @@ class BriefedSubAgentMiddleware(SubAgentMiddleware):
 __all__ = [
     "NO_BRIEF",
     "RETURNED_STATE_KEYS",
+    "SUBAGENT_RUN",
     "TASK_TOOL_NAME",
     "BriefedSubAgentMiddleware",
     "TaskCall",
+    "announced_subagent_run",
     "briefed",
     "handed_back",
     "settle",

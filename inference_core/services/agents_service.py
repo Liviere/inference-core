@@ -31,6 +31,7 @@ from inference_core.agents.middleware import (
     canonicalize_fallback_overrides,
     create_tool_model_switch_middleware,
 )
+from inference_core.agents.middleware.task_brief import announced_subagent_run
 from inference_core.agents.tools.memory_tools import (
     generate_memory_tools_system_instructions,
     get_memory_tools,
@@ -109,6 +110,13 @@ _COST_FIELDS = (
 _TRACE_MODES = frozenset({"separate", "nested", "nested-only"})
 
 
+def _subagent_run_of(chunk: dict[str, Any]) -> tuple[str, str] | None:
+    """The announcement of a ``task`` call's subagent, if *chunk* is one."""
+    if chunk.get("type") != "custom":
+        return None
+    return announced_subagent_run(chunk.get("data"))
+
+
 @dataclass
 class RunAccumulator:
     """Mutable state accumulated during an agent streaming run.
@@ -127,6 +135,22 @@ class RunAccumulator:
     # ``response_format`` is configured. Captured from ``updates`` chunks so
     # both local streaming and Agent Server v2 stream paths populate it.
     structured_response: Any = None
+    # The ``task`` calls whose subagents run in this run, by the namespace of
+    # the tool's own run (``tools:<task id>``), as ``BriefedSubAgentMiddleware``
+    # announces them when the stream reads nested graphs.
+    subagent_calls: dict[str, str] = field(default_factory=dict)
+
+    def parent_tool_call_id(self, ns: tuple[str, ...]) -> str | None:
+        """The announced ``task`` call an event of namespace *ns* belongs to.
+
+        The innermost one: a subagent's own ``task`` call starts a subagent
+        whose namespace is longer.
+        """
+        for depth in range(len(ns), 0, -1):
+            call_id = self.subagent_calls.get("|".join(ns[:depth]))
+            if call_id is not None:
+                return call_id
+        return None
 
     def process_updates_chunk(
         self,
@@ -286,6 +310,7 @@ class AgentService:
         memory_analysis_model: Optional[Any] = None,
         memory_options: Optional[MemoryOptions] = None,
         tool_call_token_type: Literal["reasoning", "tool_call"] = "reasoning",
+        stream_subgraphs: bool = False,
     ):
         """Initialize the AgentService.
 
@@ -357,6 +382,16 @@ class AgentService:
                 line with ``type: "reasoning"``, shown among the reasoning.
                 ``"tool_call"``: the tool's name with ``type: "tool_call"`` and
                 ``tool_name``, for a client that shows tool calls on its own.
+            stream_subgraphs: Whether the callbacks also get what runs inside
+                a tool as a graph of its own, such as a subagent started by
+                ``task``. ``False`` (default): only the agent's own graph.
+                ``True``: the stream is read with ``subgraphs=True``; an event
+                from a nested graph reaches ``on_step``, ``on_token`` and
+                ``on_custom`` with ``ns`` (its namespace) and
+                ``parent_tool_call_id`` (the id of the ``task`` call whose
+                subagent it comes from, when that call was announced; see
+                ``BriefedSubAgentMiddleware``), and never becomes a part of
+                the run's result, messages or cost.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -431,6 +466,7 @@ class AgentService:
         self._memory_analysis_model = memory_analysis_model
         self._memory_options = memory_options
         self._tool_call_token_type = tool_call_token_type
+        self._stream_subgraphs = stream_subgraphs
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -877,9 +913,11 @@ class AgentService:
                 memory_instructions = generate_memory_tools_system_instructions(
                     active_tool_names=resolved_tools,
                     spaces=getattr(self._memory_service, "spaces", None),
-                    default_write=self._memory_service.default_write_key()
-                    if hasattr(self._memory_service, "default_write_key")
-                    else None,
+                    default_write=(
+                        self._memory_service.default_write_key()
+                        if hasattr(self._memory_service, "default_write_key")
+                        else None
+                    ),
                 )
 
                 if memory_instructions:
@@ -1385,9 +1423,7 @@ class AgentService:
                     # agent's identity; ``shared`` scope drops the agent_name
                     # so all categories resolve to the user-global namespace.
                     scope_agent_name = (
-                        self.display_name
-                        if self._memory_scope == "dedicated"
-                        else None
+                        self.display_name if self._memory_scope == "dedicated" else None
                     )
                     options = self._memory_options
                     self._memory_store_service = AgentMemoryStoreService(
@@ -1632,6 +1668,19 @@ class AgentService:
         if not parent_runnable_config:
             return False
         return parent_runnable_config.get("callbacks") is not None
+
+    @property
+    def stream_subgraphs(self) -> bool:
+        """Whether the stream callbacks get the events of nested graphs."""
+        return getattr(self, "_stream_subgraphs", False)
+
+    def subgraph_stream_kwargs(self) -> dict[str, Any]:
+        """The ``stream``/``astream`` keyword for :attr:`stream_subgraphs`.
+
+        For a caller that streams ``self.agent`` itself (resuming a run after
+        an interrupt) and hands the chunks to ``_process_stream_chunk``.
+        """
+        return {"subgraphs": True} if self.stream_subgraphs else {}
 
     def _build_stream_config(
         self,
@@ -1900,8 +1949,19 @@ class AgentService:
     ) -> None:
         """Process a ``StreamPart`` dict from the agent stream."""
         chunk_type = chunk.get("type", "")
+        ns = tuple(chunk.get("ns") or ())
 
-        if chunk_type == "updates":
+        if ns or _subagent_run_of(chunk) is not None:
+            # Only read with ``stream_subgraphs``: a nested graph's event.
+            self._process_nested_chunk(
+                chunk,
+                ns,
+                accumulator,
+                on_step=on_step,
+                on_token=on_token,
+                on_custom=on_custom,
+            )
+        elif chunk_type == "updates":
             accumulator.process_updates_chunk(chunk["data"], on_step)
         elif chunk_type == "messages":
             if on_token:
@@ -1925,6 +1985,51 @@ class AgentService:
                     pass  # best-effort
 
         self._check_cancel(cancel_check)
+
+    def _process_nested_chunk(
+        self,
+        chunk: dict[str, Any],
+        ns: tuple[str, ...],
+        accumulator: "RunAccumulator",
+        *,
+        on_step: Callable[[str, Any], None] | None,
+        on_token: Callable[[str, dict[str, Any]], None] | None,
+        on_custom: Callable[[Any], None] | None,
+    ) -> None:
+        """Hand an event of a nested graph (a subagent) to the callbacks.
+
+        Nothing of it goes into the run's steps, messages or cost: the
+        subagent's answer reaches the run as the ``task`` call's result. Each
+        event carries ``ns`` and ``parent_tool_call_id``; an update or a
+        custom event that is not a dict (a subagent's interrupt, which the
+        run's own graph reports too) is not handed on.
+        """
+        announced = _subagent_run_of(chunk)
+        if announced is not None:
+            checkpoint_ns, call_id = announced
+            accumulator.subagent_calls[checkpoint_ns] = call_id
+            return
+
+        where = {"ns": ns, "parent_tool_call_id": accumulator.parent_tool_call_id(ns)}
+        chunk_type = chunk.get("type", "")
+        try:
+            if chunk_type == "updates" and on_step:
+                for step_name, data in chunk["data"].items():
+                    if isinstance(data, dict):
+                        on_step(step_name, {**data, **where})
+            elif chunk_type == "messages" and on_token:
+                token, meta = chunk["data"]
+                for text, segment_meta in self._extract_message_segments(
+                    token,
+                    meta,
+                    tool_call_type=getattr(self, "_tool_call_token_type", "reasoning"),
+                ):
+                    on_token(text, {**segment_meta, **where})
+            elif chunk_type == "custom" and on_custom:
+                if isinstance(chunk["data"], dict):
+                    on_custom({**chunk["data"], **where})
+        except Exception:
+            pass  # best-effort, never break agent execution
 
     @staticmethod
     def _process_message_chunk(
@@ -2218,6 +2323,11 @@ class AgentService:
             return None
 
         for event in match.snapshot.trace_events:
+            if event.namespace:
+                # A subagent's event, recorded with ``stream_subgraphs``. A
+                # replay hands on the run's own events, as runs recorded
+                # without it have nothing else.
+                continue
             if event.event_type == "updates" and isinstance(event.payload, dict):
                 for step_name, data in event.payload.items():
                     if on_step:
@@ -2320,6 +2430,7 @@ class AgentService:
                 stream_mode=stream_modes,
                 context=context,
                 version="v2",
+                **self.subgraph_stream_kwargs(),
             )
 
             if graceful_cancel:
@@ -2443,6 +2554,7 @@ class AgentService:
                 stream_mode=stream_modes,
                 context=context,
                 version="v2",
+                **self.subgraph_stream_kwargs(),
             )
 
             if graceful_cancel:
@@ -2859,6 +2971,7 @@ class DeepAgentService(AgentService):
         memory_analysis_model: Optional[Any] = None,
         memory_options: Optional[MemoryOptions] = None,
         tool_call_token_type: Literal["reasoning", "tool_call"] = "reasoning",
+        stream_subgraphs: bool = False,
     ):
         """Initialize the DeepAgentService.
 
@@ -2897,6 +3010,10 @@ class DeepAgentService(AgentService):
                 are written (see ``AgentService``).
             tool_call_token_type: How streamed tool-call chunks reach
                 ``on_token`` (see ``AgentService``).
+            stream_subgraphs: Whether the callbacks get the events of the
+                subagents too (see ``AgentService``). With it, the ``task``
+                tool announces each subagent it starts, so their events name
+                the call they belong to.
         """
         super().__init__(
             agent_name,
@@ -2919,6 +3036,7 @@ class DeepAgentService(AgentService):
             memory_analysis_model=memory_analysis_model,
             memory_options=memory_options,
             tool_call_token_type=tool_call_token_type,
+            stream_subgraphs=stream_subgraphs,
         )
         self._explicit_subagents = subagents or []
 
@@ -3032,6 +3150,7 @@ class DeepAgentService(AgentService):
             sub_middleware = BriefedSubAgentMiddleware(
                 backend=self._backend,
                 subagents=subagent_specs,
+                announce_runs=self.stream_subgraphs,
             )
             middleware.append(sub_middleware)
         if skills_middleware is not None:
