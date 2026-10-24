@@ -279,6 +279,10 @@ models:
   # Claude models use the 'thinking' kwarg. These models take adaptive thinking
   # only: a thinking budget, `temperature` and `top_p` are rejected by the API
   # (see the `dropped` entries under param_policies).
+  # They think even when the request leaves `thinking` out, but return the text
+  # of their thinking only with `display: "summarized"`: the default
+  # (`"omitted"`) streams thinking blocks with an empty text, so no reasoning
+  # reaches the stream. `display` changes what is returned, not what is billed.
   claude-opus-5-5:
     provider: 'claude'
     display_name: 'Claude Opus 5.5'
@@ -288,6 +292,7 @@ models:
     reasoning_config:
       thinking:
         type: "adaptive"
+        display: "summarized"
     pricing:
       currency: USD
       input:
@@ -317,6 +322,7 @@ models:
     reasoning_config:
       thinking:
         type: "adaptive"
+        display: "summarized"
     pricing:
       currency: USD
       input:
@@ -346,6 +352,7 @@ models:
     reasoning_config:
       thinking:
         type: "adaptive"
+        display: "summarized"
     pricing:
       currency: USD
       # base prices correspond to prompts of up to 100K tokens
