@@ -131,6 +131,23 @@ class Settings(BaseSettings):
         default="development", description="Application environment"
     )
     debug: bool = Field(default=True, description="Debug mode")
+    log_file_rotation: Literal["time", "external"] = Field(
+        default="time",
+        description=(
+            "How the JSON log files in logs/ are rotated. 'time': by the process "
+            "itself at midnight, 30 files kept. 'external': not by the process; "
+            "the file is opened again when something else moved it (logrotate), "
+            "which also holds when several processes write one file."
+        ),
+    )
+    celery_log_file_per_node: bool = Field(
+        default=False,
+        description=(
+            "Celery workers write logs/celery-<node>.log, <node> being the part "
+            "of the worker's --hostname before '@', instead of one "
+            "logs/celery.log shared by every worker writing to that directory."
+        ),
+    )
     host: str = Field(default="0.0.0.0", description="Server host")
     port: int = Field(default=8000, description="Server port")
     app_public_url: str = Field(

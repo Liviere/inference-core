@@ -52,12 +52,40 @@ async def _shutdown_mcp_clients() -> None:
         pass
 
 
-def _setup_celery_file_logging() -> None:
-    """Attach a rotating JSON file handler for ``logs/celery.log`` to the root logger.
+# The worker's node name (its --hostname before '@'), taken at worker_init in
+# the main process; forked pool processes inherit it.
+_node_name: Optional[str] = None
+
+
+def _remember_node_name(sender: Any) -> None:
+    global _node_name
+    hostname = getattr(sender, "hostname", None)
+    if isinstance(hostname, str) and hostname:
+        _node_name = hostname.split("@", 1)[0]
+
+
+def celery_log_file_name(node: Optional[str] = None) -> str:
+    """``celery.log``, or ``celery-<node>.log`` with CELERY_LOG_FILE_PER_NODE.
+
+    ``node`` defaults to the worker's own node name. Without one (a process
+    that is not a worker, a worker named by Celery's default) the shared name
+    stays.
+    """
+    node = node or _node_name
+    if not get_settings().celery_log_file_per_node or not node:
+        return "celery.log"
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in node)
+    return f"celery-{safe}.log"
+
+
+def setup_celery_file_logging(node: Optional[str] = None) -> None:
+    """Attach a JSON file handler for ``logs/celery*.log`` to the root logger.
 
     Called inside each forked worker process so every worker independently
     owns its file descriptor. Console output is already handled by Celery's
     own logging subsystem — this function only adds the file side-channel.
+    A process that is not a worker (beat) may call it with a ``node`` of its
+    own; the file is named by ``celery_log_file_name``.
     """
     log_dir = "logs"
     try:
@@ -68,13 +96,16 @@ def _setup_celery_file_logging() -> None:
 
     settings = get_settings()
     log_level = "DEBUG" if settings.debug else "INFO"
-    log_file_path = os.path.join(log_dir, "celery.log")
+    log_file_path = os.path.join(log_dir, celery_log_file_name(node))
 
     try:
         handler = _build_file_handler(log_file_path, log_level)
         logging.root.addHandler(handler)
     except Exception as e:
         print(f"[logging] Celery file logging disabled: {e}", file=sys.stderr)
+
+
+_setup_celery_file_logging = setup_celery_file_logging
 
 
 @worker_process_init.connect
@@ -158,6 +189,7 @@ def _on_worker_init(sender=None, **_):
     on a dedicated daemon thread so that all worker threads can dispatch
     coroutines via ``asyncio.run_coroutine_threadsafe()``.
     """
+    _remember_node_name(sender)
     if not _is_threads_pool(sender):
         return
 

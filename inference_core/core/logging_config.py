@@ -28,17 +28,27 @@ class JsonFormatter(BaseJsonFormatter):
         log_record.update(existing)
 
 
-def _build_file_handler(
-    log_file_path: str, log_level: str
-) -> logging.handlers.TimedRotatingFileHandler:
-    """Create a pre-configured TimedRotatingFileHandler writing JSON records."""
-    handler = logging.handlers.TimedRotatingFileHandler(
-        filename=log_file_path,
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8",
-    )
+def _build_file_handler(log_file_path: str, log_level: str) -> logging.FileHandler:
+    """Create a pre-configured file handler writing JSON records.
+
+    With ``LOG_FILE_ROTATION=time`` (the default) it rotates the file itself at
+    midnight and keeps 30 files. Several processes doing that to one file
+    rename it under each other. With ``external`` it never rotates: a
+    ``WatchedFileHandler`` opens the file again once something else (logrotate)
+    has moved it, so any number of processes may append to one file.
+    """
+    if get_settings().log_file_rotation == "external":
+        handler: logging.FileHandler = logging.handlers.WatchedFileHandler(
+            filename=log_file_path, encoding="utf-8"
+        )
+    else:
+        handler = logging.handlers.TimedRotatingFileHandler(
+            filename=log_file_path,
+            when="midnight",
+            interval=1,
+            backupCount=30,
+            encoding="utf-8",
+        )
     handler.setFormatter(
         JsonFormatter(fmt="%(timestamp)s %(level)s %(name)s %(message)s %(lineno)d")
     )
