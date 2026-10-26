@@ -17,6 +17,15 @@ Environment variables grouped by functional domain.
 | `HOST`            | 0.0.0.0                                                    | Bind host                                                 |
 | `PORT`            | 8000                                                       | Bind port                                                 |
 
+### Log files
+
+The API writes JSON records to `logs/api.log`, and Celery workers to `logs/celery.log`, beside the console.
+
+| Variable                   | Default | Description |
+| -------------------------- | ------- | ----------- |
+| `LOG_FILE_ROTATION`        | time    | `time`: the process rotates its file at midnight and keeps 30. `external`: the process never rotates it; a `WatchedFileHandler` opens the file again once something else (logrotate) has moved it. Use `external` when several processes write one file, since each rotating it on its own renames it under the others. |
+| `CELERY_LOG_FILE_PER_NODE` | false   | Each worker writes `logs/celery-<node>.log`, `<node>` being its `--hostname` before `@`. A worker without its own name keeps `celery.log`. A process that is not a worker (beat) can take a file of its own with `setup_celery_file_logging(node=...)` from `inference_core.celery.celery_main`. |
+
 When `ENVIRONMENT=testing`, the API applies safe no-cost defaults only for settings that are not already defined in the shell or active dotenv file:
 
 - `LLM_EMULATION_ENABLED=true`
