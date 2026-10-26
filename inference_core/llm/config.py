@@ -303,6 +303,16 @@ class ExtrasPolicy(BaseModel):
     passthrough_unpriced: bool = Field(
         default=True, description="Whether to store counts for unpriced dimensions"
     )
+    breakdown_keys: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Token keys that only break down the input or output tokens and "
+            "have no price of their own, such as total_tokens, or "
+            "reasoning_tokens for a provider that bills reasoning as output. "
+            "They leave the cost as it is and do not mark it estimated. "
+            "Empty by default: every unpriced key marks the cost estimated."
+        ),
+    )
 
 
 class PricingConfig(BaseModel):

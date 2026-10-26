@@ -29,6 +29,7 @@ The system uses a "lean core + flexible extras" approach:
 - **billed_separately** marks additive extras such as cache write charges
 - **Context tier multipliers** for pricing based on input size
 - **Unpriced token passthrough** captures counts even without pricing
+- **Breakdown keys** (`extras_policy.breakdown_keys`) name usage keys that are part of the core counts and do not mark a cost estimated
 
 ### Cost Transparency
 
@@ -80,6 +81,61 @@ in input_tokens or output_tokens. Use billed_separately: true when a provider
 charges for an extra dimension on top of the core token count. If a provider
 uses nonstandard detail names, map them with key_aliases to a normalized extra
 key whose name already makes the parent dimension clear.
+
+#### Usage keys as the cost tracking names them
+
+The agent middleware and the usage callback turn every key of LangChain's
+`input_token_details` and `output_token_details` into `<key>_tokens`, and keep
+`total_tokens`. The names your `extras` and `key_aliases` must match are these:
+
+| Detail from LangChain | Usage key |
+|---|---|
+| `input_token_details.cache_read` | `cache_read_tokens` |
+| `input_token_details.cache_creation` (Anthropic, without a TTL breakdown) | `cache_creation_tokens` |
+| `input_token_details.ephemeral_5m_input_tokens` (Anthropic) | `ephemeral_5m_input_tokens_tokens` |
+| `input_token_details.ephemeral_1h_input_tokens` (Anthropic) | `ephemeral_1h_input_tokens_tokens` |
+| `output_token_details.reasoning` | `reasoning_tokens` |
+
+`langchain-anthropic` counts cache reads and cache writes in `input_tokens`, and
+reasoning in `output_tokens`. A cache write priced on its own is therefore a
+breakdown, not `billed_separately`. Map the Anthropic write keys to an extra whose
+name contains `cache` so it is taken out of the input tokens:
+
+```yaml
+extras:
+  cache_write_tokens:
+    cost_per_1m: 5      # 5-minute write, 1.25x the input price
+  cache_write_1h_tokens:
+    cost_per_1m: 8      # 1-hour write, 2x the input price
+  cache_read_tokens:
+    cost_per_1m: 0.2
+key_aliases:
+  ephemeral_5m_input_tokens_tokens: cache_write_tokens
+  ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
+  cache_creation_tokens: cache_write_tokens
+```
+
+When the response has the TTL breakdown, `cache_creation` is 0 and is left out,
+so only one of the two keys that map to `cache_write_tokens` is ever present.
+
+#### Keys that only break down input or output
+
+A usage key that ends in `_tokens` and has no price in `extras` marks the cost
+estimated (`cost_estimated`). `total_tokens`, which comes with every call, is
+one of them. So is `reasoning_tokens` when the reasoning is billed at the output
+price and already counted in `output_tokens`.
+
+`extras_policy.breakdown_keys` names the keys that only break down the input or
+output tokens. They leave the cost as it is and do not mark it estimated:
+
+```yaml
+extras_policy:
+  breakdown_keys: [total_tokens, reasoning_tokens]
+```
+
+The list is empty by default, and every unpriced key then marks the cost
+estimated. Leave `reasoning_tokens` out of the list for a provider that bills
+reasoning at a price of its own: price it in `extras` instead.
 
 ### Global Settings
 
