@@ -182,6 +182,56 @@ class TestPricingCalculator:
         assert result["cost_estimated"] is True
         assert result["cost_total_usd"] == 7.0  # Only priced tokens
 
+    def test_breakdown_keys_do_not_mark_the_cost_estimated(self):
+        """Keys that only break down input or output tokens, named in
+        ``extras_policy.breakdown_keys``, leave the cost as it is and do not
+        mark it estimated (``total_tokens`` comes with every call, and
+        ``reasoning_tokens`` with every call that reasons)."""
+        usage = {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "total_tokens": 1500,
+            "reasoning_tokens": 400,
+        }
+        plain = PricingConfig(
+            input=DimensionPrice(cost_per_1k=2.0),
+            output=DimensionPrice(cost_per_1k=10.0),
+        )
+        with_breakdowns = PricingConfig(
+            input=DimensionPrice(cost_per_1k=2.0),
+            output=DimensionPrice(cost_per_1k=10.0),
+            extras_policy=ExtrasPolicy(
+                breakdown_keys=["total_tokens", "reasoning_tokens"]
+            ),
+        )
+
+        before = PricingCalculator.compute_cost(usage, plain)
+        after = PricingCalculator.compute_cost(usage, with_breakdowns)
+
+        # Unchanged by default: an unpriced key marks the cost estimated.
+        assert before["cost_estimated"] is True
+        assert after["cost_estimated"] is False
+        # The reasoning is in the output tokens, at the output rate, either way.
+        assert before["cost_total_usd"] == after["cost_total_usd"] == 7.0
+        assert after["extra_costs"] == {}
+
+    def test_breakdown_keys_leave_other_unpriced_keys_estimated(self):
+        pricing_config = PricingConfig(
+            input=DimensionPrice(cost_per_1k=2.0),
+            output=DimensionPrice(cost_per_1k=10.0),
+            extras_policy=ExtrasPolicy(breakdown_keys=["total_tokens"]),
+        )
+        usage = {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "total_tokens": 1500,
+            "unknown_tokens": 100,
+        }
+
+        result = PricingCalculator.compute_cost(usage, pricing_config)
+
+        assert result["cost_estimated"] is True
+
     def test_compute_cost_with_rounding(self):
         """Test cost calculation with rounding"""
         pricing_config = PricingConfig(

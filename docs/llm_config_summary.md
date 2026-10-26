@@ -35,6 +35,12 @@ Some providers process a request in a given region only on a regional endpoint, 
   - `reasoning_config` can store provider-specific nested kwargs for reasoning / thinking models (for example OpenAI reasoning, Claude thinking, or Gemini thought settings).
   - Claude thinking config is normalized in `LLMModelFactory`: `temperature` is removed when `thinking` is enabled, and `max_tokens` is increased if it is not greater than the thinking budget.
   - when an agent enables reasoning output, the factory merges `reasoning_config` into the provider kwargs before model construction.
+  - `thinking_block_binding: drop_block | error` (Claude only, unset by default) says what the API does with a thinking block whose conversation changed since the block was produced.
+    - Claude Fable 5.1 and Opus, Sonnet and Haiku 5.5 bind each thinking block to everything before it: the system prompt, the tools and every earlier message. A request that replays a block after one of them changed is refused with a 400 on accounts created on or after 2026-08-31, and on older accounts only when the request sets the field.
+    - A summary of the history, cleared tool results or a system prompt rebuilt for each turn change it.
+    - `drop_block` has the API drop the first such block and every later one, unbilled, and answer. `error` asks for the 400 on any account, which is how to find such changes on an older account.
+    - The factory sends it as `thinking.block_binding.prefix_mismatch_behavior` with the `thinking-binding-controls-2026-08-01` beta, on every call of the model, with or without reasoning output. Without reasoning output the thinking sent is `{type: adaptive}`, which these models use when `thinking` is left out. A thinking type that does not take it (`between_tools`) is left alone with a warning.
+    - Set it only on models that take adaptive thinking: on a model that does not (Haiku 4.5, say), `{type: adaptive}` is refused.
   - directly affects instance creation in `inference_core/llm/models.py`.
   - missing API key / base_url affects `is_model_available()` results.
 

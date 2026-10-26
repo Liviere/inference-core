@@ -173,8 +173,10 @@ class PricingCalculator:
         result["cost_extras_usd"] = extra_costs_total
 
         # Build set of known dimensions for cost_estimated detection
-        known_dimensions = {"input_tokens", "output_tokens"} | set(
-            pricing_config.extras.keys()
+        known_dimensions = (
+            {"input_tokens", "output_tokens"}
+            | set(pricing_config.extras.keys())
+            | set(pricing_config.extras_policy.breakdown_keys)
         )
 
         # Check for unpriced tokens

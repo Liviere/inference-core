@@ -252,3 +252,165 @@ class TestClaudeThinkingStream:
 
         assert sent_payloads[-1]["thinking"] == {"type": "adaptive"}
         assert segments == [("text", "4")]
+
+
+def _header_transport(
+    sent: list[tuple[dict[str, Any], str | None]], body: str
+) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append((json.loads(request.content), request.headers.get("anthropic-beta")))
+        return httpx.Response(
+            200, content=body.encode(), headers={"content-type": "text/event-stream"}
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def _bound_config(thinking: dict[str, Any] | None, behavior: str | None, **extra):
+    fields: dict[str, Any] = dict(
+        name="claude-haiku-5-5",
+        provider=ModelProvider.CLAUDE,
+        api_key="test-key",
+        max_tokens=256,
+        temperature=0.7,
+        thinking_block_binding=behavior,
+        **extra,
+    )
+    if thinking is not None:
+        fields["reasoning_config"] = {"thinking": thinking}
+    return ModelConfig(**fields)
+
+
+BINDING_BETA = "thinking-binding-controls-2026-08-01"
+
+
+class TestClaudeThinkingBlockBinding:
+    """``thinking_block_binding`` asks the API what to do with a thinking block
+    whose conversation changed, on every call of the model."""
+
+    async def test_drop_block_with_reasoning_output_keeps_display(self):
+        sent: list = []
+        model = _build_model(
+            _bound_config(SUMMARIZED, "drop_block"),
+            _header_transport(sent, SUMMARIZED_STREAM),
+            reasoning_output=True,
+        )
+
+        await _segments(model)
+
+        payload, beta = sent[-1]
+        assert payload["thinking"] == {
+            **SUMMARIZED,
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        assert BINDING_BETA in (beta or "").split(",")
+        assert "temperature" not in payload
+
+    async def test_drop_block_without_reasoning_output_sends_adaptive(self):
+        """These models think adaptively by default; the binding needs a
+        thinking config to go with, and adaptive is that default."""
+        sent: list = []
+        model = _build_model(
+            _bound_config(SUMMARIZED, "drop_block"),
+            _header_transport(sent, OMITTED_STREAM),
+        )
+
+        await _segments(model)
+
+        payload, beta = sent[-1]
+        assert payload["thinking"] == {
+            "type": "adaptive",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        assert BINDING_BETA in (beta or "").split(",")
+        assert "temperature" not in payload
+
+    async def test_error_is_sent_as_is(self):
+        sent: list = []
+        model = _build_model(
+            _bound_config(None, "error"), _header_transport(sent, OMITTED_STREAM)
+        )
+
+        await _segments(model)
+
+        assert sent[-1][0]["thinking"]["block_binding"] == {
+            "prefix_mismatch_behavior": "error"
+        }
+
+    async def test_unset_sends_nothing(self):
+        sent: list = []
+        model = _build_model(
+            _bound_config(SUMMARIZED, None),
+            _header_transport(sent, OMITTED_STREAM),
+        )
+
+        await _segments(model)
+
+        payload, beta = sent[-1]
+        assert "thinking" not in payload
+        assert BINDING_BETA not in (beta or "")
+
+    async def test_betas_already_set_are_kept(self):
+        sent: list = []
+        config = _bound_config(None, "drop_block")
+        config.reasoning_config = {
+            "thinking": {"type": "adaptive"},
+            "betas": ["context-1m-2025-08-07"],
+        }
+        model = _build_model(
+            config, _header_transport(sent, OMITTED_STREAM), reasoning_output=True
+        )
+
+        await _segments(model)
+
+        betas = (sent[-1][1] or "").split(",")
+        assert "context-1m-2025-08-07" in betas
+        assert BINDING_BETA in betas
+
+    async def test_a_thinking_type_without_binding_is_left_alone(self):
+        """Sonnet 5.5's ``between_tools`` takes no other field."""
+        sent: list = []
+        model = _build_model(
+            _bound_config({"type": "between_tools"}, "drop_block"),
+            _header_transport(sent, OMITTED_STREAM),
+            reasoning_output=True,
+        )
+
+        await _segments(model)
+
+        payload, beta = sent[-1]
+        assert payload["thinking"] == {"type": "between_tools"}
+        assert BINDING_BETA not in (beta or "")
+
+    async def test_a_replayed_thinking_block_goes_back_unchanged(self):
+        """The API decides which blocks still match their conversation: the
+        history is sent as it is, signatures included."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        sent: list = []
+        model = _build_model(
+            _bound_config(SUMMARIZED, "drop_block"),
+            _header_transport(sent, OMITTED_STREAM),
+            reasoning_output=True,
+        )
+        history = [
+            HumanMessage("2+2?"),
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "Easy.", "signature": "sig-1"},
+                    {"type": "text", "text": "4"},
+                ],
+                response_metadata={"model_provider": "anthropic"},
+            ),
+            HumanMessage("And 3+3?"),
+        ]
+
+        async for _chunk in model.astream(history):
+            pass
+
+        replayed = sent[-1][0]["messages"][1]["content"]
+        assert replayed[0] == {
+            "type": "thinking",
+            "thinking": "Easy.",
+            "signature": "sig-1",
+        }
