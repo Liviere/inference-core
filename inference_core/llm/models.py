@@ -32,6 +32,49 @@ from .provider_registry import get_registered_provider
 logger = logging.getLogger(__name__)
 
 
+#: The beta that lets a request say what happens to a thinking block whose
+#: conversation changed (``thinking.block_binding``).
+THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+
+#: The thinking types ``block_binding`` may go with.
+_BINDABLE_THINKING_TYPES = frozenset({"adaptive", "enabled"})
+
+
+def _bind_thinking_blocks(model_params: Dict[str, Any], behavior: str) -> None:
+    """Ask the API to ``behavior`` a thinking block whose prefix changed.
+
+    Claude models that bind a thinking block to the conversation before it
+    reject a request replaying one after that conversation changed: a
+    summary, cleared tool results, a system prompt rebuilt for a turn.
+    ``drop_block`` has the API drop such a block and every later one. The
+    model's thinking config gets ``block_binding``; without one it is
+    ``{type: adaptive}``, what these models do when ``thinking`` is left out.
+    The beta is added to those already set. A thinking type that does not
+    take ``block_binding`` (``between_tools``, ``disabled``) is left alone.
+    """
+    thinking = model_params.get("thinking")
+    if thinking is None:
+        thinking = {"type": "adaptive"}
+    if not isinstance(thinking, dict) or (
+        thinking.get("type") not in _BINDABLE_THINKING_TYPES
+    ):
+        logger.warning(
+            "thinking_block_binding is ignored: thinking type %r does not take it",
+            thinking.get("type") if isinstance(thinking, dict) else type(thinking),
+        )
+        return
+    model_params["thinking"] = {
+        **thinking,
+        "block_binding": {"prefix_mismatch_behavior": behavior},
+    }
+    betas = list(model_params.get("betas") or [])
+    if THINKING_BINDING_BETA not in betas:
+        betas.append(THINKING_BINDING_BETA)
+    model_params["betas"] = betas
+    # Claude takes no temperature with thinking set (see above).
+    model_params.pop("temperature", None)
+
+
 class LLMModelFactory:
     """Factory for creating LLM model instances"""
 
@@ -141,6 +184,7 @@ class LLMModelFactory:
             "description",
             "reasoning_config",
             "multimodal",
+            "thinking_block_binding",
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
         config_params = config.model_dump(exclude=exclude_fields)
@@ -225,6 +269,9 @@ class LLMModelFactory:
                     logger.debug(
                         "Adjusted 'max_tokens' to be greater than 'thinking.budget_tokens' for Claude model"
                     )
+
+            if config.thinking_block_binding:
+                _bind_thinking_blocks(model_params, config.thinking_block_binding)
 
             return self._create_claude_model(config, model_params)
 

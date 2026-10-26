@@ -123,3 +123,12 @@ def test_every_priced_model_of_the_example_names_its_breakdown_keys(example_conf
         assert {"total_tokens", "reasoning_tokens"} <= set(
             model.pricing.extras_policy.breakdown_keys
         ), name
+
+
+@pytest.mark.parametrize("name", sorted(PRICES))
+def test_claude_models_of_the_example_drop_stale_thinking_blocks(
+    example_config, name
+):
+    """Each binds thinking blocks to the conversation; the example asks the
+    API to drop a block whose conversation changed rather than refuse."""
+    assert example_config.models[name].thinking_block_binding == "drop_block"

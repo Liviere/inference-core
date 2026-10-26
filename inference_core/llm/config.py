@@ -10,7 +10,7 @@ import logging
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -436,6 +436,22 @@ class ModelConfig(ModelParams):
             "Examples: {reasoning: {effort: low}} for OpenAI, "
             "{thinking: {type: enabled, budget_tokens: 5000}} for Claude, "
             "{thinking_level: low, include_thoughts: true} for Gemini."
+        ),
+    )
+    thinking_block_binding: Optional[Literal["error", "drop_block"]] = Field(
+        default=None,
+        description=(
+            "Claude only: what the API does with a thinking block whose "
+            "conversation changed before it (the system prompt, the tools or "
+            "an earlier message) since the block was produced. Claude models "
+            "that bind thinking blocks to the conversation (Fable 5.1, Opus, "
+            "Sonnet and Haiku 5.5) reject such a request with a 400 on "
+            "accounts created on or after 2026-08-31. 'drop_block' has the API "
+            "drop the block and every later one instead; 'error' asks for the "
+            "400 on any account. Sent as thinking.block_binding with the "
+            "thinking-binding-controls-2026-08-01 beta, on every call of the "
+            "model. Without reasoning_output the thinking sent is "
+            "{type: adaptive}, these models' default. Unset: nothing is sent."
         ),
     )
     multimodal: bool = Field(

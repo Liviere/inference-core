@@ -321,6 +321,11 @@ models:
       thinking:
         type: "adaptive"
         display: "summarized"
+    # A thinking block is bound to the conversation before it: a summary,
+    # cleared tool results or a system prompt rebuilt for a turn invalidate
+    # it, and on accounts created on or after 2026-08-31 the API refuses the
+    # request (400). `drop_block` has the API drop such blocks instead.
+    thinking_block_binding: drop_block
     pricing:
       currency: USD
       input:
@@ -357,6 +362,11 @@ models:
       thinking:
         type: "adaptive"
         display: "summarized"
+    # A thinking block is bound to the conversation before it: a summary,
+    # cleared tool results or a system prompt rebuilt for a turn invalidate
+    # it, and on accounts created on or after 2026-08-31 the API refuses the
+    # request (400). `drop_block` has the API drop such blocks instead.
+    thinking_block_binding: drop_block
     pricing:
       currency: USD
       input:
@@ -393,6 +403,11 @@ models:
       thinking:
         type: "adaptive"
         display: "summarized"
+    # A thinking block is bound to the conversation before it: a summary,
+    # cleared tool results or a system prompt rebuilt for a turn invalidate
+    # it, and on accounts created on or after 2026-08-31 the API refuses the
+    # request (400). `drop_block` has the API drop such blocks instead.
+    thinking_block_binding: drop_block
     pricing:
       currency: USD
       # base prices correspond to prompts of up to 100K tokens
