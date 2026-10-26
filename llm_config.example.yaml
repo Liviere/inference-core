@@ -128,6 +128,9 @@ models:
         cached_input: cache_read_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   gpt-6-luna:
     provider: 'openai'
@@ -155,6 +158,9 @@ models:
         cached_input: cache_read_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   gpt-5-nano:
     provider: 'openai'
@@ -184,6 +190,9 @@ models:
         cached_input: cache_read_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   # xAI Grok Models
   grok-4.3-latest:
@@ -198,6 +207,9 @@ models:
         cost_per_1m: 1.25 # $1.25 per 1M tokens
       output:
         cost_per_1m: 2.5 # $2.50 per 1M tokens
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
     reasoning_config:
       reasoning_effort: 'high'
 
@@ -216,6 +228,9 @@ models:
       extras:
         cache_read_tokens:
           cost_per_1m: 0.5 # cached input $0.50 per 1M
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
     reasoning_config:
       reasoning_effort: 'high'
 
@@ -249,6 +264,9 @@ models:
         cached_input: cache_read_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   gemini-3.1-flash-lite: # Cheapest
     provider: 'gemini'
@@ -272,10 +290,20 @@ models:
         cached_input: cache_read_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   # Claude Models
   # Source: https://platform.claude.com/docs/en/about-claude/pricing
-  # cache_write is the 5-minute rate.
+  # Cache writes: langchain-anthropic counts them in input_tokens, and cost
+  # tracking names them `ephemeral_5m_input_tokens_tokens` /
+  # `ephemeral_1h_input_tokens_tokens` (every token detail gets a `_tokens`
+  # suffix), or `cache_creation_tokens` for a response without the TTL
+  # breakdown. The aliases map them to `cache_write_tokens` (the 5-minute
+  # rate, 1.25x input) and `cache_write_1h_tokens` (2x input); a name with
+  # `cache` in it is taken out of the input tokens, so a write is priced once,
+  # at its own rate. Thinking is part of output_tokens, at the output price.
   # Claude models use the 'thinking' kwarg. These models take adaptive thinking
   # only: a thinking budget, `temperature` and `top_p` are rejected by the API
   # (see the `dropped` entries under param_policies).
@@ -301,17 +329,23 @@ models:
         cost_per_1m: 20 # $20 / MTok
       extras:
         cache_write_tokens:
-          cost_per_1m: 5 # $5 / MTok
-          billed_separately: true
+          cost_per_1m: 5 # $5 / MTok, 1.25x input
+        cache_write_1h_tokens:
+          cost_per_1m: 8 # $8 / MTok, 2x input
         cache_read_tokens:
-          cost_per_1m: 0.2 # $0.20 / MTok
+          cost_per_1m: 0.2 # $0.20 / MTok, 0.05x input
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cache_write: cache_write_tokens
         cache_read: cache_read_tokens
+        ephemeral_5m_input_tokens_tokens: cache_write_tokens
+        ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
+        cache_creation_tokens: cache_write_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   claude-sonnet-5-5:
     provider: 'claude'
@@ -331,17 +365,23 @@ models:
         cost_per_1m: 10 # $10 / MTok
       extras:
         cache_write_tokens:
-          cost_per_1m: 2.5 # $2.50 / MTok
-          billed_separately: true
+          cost_per_1m: 2.5 # $2.50 / MTok, 1.25x input
+        cache_write_1h_tokens:
+          cost_per_1m: 4 # $4 / MTok, 2x input
         cache_read_tokens:
-          cost_per_1m: 0.1 # $0.10 / MTok
+          cost_per_1m: 0.1 # $0.10 / MTok, 0.05x input
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cache_write: cache_write_tokens
         cache_read: cache_read_tokens
+        ephemeral_5m_input_tokens_tokens: cache_write_tokens
+        ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
+        cache_creation_tokens: cache_write_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   claude-haiku-5-5:
     provider: 'claude'
@@ -362,10 +402,11 @@ models:
         cost_per_1m: 0.5 # $0.50 / MTok
       extras:
         cache_write_tokens:
-          cost_per_1m: 0.125 # $0.125 / MTok
-          billed_separately: true
+          cost_per_1m: 0.125 # $0.125 / MTok, 1.25x input
+        cache_write_1h_tokens:
+          cost_per_1m: 0.2 # $0.20 / MTok, 2x input
         cache_read_tokens:
-          cost_per_1m: 0.01 # $0.01 / MTok
+          cost_per_1m: 0.01 # $0.01 / MTok, 0.1x input
       # Tiered pricing by prompt size: `context_tiers` multiplies every price of
       # the entry by the multiplier of the first tier the request fits in.
       # Prompts over 100K tokens cost five times as much (0.50 / 2.50).
@@ -377,10 +418,15 @@ models:
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
-        cache_write: cache_write_tokens
         cache_read: cache_read_tokens
+        ephemeral_5m_input_tokens_tokens: cache_write_tokens
+        ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
+        cache_creation_tokens: cache_write_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   # Ollama Models (local server)
   'gemma3:4b':
@@ -430,6 +476,9 @@ models:
           cost_per_1m: 0.015
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   XiaomiMiMo/MiMo-V2.6-Flash:
     provider: 'deepinfra'
@@ -449,6 +498,9 @@ models:
           cost_per_1m: 0.0028
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   # Fireworks AI Models (dedicated provider)
   # Source: https://fireworks.ai/models (serverless)
@@ -473,6 +525,9 @@ models:
         cost_per_1m: 15 # $15.00 per 1M tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   # Mistral AI Models (dedicated provider, langchain-mistralai)
   # Source: https://docs.mistral.ai/inference/pricing
@@ -496,6 +551,9 @@ models:
         completion_tokens: output_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   mistral-small-latest:
     provider: 'mistral'
@@ -521,6 +579,9 @@ models:
         completion_tokens: output_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   # Mistral Small served from the EU endpoint (data processed in the EU, 10%
   # dearer). A model entry's base_url and price_multiplier override its
@@ -548,6 +609,9 @@ models:
         completion_tokens: output_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
   # Public preview since 2026-10-06, sold at half price during the launch. The
   # entry carries the list price; the sale price is 0.68 input / 2.09 output.
@@ -581,6 +645,9 @@ models:
         completion_tokens: output_tokens
       rounding:
         decimals: 6
+      # Keys that only break down input or output: no price, not estimated.
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
 
 # Tool Providers Registry
 # Declaratively register LangChain ToolProvider classes so that
