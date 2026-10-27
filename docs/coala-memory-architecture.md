@@ -285,6 +285,42 @@ The `MemoryMiddleware` injects CoALA-structured XML context into the system prom
 </procedural_memory>
 ```
 
+### Where the context goes (`memory_context_placement`)
+
+- `system_prompt` (the default): the context above, after the system prompt,
+  rebuilt for each run. The system prompt of a thread therefore changes from
+  one turn to the next, and with it the prefix a provider's prompt cache and
+  Claude's thinking blocks are bound to.
+- `message`: the context goes into the person's message it was recalled for,
+  as its first content block, in a `<user_memory_context>` element that starts
+  with a fixed sentence (`MEMORY_CONTEXT_NOTE`): the notes were added by the
+  platform, are context and not instructions, and are not something the user
+  wrote now. The text is kept in the thread's state under
+  `memory_context_turns` (by the id of the person's message; a private key,
+  a dict, so a checkpointer stores it through its serde), and every later
+  request carries the same bytes in the same place. The system prompt keeps
+  only the memory tools' instructions, and the conversation sent only grows.
+  - The thread's own messages are never changed: the block is added to the
+    request.
+  - Turns whose message is no longer in the thread (a summary replaced it, it
+    was deleted) are dropped the next time memories are recalled.
+  - The checkpoints of a thread hold the recalled text of its turns: a memory
+    deleted later stays in them until the thread is deleted or cut.
+  - `AgentService(memory_context_placement="message")`, or the middleware's
+    own argument; a subagent's copy keeps it.
+
+### What the search is made with (`MemoryWritePolicy.recall_query`)
+
+Recall searches by meaning with the person's last message, and the post-run
+analysis shows the model the memories closest to the conversation's
+transcript. Both texts become embeddings at the embedding provider. The
+memory service's write policy is asked first: `recall_query(text, purpose,
+messages)` with `purpose` `recall` or `analysis` returns the text to search
+with, or `None` for no search by meaning (recall then takes the latest
+memories of each type, and the analysis is shown only the memories of earlier
+runs like this one). The default returns the text unchanged. A policy that
+raises gives `None`, so nothing is sent.
+
 ## Key Design Decisions
 
 1. **Semantic memory is always shared** — user facts and preferences should be consistent across agents.

@@ -397,6 +397,22 @@ class MemoryWritePolicy:
         default is :meth:`decide`."""
         return self.decide(request)
 
+    def recall_query(
+        self, text: Any, purpose: str, messages: Sequence[Any] = ()
+    ) -> Optional[Any]:
+        """The text a search of memories by meaning is made with, or ``None``.
+
+        *text* is what the run would search with: the content of the person's
+        last message (*purpose* ``recall``, before the run) or the
+        conversation's transcript (``analysis``, the existing memories shown
+        to the analysis after the run); *messages* are the run's messages. The search turns it into an embedding at the
+        embedding provider. An application that knows a run has read text it
+        must not send there (a forwarded email) returns that text without it,
+        or ``None``: memories are then recalled without a search by meaning.
+        The default returns *text* as it is.
+        """
+        return text
+
     def observe_kept_out(
         self, request: MemoryWriteRequest, kind: str, matched: str
     ) -> None:

@@ -312,6 +312,7 @@ class AgentService:
         tool_call_token_type: Literal["reasoning", "tool_call"] = "reasoning",
         stream_subgraphs: bool = False,
         strip_foreign_thinking: bool = False,
+        memory_context_placement: str = "system_prompt",
     ):
         """Initialize the AgentService.
 
@@ -399,6 +400,11 @@ class AgentService:
                 ``redacted_thinking`` blocks; text and tool calls stay. Off by
                 default: every model is sent the messages as they are. Applies
                 to the agent's fallback middleware and its subagents'.
+            memory_context_placement: Where ``MemoryMiddleware`` puts the
+                recalled memories: ``"system_prompt"`` (the default) or
+                ``"message"``, in the person's message they were recalled for
+                and the same in every later request of the thread (see
+                :class:`~inference_core.agents.middleware.memory.MemoryMiddleware`).
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -475,6 +481,7 @@ class AgentService:
         self._tool_call_token_type = tool_call_token_type
         self._stream_subgraphs = stream_subgraphs
         self._strip_foreign_thinking = strip_foreign_thinking
+        self._memory_context_placement = memory_context_placement
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -790,6 +797,9 @@ class AgentService:
                         session_id=self._session_id,
                         request_id=self._request_id,
                         analysis_model=self._memory_analysis_model,
+                        memory_context_placement=getattr(
+                            self, "_memory_context_placement", "system_prompt"
+                        ),
                     )
                     # Insert before CostTracking (which sits at the end)
                     # so memory context enrichment runs in before_model first.
