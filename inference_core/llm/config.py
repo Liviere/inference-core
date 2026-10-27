@@ -493,6 +493,30 @@ class ModelConfig(ModelParams):
             "{type: adaptive}, these models' default. Unset: nothing is sent."
         ),
     )
+    context_management: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Claude only: Anthropic's context editing, applied by the API to "
+            "every request of the model, e.g. {edits: [{type: "
+            "clear_tool_uses_20250919, trigger: {type: input_tokens, value: "
+            "15000}, keep: {type: tool_uses, value: 3}}]}. The API clears old "
+            "tool results from what the model reads while the conversation "
+            "sent stays as it was, so a thinking block bound to it stays "
+            "valid. Sent as the request's context_management with the "
+            "context-management-2025-06-27 beta. Unset: nothing is sent."
+        ),
+    )
+    prompt_cache: Optional[Literal["5m", "1h"]] = Field(
+        default=None,
+        description=(
+            "Claude only: Anthropic's automatic prompt caching with this "
+            "lifetime. Every request of the model carries a top-level "
+            "cache_control, and the API caches the prompt up to its last "
+            "block, so the next request reads the unchanged part from the "
+            "cache (writes cost 1.25x input for 5m, 2x for 1h; reads 0.1x or "
+            "less). Unset: nothing is sent and nothing is cached."
+        ),
+    )
     multimodal: bool = Field(
         default=False,
         description=(

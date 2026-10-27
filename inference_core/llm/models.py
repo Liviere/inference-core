@@ -75,6 +75,42 @@ def _bind_thinking_blocks(model_params: Dict[str, Any], behavior: str) -> None:
     model_params.pop("temperature", None)
 
 
+#: The beta of Anthropic's context editing (``context_management``).
+CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+
+#: Model settings only Claude models take.
+_CLAUDE_ONLY_SETTINGS = ("context_management", "prompt_cache")
+
+
+def _add_beta(model_params: Dict[str, Any], beta: str) -> None:
+    betas = list(model_params.get("betas") or [])
+    if beta not in betas:
+        betas.append(beta)
+    model_params["betas"] = betas
+
+
+def _manage_context(model_params: Dict[str, Any], context_management: dict) -> None:
+    """Have the API edit what the model reads, e.g. clear old tool results.
+
+    The conversation sent stays as it is: the API applies the edits on its
+    side, so they do not change the prefix a cached prompt or a thinking
+    block is bound to.
+    """
+    model_params["context_management"] = dict(context_management)
+    _add_beta(model_params, CONTEXT_MANAGEMENT_BETA)
+
+
+def _cache_prompts(model_params: Dict[str, Any], ttl: str) -> None:
+    """Have every request cache its prompt (Anthropic's automatic caching).
+
+    A top-level ``cache_control`` on the request: the API puts the cache
+    breakpoint on the prompt's last block itself.
+    """
+    model_kwargs = dict(model_params.get("model_kwargs") or {})
+    model_kwargs["cache_control"] = {"type": "ephemeral", "ttl": ttl}
+    model_params["model_kwargs"] = model_kwargs
+
+
 class LLMModelFactory:
     """Factory for creating LLM model instances"""
 
@@ -186,6 +222,7 @@ class LLMModelFactory:
             "multimodal",
             "thinking_block_binding",
             "provider_model_id",
+            *_CLAUDE_ONLY_SETTINGS,
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
         config_params = config.model_dump(exclude=exclude_fields)
@@ -231,6 +268,15 @@ class LLMModelFactory:
                 list(reasoning_config.keys()),
             )
 
+        if config.provider != ModelProvider.CLAUDE:
+            for setting in _CLAUDE_ONLY_SETTINGS:
+                if getattr(config, setting, None):
+                    logger.warning(
+                        "%s is ignored for model '%s': only Claude models take it",
+                        setting,
+                        config.name,
+                    )
+
         # A provider the application registered builds its own model.
         registered = get_registered_provider(config.provider)
         if registered is not None:
@@ -273,6 +319,10 @@ class LLMModelFactory:
 
             if config.thinking_block_binding:
                 _bind_thinking_blocks(model_params, config.thinking_block_binding)
+            if config.context_management:
+                _manage_context(model_params, config.context_management)
+            if config.prompt_cache:
+                _cache_prompts(model_params, config.prompt_cache)
 
             return self._create_claude_model(config, model_params)
 

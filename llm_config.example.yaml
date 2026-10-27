@@ -347,6 +347,22 @@ models:
     # it, and on accounts created on or after 2026-08-31 the API refuses the
     # request (400). `drop_block` has the API drop such blocks instead.
     thinking_block_binding: drop_block
+    # Anthropic's automatic prompt caching: each request caches its prompt and
+    # the next one reads the unchanged part at the cache-read price. `5m` or
+    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached.
+    prompt_cache: 5m
+    # Old tool results cleared by the API, not in the history sent: the
+    # history stays as it was, so the cache and the thinking blocks bound to
+    # it stay valid. Every clearing still rewrites the cached prompt from the
+    # cleared result on, so `clear_at_least` keeps clearings few and large.
+    context_management:
+      edits:
+        - type: clear_tool_uses_20250919
+          trigger: {type: input_tokens, value: 15000}
+          keep: {type: tool_uses, value: 3}
+          clear_at_least: {type: input_tokens, value: 5000}
+          clear_tool_inputs: true
+          exclude_tools: [write_todos]
     pricing:
       currency: USD
       input:
@@ -388,6 +404,22 @@ models:
     # it, and on accounts created on or after 2026-08-31 the API refuses the
     # request (400). `drop_block` has the API drop such blocks instead.
     thinking_block_binding: drop_block
+    # Anthropic's automatic prompt caching: each request caches its prompt and
+    # the next one reads the unchanged part at the cache-read price. `5m` or
+    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached.
+    prompt_cache: 5m
+    # Old tool results cleared by the API, not in the history sent: the
+    # history stays as it was, so the cache and the thinking blocks bound to
+    # it stay valid. Every clearing still rewrites the cached prompt from the
+    # cleared result on, so `clear_at_least` keeps clearings few and large.
+    context_management:
+      edits:
+        - type: clear_tool_uses_20250919
+          trigger: {type: input_tokens, value: 15000}
+          keep: {type: tool_uses, value: 3}
+          clear_at_least: {type: input_tokens, value: 5000}
+          clear_tool_inputs: true
+          exclude_tools: [write_todos]
     pricing:
       currency: USD
       input:
@@ -429,6 +461,22 @@ models:
     # it, and on accounts created on or after 2026-08-31 the API refuses the
     # request (400). `drop_block` has the API drop such blocks instead.
     thinking_block_binding: drop_block
+    # Anthropic's automatic prompt caching: each request caches its prompt and
+    # the next one reads the unchanged part at the cache-read price. `5m` or
+    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached.
+    prompt_cache: 5m
+    # Old tool results cleared by the API, not in the history sent: the
+    # history stays as it was, so the cache and the thinking blocks bound to
+    # it stay valid. Every clearing still rewrites the cached prompt from the
+    # cleared result on, so `clear_at_least` keeps clearings few and large.
+    context_management:
+      edits:
+        - type: clear_tool_uses_20250919
+          trigger: {type: input_tokens, value: 15000}
+          keep: {type: tool_uses, value: 3}
+          clear_at_least: {type: input_tokens, value: 5000}
+          clear_tool_inputs: true
+          exclude_tools: [write_todos]
     pricing:
       currency: USD
       # base prices correspond to prompts of up to 100K tokens
