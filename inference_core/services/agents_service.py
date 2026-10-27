@@ -311,6 +311,7 @@ class AgentService:
         memory_options: Optional[MemoryOptions] = None,
         tool_call_token_type: Literal["reasoning", "tool_call"] = "reasoning",
         stream_subgraphs: bool = False,
+        strip_foreign_thinking: bool = False,
     ):
         """Initialize the AgentService.
 
@@ -392,6 +393,12 @@ class AgentService:
                 subagent it comes from, when that call was announced; see
                 ``BriefedSubAgentMiddleware``), and never becomes a part of
                 the run's result, messages or cost.
+            strip_foreign_thinking: Whether a model of another provider than
+                Anthropic (a fallback after Claude failed, say) is sent the
+                conversation without Claude's ``thinking`` and
+                ``redacted_thinking`` blocks; text and tool calls stay. Off by
+                default: every model is sent the messages as they are. Applies
+                to the agent's fallback middleware and its subagents'.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -467,6 +474,7 @@ class AgentService:
         self._memory_options = memory_options
         self._tool_call_token_type = tool_call_token_type
         self._stream_subgraphs = stream_subgraphs
+        self._strip_foreign_thinking = strip_foreign_thinking
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -1092,6 +1100,7 @@ class AgentService:
             reasoning_output=getattr(self.agent_config, "reasoning_output", False),
             generation_params=_agent_gen.as_overrides() if _agent_gen else None,
             owner=self.display_name,
+            strip_foreign_thinking=getattr(self, "_strip_foreign_thinking", False),
         )
         if fallback_middleware is None:
             return
@@ -3564,6 +3573,7 @@ class DeepAgentService(AgentService):
             reasoning_output=getattr(sub_config, "reasoning_output", False),
             generation_params=_sub_gen.as_overrides() if _sub_gen else None,
             owner=f"subagent {subagent_name}",
+            strip_foreign_thinking=getattr(self, "_strip_foreign_thinking", False),
         )
         if fallback_middleware is not None:
             middleware.append(fallback_middleware)

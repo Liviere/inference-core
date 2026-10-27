@@ -136,6 +136,73 @@ def _log_fallback(failed_model: Any, exc: BaseException, next_model: Any) -> Non
     )
 
 
+#: Claude's reasoning blocks: their text (or encrypted data) and a signature
+#: only Anthropic's API reads.
+_ANTHROPIC_THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _is_anthropic_model(model: Any) -> bool:
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError:  # pragma: no cover - the integration is a dependency
+        return False
+    return isinstance(model, ChatAnthropic)
+
+
+def _is_anthropic_thinking(block: Any) -> bool:
+    """A ``thinking`` / ``redacted_thinking`` block in Anthropic's shape.
+
+    Mistral's own ``thinking`` block holds a list of chunks; Anthropic's holds
+    a string and a ``signature``.
+    """
+    if not isinstance(block, dict):
+        return False
+    kind = block.get("type")
+    if kind == "redacted_thinking":
+        return True
+    return kind == "thinking" and not isinstance(block.get("thinking"), list)
+
+
+def strip_foreign_thinking(messages: Sequence[Any], model: Any) -> Sequence[Any]:
+    """``messages`` without Claude's thinking blocks, for a model of another
+    provider.
+
+    Claude's answers keep their ``thinking`` and ``redacted_thinking``
+    blocks in the conversation. A model of another provider is sent them as
+    they are (langchain-mistralai passes an AI message's content blocks
+    through), and they are not that provider's format. For such a model each
+    AI message loses those blocks; its text and tool calls stay. An answer
+    that was nothing but thinking, with no tool call, is left out, since an
+    assistant message with neither content nor tool calls is refused.
+
+    ``messages`` is returned unchanged (the same object) for an Anthropic
+    model, for a model given by name, and when there is nothing to take out.
+    The messages themselves are never modified.
+    """
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+
+    if not isinstance(model, BaseChatModel) or _is_anthropic_model(model):
+        return messages
+
+    result: list[Any] = []
+    changed = False
+    for message in messages:
+        content = getattr(message, "content", None)
+        if not isinstance(message, AIMessage) or not isinstance(content, list):
+            result.append(message)
+            continue
+        kept = [block for block in content if not _is_anthropic_thinking(block)]
+        if len(kept) == len(content):
+            result.append(message)
+            continue
+        changed = True
+        if not kept and not message.tool_calls and not message.invalid_tool_calls:
+            continue
+        result.append(message.model_copy(update={"content": kept}))
+    return result if changed else messages
+
+
 class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
     """``ModelFallbackMiddleware`` that never swallows cancellation/interrupts.
 
@@ -164,11 +231,33 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
 
     ``cancel_check`` is populated by ``AgentService.set_cancel_check``,
     which assigns the callback to every middleware exposing the attribute.
+
+    With ``strip_foreign_thinking`` (off by default), every attempt, the
+    primary's included, is sent without Claude's thinking blocks when its
+    model is not Anthropic's (:func:`strip_foreign_thinking`): this is the
+    one place that knows which model a call goes to.
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self, *args: Any, strip_foreign_thinking: bool = False, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.cancel_check: Callable[[], bool] | None = None
+        self.strip_foreign_thinking = strip_foreign_thinking
+
+    def _for(self, request: Any, model: Any = None) -> Any:
+        """``request`` for an attempt on ``model`` (``None``: its own)."""
+        if model is not None:
+            request = request.override(model=model)
+        if not self.strip_foreign_thinking:
+            return request
+        messages = getattr(request, "messages", None)
+        if not messages:
+            return request
+        stripped = strip_foreign_thinking(messages, request.model)
+        if stripped is messages:
+            return request
+        return request.override(messages=list(stripped))
 
     def _raise_if_cancelled(self) -> None:
         """Raise ``AgentCancelled`` when the cancel callback reports True.
@@ -194,7 +283,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         """Try fallback models in sequence, propagating cancellation."""
         last_exception: Exception
         try:
-            response = handler(request)
+            response = handler(self._for(request))
         except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
@@ -211,7 +300,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
             _log_fallback(failed_model, last_exception, fallback_model)
             failed_model = fallback_model
             try:
-                response = handler(request.override(model=fallback_model))
+                response = handler(self._for(request, fallback_model))
             except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
@@ -232,7 +321,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         """Async version of :meth:`wrap_model_call`."""
         last_exception: Exception
         try:
-            response = await handler(request)
+            response = await handler(self._for(request))
         except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
@@ -249,7 +338,7 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
             _log_fallback(failed_model, last_exception, fallback_model)
             failed_model = fallback_model
             try:
-                response = await handler(request.override(model=fallback_model))
+                response = await handler(self._for(request, fallback_model))
             except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
@@ -334,6 +423,7 @@ def build_model_fallback_middleware(
     reasoning_output: bool = False,
     generation_params: Mapping[str, Any] | None = None,
     owner: str = "agent",
+    strip_foreign_thinking: bool = False,
 ) -> ModelFallbackMiddleware | None:
     """Build ``ModelFallbackMiddleware`` from configured model names.
 
@@ -341,6 +431,10 @@ def build_model_fallback_middleware(
     agent's ``generation_params`` YAML field) so fallback models match the
     primary model's tuning. Keys a provider does not accept are dropped
     downstream by ``normalize_params``.
+
+    ``strip_foreign_thinking`` (off by default) sends a model of another
+    provider the conversation without Claude's thinking blocks (see
+    :class:`CancelAwareModelFallbackMiddleware`).
     """
     fallback_names = normalize_fallback_model_names(
         fallback_models,
@@ -396,6 +490,7 @@ def build_model_fallback_middleware(
         return CancelAwareModelFallbackMiddleware(
             fallback_model_objects[0],
             *fallback_model_objects[1:],
+            strip_foreign_thinking=strip_foreign_thinking,
         )
     except Exception:
         logger.exception("Failed to build model fallback middleware for %s", owner)

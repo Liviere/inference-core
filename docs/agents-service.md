@@ -65,6 +65,19 @@ Key concepts:
   instances can override this chain through `config_overrides.fallback` or the
   compatibility alias `fallback_models`; an empty list disables inherited
   fallback for that instance.
+- **Claude's thinking blocks for another provider** – a conversation that ran
+  on Claude keeps the `thinking` and `redacted_thinking` blocks of its answers,
+  in Anthropic's shape (a string and a `signature`). A model of another
+  provider is sent them as they are: langchain-mistralai, for one, passes an
+  answer's content blocks through. `AgentService(strip_foreign_thinking=True)`
+  (off by default) has the fallback middleware send each attempt whose model
+  is not `ChatAnthropic`, the primary's included, without those blocks: text
+  and tool calls stay, and an answer that was nothing but thinking is left out
+  (an assistant message with neither content nor tool calls is refused). A
+  provider's own thinking blocks (Mistral's hold a list of chunks) stay. The
+  same switch is `build_model_fallback_middleware(strip_foreign_thinking=…)`
+  and `strip_foreign_thinking(messages, model)` in
+  `inference_core.agents.middleware.model_fallback`.
 - **Skills** – on-demand instructions loaded from `SKILL.md` files; allow complex workflows without filling the context window.
 - **Subagents** – pointers to other agents defined in `llm_config.yaml` that can be invoked via the `task()` tool. In coordinator workflows, keep the parent tool surface narrow and let specialists handle raw browser/email execution. A subagent passed to `DeepAgentService` as a declarative spec may carry skills of its own under `user_skills` (records with `name`, `description`, `content`): it is given its own skill list and its own `read_skill_file`, apart from the parent's. The `task()` tool takes three arguments: `description`, a label of a few words; `prompt`, the whole brief, required, and the subagent's only message; and `subagent_type`. deepagents' own tool has no `prompt` and takes the brief from `description`, which a model that knows another framework's tool of the same name reads as a title: subagents were started on a few words. `BriefedSubAgentMiddleware` (`inference_core/agents/middleware/task_brief.py`), which both `DeepAgentService` and the Agent Server's graph builder use in place of `SubAgentMiddleware`, wraps deepagents' tool under the new arguments and hands the subagent `prompt` alone. Before the tool runs, a call is read for where its brief is: one under an argument the tool does not have (`content`, `instructions`) is moved to `prompt`, and one under `description` alone, the way deepagents' tool takes it and every call of an older conversation is written, is taken from there (anything of more than one line or twelve words). A single word such as `model: lite` is not taken for a brief. A call that carries a label and nothing else is refused with a tool error that says what to write under `prompt`, and no subagent is started. The class checks the tool it wraps when it is built, so a deepagents that builds its tool another way fails there.
 - **Local Tool Providers** – reusable bundles of tools registered in the code. Inference Core ships `weather_agent_tools`, `default_agent_tools`, `demo_tool_calling`, and `email_tools`; application-specific providers can be registered alongside them.
