@@ -1153,6 +1153,36 @@ class EmbeddingConfig(BaseModel):
         default=None,
         description="Override base URL for custom endpoints (e.g. Ollama, Azure).",
     )
+    pricing: Optional[PricingConfig] = Field(
+        default=None,
+        description=(
+            "What the model's tokens cost, in the shape of a chat model's "
+            "pricing; 'output' may be left out (an embedding has no output "
+            "tokens). Scaled by the provider's price_multiplier, or the "
+            "entry's own. Used to price the usage reported to an embedding "
+            "usage hook; unset, an embedding has no price."
+        ),
+    )
+    price_multiplier: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Overrides the provider's price_multiplier for this entry.",
+    )
+    batch_size: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "How many texts go into one request, for the providers whose "
+            "client batches them itself (cortecs). Unset: 64."
+        ),
+    )
+
+    @field_validator("pricing", mode="before")
+    @classmethod
+    def _no_output_price_needed(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "output" not in value:
+            return {**value, "output": {"cost_per_1m": 0.0}}
+        return value
 
     @field_validator("provider")
     @classmethod
@@ -1167,6 +1197,8 @@ class EmbeddingConfig(BaseModel):
             ModelProvider.GEMINI,
             ModelProvider.OLLAMA,
             ModelProvider.DEEPINFRA,
+            ModelProvider.FIREWORKS,
+            ModelProvider.CORTECS,
         }
         if value not in supported_providers:
             supported = ", ".join(provider.value for provider in supported_providers)
@@ -1654,9 +1686,28 @@ class LLMConfig:
 
         for name, config_data in embeddings_data.items():
             try:
-                self.embedding_configs[name] = EmbeddingConfig(**config_data)
+                embed_config = EmbeddingConfig(**config_data)
+                if embed_config.pricing is not None:
+                    # Written at list prices, like a chat model's; what the
+                    # provider charges on top of them is applied here.
+                    multiplier = embed_config.price_multiplier
+                    if multiplier is None:
+                        multiplier = self._provider_price_multiplier(
+                            embed_config.provider.value
+                        )
+                    embed_config = embed_config.model_copy(
+                        update={"pricing": embed_config.pricing.scaled(multiplier)}
+                    )
+                self.embedding_configs[name] = embed_config
             except Exception as e:
                 logging.warning(f"Error parsing embedding config '{name}': {e}")
+
+    def _provider_price_multiplier(self, provider: str) -> float:
+        """The provider's ``price_multiplier``; 1.0 without a readable entry."""
+        try:
+            return self.get_provider_config(provider).price_multiplier
+        except Exception:
+            return 1.0
 
     def get_embedding_config(self, name: str = "default") -> Optional[EmbeddingConfig]:
         """Get a named embedding configuration."""

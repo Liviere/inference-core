@@ -4,7 +4,8 @@ Unified interface for generating text embeddings with two backends:
 
 - **local**: Delegates to a dedicated Celery prefork worker running
   SentenceTransformer. The API process never loads the model.
-- **remote**: Uses LangChain embedding classes (OpenAI, Gemini, DeepInfra, Ollama)
+- **remote**: Uses LangChain embedding classes (OpenAI, Gemini, DeepInfra,
+  Ollama, Fireworks), or an OpenAI-compatible client for the Cortecs gateway,
   configured in the ``embeddings:`` section of ``llm_config.yaml``.
 - **fake**: Generates deterministic in-process vectors for no-cost tests.
 
@@ -19,11 +20,20 @@ import asyncio
 import hashlib
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from inference_core.core.config import Settings, get_settings
 from inference_core.llm.config import ModelProvider
+from inference_core.services.embedding_usage import (
+    EmbeddingUsage,
+    ReportedUsage,
+    elapsed_ms,
+    estimate_tokens,
+    has_embedding_usage_hooks,
+    report_embedding_usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +61,23 @@ class BaseEmbeddingBackend(ABC):
         """Return the embedding vector dimensionality for this backend."""
         ...
 
+    # What a usage report names; a backend that knows better says so.
+    backend_name: str = "custom"
+    provider_name: Optional[str] = None
+    model_name: Optional[str] = None
+    pricing: Any = None
+
+    def embed_texts_with_usage(
+        self, texts: list[str]
+    ) -> Tuple[list[list[float]], Optional[ReportedUsage]]:
+        """The vectors, and what the provider said the call used, if it did."""
+        return self.embed_texts(texts), None
+
+    async def aembed_texts_with_usage(
+        self, texts: list[str]
+    ) -> Tuple[list[list[float]], Optional[ReportedUsage]]:
+        return await self.aembed_texts(texts), None
+
 
 # ---------------------------------------------------------------------------
 # Local backend — Celery prefork worker
@@ -63,8 +90,12 @@ class LocalCeleryBackend(BaseEmbeddingBackend):
     The API process never imports or loads SentenceTransformer.
     """
 
+    backend_name = "local"
+    provider_name = "local"
+
     def __init__(self, settings: Settings) -> None:
         self._model_name = settings.embedding_local_model
+        self.model_name = self._model_name
         self._timeout = settings.embedding_local_timeout
         self._fallback_dim = settings.vector_dim
         self._cached_dim: Optional[int] = None
@@ -109,6 +140,8 @@ class LocalCeleryBackend(BaseEmbeddingBackend):
 class RemoteLangChainBackend(BaseEmbeddingBackend):
     """Uses LangChain embedding classes to call external API providers."""
 
+    backend_name = "remote"
+
     def __init__(self, settings: Settings) -> None:
         from inference_core.llm.config import get_llm_config
 
@@ -124,6 +157,9 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
             embed_config, llm_config.providers
         )
         self._dim: Optional[int] = embed_config.dimensions
+        self.provider_name = self._coerce_provider(embed_config.provider).value
+        self.model_name = embed_config.model
+        self.pricing = embed_config.pricing
 
     @staticmethod
     def _create_langchain_embeddings(
@@ -217,6 +253,40 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
                 fireworks_api_key=os.getenv(api_key_env),
             )
 
+        if provider == ModelProvider.CORTECS:
+            from inference_core.services.openai_compatible_embeddings import (
+                OpenAICompatibleEmbeddings,
+            )
+
+            provider_cfg = RemoteLangChainBackend._get_provider_config(
+                providers, provider
+            )
+            api_key_env = RemoteLangChainBackend._resolve_api_key_env(
+                embed_config,
+                provider_cfg,
+                default_env="CORTECS_API_KEY",
+            )
+            # The gateway's address is the config's: the entry's own, or the
+            # provider's. There is no default to fall back on.
+            base_url = embed_config.base_url or provider_cfg.get("base_url")
+            if not base_url:
+                raise ValueError(
+                    "Embedding provider 'cortecs' needs a base_url on the "
+                    "provider or the embeddings entry"
+                )
+            api_key = os.getenv(api_key_env)
+            if not api_key:
+                raise ValueError(
+                    f"Embedding provider 'cortecs' needs its key in {api_key_env}"
+                )
+            return OpenAICompatibleEmbeddings(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                request_options=provider_cfg.get("request_options") or {},
+                batch_size=embed_config.batch_size,
+            )
+
         raise ValueError(f"Unsupported embedding provider: {provider}")
 
     @staticmethod
@@ -266,6 +336,22 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
     async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
         return await self._embeddings.aembed_documents(texts)
 
+    def embed_texts_with_usage(
+        self, texts: list[str]
+    ) -> Tuple[list[list[float]], Optional[ReportedUsage]]:
+        with_usage = getattr(self._embeddings, "embed_with_usage", None)
+        if with_usage is None:
+            return self.embed_texts(texts), None
+        return with_usage(texts)
+
+    async def aembed_texts_with_usage(
+        self, texts: list[str]
+    ) -> Tuple[list[list[float]], Optional[ReportedUsage]]:
+        with_usage = getattr(self._embeddings, "aembed_with_usage", None)
+        if with_usage is None:
+            return await self.aembed_texts(texts), None
+        return await with_usage(texts)
+
     def get_dimension(self) -> int:
         if self._dim is not None:
             return self._dim
@@ -286,6 +372,9 @@ class FakeDeterministicBackend(BaseEmbeddingBackend):
     behave like production without requiring local model workers or remote
     embedding APIs.
     """
+
+    backend_name = "fake"
+    provider_name = "fake"
 
     def __init__(self, settings: Settings) -> None:
         self._dim = settings.vector_dim
@@ -353,11 +442,63 @@ class EmbeddingService:
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Synchronous batch embedding."""
-        return self._backend.embed_texts(texts)
+        if not has_embedding_usage_hooks():
+            return self._backend.embed_texts(texts)
+        started = time.perf_counter()
+        try:
+            vectors, reported = self._backend.embed_texts_with_usage(texts)
+        except Exception as exc:
+            self._report(texts, started, None, exc)
+            raise
+        self._report(texts, started, reported, None)
+        return vectors
 
     async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
         """Async batch embedding."""
-        return await self._backend.aembed_texts(texts)
+        if not has_embedding_usage_hooks():
+            return await self._backend.aembed_texts(texts)
+        started = time.perf_counter()
+        try:
+            vectors, reported = await self._backend.aembed_texts_with_usage(texts)
+        except Exception as exc:
+            self._report(texts, started, None, exc)
+            raise
+        self._report(texts, started, reported, None)
+        return vectors
+
+    def _report(
+        self,
+        texts: list[str],
+        started: float,
+        reported: Optional[ReportedUsage],
+        error: Optional[BaseException],
+    ) -> None:
+        """Tell the usage hooks about one call: never its texts."""
+        try:
+            input_tokens = reported.input_tokens if reported else None
+            estimated = False
+            if input_tokens is None and error is None:
+                input_tokens = estimate_tokens(texts)
+                estimated = input_tokens is not None
+            backend = self._backend
+            usage = EmbeddingUsage(
+                backend=getattr(backend, "backend_name", "custom"),
+                provider=getattr(backend, "provider_name", None),
+                model=getattr(backend, "model_name", None),
+                texts=len(texts),
+                input_tokens=input_tokens,
+                estimated=estimated,
+                latency_ms=elapsed_ms(started),
+                success=error is None,
+                error_type=type(error).__name__ if error is not None else None,
+                pricing=getattr(backend, "pricing", None),
+                reported_model=reported.reported_model if reported else None,
+                provider_cost=reported.provider_cost if reported else None,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Could not measure an embedding call: %s", type(exc).__name__)
+            return
+        report_embedding_usage(usage)
 
     def get_embed_fn(self) -> callable:
         """Return a sync callable ``(list[str]) -> list[list[float]]``.
@@ -372,13 +513,12 @@ class EmbeddingService:
         plaintext, plaintext → passthrough, never raises), which keeps BOTH
         the put()-side document indexing and the search()-side query
         embedding correct: queries are plaintext and pass through untouched.
+        A call through it is reported to the usage hooks like any other.
         """
         from inference_core.services.content_cipher import dec_field
 
-        raw_embed = self._backend.embed_texts
-
         def _decrypting_embed(texts: list[str]) -> list[list[float]]:
-            return raw_embed(
+            return self.embed_texts(
                 [dec_field(t, purpose="memory") if isinstance(t, str) else t
                  for t in texts]
             )
@@ -391,11 +531,11 @@ class EmbeddingService:
 
     def embed_query(self, text: str) -> list[float]:
         """Single-text embedding (convenience for search queries)."""
-        return self._backend.embed_texts([text])[0]
+        return self.embed_texts([text])[0]
 
     async def aembed_query(self, text: str) -> list[float]:
         """Async single-text embedding."""
-        result = await self._backend.aembed_texts([text])
+        result = await self.aembed_texts([text])
         return result[0]
 
 
