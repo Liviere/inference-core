@@ -163,6 +163,58 @@ def _parse_xai(item: Dict[str, Any]) -> Optional[DiscoveredModel]:
     )
 
 
+def _cortecs_kind(item: Dict[str, Any]) -> ModelKind:
+    outputs = item.get("output_modalities")
+    outputs = outputs if isinstance(outputs, list) else []
+    if "embeddings" in outputs:
+        return ModelKind.EMBEDDING
+    if "text" in outputs:
+        return ModelKind.CHAT
+    if "image" in outputs:
+        return ModelKind.IMAGE
+    if "audio" in outputs:
+        return ModelKind.AUDIO
+    return ModelKind.OTHER if outputs else ModelKind.UNKNOWN
+
+
+def _parse_cortecs(item: Dict[str, Any]) -> Optional[DiscoveredModel]:
+    """A model of the Cortecs gateway.
+
+    Its prices are in the gateway's own currency (EUR) and are the lowest of
+    the providers behind it, so they are not kept as the model's pricing,
+    which the catalog holds in USD.
+    """
+    model_id = clean_model_id(item.get("id"))
+    if not model_id:
+        return None
+    features = item.get("supported_features")
+    features = features if isinstance(features, list) else None
+    inputs = item.get("input_modalities")
+    return DiscoveredModel(
+        provider="cortecs",
+        model_id=model_id,
+        kind=_cortecs_kind(item),
+        attributes=compact(
+            {
+                "created_at": iso(from_unix(item.get("created"))),
+                "context_window": positive_int(item.get("context_size")),
+                "max_output_tokens": positive_int(item.get("max_output_tokens")),
+                "capabilities": compact(
+                    {
+                        "vision": "image" in inputs
+                        if isinstance(inputs, list)
+                        else None,
+                        "tools": "tools" in features if features is not None else None,
+                        "reasoning": "reasoning" in features
+                        if features is not None
+                        else None,
+                    }
+                ),
+            }
+        ),
+    )
+
+
 def _flag(value: Any) -> Optional[bool]:
     return value if isinstance(value, bool) else None
 
@@ -210,3 +262,6 @@ list_xai_models, get_xai_model = _lister(
 list_compatible_models, get_compatible_model = _lister(
     "", "/models", "data", _parse_generic
 )
+# The Cortecs gateway has no default address either: its ``base_url`` is the
+# provider's, and the catalog skips the provider without one.
+list_cortecs_models, get_cortecs_model = _lister("", "/models", "data", _parse_cortecs)

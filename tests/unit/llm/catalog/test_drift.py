@@ -306,3 +306,37 @@ class TestConfiguredModels:
             "d": 1,
             "e": 0,
         }
+
+
+class TestProviderModelId:
+    """A model called by another id than its name is looked for under it."""
+
+    def _config(self):
+        config = make_config({}, {})
+        config.models = {
+            "acme-a": ModelConfig(name="acme-a", provider=ACME, provider_model_id="a"),
+            "acme-typo": ModelConfig(
+                name="acme-typo", provider=ACME, provider_model_id="typo"
+            ),
+        }
+        return config
+
+    def test_drift_names_the_providers_id(self):
+        (entry,) = compute_drift(self._config(), [_row("a")], [_read()])
+
+        assert (entry.model, entry.state) == ("typo", "missing")
+
+    def test_the_list_keeps_the_configs_names(self):
+        entries = configured_models(self._config(), [_row("a")], [_read()])
+
+        assert [(e.model, e.catalog_state) for e in entries] == [
+            ("acme-a", "ok"),
+            ("acme-typo", "missing"),
+        ]
+
+    def test_the_plan_asks_for_the_providers_ids(self):
+        from inference_core.llm.catalog.service import plan_providers
+
+        (plan,) = plan_providers(self._config())
+
+        assert plan.configured == ("a", "typo")

@@ -23,7 +23,7 @@ from inference_core.core.resource_lifecycle import close_resource, close_resourc
 
 from .chat_deepinfra import DEEPINFRA_OPENAI_BASE_URL, ChatDeepInfraReasoning
 from .chat_fireworks import ChatFireworksReasoning
-from .config import LLMConfig, ModelConfig, ModelProvider
+from .config import LLMConfig, ModelConfig, ModelProvider, provider_model_id
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
 from .model_identity import tag_model_identity
 from .param_policy import normalize_params
@@ -185,6 +185,7 @@ class LLMModelFactory:
             "reasoning_config",
             "multimodal",
             "thinking_block_binding",
+            "provider_model_id",
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
         config_params = config.model_dump(exclude=exclude_fields)
@@ -287,6 +288,9 @@ class LLMModelFactory:
         elif config.provider == ModelProvider.OLLAMA:
             return self._create_ollama_model(config, model_params)
 
+        elif config.provider == ModelProvider.CORTECS:
+            return self._create_cortecs_model(config, model_params)
+
         else:
             logger.error(f"Unsupported provider: {config.provider}")
             return None
@@ -326,6 +330,55 @@ class LLMModelFactory:
         except Exception as e:
             logger.error(f"Failed to create OpenAI-compatible model: {str(e)}")
             return None
+
+    def _create_cortecs_model(
+        self, config: ModelConfig, params: Dict[str, Any]
+    ) -> Optional[ChatOpenAI]:
+        """Create a model served through the Cortecs gateway.
+
+        Cortecs speaks OpenAI's Chat Completions. Its address is the
+        provider's ``base_url`` and nothing else: there is no default here,
+        so where the calls go is always what the config says. The model is
+        called by its ``provider_model_id`` (the gateway's name for it), and
+        the provider's ``request_options`` (routing rules such as
+        ``eu_native``) go into the body of every request. Usage is asked for
+        in streamed responses too, so that a streamed call is priced from
+        what the gateway counted.
+        """
+        if not config.api_key:
+            logger.error("Cortecs API key (CORTECS_API_KEY) not provided")
+            return None
+        if not config.base_url:
+            logger.error(
+                "Cortecs model '%s' has no base_url: set it on the provider",
+                config.name,
+            )
+            return None
+        try:
+            params = dict(params)
+            request_options = self._provider_request_options(config.provider)
+            if request_options:
+                extra_body = dict(request_options)
+                extra_body.update(params.pop("extra_body", None) or {})
+                params["extra_body"] = extra_body
+            params.setdefault("stream_usage", True)
+            return ChatOpenAI(
+                model=provider_model_id(config),
+                base_url=config.base_url,
+                api_key=SecretStr(config.api_key),
+                **params,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create Cortecs model: {str(e)}")
+            return None
+
+    def _provider_request_options(self, provider: str) -> Dict[str, Any]:
+        """The provider's ``request_options``, or none when unreadable."""
+        try:
+            options = self.config.get_provider_config(provider).request_options
+        except Exception:
+            return {}
+        return dict(options or {})
 
     def _create_xai_model(
         self, config: ModelConfig, params: Dict[str, Any]

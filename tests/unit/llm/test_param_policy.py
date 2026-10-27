@@ -50,6 +50,7 @@ class TestPoliciesDefinition:
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
             ModelProvider.OLLAMA,
+            ModelProvider.CORTECS,
         }
 
         assert set(POLICIES.keys()) == expected_providers
@@ -413,6 +414,7 @@ class TestGetSupportedProviders:
             ModelProvider.GEMINI,
             ModelProvider.CLAUDE,
             ModelProvider.OLLAMA,
+            ModelProvider.CORTECS,
         }
 
         assert providers == expected

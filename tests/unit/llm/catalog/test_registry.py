@@ -35,6 +35,7 @@ def _clean_registry():
 def test_builtin_providers_have_listers():
     assert listed_providers() == [
         "claude",
+        "cortecs",
         "custom_openai_compatible",
         "deepinfra",
         "fireworks",

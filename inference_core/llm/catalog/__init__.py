@@ -42,6 +42,11 @@ def _register_builtin_listers() -> None:
         get_model=openai_compatible.get_mistral_model,
     )
     register_model_lister(
+        "cortecs",
+        openai_compatible.list_cortecs_models,
+        get_model=openai_compatible.get_cortecs_model,
+    )
+    register_model_lister(
         "claude", anthropic.list_models, get_model=anthropic.get_model
     )
     register_model_lister("gemini", gemini.list_models, get_model=gemini.get_model)

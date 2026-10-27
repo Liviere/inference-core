@@ -103,6 +103,23 @@ POLICIES: Dict[ModelProvider, ProviderParamPolicy] = {
         dropped=set(),
         passthrough_prefixes=set(),
     ),
+    # Cortecs is a gateway with OpenAI's Chat Completions: the sampling
+    # parameters every model there takes, and the reasoning effort for the
+    # models that reason (the gateway passes it on to the model's provider).
+    ModelProvider.CORTECS: ProviderParamPolicy(
+        allowed={
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "request_timeout",
+            "reasoning_effort",
+        },
+        renamed={},
+        dropped=set(),
+        passthrough_prefixes=set(),
+    ),
     ModelProvider.DEEPINFRA: ProviderParamPolicy(
         allowed={
             "temperature",

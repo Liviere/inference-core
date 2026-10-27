@@ -22,7 +22,7 @@ from inference_core.database.sql.models.model_catalog import (
     LLMCatalogModel,
     LLMCatalogProviderState,
 )
-from inference_core.llm.config import LLMConfig
+from inference_core.llm.config import LLMConfig, provider_model_id
 
 from .reconcile import as_utc
 from .service import SessionFactory, catalog_models, plan_providers, provider_states
@@ -135,7 +135,7 @@ def configured_models(
         for name in configured[provider]:
             catalog_state = None
             if provider in answerable:
-                row = known.get(name)
+                row = known.get(provider_model_id(config.models[name]))
                 catalog_state = (
                     STATE_MISSING if row is None else _state(row) or STATE_CURRENT
                 )

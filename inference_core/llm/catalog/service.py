@@ -31,7 +31,7 @@ from inference_core.database.sql.models.model_catalog import (
     LLMCatalogModel,
     LLMCatalogProviderState,
 )
-from inference_core.llm.config import LLMConfig
+from inference_core.llm.config import LLMConfig, provider_model_id
 
 from .http import DEFAULT_READ_TIMEOUT_SECONDS, CatalogError, build_client
 from .reconcile import as_utc, reconcile
@@ -85,6 +85,10 @@ class _EmptyListing(CatalogError):
     """A provider that had models listed none."""
 
 
+# Providers whose lister has no address of its own to fall back on.
+_NO_DEFAULT_ENDPOINT = frozenset({"custom_openai_compatible", "cortecs"})
+
+
 def plan_providers(config: LLMConfig) -> List[ProviderPlan]:
     """The providers the catalog covers, sorted by name.
 
@@ -92,9 +96,15 @@ def plan_providers(config: LLMConfig) -> List[ProviderPlan]:
     catalog at all. One that is switched off or cannot be asked is, with the
     reason.
     """
+    # A model is looked for under the id its provider knows it by.
     configured: Dict[str, List[str]] = {}
-    for name, model in config.models.items():
-        configured.setdefault(str(model.provider), []).append(name)
+    own: Dict[str, List[Tuple[str, Any]]] = {}
+    for model in config.models.values():
+        model_id = provider_model_id(model)
+        provider = str(model.provider)
+        if model_id not in configured.setdefault(provider, []):
+            configured[provider].append(model_id)
+        own.setdefault(provider, []).append((model_id, model.base_url))
 
     plans = []
     for provider in sorted(configured):
@@ -105,7 +115,7 @@ def plan_providers(config: LLMConfig) -> List[ProviderPlan]:
                 provider=provider,
                 configured=tuple(configured[provider]),
                 skip_reason=_skip_reason(config, provider),
-                own_endpoints=_own_endpoints(config, provider, configured[provider]),
+                own_endpoints=_own_endpoints(config, provider, own[provider]),
             )
         )
     return plans
@@ -118,17 +128,18 @@ def _endpoint(url: Any) -> Optional[str]:
 
 
 def _own_endpoints(
-    config: LLMConfig, provider: str, models: Sequence[str]
+    config: LLMConfig, provider: str, models: Sequence[Tuple[str, Any]]
 ) -> Tuple[Tuple[str, str], ...]:
-    """The models whose ``base_url`` is not their provider's, with it."""
+    """The models (by provider id) whose ``base_url`` is not their
+    provider's, with it."""
     provider_endpoint = _endpoint(
         config.get_provider_runtime_config(provider).get("base_url")
     )
     own = []
-    for name in models:
-        endpoint = _endpoint(config.models[name].base_url)
+    for model_id, base_url in models:
+        endpoint = _endpoint(base_url)
         if endpoint and endpoint != provider_endpoint:
-            own.append((name, endpoint))
+            own.append((model_id, endpoint))
     return tuple(own)
 
 
@@ -142,7 +153,7 @@ def _skip_reason(config: LLMConfig, provider: str) -> Optional[str]:
     runtime = config.get_provider_runtime_config(provider)
     if provider_config.requires_api_key and not runtime.get("api_key"):
         return "no API key"
-    if provider == "custom_openai_compatible" and not runtime.get("base_url"):
+    if provider in _NO_DEFAULT_ENDPOINT and not runtime.get("base_url"):
         return "no base_url"
     return None
 

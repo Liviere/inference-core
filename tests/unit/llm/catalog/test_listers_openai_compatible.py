@@ -216,3 +216,48 @@ class TestCompatibleServer:
         assert model.model_id == "local-model"
         assert model.lifecycle is ModelLifecycle.UNKNOWN
         assert model.attributes == {}
+
+
+class TestCortecs:
+    async def test_lists_the_gateways_models_by_kind(self):
+        seen = []
+        payload = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "mistral-small-2603",
+                    "created": 1754000000,
+                    "context_size": 128000,
+                    "max_output_tokens": 32000,
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text"],
+                    "supported_features": ["tools", "json_mode"],
+                    "pricing": {"currency": "EUR", "input_token": 0.1},
+                },
+                {
+                    "id": "bge-m3",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["embeddings"],
+                    "supported_features": [],
+                },
+                {"id": "odd-one"},
+            ],
+        }
+        runtime = {"api_key": "sk-test", "base_url": "https://gw.example/v1/"}
+        async with _client(_serving(payload, seen)) as client:
+            models = await listers.list_cortecs_models(runtime, client)
+
+        assert str(seen[0].url) == "https://gw.example/v1/models"
+        assert seen[0].headers["authorization"] == "Bearer sk-test"
+        chat, embedding, odd = models
+        assert (chat.provider, chat.kind) == ("cortecs", ModelKind.CHAT)
+        assert chat.attributes["context_window"] == 128000
+        assert chat.attributes["capabilities"] == {
+            "vision": True,
+            "tools": True,
+            "reasoning": False,
+        }
+        # The gateway's prices are in EUR; the catalog keeps USD only.
+        assert "pricing" not in chat.attributes
+        assert embedding.kind == ModelKind.EMBEDDING
+        assert odd.kind == ModelKind.UNKNOWN

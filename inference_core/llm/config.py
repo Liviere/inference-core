@@ -35,6 +35,7 @@ class ModelProvider(str, Enum):
     GEMINI = "gemini"
     CLAUDE = "claude"
     OLLAMA = "ollama"
+    CORTECS = "cortecs"
 
 
 def resolve_provider_name(provider: Any) -> str:
@@ -81,6 +82,22 @@ class ProviderConfig(BaseModel):
     endpoint than its provider's). The default, 1.0, leaves the prices as
     they are written.
     """
+    request_options: Dict[str, Any] = Field(default_factory=dict)
+    """Fields added to the body of every request to this provider: options
+    a provider takes outside the OpenAI schema, such as a gateway's routing
+    rules (``{eu_native: true}``). Read by the providers whose clients send
+    them, today ``cortecs`` (chat models and embeddings). Empty by default,
+    so nothing is added.
+    """
+
+
+def provider_model_id(model: Any) -> str:
+    """The id a model is called by at its provider: ``provider_model_id``,
+    or the entry's name when it has none."""
+    own = getattr(model, "provider_model_id", None)
+    if isinstance(own, str) and own.strip():
+        return own.strip()
+    return str(model.name)
 
 
 def _price_multiplier(
@@ -423,6 +440,18 @@ class ModelConfig(ModelParams):
     )
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    provider_model_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The identifier the provider knows the model by, when it is not "
+            "the entry's name. A gateway serves models of other providers "
+            "under their names, so one model configured both directly and "
+            "through the gateway needs two names ('cortecs-gpt-5-nano' with "
+            "provider_model_id 'gpt-5-nano'). Read by the providers that "
+            "support it (cortecs) and by the model catalog. Unset: the "
+            "entry's name."
+        ),
+    )
     timeout: int = Field(default=60, ge=1)
     pricing: Optional[PricingConfig] = Field(
         default=None, description="Pricing configuration"
