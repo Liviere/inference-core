@@ -282,7 +282,7 @@ embeddings:
     # dimensions: 1536
 ```
 
-**Cortecs** (`provider: cortecs`): the address is the entry's `base_url` or the provider's, and the key comes from `api_key_env` (default `CORTECS_API_KEY`); there is no default address. The client sends the texts as they are (no tiktoken token ids), asks for floats, sends no `dimensions` (it is only what the vector stores are told), puts the provider's `request_options` into the body (the gateway's routing rules, such as `eu_native`) and sends the texts in requests of `batch_size` (default 64). The response's usage comes back with the vectors.
+**Cortecs** (`provider: cortecs`): the address is the entry's `base_url` or the provider's, and the key comes from `api_key_env` (default `CORTECS_API_KEY`); there is no default address. The client sends the texts as they are (no tiktoken token ids), asks for floats, sends no `dimensions` (it is only what the vector stores are told), puts the provider's `request_options` into the body (the gateway's routing rules, such as `eu_native`) and sends the texts in requests of `batch_size` (default 25: OVH, one of the hosts behind the gateway, takes no more). The response's usage comes back with the vectors.
 
 ```yaml
 providers:

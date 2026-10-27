@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from inference_core.services.embedding_usage import ReportedUsage
 
-DEFAULT_BATCH_SIZE = 64
+# OVH, one of the hosts behind the Cortecs gateway, takes at most 25 texts in
+# a request ("given batch size overflow maximal one", 2026-10-27), and the
+# gateway does not split a larger one.
+DEFAULT_BATCH_SIZE = 25
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
 

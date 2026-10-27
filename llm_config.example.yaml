@@ -985,7 +985,7 @@ embeddings:
   # France at 0.010 EUR or IONOS in Germany at 0.080 EUR per 1M tokens). The
   # provider's base_url, key and request_options apply; allowed_providers in
   # them pins the host. The gateway takes no `dimensions`: it is only what
-  # the vector stores are told. Texts go in requests of `batch_size` (64).
+  # the vector stores are told. Texts go in requests of `batch_size` (25, the most OVH takes).
   # Source: https://api.cortecs.ai/v1/models?tag=Embedding
   # cortecs:
   #   provider: cortecs

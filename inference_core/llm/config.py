@@ -1173,7 +1173,8 @@ class EmbeddingConfig(BaseModel):
         ge=1,
         description=(
             "How many texts go into one request, for the providers whose "
-            "client batches them itself (cortecs). Unset: 64."
+            "client batches them itself (cortecs). Unset: 25, the most OVH "
+            "takes behind the Cortecs gateway."
         ),
     )
 
