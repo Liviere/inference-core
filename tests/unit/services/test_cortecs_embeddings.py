@@ -396,6 +396,15 @@ class TestUsageHooks:
         assert "ValueError" in caplog.text
         assert SECRET_TEXT not in caplog.text
 
+    def test_a_duck_typed_backend_is_reported_with_an_estimate(self, reports):
+        backend = MagicMock()
+        backend.embed_texts.return_value = [[1.0]]
+
+        assert EmbeddingService(backend=backend).embed_texts(["abc"]) == [[1.0]]
+
+        (usage,) = reports
+        assert usage.estimated is True
+
     def test_registering_twice_reports_once(self, reports):
         register_embedding_usage_hook(reports.append)
 

@@ -446,7 +446,10 @@ class EmbeddingService:
             return self._backend.embed_texts(texts)
         started = time.perf_counter()
         try:
-            vectors, reported = self._backend.embed_texts_with_usage(texts)
+            if isinstance(self._backend, BaseEmbeddingBackend):
+                vectors, reported = self._backend.embed_texts_with_usage(texts)
+            else:  # a duck-typed backend: its usage is estimated
+                vectors, reported = self._backend.embed_texts(texts), None
         except Exception as exc:
             self._report(texts, started, None, exc)
             raise
@@ -459,7 +462,12 @@ class EmbeddingService:
             return await self._backend.aembed_texts(texts)
         started = time.perf_counter()
         try:
-            vectors, reported = await self._backend.aembed_texts_with_usage(texts)
+            if isinstance(self._backend, BaseEmbeddingBackend):
+                vectors, reported = await self._backend.aembed_texts_with_usage(
+                    texts
+                )
+            else:  # a duck-typed backend: its usage is estimated
+                vectors, reported = await self._backend.aembed_texts(texts), None
         except Exception as exc:
             self._report(texts, started, None, exc)
             raise
