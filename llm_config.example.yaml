@@ -451,6 +451,10 @@ models:
           multiplier: 1.0
         - max_context: 1000000
           multiplier: 5.0
+      # Anthropic chooses the price by the prompt alone: "A request's prompt
+      # length counts all of its input tokens, including cache reads and cache
+      # writes." `input` does the same (the default, `total`, adds the output).
+      context_tier_basis: input
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens

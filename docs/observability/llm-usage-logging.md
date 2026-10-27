@@ -76,6 +76,32 @@ models:
         passthrough_unpriced: true
 ```
 
+#### Context tiers
+
+`context_tiers` multiplies every price of the entry by the multiplier of the
+first tier the request fits in (a request over the last tier pays the last
+one). Which tokens choose the tier is `context_tier_basis`:
+
+- `total` (the default): input and output tokens together.
+- `input`: the prompt alone, its cache reads and writes included
+  (`input_tokens` already counts them). Use it for a provider that prices a
+  request by the length of its prompt, such as Anthropic's models priced
+  higher over 100K tokens.
+
+With `input`, a request of 95,000 prompt tokens and 10,000 output tokens on a
+model priced at 0.10 / 0.50 per 1M up to 100K and five times that above costs
+0.0095 + 0.005 = 0.0145 USD; with `total` the same request is over 100K and
+costs 0.0475 + 0.025 = 0.0725 USD.
+
+```yaml
+      context_tiers:
+        - max_context: 100000
+          multiplier: 1.0
+        - max_context: 1000000
+          multiplier: 5.0
+      context_tier_basis: input
+```
+
 Standard LangChain-style extras are treated as token breakdowns already included
 in input_tokens or output_tokens. Use billed_separately: true when a provider
 charges for an extra dimension on top of the core token count. If a provider

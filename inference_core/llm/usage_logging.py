@@ -121,10 +121,15 @@ class PricingCalculator:
         input_tokens = normalized_usage.get("input_tokens", 0)
         output_tokens = normalized_usage.get("output_tokens", 0)
 
-        # Determine context multiplier
-        total_tokens = input_tokens + output_tokens
+        # Determine context multiplier: by the prompt alone, or (the default)
+        # by input and output together. ``input_tokens`` already counts the
+        # cache reads and writes of the prompt.
+        if pricing_config.context_tier_basis == "input":
+            tier_tokens = input_tokens
+        else:
+            tier_tokens = input_tokens + output_tokens
         context_multiplier = PricingCalculator._get_context_multiplier(
-            total_tokens, pricing_config.context_tiers
+            tier_tokens, pricing_config.context_tiers
         )
         result["context_multiplier"] = context_multiplier
 
@@ -215,7 +220,7 @@ class PricingCalculator:
 
     @staticmethod
     def _get_context_multiplier(total_tokens: int, context_tiers: list) -> float:
-        """Get context multiplier based on total tokens"""
+        """The multiplier of the first tier ``total_tokens`` fits in."""
         if not context_tiers:
             return 1.0
 

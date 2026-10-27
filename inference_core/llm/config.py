@@ -349,6 +349,16 @@ class PricingConfig(BaseModel):
     context_tiers: List[ContextTier] = Field(
         default_factory=list, description="Context tier multipliers"
     )
+    context_tier_basis: Literal["total", "input"] = Field(
+        default="total",
+        description=(
+            "Which tokens choose the context tier: 'total' (the default) "
+            "counts input and output tokens together; 'input' counts the "
+            "prompt only, its cache reads and writes included, for a "
+            "provider that prices a request by the length of its prompt "
+            "(Anthropic's long-context prices)."
+        ),
+    )
     rounding: Optional[RoundingConfig] = Field(
         default=None, description="Rounding configuration"
     )
@@ -1369,6 +1379,9 @@ class LLMConfig:
                         extras=extras,
                         key_aliases=pricing_data.get("key_aliases", {}),
                         context_tiers=context_tiers,
+                        context_tier_basis=pricing_data.get(
+                            "context_tier_basis", "total"
+                        ),
                         rounding=rounding,
                         extras_policy=extras_policy,
                     )
