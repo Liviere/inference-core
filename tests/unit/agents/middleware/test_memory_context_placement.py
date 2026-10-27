@@ -197,12 +197,33 @@ def test_by_default_no_turns_are_kept():
     assert middleware._with_turns_update(state, "new", {"x": 1}) == {"x": 1}
 
 
-def test_a_subagents_copy_keeps_the_placement():
+def test_a_subagents_copy_keeps_the_placement_and_is_briefed():
     middleware = MemoryMiddleware(
         memory_service=_service([]), memory_context_placement="message"
     )
 
-    assert middleware.copy_for_subagent().memory_context_placement == "message"
+    copy = middleware.copy_for_subagent()
+    assert copy.memory_context_placement == "message"
+    assert copy.briefed is True
+    assert middleware.briefed is False
+
+
+def test_a_briefed_agent_asks_for_its_briefs_query():
+    policy = _Policy(lambda text: text)
+    service = _service(["- A note."], policy=policy)
+    middleware = MemoryMiddleware(
+        memory_service=service, user_id="u1", postrun_analysis=False, briefed=True
+    )
+    agent = create_agent(
+        model=_Recorder(calls=[]), middleware=[middleware], checkpointer=InMemorySaver()
+    )
+
+    agent.invoke(
+        {"messages": [HumanMessage("Check the invoice")]},
+        {"configurable": {"thread_id": "t"}},
+    )
+
+    assert policy.asked[0][1] == "brief"
 
 
 def test_an_unknown_placement_is_refused():

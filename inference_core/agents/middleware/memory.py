@@ -226,6 +226,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         request_id: Optional[str] = None,
         analysis_model: Optional[Any] = None,
         memory_context_placement: str = MEMORY_CONTEXT_IN_SYSTEM_PROMPT,
+        briefed: bool = False,
     ):
         """Initialize the memory middleware.
 
@@ -289,6 +290,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 bound to the conversation before it (Claude) then stay valid
                 from one turn to the next. The memory tools' instructions stay
                 in the system prompt either way.
+            briefed: The agent is handed its work by another agent (a
+                subagent): its "user" message is a brief that agent wrote. The
+                write policy is then asked for the recall query with the
+                purpose ``brief`` rather than ``recall``.
         """
         if memory_context_placement not in MEMORY_CONTEXT_PLACEMENTS:
             raise ValueError(
@@ -296,6 +301,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 f"not {memory_context_placement!r}"
             )
         self.memory_context_placement = memory_context_placement
+        self.briefed = briefed
         self.memory_service = memory_service
         self.user_id = user_id
         self.auto_recall = auto_recall
@@ -351,6 +357,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             request_id=self.request_id,
             analysis_model=self._analysis_model,
             memory_context_placement=self.memory_context_placement,
+            briefed=True,
         )
 
     @property
@@ -450,7 +457,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         try:
             # What the search by meaning is made with: the policy may leave
             # out text the run must not send to the embedding provider.
-            query = self._recall_query(user_input, "recall", state)
+            query = self._recall_query(
+                user_input, "brief" if self.briefed else "recall", state
+            )
             # Recall memories using asyncio.run() since hooks are synchronous
             memory_context, metrics = self._recall_and_format(query, resolved_uid)
 

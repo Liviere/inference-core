@@ -1528,6 +1528,7 @@ class AgentService:
         *,
         tool_names: Optional[list[str]] = None,
         postrun_analysis: bool = False,
+        briefed: bool = False,
     ) -> tuple[AgentMemoryStoreService, MemoryMiddleware, list[Any]]:
         """A memory of its own for an agent built outside this service.
 
@@ -1541,6 +1542,11 @@ class AgentService:
             tool_names: Which memory tools it gets; ``None`` = all four.
             postrun_analysis: Whether its runs end with the memory analysis
                 (an extra model call each time it is handed a task).
+            briefed: Whether its work is a brief another agent wrote (a
+                subagent's); see ``MemoryMiddleware(briefed=…)``.
+
+        The middleware puts the recalled memories where this service's own
+        does (``memory_context_placement``).
         """
         settings = get_settings()
         service = options.service(
@@ -1570,6 +1576,10 @@ class AgentService:
             request_id=self._request_id,
             analysis_model=self._memory_analysis_model,
             active_tool_names=[tool.name for tool in tools],
+            memory_context_placement=getattr(
+                self, "_memory_context_placement", "system_prompt"
+            ),
+            briefed=briefed,
         )
         return service, middleware, tools
 

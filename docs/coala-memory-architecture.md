@@ -315,8 +315,10 @@ Recall searches by meaning with the person's last message, and the post-run
 analysis shows the model the memories closest to the conversation's
 transcript. Both texts become embeddings at the embedding provider. The
 memory service's write policy is asked first: `recall_query(text, purpose,
-messages)` with `purpose` `recall` or `analysis` returns the text to search
-with, or `None` for no search by meaning (recall then takes the latest
+messages)` with `purpose` `recall`, `brief` (a subagent's, whose "user"
+message is the brief its coordinator wrote: `MemoryMiddleware(briefed=True)`,
+which a subagent's copy and `build_memory_kit(briefed=True)` set) or
+`analysis` returns the text to search with, or `None` for no search by meaning (recall then takes the latest
 memories of each type, and the analysis is shown only the memories of earlier
 runs like this one). The default returns the text unchanged. A policy that
 raises gives `None`, so nothing is sent.

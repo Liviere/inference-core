@@ -403,7 +403,8 @@ class MemoryWritePolicy:
         """The text a search of memories by meaning is made with, or ``None``.
 
         *text* is what the run would search with: the content of the person's
-        last message (*purpose* ``recall``, before the run) or the
+        last message (*purpose* ``recall``, before the run), the brief another
+        agent handed a subagent (``brief``, in place of ``recall``), or the
         conversation's transcript (``analysis``, the existing memories shown
         to the analysis after the run); *messages* are the run's messages. The search turns it into an embedding at the
         embedding provider. An application that knows a run has read text it
