@@ -274,7 +274,7 @@ docker run -p 6333:6333 -v ./qdrant_storage:/qdrant/storage qdrant/qdrant:latest
 The system now uses `EmbeddingService`, which supports two modes:
 
 - `local`: delegates to the `embeddings.generate` Celery task on the dedicated prefork worker.
-- `remote`: uses a LangChain embedding provider configured in `llm_config.yaml`.
+- `remote`: uses a LangChain embedding provider configured in `llm_config.yaml`, or the Cortecs gateway's OpenAI-compatible client (`provider: cortecs`; see `configuration.md` → Embedding Backend).
 
 For local mode, common SentenceTransformer models include:
 

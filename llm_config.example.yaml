@@ -84,6 +84,27 @@ providers:
     # it, so the prices below stay the list prices.
     # price_multiplier: 1.1
 
+  cortecs:
+    name: 'Cortecs'
+    # The Cortecs gateway (Cortecs GmbH, Vienna) routes OpenAI-shaped requests
+    # to models hosted by European clouds (OVH, IONOS, Scaleway, Mistral, ...).
+    # Its address is always this base_url: inference-core has no default.
+    # Source: https://docs.cortecs.ai/api/api-compatibility
+    base_url: 'https://api.cortecs.ai/v1'
+    api_key_env: 'CORTECS_API_KEY'
+    requires_api_key: true
+    openai_compatible: true
+    allow_byok: true
+    # Added to the body of every request (chat and embeddings): the gateway's
+    # routing rules. eu_native keeps a request with providers established in
+    # the EU, allow_zero_data_retention with endpoints that keep no data.
+    # The same settings exist per project in the Cortecs console, where they
+    # can also be enforced for every key ("Allow overwrite" off).
+    # Source: https://docs.cortecs.ai/routing/routing-concept
+    request_options:
+      eu_native: true
+      allow_zero_data_retention: true
+
 # Available Models Configuration
 #
 # `provider` is one of the providers above or a name the application registered
@@ -664,6 +685,35 @@ models:
       extras_policy:
         breakdown_keys: [total_tokens, reasoning_tokens]
 
+  # A model through the Cortecs gateway. The gateway serves other providers'
+  # models under their names, so the entry has a name of its own and says
+  # which model to ask for in provider_model_id (here the same Mistral Small
+  # as above, next to the direct entry). Cortecs prices in EUR and its listed
+  # price is the lowest of the providers behind it; `pricing` is in USD,
+  # converted at the day's rate (0.14 / 0.561 EUR on 2026-10-27).
+  # Source: https://api.cortecs.ai/v1/models
+  cortecs-mistral-small-2603:
+    provider: 'cortecs'
+    provider_model_id: 'mistral-small-2603'
+    display_name: 'Mistral Small (Cortecs)'
+    description: 'Mistral Small through the Cortecs gateway'
+    max_tokens: 8192
+    temperature: 0.7
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 0.163
+      output:
+        cost_per_1m: 0.652
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+      rounding:
+        decimals: 6
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
+
+
 # Tool Providers Registry
 # Declaratively register LangChain ToolProvider classes so that
 # ``agent_graphs.py`` (the LangGraph Agent Server entry point) can wire them
@@ -688,6 +738,7 @@ tool_providers:
     class_path: 'inference_core.agents.tools.email_provider:EmailToolsProvider'
 
 # Agent Model Assignments
+
 agents:
   default_agent:
     primary: 'gpt-6-luna'
@@ -920,11 +971,30 @@ agents:
 # is used unless overridden.
 embeddings:
   default:
-    provider: openai                 # openai | gemini | deepinfra | fireworks | ollama
+    provider: openai                 # openai | gemini | deepinfra | fireworks | ollama | cortecs
     model: text-embedding-3-small    # Provider-specific model name
     # dimensions: 1536              # Optional dimension override (OpenAI v3 supports this)
     # api_key_env: OPENAI_API_KEY   # Defaults to provider's api_key_env
     # base_url:                     # Override for custom endpoints
+    # pricing:                      # Optional; prices the usage given to embedding
+    #   currency: USD               # usage hooks (output may be left out)
+    #   input:
+    #     cost_per_1m: 0.02
+
+  # bge-m3 through the Cortecs gateway (1024 dimensions, hosted by OVH in
+  # France at 0.010 EUR or IONOS in Germany at 0.080 EUR per 1M tokens). The
+  # provider's base_url, key and request_options apply; allowed_providers in
+  # them pins the host. The gateway takes no `dimensions`: it is only what
+  # the vector stores are told. Texts go in requests of `batch_size` (64).
+  # Source: https://api.cortecs.ai/v1/models?tag=Embedding
+  # cortecs:
+  #   provider: cortecs
+  #   model: bge-m3
+  #   dimensions: 1024
+  #   pricing:
+  #     currency: USD
+  #     input:
+  #       cost_per_1m: 0.0117       # 0.010 EUR on 2026-10-27
 
   # large:
   #   provider: openai

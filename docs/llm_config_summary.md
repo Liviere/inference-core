@@ -25,11 +25,14 @@ Some providers process a request in a given region only on a regional endpoint, 
   - supplying `base_url`,
   - indicating whether the provider requires an API key (`requires_api_key`).
   - `price_multiplier` (default 1.0): what the provider charges against the list prices written in its models' `pricing`, for example 1.1 for an endpoint that costs 10% more. A model's pricing is scaled by it when the config is loaded, so every cost computed from it (usage logs, cost tracking, pricing snapshots) includes it.
+  - `request_options` (default empty): fields added to the body of every request to the provider, for options outside the OpenAI schema such as a gateway's routing rules. Read by `cortecs` (chat models, a user's own key on them, and embeddings); other providers do not read it.
+- **`cortecs`** is the Cortecs gateway (OpenAI's Chat Completions and `/embeddings`, models hosted by European clouds). Its models are `ChatOpenAI` clients on the provider's `base_url` (required: there is no default address) and key, with usage asked for in streamed responses. The catalog lists its models with their kind, context window and capabilities; its prices are in EUR and are not kept.
 
 - **`models`**: each named entry becomes a `ModelConfig` in `LLMConfig.models`.
   - fields include `provider`, `max_tokens`, `temperature`, optional `pricing`, etc.
   - `base_url` on a model entry overrides its provider's, so one provider can serve a model from another endpoint (for example a regional one). The entry's key is still the model's name at the provider, so a model served from two endpoints needs two names for it (a dated version and an alias, say).
   - `price_multiplier` on a model entry overrides its provider's, for a model on an endpoint that is priced differently from the provider's.
+  - `provider_model_id` (unset by default) is the id the provider knows the model by when it is not the entry's key. A gateway serves other providers' models under their names, so a model configured both directly and through the gateway needs two keys (`cortecs-mistral-small-2603` with `provider_model_id: mistral-small-2603`). Read by `cortecs` and by the model catalog, which looks the model up under it; the key stays the model's name everywhere else (agents, usage logs).
   - `multimodal: true|false` declares whether the model can accept multimodal inputs. Tool loading uses this flag to decide whether tools that declare `requires_multimodal = True` are exposed directly, skipped, or retained for delegation.
   - **Extra & Nested Parameters:** supports arbitrary extra fields from YAML (including nested dictionaries). These are preserved and forwarded to LLM providers via `kwargs`. Useful for provider-specific parameters like `logit_bias`, `response_format`, or Ollama `options`.
   - `reasoning_config` can store provider-specific nested kwargs for reasoning / thinking models (for example OpenAI reasoning, Claude thinking, or Gemini thought settings).

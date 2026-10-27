@@ -270,7 +270,7 @@ Controls how embeddings are generated for vector operations, agent memory, and t
 Backend behavior:
 
 - `local`: `EmbeddingService` sends `embeddings.generate` tasks to the dedicated `embeddings` queue. Run a separate Celery worker with `--queues=embeddings --pool=prefork`.
-- `remote`: `EmbeddingService` instantiates a LangChain embedding provider from the `embeddings:` section in `llm_config.yaml` (OpenAI, Gemini, DeepInfra, Fireworks, Ollama).
+- `remote`: `EmbeddingService` instantiates a LangChain embedding provider from the `embeddings:` section in `llm_config.yaml` (OpenAI, Gemini, DeepInfra, Fireworks, Ollama), or an OpenAI-compatible client for the Cortecs gateway (`cortecs`).
 
 Example YAML for `EMBEDDING_BACKEND=remote`:
 
@@ -281,6 +281,31 @@ embeddings:
     model: text-embedding-3-small
     # dimensions: 1536
 ```
+
+**Cortecs** (`provider: cortecs`): the address is the entry's `base_url` or the provider's, and the key comes from `api_key_env` (default `CORTECS_API_KEY`); there is no default address. The client sends the texts as they are (no tiktoken token ids), asks for floats, sends no `dimensions` (it is only what the vector stores are told), puts the provider's `request_options` into the body (the gateway's routing rules, such as `eu_native`) and sends the texts in requests of `batch_size` (default 64). The response's usage comes back with the vectors.
+
+```yaml
+providers:
+  cortecs:
+    name: 'Cortecs'
+    base_url: 'https://api.cortecs.ai/v1'
+    api_key_env: 'CORTECS_API_KEY'
+    requires_api_key: true
+    request_options: { eu_native: true, allow_zero_data_retention: true }
+
+embeddings:
+  default:
+    provider: cortecs
+    model: bge-m3
+    dimensions: 1024
+    pricing:
+      currency: USD
+      input: { cost_per_1m: 0.0117 }
+```
+
+**Pricing:** an entry may carry `pricing` in a chat model's shape; `output` may be left out. It is scaled by the provider's `price_multiplier`, or the entry's own, when the config is loaded.
+
+**Usage hooks:** `register_embedding_usage_hook(fn)` (`inference_core.services.embedding_usage`) makes the service call `fn(usage)` after every call it makes, from any caller (the memory store, vector stores, the embeddings route, tools), in the caller's thread and context. `usage` is an `EmbeddingUsage`: backend, provider, model, how many texts, input tokens (the provider's count where its response gives one, otherwise an estimate, with `estimated=True`), latency, success and the exception's class, the entry's pricing and the provider's own cost figure. It never carries the texts. A hook that raises is logged by its exception's class and the call goes on. Nothing is registered by default, and without a hook nothing is measured: the backends are called as before. An application that keeps a usage log writes its rows from a hook, with what it knows of the run. The dimension probe a backend makes for itself (a remote entry without `dimensions`, the local worker) is not reported.
 
 ## Agent Memory
 
