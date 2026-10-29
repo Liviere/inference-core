@@ -859,6 +859,7 @@ class AgentService:
 
         # Add ModelFallbackMiddleware if fallback models are configured.
         self._add_model_fallback_middleware(middleware)
+        self._place_prompt_cache_routing(middleware)
         self._ensure_cost_tracking_last(middleware)
 
         return middleware
@@ -1130,6 +1131,27 @@ class AgentService:
             "Added ModelFallbackMiddleware for agent '%s'",
             self.display_name,
         )
+
+    def _place_prompt_cache_routing(self, middleware: list[Any]) -> None:
+        """Put ``PromptCacheRoutingMiddleware`` inside the fallback, once.
+
+        Only when a model of the agent's config asks for it
+        (``prompt_cache_routing``). It goes after every other middleware, so
+        that it sees the model each attempt is made on, and before cost
+        tracking, which ``_ensure_cost_tracking_last`` then moves last. One
+        inherited from a parent (a subagent's list) is taken out first: it
+        would stand outside the subagent's own fallback.
+        """
+        from inference_core.agents.middleware.prompt_cache_routing import (
+            PromptCacheRoutingMiddleware,
+        )
+
+        config = getattr(getattr(self, "model_factory", None), "config", None)
+        middleware[:] = [
+            m for m in middleware if not isinstance(m, PromptCacheRoutingMiddleware)
+        ]
+        if config is not None and PromptCacheRoutingMiddleware.wanted(config):
+            middleware.append(PromptCacheRoutingMiddleware(config))
 
     @staticmethod
     def _ensure_cost_tracking_last(middleware: list[Any]) -> None:
@@ -3212,6 +3234,7 @@ class DeepAgentService(AgentService):
         # 6. Ensure CostTrackingMiddleware is absolute last so its
         #    after_model (state accumulation) runs FIRST in reverse order,
         #    before any interrupt-causing middleware.
+        self._place_prompt_cache_routing(middleware)
         self._ensure_cost_tracking_last(middleware)
 
         # 7. Create the agent via standard create_agent
@@ -3529,6 +3552,7 @@ class DeepAgentService(AgentService):
                         middleware.append(_for_subagent(m))
 
             # CostTracking must be last so it runs first in after_model
+            self._place_prompt_cache_routing(middleware)
             self._ensure_cost_tracking_last(middleware)
 
             # Per-subagent interrupt_on: own config wins, parent's as fallback
@@ -3623,6 +3647,7 @@ class DeepAgentService(AgentService):
             middleware.append(fallback_middleware)
 
         # CostTracking must be last so it runs first in after_model
+        self._place_prompt_cache_routing(middleware)
         self._ensure_cost_tracking_last(middleware)
 
         # Per-subagent interrupt_on: own config wins, parent's as fallback

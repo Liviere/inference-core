@@ -282,6 +282,7 @@ class LLMModelFactory:
             "thinking_block_binding",
             "provider_model_id",
             "request_options",
+            "prompt_cache_routing",
             *_CLAUDE_ONLY_SETTINGS,
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)

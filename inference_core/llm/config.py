@@ -608,6 +608,21 @@ class ModelConfig(ModelParams):
             "less). Unset: nothing is sent and nothing is cached."
         ),
     )
+    prompt_cache_routing: bool = Field(
+        default=False,
+        description=(
+            "Whether the requests of one conversation ask the provider to "
+            "send them to the same server, where its automatic prompt cache "
+            "keeps what the previous request read: prompt_cache_key in the "
+            "body (OpenAI, Mistral, Fireworks, DeepInfra) or the "
+            "x-grok-conv-id header (xAI). The key is a hash of the agent's "
+            "thread and the model's name, never anything of the conversation "
+            "or the person. Set by an agent's PromptCacheRoutingMiddleware, "
+            "for the model a request actually goes to, so a fallback of "
+            "another provider gets its own or none. Another provider's model "
+            "gets nothing, with a warning. Off by default: nothing is sent."
+        ),
+    )
     multimodal: bool = Field(
         default=False,
         description=(

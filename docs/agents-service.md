@@ -168,6 +168,16 @@ Router behaviour:
 4. Builds middleware stack (YAML + automatic usage middleware).
 5. Instantiates `AgentService` or `DeepAgentService` with the resolved model.
 
+## Prompt Cache Routing
+
+A model entry with `prompt_cache_routing: true` has the agent's model calls
+carry a key that sends the requests of one conversation to the provider's
+server that cached their prompt (`prompt_cache_key`, or `x-grok-conv-id` for
+xAI): `PromptCacheRoutingMiddleware`, added by `AgentService` after the
+fallback middleware and before cost tracking when any model of the config
+asks for it, in the agent's middleware and each subagent's. The key is a
+hash of the thread and the model's name. See `llm_config_summary.md`.
+
 ## Usage Logging
 
 Agent runs log to a dedicated `agent_request_logs` table via the new

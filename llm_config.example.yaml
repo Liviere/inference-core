@@ -120,6 +120,18 @@ providers:
 models:
   # Prices below are per 1M tokens (cost_per_1m) and were captured 2026-10-11.
   # Providers change them: check the linked pricing page before relying on one.
+  #
+  # `prompt_cache_routing: true` (off by default) has an agent's requests of
+  # one conversation carry a key that sends them to the server holding the
+  # provider's automatic prompt cache: `prompt_cache_key` in the body
+  # (OpenAI, Mistral, Fireworks, DeepInfra), `x-grok-conv-id` for xAI. The key
+  # is a hash of the agent's thread and the model's name. Measured on two
+  # calls of a 5,000-token prompt (2026-10-29): xAI read 5,120 cached tokens
+  # with it and 128 without, Fireworks 5,227 with it and 123 without; OpenAI,
+  # Mistral and DeepInfra read theirs either way (OpenAI asks for the key from
+  # GPT-5.6 on). Another provider's model with it gets nothing, with a
+  # warning. An older inference-core passes the field on to the model and the
+  # request is refused: set it only once the code that reads it runs.
 
   # OpenAI Models
   # Source: https://developers.openai.com/api/docs/pricing
@@ -127,6 +139,7 @@ models:
   # `context_tiers` takes one multiplier per tier, so that surcharge is not modelled.
   gpt-6.1-sol:
     provider: 'openai'
+    prompt_cache_routing: true
     display_name: 'GPT-6.1 Sol'
     description: 'Mid-tier GPT-6 model for complex chat and tool-using tasks'
     max_tokens: 8192
@@ -162,6 +175,7 @@ models:
 
   gpt-6-luna:
     provider: 'openai'
+    prompt_cache_routing: true
     display_name: 'GPT-6 Luna'
     description: 'Cheapest GPT-6 model for fast general tasks'
     max_tokens: 8192
@@ -192,6 +206,7 @@ models:
 
   gpt-5-nano:
     provider: 'openai'
+    prompt_cache_routing: true
     display_name: 'GPT-5 Nano'
     description: 'Fast and efficient for most tasks'
     max_tokens: 4096
@@ -225,6 +240,7 @@ models:
   # xAI Grok Models
   grok-4.3-latest:
     provider: 'xai'
+    prompt_cache_routing: true
     display_name: 'Grok 4.3'
     description: 'Grok model for complex chat and tool-using tasks'
     max_tokens: 8192
@@ -235,6 +251,9 @@ models:
         cost_per_1m: 1.25 # $1.25 per 1M tokens
       output:
         cost_per_1m: 2.5 # $2.50 per 1M tokens
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.2 # cached input $0.20 per 1M
       # Keys that only break down input or output: no price, not estimated.
       extras_policy:
         breakdown_keys: [total_tokens, reasoning_tokens]
@@ -243,6 +262,7 @@ models:
 
   grok-4.7:
     provider: 'xai'
+    prompt_cache_routing: true
     display_name: 'Grok 4.7'
     description: 'Newest Grok model; costs more than Grok 4.3'
     max_tokens: 8192
@@ -566,6 +586,7 @@ models:
   # runs discounts with no end date; they are not reflected here.
   deepseek-ai/DeepSeek-V4-Flash-0731:
     provider: 'deepinfra'
+    prompt_cache_routing: true
     display_name: 'DeepSeek V4 Flash 0731'
     description: 'DeepSeek V4 Flash (text only), hosted on DeepInfra'
     max_tokens: 8192
@@ -592,6 +613,7 @@ models:
 
   XiaomiMiMo/MiMo-V2.6-Flash:
     provider: 'deepinfra'
+    prompt_cache_routing: true
     display_name: 'MiMo V2.6 Flash'
     description: 'Xiaomi MiMo V2.6 Flash, hosted on DeepInfra'
     max_tokens: 8192
@@ -616,6 +638,7 @@ models:
   # Source: https://fireworks.ai/models (serverless)
   accounts/fireworks/models/kimi-k3:
     provider: 'fireworks'
+    prompt_cache_routing: true
     display_name: 'Kimi K3'
     description: 'Kimi K3 model, hosted on Fireworks AI'
     max_tokens: 8192
@@ -633,6 +656,9 @@ models:
         cost_per_1m: 3 # $3.00 per 1M tokens
       output:
         cost_per_1m: 15 # $15.00 per 1M tokens
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.3 # cached input $0.30 per 1M (global tier)
       rounding:
         decimals: 6
       # Keys that only break down input or output: no price, not estimated.
@@ -641,11 +667,16 @@ models:
 
   # Mistral AI Models (dedicated provider, langchain-mistralai)
   # Source: https://docs.mistral.ai/inference/pricing
+  # Mistral caches the start of a prompt by itself and bills what it read
+  # from the cache at a tenth of the input price (cached_tokens in its
+  # usage), but langchain-mistralai does not pass that number on, so no
+  # cache price below would ever apply: every input token is priced in full.
   # NOTE: Mistral accepts `temperature` only in the 0.0-1.0 range; a higher
   # value (model- or agent-level) makes the model fail to initialize.
   # `timeout` must be a whole number of seconds.
   mistral-large-latest:
     provider: 'mistral'
+    prompt_cache_routing: true
     display_name: 'Mistral Large'
     description: 'Flagship Mistral model for complex chat and tool-using tasks'
     max_tokens: 8192
@@ -667,6 +698,7 @@ models:
 
   mistral-small-latest:
     provider: 'mistral'
+    prompt_cache_routing: true
     display_name: 'Mistral Small'
     description: 'Fast Mistral model with adjustable reasoning'
     max_tokens: 8192
@@ -702,6 +734,7 @@ models:
   # second entry is needed.
   mistral-small-2603:
     provider: 'mistral'
+    prompt_cache_routing: true
     base_url: 'https://api.eu.mistral.ai/v1'
     price_multiplier: 1.1
     display_name: 'Mistral Small (EU)'
@@ -727,6 +760,7 @@ models:
   # entry carries the list price; the sale price is 0.68 input / 2.09 output.
   mistral-large-4:
     provider: 'mistral'
+    prompt_cache_routing: true
     display_name: 'Mistral Large 4'
     description: 'Newest Mistral flagship (preview): 1M context, reasoning, multimodal'
     # The output limit covers reasoning tokens too. A limit as low as 8192 can
@@ -782,6 +816,11 @@ models:
         cost_per_1m: 0.163
       output:
         cost_per_1m: 0.652
+      extras:
+        # The gateway reports what Mistral read from its cache
+        # (prompt_tokens_details.cached_tokens), at about a tenth of input.
+        cache_read_tokens:
+          cost_per_1m: 0.0163
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
