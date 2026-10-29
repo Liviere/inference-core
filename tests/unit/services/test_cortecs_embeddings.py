@@ -265,6 +265,68 @@ class TestCortecsBackend:
         assert pricing.input.cost_per_1k == pytest.approx(0.00001)
 
 
+class TestCortecsEntryRequestOptions:
+    def _backend(self, monkeypatch, config):
+        monkeypatch.setattr("inference_core.llm.config.get_llm_config", lambda: config)
+        settings = MagicMock()
+        settings.embedding_backend = "remote"
+        return RemoteLangChainBackend(settings)
+
+    def test_the_entrys_options_go_on_top_of_the_providers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TEST_CORTECS_KEY", "test-key")
+        config = _llm_config(
+            tmp_path,
+            monkeypatch,
+            embedding={"request_options": {"allowed_providers": ["ovh"]}},
+        )
+
+        backend = self._backend(monkeypatch, config)
+
+        assert backend._embeddings._extra_body == {
+            "eu_native": True,
+            "allowed_providers": ["ovh"],
+        }
+
+    def test_the_entry_wins_key_by_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TEST_CORTECS_KEY", "test-key")
+        config = _llm_config(
+            tmp_path,
+            monkeypatch,
+            provider={
+                "request_options": {"eu_native": True, "allowed_providers": ["ionos"]}
+            },
+            embedding={"request_options": {"allowed_providers": ["ovh"]}},
+        )
+
+        backend = self._backend(monkeypatch, config)
+
+        assert backend._embeddings._extra_body["allowed_providers"] == ["ovh"]
+
+    def test_an_entry_that_changes_a_locked_key_is_not_read(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        config = _llm_config(
+            tmp_path,
+            monkeypatch,
+            provider={"locked_request_options": ["eu_native"]},
+            embedding={"request_options": {"eu_native": False}},
+        )
+
+        assert config.get_embedding_config("default") is None
+
+    def test_a_locked_key_with_the_same_value_is_read(self, tmp_path, monkeypatch):
+        config = _llm_config(
+            tmp_path,
+            monkeypatch,
+            provider={"locked_request_options": ["eu_native"]},
+            embedding={"request_options": {"eu_native": True}},
+        )
+
+        assert config.get_embedding_config("default").request_options == {
+            "eu_native": True
+        }
+
+
 class TestEmbeddingConfig:
     def test_fireworks_and_cortecs_are_embedding_providers(self):
         from inference_core.llm.config import EmbeddingConfig

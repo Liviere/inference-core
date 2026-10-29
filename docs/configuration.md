@@ -282,7 +282,7 @@ embeddings:
     # dimensions: 1536
 ```
 
-**Cortecs** (`provider: cortecs`): the address is the entry's `base_url` or the provider's, and the key comes from `api_key_env` (default `CORTECS_API_KEY`); there is no default address. The client sends the texts as they are (no tiktoken token ids), asks for floats, sends no `dimensions` (it is only what the vector stores are told), puts the provider's `request_options` into the body (the gateway's routing rules, such as `eu_native`) and sends the texts in requests of `batch_size` (default 25: OVH, one of the hosts behind the gateway, takes no more). The response's usage comes back with the vectors.
+**Cortecs** (`provider: cortecs`): the address is the entry's `base_url` or the provider's, and the key comes from `api_key_env` (default `CORTECS_API_KEY`); there is no default address. The client sends the texts as they are (no tiktoken token ids), asks for floats, sends no `dimensions` (it is only what the vector stores are told), puts the provider's `request_options` into the body (the gateway's routing rules, such as `eu_native`), with the entry's own `request_options` on top of them key by key (`allowed_providers: [ovh]` pins the host that computes the vectors, without pinning the provider's chat models), and sends the texts in requests of `batch_size` (default 25: OVH, one of the hosts behind the gateway, takes no more). The response's usage comes back with the vectors.
 
 ```yaml
 providers:
@@ -292,16 +292,21 @@ providers:
     api_key_env: 'CORTECS_API_KEY'
     requires_api_key: true
     request_options: { eu_native: true, allow_zero_data_retention: true }
+    # No entry may change these two.
+    locked_request_options: [eu_native, allow_zero_data_retention]
 
 embeddings:
   default:
     provider: cortecs
     model: bge-m3
     dimensions: 1024
+    request_options: { allowed_providers: [ovh] }
     pricing:
       currency: USD
       input: { cost_per_1m: 0.0117 }
 ```
+
+An entry's `request_options` may not change a key its provider lists in `locked_request_options`: such an entry is not loaded (a warning names the entry and the key). Without `request_options` on the entry, the provider's are sent as they are.
 
 **Pricing:** an entry may carry `pricing` in a chat model's shape; `output` may be left out. It is scaled by the provider's `price_multiplier`, or the entry's own, when the config is loaded.
 

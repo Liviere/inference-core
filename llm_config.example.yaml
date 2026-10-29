@@ -104,6 +104,13 @@ providers:
     request_options:
       eu_native: true
       allow_zero_data_retention: true
+    # A model or embeddings entry may add its own request_options (for
+    # example allowed_providers, to pin the host of that entry only); they
+    # win over these key by key. The keys listed here are the exception: an
+    # entry that changes one is refused when the config is loaded. With
+    # "Allow overwrite" on in the Cortecs console, a request's fields replace
+    # the project's settings, so this keeps an entry from lifting them.
+    # locked_request_options: [eu_native, allow_zero_data_retention]
 
 # Available Models Configuration
 #
@@ -749,6 +756,9 @@ models:
     provider_model_id: 'mistral-small-2603'
     display_name: 'Mistral Small (Cortecs)'
     description: 'Mistral Small through the Cortecs gateway'
+    # Routing for this model only, on top of the provider's request_options:
+    # request_options:
+    #   allowed_providers: ['mistral']
     max_tokens: 8192
     temperature: 0.7
     pricing:
@@ -1035,14 +1045,18 @@ embeddings:
 
   # bge-m3 through the Cortecs gateway (1024 dimensions, hosted by OVH in
   # France at 0.010 EUR or IONOS in Germany at 0.080 EUR per 1M tokens). The
-  # provider's base_url, key and request_options apply; allowed_providers in
-  # them pins the host. The gateway takes no `dimensions`: it is only what
-  # the vector stores are told. Texts go in requests of `batch_size` (25, the most OVH takes).
+  # provider's base_url, key and request_options apply, with the entry's own
+  # request_options on top: allowed_providers there pins the host for the
+  # embeddings only (the price below is OVH's). The gateway takes no
+  # `dimensions`: it is only what the vector stores are told. Texts go in
+  # requests of `batch_size` (25, the most OVH takes).
   # Source: https://api.cortecs.ai/v1/models?tag=Embedding
   # cortecs:
   #   provider: cortecs
   #   model: bge-m3
   #   dimensions: 1024
+  #   request_options:
+  #     allowed_providers: ['ovh']
   #   pricing:
   #     currency: USD
   #     input:

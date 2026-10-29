@@ -153,3 +153,130 @@ def test_request_options_default_to_none():
     from inference_core.llm.config import ProviderConfig
 
     assert ProviderConfig(name="any").request_options == {}
+
+
+# --- request_options of a model entry -------------------------------------
+
+
+def _pinned(**entry):
+    return {
+        "cortecs-pinned": {
+            "provider": "cortecs",
+            "provider_model_id": "mistral-small-2603",
+            **entry,
+        },
+        "mistral-small-2603": {"provider": "cortecs"},
+    }
+
+
+def test_an_entrys_request_options_go_on_top_of_the_providers(tmp_path, monkeypatch):
+    config = _config(
+        tmp_path,
+        monkeypatch,
+        models=_pinned(request_options={"allowed_providers": ["ionos"]}),
+    )
+
+    factory = LLMModelFactory(config)
+    pinned = factory.create_model("cortecs-pinned")
+    other = factory.create_model("mistral-small-2603")
+
+    assert pinned.extra_body == {
+        "eu_native": True,
+        "allow_zero_data_retention": True,
+        "allowed_providers": ["ionos"],
+    }
+    # The provider's other models are not pinned.
+    assert other.extra_body == {"eu_native": True, "allow_zero_data_retention": True}
+
+
+def test_the_entry_wins_key_by_key_and_a_list_is_replaced(tmp_path, monkeypatch):
+    config = _config(
+        tmp_path,
+        monkeypatch,
+        provider={
+            "request_options": {
+                "eu_native": True,
+                "allowed_providers": ["ovh", "ionos"],
+            }
+        },
+        models=_pinned(request_options={"allowed_providers": ["ionos"]}),
+    )
+
+    model = LLMModelFactory(config).create_model("cortecs-pinned")
+
+    assert model.extra_body == {"eu_native": True, "allowed_providers": ["ionos"]}
+
+
+def test_request_options_are_no_parameter_of_the_model(tmp_path, monkeypatch):
+    config = _config(
+        tmp_path,
+        monkeypatch,
+        models=_pinned(request_options={"allowed_providers": ["ionos"]}),
+    )
+
+    model = LLMModelFactory(config).create_model("cortecs-pinned")
+
+    assert "request_options" not in (model.model_kwargs or {})
+    assert "allowed_providers" not in (model.model_kwargs or {})
+
+
+def test_an_entry_may_not_change_a_locked_key(tmp_path, monkeypatch):
+    with pytest.raises(ValueError) as raised:
+        _config(
+            tmp_path,
+            monkeypatch,
+            provider={"locked_request_options": ["eu_native"]},
+            models=_pinned(request_options={"eu_native": False}),
+        )
+
+    message = str(raised.value)
+    assert "cortecs-pinned" in message and "eu_native" in message
+    assert "False" not in message
+
+
+def test_an_entry_may_repeat_a_locked_key_with_the_same_value(tmp_path, monkeypatch):
+    config = _config(
+        tmp_path,
+        monkeypatch,
+        provider={"locked_request_options": ["eu_native", "allow_zero_data_retention"]},
+        models=_pinned(
+            request_options={"eu_native": True, "allowed_providers": ["ionos"]}
+        ),
+    )
+
+    model = LLMModelFactory(config).create_model("cortecs-pinned")
+
+    assert model.extra_body["eu_native"] is True
+    assert model.extra_body["allowed_providers"] == ["ionos"]
+
+
+def test_an_entry_may_not_add_a_locked_key_its_provider_does_not_set(
+    tmp_path, monkeypatch
+):
+    with pytest.raises(ValueError, match="allowed_providers"):
+        _config(
+            tmp_path,
+            monkeypatch,
+            provider={"locked_request_options": ["allowed_providers"]},
+            models=_pinned(request_options={"allowed_providers": ["ionos"]}),
+        )
+
+
+def test_entry_request_options_and_locks_default_to_none():
+    from inference_core.llm.config import EmbeddingConfig, ModelConfig, ProviderConfig
+
+    assert ModelConfig(name="m", provider="cortecs").request_options is None
+    assert EmbeddingConfig(provider="cortecs", model="bge-m3").request_options is None
+    assert ProviderConfig(name="any").locked_request_options == []
+
+
+def test_merged_request_options_without_entry_options_are_the_providers():
+    from inference_core.llm.config import ProviderConfig, merged_request_options
+
+    provider = ProviderConfig(name="Cortecs", request_options={"eu_native": True})
+
+    assert merged_request_options(provider, None, entry="e") == {"eu_native": True}
+    assert merged_request_options({"request_options": {"a": 1}}, {}, entry="e") == {
+        "a": 1
+    }
+    assert merged_request_options({}, None, entry="e") == {}

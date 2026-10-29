@@ -23,7 +23,13 @@ from inference_core.core.resource_lifecycle import close_resource, close_resourc
 
 from .chat_deepinfra import DEEPINFRA_OPENAI_BASE_URL, ChatDeepInfraReasoning
 from .chat_fireworks import ChatFireworksReasoning
-from .config import LLMConfig, ModelConfig, ModelProvider, provider_model_id
+from .config import (
+    LLMConfig,
+    ModelConfig,
+    ModelProvider,
+    merged_request_options,
+    provider_model_id,
+)
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
 from .model_identity import tag_model_identity
 from .param_policy import normalize_params
@@ -222,6 +228,7 @@ class LLMModelFactory:
             "multimodal",
             "thinking_block_binding",
             "provider_model_id",
+            "request_options",
             *_CLAUDE_ONLY_SETTINGS,
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
@@ -391,7 +398,8 @@ class LLMModelFactory:
         so where the calls go is always what the config says. The model is
         called by its ``provider_model_id`` (the gateway's name for it), and
         the provider's ``request_options`` (routing rules such as
-        ``eu_native``) go into the body of every request. Usage is asked for
+        ``eu_native``), with the model entry's own on top, go into the body
+        of every request. Usage is asked for
         in streamed responses too, so that a streamed call is priced from
         what the gateway counted.
         """
@@ -406,7 +414,7 @@ class LLMModelFactory:
             return None
         try:
             params = dict(params)
-            request_options = self._provider_request_options(config.provider)
+            request_options = self._request_options(config)
             if request_options:
                 extra_body = dict(request_options)
                 extra_body.update(params.pop("extra_body", None) or {})
@@ -422,13 +430,19 @@ class LLMModelFactory:
             logger.error(f"Failed to create Cortecs model: {str(e)}")
             return None
 
-    def _provider_request_options(self, provider: str) -> Dict[str, Any]:
-        """The provider's ``request_options``, or none when unreadable."""
+    def _request_options(self, config: ModelConfig) -> Dict[str, Any]:
+        """The provider's ``request_options`` with the entry's own on top.
+
+        The entry's own alone when the provider's entry is unreadable. A key
+        the provider locks was checked when the configuration was read.
+        """
         try:
-            options = self.config.get_provider_config(provider).request_options
+            provider = self.config.get_provider_config(config.provider)
         except Exception:
-            return {}
-        return dict(options or {})
+            return dict(config.request_options or {})
+        return merged_request_options(
+            provider, config.request_options, entry=config.name
+        )
 
     def _create_xai_model(
         self, config: ModelConfig, params: Dict[str, Any]

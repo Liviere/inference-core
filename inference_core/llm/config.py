@@ -87,8 +87,50 @@ class ProviderConfig(BaseModel):
     a provider takes outside the OpenAI schema, such as a gateway's routing
     rules (``{eu_native: true}``). Read by the providers whose clients send
     them, today ``cortecs`` (chat models and embeddings). Empty by default,
-    so nothing is added.
+    so nothing is added. A model or embeddings entry may add its own
+    (``request_options`` on the entry), which win over these key by key.
     """
+    locked_request_options: List[str] = Field(default_factory=list)
+    """Keys of ``request_options`` that an entry may not change: an entry
+    that sets one of them to another value than the provider's is refused
+    when the configuration is read. For a gateway's routing rules that must
+    hold for every request (``[eu_native, allow_zero_data_retention]``), so
+    that an entry pinning its host cannot also lift them. Empty by default:
+    an entry may change any key.
+    """
+
+
+def merged_request_options(
+    provider: Any, entry_options: Optional[Dict[str, Any]], *, entry: str
+) -> Dict[str, Any]:
+    """The ``request_options`` a request of an entry carries.
+
+    The provider's options with the entry's own on top, key by key: a key the
+    entry names takes the entry's value whole (a list replaces the
+    provider's list). *provider* is a :class:`ProviderConfig` or its raw
+    mapping. Raises ``ValueError`` naming *entry* and the key, never a value,
+    when the entry changes a key the provider lists in
+    ``locked_request_options``. Without options on the entry the result is
+    the provider's options as they are.
+    """
+    if isinstance(provider, dict):
+        provider_options = provider.get("request_options")
+        locked = provider.get("locked_request_options")
+    else:
+        provider_options = getattr(provider, "request_options", None)
+        locked = getattr(provider, "locked_request_options", None)
+    merged = dict(provider_options or {})
+    own = entry_options or {}
+    if not isinstance(own, dict):
+        raise ValueError(f"'{entry}': request_options must be a mapping")
+    for key in locked or ():
+        if key in own and (key not in merged or own[key] != merged[key]):
+            raise ValueError(
+                f"'{entry}': request_options may not change '{key}', "
+                "which its provider locks (locked_request_options)"
+            )
+    merged.update(own)
+    return merged
 
 
 def provider_model_id(model: Any) -> str:
@@ -460,6 +502,17 @@ class ModelConfig(ModelParams):
             "provider_model_id 'gpt-5-nano'). Read by the providers that "
             "support it (cortecs) and by the model catalog. Unset: the "
             "entry's name."
+        ),
+    )
+    request_options: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Fields added to the body of this model's requests on top of its "
+            "provider's request_options, winning over them key by key (e.g. "
+            "{allowed_providers: [ionos]} to pin a gateway's host for this "
+            "model only). A key the provider locks (locked_request_options) "
+            "cannot be changed. Read by the providers that send request "
+            "options (cortecs). Unset: the provider's options alone."
         ),
     )
     timeout: int = Field(default=60, ge=1)
@@ -1202,6 +1255,17 @@ class EmbeddingConfig(BaseModel):
         gt=0.0,
         description="Overrides the provider's price_multiplier for this entry.",
     )
+    request_options: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Fields added to the body of this entry's requests on top of its "
+            "provider's request_options, winning over them key by key (e.g. "
+            "{allowed_providers: [ovh]} to pin the host that computes the "
+            "vectors). A key the provider locks (locked_request_options) "
+            "cannot be changed. Read by the providers whose client sends "
+            "request options (cortecs). Unset: the provider's options alone."
+        ),
+    )
     batch_size: Optional[int] = Field(
         default=None,
         ge=1,
@@ -1418,6 +1482,15 @@ class LLMConfig:
             if pricing_config is not None:
                 pricing_config = pricing_config.scaled(
                     _price_multiplier(model_name, model_data, provider_config)
+                )
+
+            # An entry's own request options may not lift what its provider
+            # locks; refused here, like an unreadable price_multiplier.
+            if model_data.get("request_options") is not None:
+                merged_request_options(
+                    provider_config,
+                    model_data.get("request_options"),
+                    entry=model_name,
                 )
 
             # Prepare initialization data, excluding fields we construct manually
@@ -1725,6 +1798,12 @@ class LLMConfig:
         for name, config_data in embeddings_data.items():
             try:
                 embed_config = EmbeddingConfig(**config_data)
+                if embed_config.request_options is not None:
+                    merged_request_options(
+                        self.providers.get(embed_config.provider.value) or {},
+                        embed_config.request_options,
+                        entry=f"embeddings.{name}",
+                    )
                 if embed_config.pricing is not None:
                     # Written at list prices, like a chat model's; what the
                     # provider charges on top of them is applied here.

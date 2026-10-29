@@ -254,6 +254,7 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
             )
 
         if provider == ModelProvider.CORTECS:
+            from inference_core.llm.config import merged_request_options
             from inference_core.services.openai_compatible_embeddings import (
                 OpenAICompatibleEmbeddings,
             )
@@ -283,7 +284,11 @@ class RemoteLangChainBackend(BaseEmbeddingBackend):
                 model=model,
                 base_url=base_url,
                 api_key=api_key,
-                request_options=provider_cfg.get("request_options") or {},
+                request_options=merged_request_options(
+                    provider_cfg,
+                    embed_config.request_options,
+                    entry=f"embeddings ({model})",
+                ),
                 batch_size=embed_config.batch_size,
             )
 
