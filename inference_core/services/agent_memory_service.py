@@ -404,12 +404,17 @@ class MemoryWritePolicy:
 
         *text* is what the run would search with: the content of the person's
         last message (*purpose* ``recall``, before the run), the brief another
-        agent handed a subagent (``brief``, in place of ``recall``), or the
+        agent handed a subagent (``brief``, in place of ``recall``), the
         conversation's transcript (``analysis``, the existing memories shown
-        to the analysis after the run); *messages* are the run's messages. The search turns it into an embedding at the
+        to the analysis after the run), or the query a model wrote to the
+        ``recall_memories_store`` tool (``tool``, during the run and in the
+        analysis after it; *messages* are then empty); *messages* are the
+        run's messages. The search turns it into an embedding at the
         embedding provider. An application that knows a run has read text it
         must not send there (a forwarded email) returns that text without it,
-        or ``None``: memories are then recalled without a search by meaning.
+        or ``None``: memories are then recalled without a search by meaning
+        (for ``tool``, the newest ones, those that hold the query's words
+        first: :meth:`AgentMemoryStoreService.recall_recent`).
         The default returns *text* as it is.
         """
         return text
@@ -533,6 +538,28 @@ DEFAULT_CONTEXT_TYPES = (
     MemoryType.SKILL.value,
     MemoryType.WORKFLOW.value,
 )
+
+
+_WORD = re.compile(r"\w{3,}")
+
+
+def _word_stems(text: Any) -> Tuple[str, ...]:
+    """The words of *text* (three letters or more) cut to their beginning,
+    once each: a stem matches the word in another form ("invoices",
+    "invoice"; "faktury", "faktura")."""
+    if not isinstance(text, str):
+        return ()
+    stems = {
+        word[: max(3, len(word) - 2)] if len(word) > 4 else word
+        for word in _WORD.findall(text.casefold())
+    }
+    return tuple(sorted(stems))
+
+
+def _words_held(stems: Sequence[str], text: str) -> int:
+    """How many of *stems* begin a word of *text*."""
+    words = _WORD.findall(text.casefold())
+    return sum(1 for stem in stems if any(word.startswith(stem) for word in words))
 
 
 def _newest_first(doc: "MemoryStoreDocument") -> tuple:
@@ -1612,11 +1639,84 @@ class AgentMemoryStoreService:
         documents = documents[:limit]
 
         self.logger.debug(
-            "Recalled %d memories for user=%s, query='%s', sort_by_time=%s",
+            "Recalled %d memories for user=%s, query of %d chars, sort_by_time=%s",
             len(documents),
             user_id,
-            query[:50] + "..." if len(query) > 50 else query,
+            len(query or ""),
             sort_by_time,
+        )
+        return documents
+
+    def tool_query(self, text: str) -> Optional[str]:
+        """What the ``recall_memories_store`` tool searches by meaning with:
+        its *text*, as the write policy says (``recall_query`` with *purpose*
+        ``tool``), or ``None`` for a recall without a search by meaning. A
+        policy that fails gives ``None``: the text is then sent nowhere."""
+        policy = self.write_policy
+        if policy is None:
+            return text
+        try:
+            return policy.recall_query(text, "tool", messages=())
+        except Exception as exc:
+            self.logger.warning(
+                "Memory write policy failed to give a tool query (%s); "
+                "no search by meaning",
+                type(exc).__name__,
+            )
+            return None
+
+    async def recall_recent(
+        self,
+        user_id: str,
+        words: str = "",
+        k: Optional[int] = None,
+        memory_type: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> List[MemoryStoreDocument]:
+        """Memories of every space the agent reads, without a search by
+        meaning: nothing is sent to the embedding provider.
+
+        The newest :data:`REPEAT_SCAN_LIMIT` of each namespace (of
+        *category*, or of *memory_type*'s, or of all) are looked through in
+        one batch. Those whose text or topic holds the most of the *words*
+        come first, newest first among equals; the newest of the rest fill
+        the list up to *k*. The words are matched here, on the decrypted
+        text, by their beginning (so "invoices" finds "invoice"). Scores are
+        ``None``.
+        """
+        limit = k or self.max_results
+        user_id = str(user_id)
+        if category:
+            categories = [MemoryCategory(category)]
+        elif memory_type:
+            categories = [get_category_for_type(memory_type)]
+        else:
+            categories = list(MemoryCategory)
+        filters = {"memory_type": memory_type} if memory_type else None
+        found = self._run_searches(
+            [
+                (space, namespace, None, filters, REPEAT_SCAN_LIMIT)
+                for space, namespace in self._search_namespaces(user_id, categories)
+            ],
+            include_scores=False,
+        )
+        documents = [doc for docs in found for doc in docs]
+        documents.sort(key=_newest_first, reverse=True)
+        stems = _word_stems(words)
+        if stems:
+            matched = {
+                id(doc): _words_held(stems, f"{doc.topic or ''} {doc.content or ''}")
+                for doc in documents
+            }
+            # A stable sort keeps the newest first among equals.
+            documents.sort(key=lambda doc: matched[id(doc)], reverse=True)
+        documents = documents[:limit]
+        self.logger.debug(
+            "Recalled %d memories without a search by meaning for user=%s "
+            "(%d words)",
+            len(documents),
+            user_id,
+            len(stems),
         )
         return documents
 

@@ -323,6 +323,16 @@ memories of each type, and the analysis is shown only the memories of earlier
 runs like this one). The default returns the text unchanged. A policy that
 raises gives `None`, so nothing is sent.
 
+The query a model writes to the `recall_memories_store` tool, during a run
+and in the post-run analysis (which calls the same tool), is asked for with
+`purpose` `tool` (and no messages). With `None`, the tool searches without
+an embedding (`AgentMemoryStoreService.recall_recent`): the newest memories
+of each space it reads (`REPEAT_SCAN_LIMIT` per namespace, filtered by type
+or category), those whose text or topic holds most of the query's words
+first (matched on the server, by the words' beginnings), the newest of the
+rest filling the list. Its answer says that search by meaning was not
+available. The service's logs give a query's length, never its text.
+
 ## Key Design Decisions
 
 1. **Semantic memory is always shared** — user facts and preferences should be consistent across agents.

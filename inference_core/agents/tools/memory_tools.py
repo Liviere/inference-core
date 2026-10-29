@@ -31,6 +31,7 @@ from inference_core.services.agent_memory_service import (
     MemorySpaceError,
     MemoryType,
     MemoryWriteOutcome,
+    MemoryWritePolicy,
     format_memory_types_for_description,
     get_category_for_type,
     validate_memory_type,
@@ -253,6 +254,14 @@ Arguments:
             return f"✗ Failed to save memory: {exc}"
 
 
+# What the recall tool says when the run's write policy kept its query from
+# the search by meaning.
+NOT_BY_MEANING_NOTE = (
+    "Search by meaning is not available in this run, so these are the newest "
+    "memories, those that contain words of your query first."
+)
+
+
 class RecallMemoryStoreTool(BaseTool):
     """Tool for retrieving store-backed user memories by semantic search (CoALA-aware)."""
 
@@ -285,11 +294,24 @@ Arguments:
             uid = _resolve_tool_user_id(self.user_id)
             if memory_type:
                 memory_type = validate_memory_type(memory_type)
+            k = max_results or self.default_max_results
+            search = self._search_query(query)
+            if search is None:
+                memories = run_async_safely(
+                    self.memory_service.recall_recent(
+                        user_id=uid,
+                        words=query,
+                        k=k,
+                        memory_type=memory_type,
+                        category=category,
+                    )
+                )
+                return self._format_results(memories, by_meaning=False)
             memories = run_async_safely(
                 self.memory_service.recall_memories(
                     user_id=uid,
-                    query=query,
-                    k=max_results or self.default_max_results,
+                    query=search,
+                    k=k,
                     memory_type=memory_type,
                     category=category,
                 )
@@ -313,10 +335,21 @@ Arguments:
             uid = _resolve_tool_user_id(self.user_id)
             if memory_type:
                 memory_type = validate_memory_type(memory_type)
+            k = max_results or self.default_max_results
+            search = self._search_query(query)
+            if search is None:
+                memories = await self.memory_service.recall_recent(
+                    user_id=uid,
+                    words=query,
+                    k=k,
+                    memory_type=memory_type,
+                    category=category,
+                )
+                return self._format_results(memories, by_meaning=False)
             memories = await self.memory_service.recall_memories(
                 user_id=uid,
-                query=query,
-                k=max_results or self.default_max_results,
+                query=search,
+                k=k,
                 memory_type=memory_type,
                 category=category,
             )
@@ -328,12 +361,26 @@ Arguments:
             logger.error("Failed to recall memories: %s", exc)
             return f"✗ Failed to recall memories: {exc}"
 
-    def _format_results(self, memories: list) -> str:
-        """Format recalled memories with temporal and category context."""
-        if not memories:
-            return "No relevant memories found."
+    def _search_query(self, query: str) -> Optional[str]:
+        """What the search by meaning is made with, as the service's write
+        policy lets the model's query be (``MemoryWritePolicy.recall_query``,
+        purpose ``tool``); ``None``: the newest memories, those that hold the
+        query's words first, without a search by meaning."""
+        policy = getattr(self.memory_service, "write_policy", None)
+        if not isinstance(policy, MemoryWritePolicy):
+            return query
+        return self.memory_service.tool_query(query)
 
-        lines = [f"Found {len(memories)} relevant memories:"]
+    def _format_results(self, memories: list, by_meaning: bool = True) -> str:
+        """Format recalled memories with temporal and category context."""
+        if not by_meaning:
+            if not memories:
+                return NOT_BY_MEANING_NOTE + " No memories found."
+            lines = [NOT_BY_MEANING_NOTE, f"Found {len(memories)} memories:"]
+        elif not memories:
+            return "No relevant memories found."
+        else:
+            lines = [f"Found {len(memories)} relevant memories:"]
         for idx, mem in enumerate(memories, 1):
             score_str = (
                 f" (relevance: {mem.score:.2f})" if getattr(mem, "score", None) else ""
