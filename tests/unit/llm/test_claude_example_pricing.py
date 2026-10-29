@@ -7,6 +7,8 @@ calculator, as in a real call. The example's Claude entries must then price:
 - cache reads at the read rate, taken out of the input tokens;
 - 5-minute and 1-hour cache writes at their own rates (1.25x and 2x input),
   taken out of the input tokens, which langchain-anthropic counts them in;
+- a write reported without its lifetime (a streamed response) at the rate of
+  the entry's ``prompt_cache`` lifetime, an hour (OO-451);
 - the rest of the input at the input rate, the output (thinking included) at
   the output rate;
 
@@ -16,7 +18,12 @@ and a call that reasons is not marked estimated.
 from pathlib import Path
 
 import pytest
-from anthropic.types import CacheCreation, OutputTokensDetails, Usage
+from anthropic.types import (
+    CacheCreation,
+    MessageDeltaUsage,
+    OutputTokensDetails,
+    Usage,
+)
 from langchain_anthropic.chat_models import _create_usage_metadata
 
 from inference_core.agents.middleware.cost_tracking import CostTrackingMiddleware
@@ -75,11 +82,7 @@ def test_cache_writes_reads_and_thinking_at_their_rates(example_config, name):
     result = _cost(pricing, usage)
 
     expected = (
-        1_000 * inp
-        + 20_000 * read
-        + 3_000 * write_5m
-        + 2_000 * write_1h
-        + 600 * out
+        1_000 * inp + 20_000 * read + 3_000 * write_5m + 2_000 * write_1h + 600 * out
     ) / 1_000_000
     assert result["cost_total_usd"] == pytest.approx(expected, abs=1e-6)
     assert result["cost_input_usd"] == pytest.approx(1_000 * inp / 1e6, abs=1e-6)
@@ -88,8 +91,13 @@ def test_cache_writes_reads_and_thinking_at_their_rates(example_config, name):
 
 
 @pytest.mark.parametrize("name", sorted(PRICES))
-def test_a_cache_write_without_the_ttl_breakdown(example_config, name):
-    inp, out, write_5m, _write_1h, _read = PRICES[name]
+def test_the_claude_models_of_the_example_cache_for_an_hour(example_config, name):
+    assert example_config.models[name].prompt_cache == "1h"
+
+
+@pytest.mark.parametrize("name", sorted(PRICES))
+def test_a_cache_write_without_the_ttl_breakdown_is_an_hours(example_config, name):
+    inp, out, _write_5m, write_1h, _read = PRICES[name]
     pricing = example_config.models[name].pricing
     usage = Usage(
         input_tokens=1_000,
@@ -99,9 +107,62 @@ def test_a_cache_write_without_the_ttl_breakdown(example_config, name):
 
     result = _cost(pricing, usage)
 
-    expected = (1_000 * inp + 4_000 * write_5m + 100 * out) / 1_000_000
+    expected = (1_000 * inp + 4_000 * write_1h + 100 * out) / 1_000_000
     assert result["cost_total_usd"] == pytest.approx(expected, abs=1e-6)
     assert result["cost_estimated"] is False
+
+
+#: Haiku 5.5: 1,000 tokens of input, 4,000 written to the cache for an hour,
+#: 500 of output: 0.0001 + 0.0008 + 0.00025 USD. At the 5-minute rate the
+#: write would be 0.0005 and the call 0.00085; as plain input, 0.00075.
+HOUR_WRITE_ON_HAIKU = 0.00115
+
+
+def test_a_streamed_hours_write_on_haiku(example_config):
+    """What a stream reports: the message_delta event's usage, no breakdown."""
+    pricing = example_config.models["claude-haiku-5-5"].pricing
+    usage = MessageDeltaUsage(
+        input_tokens=1_000,
+        cache_creation_input_tokens=4_000,
+        cache_read_input_tokens=0,
+        output_tokens=500,
+    )
+
+    result = _cost(pricing, usage)
+
+    assert result["cost_total_usd"] == pytest.approx(HOUR_WRITE_ON_HAIKU, abs=1e-9)
+    assert result["extra_costs"]["cache_write_1h_tokens"] == pytest.approx(0.0008)
+
+
+def test_the_same_write_broken_down_costs_the_same(example_config):
+    pricing = example_config.models["claude-haiku-5-5"].pricing
+    usage = Usage(
+        input_tokens=1_000,
+        cache_creation_input_tokens=4_000,
+        cache_creation=CacheCreation(
+            ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=4_000
+        ),
+        output_tokens=500,
+    )
+
+    result = _cost(pricing, usage)
+
+    assert result["cost_total_usd"] == pytest.approx(HOUR_WRITE_ON_HAIKU, abs=1e-9)
+
+
+@pytest.mark.parametrize("name", sorted(PRICES))
+def test_the_server_clears_tool_results_from_30k_tokens(example_config, name):
+    [edit] = example_config.models[name].context_management["edits"]
+
+    assert edit["trigger"] == {"type": "input_tokens", "value": 30000}
+
+
+def test_the_example_reads_without_a_cache_price_warning(caplog):
+    with caplog.at_level("WARNING"), pytest.MonkeyPatch.context() as mp:
+        mp.setenv("LLM_CONFIG_PATH", str(EXAMPLE))
+        LLMConfig()
+
+    assert "caches its prompts" not in caplog.text
 
 
 def test_haiku_over_100k_tokens_at_five_times_the_prices(example_config):
@@ -126,9 +187,7 @@ def test_every_priced_model_of_the_example_names_its_breakdown_keys(example_conf
 
 
 @pytest.mark.parametrize("name", sorted(PRICES))
-def test_claude_models_of_the_example_drop_stale_thinking_blocks(
-    example_config, name
-):
+def test_claude_models_of_the_example_drop_stale_thinking_blocks(example_config, name):
     """Each binds thinking blocks to the conversation; the example asks the
     API to drop a block whose conversation changed rather than refuse."""
     assert example_config.models[name].thinking_block_binding == "drop_block"

@@ -138,11 +138,28 @@ extras:
 key_aliases:
   ephemeral_5m_input_tokens_tokens: cache_write_tokens
   ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
-  cache_creation_tokens: cache_write_tokens
+  cache_creation_tokens: cache_write_tokens   # with prompt_cache: 5m
 ```
 
 When the response has the TTL breakdown, `cache_creation` is 0 and is left out,
-so only one of the two keys that map to `cache_write_tokens` is ever present.
+so only one of the two keys that map to a write price is ever present.
+
+A streamed response has no TTL breakdown: `langchain-anthropic` reads the usage
+of a stream from its `message_delta` event, which names only
+`cache_creation_input_tokens`. The model factory streams every call, so
+`cache_creation_tokens` is what nearly every call logs. A model whose
+`prompt_cache` is `1h` asks only for an hour's cache, so it maps that key to
+the hour's price:
+
+```yaml
+  cache_creation_tokens: cache_write_1h_tokens   # with prompt_cache: 1h
+```
+
+Mapped to the 5-minute price, an hour's write would be logged at 1.25x the
+input price instead of 2x. When the file is read, a model whose
+`cache_creation_tokens` is priced at another rate than its `prompt_cache`
+lifetime's (1.25x for `5m`, 2x for `1h`) is logged with a warning; its
+pricing is used as it is.
 
 #### Keys that only break down input or output
 

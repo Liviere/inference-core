@@ -157,6 +157,44 @@ def _price_multiplier(
     return float(value)
 
 
+#: What a prompt cache write costs, in input prices, by the cache's lifetime
+#: (Anthropic's prices).
+_CACHE_WRITE_RATES = {"5m": 1.25, "1h": 2.0}
+
+
+def _warn_on_cache_write_price(model: "ModelConfig") -> None:
+    """Warn when a cache write without its lifetime is priced for another one.
+
+    A streamed Claude response names only how many tokens it wrote to the
+    cache (``cache_creation_tokens``), not for how long; a response that is
+    not streamed breaks them down by lifetime. The entry's ``key_aliases``
+    say what the former costs, and with ``prompt_cache: 1h`` it should cost
+    what an hour's write does (2x input), not the 5 minutes' (1.25x). Nothing
+    is changed here: a pricing that does not say so is logged once, when the
+    file is read.
+    """
+    expected = _CACHE_WRITE_RATES.get(model.prompt_cache or "")
+    pricing = model.pricing
+    if expected is None or pricing is None or not pricing.input.cost_per_1k:
+        return
+    key = pricing.key_aliases.get("cache_creation_tokens", "cache_creation_tokens")
+    price = pricing.extras.get(key)
+    # A key without a price of its own stays in the input tokens.
+    rate = price.cost_per_1k / pricing.input.cost_per_1k if price else 1.0
+    if abs(rate - expected) <= 0.01 * expected:
+        return
+    logging.warning(
+        "Model '%s' caches its prompts for %s, but a cache write reported "
+        "without its lifetime (cache_creation_tokens, as a streamed response "
+        "reports it) is priced at %.2fx input, not %.2fx: map it in "
+        "key_aliases to the extra priced for that lifetime",
+        model.name,
+        model.prompt_cache,
+        rate,
+        expected,
+    )
+
+
 class ProviderCatalogConfig(BaseModel):
     """A provider's ``catalog:`` block: its part in the model catalog.
 
@@ -1510,6 +1548,7 @@ class LLMConfig:
                 pricing=pricing_config,
                 **init_data,
             )
+            _warn_on_cache_write_price(self.models[model_name])
 
         # Parse agent model assignments
         agents_config = yaml_config.get("agents", {})

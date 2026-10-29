@@ -328,10 +328,13 @@ models:
   # tracking names them `ephemeral_5m_input_tokens_tokens` /
   # `ephemeral_1h_input_tokens_tokens` (every token detail gets a `_tokens`
   # suffix), or `cache_creation_tokens` for a response without the TTL
-  # breakdown. The aliases map them to `cache_write_tokens` (the 5-minute
-  # rate, 1.25x input) and `cache_write_1h_tokens` (2x input); a name with
-  # `cache` in it is taken out of the input tokens, so a write is priced once,
-  # at its own rate. Thinking is part of output_tokens, at the output price.
+  # breakdown (a streamed one: the factory streams every call). The aliases
+  # map them to `cache_write_tokens` (the 5-minute rate, 1.25x input) and
+  # `cache_write_1h_tokens` (2x input); `cache_creation_tokens` goes to the
+  # rate of the entry's `prompt_cache` lifetime, since that is the only
+  # lifetime its requests ask for (inference-core warns when the file reads
+  # otherwise). A name with `cache` in it is taken out of the input tokens, so
+  # a write is priced once, at its own rate. Thinking is part of output_tokens, at the output price.
   # Claude models use the 'thinking' kwarg. These models take adaptive thinking
   # only: a thinking budget, `temperature` and `top_p` are rejected by the API
   # (see the `dropped` entries under param_policies).
@@ -356,8 +359,11 @@ models:
     thinking_block_binding: drop_block
     # Anthropic's automatic prompt caching: each request caches its prompt and
     # the next one reads the unchanged part at the cache-read price. `5m` or
-    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached.
-    prompt_cache: 5m
+    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached. An hour
+    # keeps the cache across a pause in a conversation and for a run in the
+    # background that comes back to the same context; with it,
+    # `cache_creation_tokens` below is priced as an hour's write.
+    prompt_cache: 1h
     # Old tool results cleared by the API, not in the history sent: the
     # history stays as it was, so the cache and the thinking blocks bound to
     # it stay valid. Every clearing still rewrites the cached prompt from the
@@ -365,7 +371,7 @@ models:
     context_management:
       edits:
         - type: clear_tool_uses_20250919
-          trigger: {type: input_tokens, value: 15000}
+          trigger: {type: input_tokens, value: 30000}
           keep: {type: tool_uses, value: 3}
           clear_at_least: {type: input_tokens, value: 5000}
           clear_tool_inputs: true
@@ -389,7 +395,8 @@ models:
         cache_read: cache_read_tokens
         ephemeral_5m_input_tokens_tokens: cache_write_tokens
         ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
-        cache_creation_tokens: cache_write_tokens
+        # A write the response does not break down: prompt_cache's lifetime.
+        cache_creation_tokens: cache_write_1h_tokens
       rounding:
         decimals: 6
       # Keys that only break down input or output: no price, not estimated.
@@ -413,8 +420,11 @@ models:
     thinking_block_binding: drop_block
     # Anthropic's automatic prompt caching: each request caches its prompt and
     # the next one reads the unchanged part at the cache-read price. `5m` or
-    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached.
-    prompt_cache: 5m
+    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached. An hour
+    # keeps the cache across a pause in a conversation and for a run in the
+    # background that comes back to the same context; with it,
+    # `cache_creation_tokens` below is priced as an hour's write.
+    prompt_cache: 1h
     # Old tool results cleared by the API, not in the history sent: the
     # history stays as it was, so the cache and the thinking blocks bound to
     # it stay valid. Every clearing still rewrites the cached prompt from the
@@ -422,7 +432,7 @@ models:
     context_management:
       edits:
         - type: clear_tool_uses_20250919
-          trigger: {type: input_tokens, value: 15000}
+          trigger: {type: input_tokens, value: 30000}
           keep: {type: tool_uses, value: 3}
           clear_at_least: {type: input_tokens, value: 5000}
           clear_tool_inputs: true
@@ -446,7 +456,8 @@ models:
         cache_read: cache_read_tokens
         ephemeral_5m_input_tokens_tokens: cache_write_tokens
         ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
-        cache_creation_tokens: cache_write_tokens
+        # A write the response does not break down: prompt_cache's lifetime.
+        cache_creation_tokens: cache_write_1h_tokens
       rounding:
         decimals: 6
       # Keys that only break down input or output: no price, not estimated.
@@ -470,8 +481,11 @@ models:
     thinking_block_binding: drop_block
     # Anthropic's automatic prompt caching: each request caches its prompt and
     # the next one reads the unchanged part at the cache-read price. `5m` or
-    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached.
-    prompt_cache: 5m
+    # `1h` (writes cost 1.25x or 2x input). Unset: nothing is cached. An hour
+    # keeps the cache across a pause in a conversation and for a run in the
+    # background that comes back to the same context; with it,
+    # `cache_creation_tokens` below is priced as an hour's write.
+    prompt_cache: 1h
     # Old tool results cleared by the API, not in the history sent: the
     # history stays as it was, so the cache and the thinking blocks bound to
     # it stay valid. Every clearing still rewrites the cached prompt from the
@@ -479,7 +493,7 @@ models:
     context_management:
       edits:
         - type: clear_tool_uses_20250919
-          trigger: {type: input_tokens, value: 15000}
+          trigger: {type: input_tokens, value: 30000}
           keep: {type: tool_uses, value: 3}
           clear_at_least: {type: input_tokens, value: 5000}
           clear_tool_inputs: true
@@ -516,7 +530,8 @@ models:
         cache_read: cache_read_tokens
         ephemeral_5m_input_tokens_tokens: cache_write_tokens
         ephemeral_1h_input_tokens_tokens: cache_write_1h_tokens
-        cache_creation_tokens: cache_write_tokens
+        # A write the response does not break down: prompt_cache's lifetime.
+        cache_creation_tokens: cache_write_1h_tokens
       rounding:
         decimals: 6
       # Keys that only break down input or output: no price, not estimated.
