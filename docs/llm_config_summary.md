@@ -51,6 +51,8 @@ Some providers process a request in a given region only on a regional endpoint, 
     - The API clears old tool results from what the model reads; the conversation sent stays as it was. So the prefix a thinking block is bound to does not change (server-side edits are not edits of the history), where the same clearing done before the request does.
     - Each clearing still writes the cached prompt again from the cleared result on: `clear_at_least` keeps clearings few and large.
     - The model object carries it (`ChatAnthropic.context_management`), so an application that also clears tool results itself can leave such a model's requests alone.
+    - One model can be built with another choice than its entry's: `LLMModelFactory.create_model(name, prompt_cache=False)` builds it without the cache, `"5m"` or `"1h"` with that lifetime; left out (or `None`), the entry decides. The factory keeps the two apart (another key in its cache of models). `without_prompt_cache(model)` gives a copy of a model already built that sends no `cache_control`, the same model otherwise (its notes, `metadata`, included).
+    - A call whose prompt is different every time (an analysis of a run, a summary, an extraction) only writes the cache and never reads it, and a write costs more than plain input. Such a call is better made without it.
   - Another provider's model with `prompt_cache` or `context_management` is built without them, with a warning.
   - An inference-core version that does not know these two fields passes them on to the model as extra parameters (see below), and the request is then refused: add them to the file only once the code that reads them runs.
   - directly affects instance creation in `inference_core/llm/models.py`.

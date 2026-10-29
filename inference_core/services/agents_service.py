@@ -313,6 +313,7 @@ class AgentService:
         stream_subgraphs: bool = False,
         strip_foreign_thinking: bool = False,
         memory_context_placement: str = "system_prompt",
+        memory_analysis_prompt_cache: bool = True,
     ):
         """Initialize the AgentService.
 
@@ -405,6 +406,11 @@ class AgentService:
                 ``"message"``, in the person's message they were recalled for
                 and the same in every later request of the thread (see
                 :class:`~inference_core.agents.middleware.memory.MemoryMiddleware`).
+            memory_analysis_prompt_cache: Whether post-run memory analysis
+                keeps the prompt cache of the model it runs on (on by
+                default). ``False`` sends its calls without ``cache_control``:
+                its prompt is different after every run, so the cache is
+                written and never read (see ``MemoryMiddleware``).
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -482,6 +488,7 @@ class AgentService:
         self._stream_subgraphs = stream_subgraphs
         self._strip_foreign_thinking = strip_foreign_thinking
         self._memory_context_placement = memory_context_placement
+        self._memory_analysis_prompt_cache = memory_analysis_prompt_cache
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -799,6 +806,9 @@ class AgentService:
                         analysis_model=self._memory_analysis_model,
                         memory_context_placement=getattr(
                             self, "_memory_context_placement", "system_prompt"
+                        ),
+                        analysis_prompt_cache=getattr(
+                            self, "_memory_analysis_prompt_cache", True
                         ),
                     )
                     # Insert before CostTracking (which sits at the end)
@@ -1580,6 +1590,7 @@ class AgentService:
                 self, "_memory_context_placement", "system_prompt"
             ),
             briefed=briefed,
+            analysis_prompt_cache=getattr(self, "_memory_analysis_prompt_cache", True),
         )
         return service, middleware, tools
 
@@ -3003,6 +3014,7 @@ class DeepAgentService(AgentService):
         stream_subgraphs: bool = False,
         strip_foreign_thinking: bool = False,
         memory_context_placement: str = "system_prompt",
+        memory_analysis_prompt_cache: bool = True,
     ):
         """Initialize the DeepAgentService.
 
@@ -3050,6 +3062,8 @@ class DeepAgentService(AgentService):
                 stripped (see ``AgentService``).
             memory_context_placement: Where ``MemoryMiddleware`` puts the
                 recalled memories (see ``AgentService``).
+            memory_analysis_prompt_cache: Whether post-run memory analysis
+                keeps the prompt cache of its model (see ``AgentService``).
         """
         super().__init__(
             agent_name,
@@ -3075,6 +3089,7 @@ class DeepAgentService(AgentService):
             stream_subgraphs=stream_subgraphs,
             strip_foreign_thinking=strip_foreign_thinking,
             memory_context_placement=memory_context_placement,
+            memory_analysis_prompt_cache=memory_analysis_prompt_cache,
         )
         self._explicit_subagents = subagents or []
 

@@ -423,6 +423,15 @@ demand. A run that was cancelled or interrupted is not carried on by the next
 model, and an empty iterable means that no analysis runs at all: the agent's
 own model is not used in its place.
 
+The analysis's prompt is different after every run, so a prompt cache written
+for it (a Claude entry's `prompt_cache`) is never read, and each write costs
+more than plain input (1.25x for 5 minutes, 2x for an hour).
+`AgentService(memory_analysis_prompt_cache=False)`, passed on to
+`MemoryMiddleware(analysis_prompt_cache=False)`, sends the analysis's calls
+without `cache_control`, whichever model they run on (one handed over, one
+resolved by name or the agent's own, through `without_prompt_cache`). The
+default (`True`) uses the model as it is.
+
 Otherwise the model is instantiated through the global model factory so provider and
 parameters from `llm_config.yaml` are applied. The middleware asks the model to
 inspect semantically similar memories first and then call `save_memory_store`,

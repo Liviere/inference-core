@@ -117,6 +117,41 @@ def _cache_prompts(model_params: Dict[str, Any], ttl: str) -> None:
     model_params["model_kwargs"] = model_kwargs
 
 
+#: The values ``create_model(prompt_cache=…)`` takes: a lifetime, or ``False``
+#: for a model built without the cache whatever its entry says.
+_PROMPT_CACHE_OVERRIDES = (False, "5m", "1h")
+
+
+def without_prompt_cache(model: Any) -> Any:
+    """*model* without the prompt cache its entry gave it.
+
+    For a model that is already built (an agent's own, taken over for a side
+    job): a copy whose requests carry no ``cache_control``, the same model in
+    every other way, its notes (``metadata``) included. A model that caches
+    nothing is returned as it is.
+
+    A side job whose prompt is different every time (an analysis of the run,
+    a summary) only pays for cache writes that are never read.
+    """
+    model_kwargs = getattr(model, "model_kwargs", None)
+    if not isinstance(model_kwargs, dict) or "cache_control" not in model_kwargs:
+        return model
+    try:
+        return model.model_copy(
+            update={
+                "model_kwargs": {
+                    k: v for k, v in model_kwargs.items() if k != "cache_control"
+                }
+            }
+        )
+    except Exception:
+        logger.warning(
+            "Could not copy a model without its prompt cache; it is used as it is",
+            exc_info=True,
+        )
+        return model
+
+
 class LLMModelFactory:
     """Factory for creating LLM model instances"""
 
@@ -131,7 +166,11 @@ class LLMModelFactory:
 
         Args:
             model_name: Name of the model to create
-            **kwargs: Additional parameters to override model config
+            **kwargs: Additional parameters to override model config.
+                ``prompt_cache`` overrides the entry's for this model:
+                ``False`` builds it without the prompt cache, ``"5m"`` or
+                ``"1h"`` with that lifetime. Left out (or ``None``), the
+                entry decides.
 
         Returns:
             BaseChatModel instance or None if model cannot be created
@@ -142,7 +181,21 @@ class LLMModelFactory:
             logger.debug(f"Using cached model instance for {model_name}")
             return self._model_cache[cache_key]
 
+        prompt_cache = kwargs.pop("prompt_cache", None)
+        override_cache = prompt_cache is not None
+        if override_cache and prompt_cache not in _PROMPT_CACHE_OVERRIDES:
+            logger.error(
+                "prompt_cache=%r for model %s: expected False, '5m' or '1h'",
+                prompt_cache,
+                model_name,
+            )
+            return None
+
         model_config = self.config.get_model_config(model_name)
+        if model_config is not None and override_cache:
+            model_config = model_config.model_copy(
+                update={"prompt_cache": prompt_cache or None}
+            )
         if not model_config:
             if is_llm_emulation_enabled():
                 logger.info(

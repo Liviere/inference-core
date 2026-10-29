@@ -227,6 +227,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         analysis_model: Optional[Any] = None,
         memory_context_placement: str = MEMORY_CONTEXT_IN_SYSTEM_PROMPT,
         briefed: bool = False,
+        analysis_prompt_cache: bool = True,
     ):
         """Initialize the memory middleware.
 
@@ -294,6 +295,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 subagent): its "user" message is a brief that agent wrote. The
                 write policy is then asked for the recall query with the
                 purpose ``brief`` rather than ``recall``.
+            analysis_prompt_cache: Whether the analysis's calls keep the
+                prompt cache of the model they run on (a Claude entry's
+                ``prompt_cache``). ``True`` (the default): the model is used as
+                it is. ``False``: the calls carry no ``cache_control``. The
+                analysis's prompt is different after every run, so a cache
+                written for it is never read, and a write costs more than
+                plain input (1.25x for 5 minutes, 2x for an hour).
         """
         if memory_context_placement not in MEMORY_CONTEXT_PLACEMENTS:
             raise ValueError(
@@ -315,6 +323,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self.session_id = session_id
         self.request_id = request_id
         self._analysis_model = analysis_model
+        self.analysis_prompt_cache = analysis_prompt_cache
         # Set in wrap_model_call / awrap_model_call; used by after_agent.
         self._captured_model: Optional[Any] = None
         self.include_memory_types = include_memory_types or list(
@@ -358,6 +367,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             analysis_model=self._analysis_model,
             memory_context_placement=self.memory_context_placement,
             briefed=True,
+            analysis_prompt_cache=self.analysis_prompt_cache,
         )
 
     @property
@@ -1432,6 +1442,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         when no model answered.
         """
         for candidate in _models_to_try(model):
+            if not self.analysis_prompt_cache:
+                from inference_core.llm.models import without_prompt_cache
+
+                candidate = without_prompt_cache(candidate)
             try:
                 bound = candidate.bind_tools(tools)
                 response = await bound.ainvoke(messages)
