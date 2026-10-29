@@ -3001,6 +3001,8 @@ class DeepAgentService(AgentService):
         memory_options: Optional[MemoryOptions] = None,
         tool_call_token_type: Literal["reasoning", "tool_call"] = "reasoning",
         stream_subgraphs: bool = False,
+        strip_foreign_thinking: bool = False,
+        memory_context_placement: str = "system_prompt",
     ):
         """Initialize the DeepAgentService.
 
@@ -3043,6 +3045,11 @@ class DeepAgentService(AgentService):
                 subagents too (see ``AgentService``). With it, the ``task``
                 tool announces each subagent it starts, so their events name
                 the call they belong to.
+            strip_foreign_thinking: Whether a model of another provider than
+                the one that wrote the history's thinking blocks gets them
+                stripped (see ``AgentService``).
+            memory_context_placement: Where ``MemoryMiddleware`` puts the
+                recalled memories (see ``AgentService``).
         """
         super().__init__(
             agent_name,
@@ -3066,6 +3073,8 @@ class DeepAgentService(AgentService):
             memory_options=memory_options,
             tool_call_token_type=tool_call_token_type,
             stream_subgraphs=stream_subgraphs,
+            strip_foreign_thinking=strip_foreign_thinking,
+            memory_context_placement=memory_context_placement,
         )
         self._explicit_subagents = subagents or []
 
