@@ -6,7 +6,7 @@ import pytest
 from langchain.agents.middleware import AgentMiddleware
 
 from inference_core.agents.middleware.cost_tracking import CostTrackingMiddleware
-from inference_core.services.agents_service import AgentService
+from inference_core.services.agents_service import AgentService, DeepAgentService
 
 
 class _Outer(AgentMiddleware):
@@ -61,3 +61,11 @@ async def test_by_default_there_is_none(factory):
     middleware = await _middleware_of(middleware=[_Outer()])
 
     assert isinstance(middleware[-1], CostTrackingMiddleware)
+
+
+def test_a_deep_agent_takes_it_too(factory):
+    """Its constructor names what it passes on: a keyword it does not name is a
+    TypeError for every deep agent."""
+    inner = _Inner()
+    service = DeepAgentService(agent_name="test_agent", innermost_middleware=[inner])
+    assert service._innermost_middleware == [inner]

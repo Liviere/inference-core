@@ -3047,6 +3047,7 @@ class DeepAgentService(AgentService):
         strip_foreign_thinking: bool = False,
         memory_context_placement: str = "system_prompt",
         memory_analysis_prompt_cache: bool = True,
+        innermost_middleware: Optional[list[Any]] = None,
     ):
         """Initialize the DeepAgentService.
 
@@ -3064,6 +3065,8 @@ class DeepAgentService(AgentService):
             checkpoint_config: Checkpointer settings.
             context_schema: Optional schema for agent context.
             middleware: Extra middleware for the parent agent.
+            innermost_middleware: Middleware of the parent agent's own model
+                calls, placed inside everything else, as in AgentService.
             enable_cost_tracking: Auto-add CostTrackingMiddleware.
             user_id: User ID for cost tracking / memory isolation.
             session_id: Session ID for grouping related requests.
@@ -3122,6 +3125,7 @@ class DeepAgentService(AgentService):
             strip_foreign_thinking=strip_foreign_thinking,
             memory_context_placement=memory_context_placement,
             memory_analysis_prompt_cache=memory_analysis_prompt_cache,
+            innermost_middleware=innermost_middleware,
         )
         self._explicit_subagents = subagents or []
 
