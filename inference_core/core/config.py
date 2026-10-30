@@ -779,6 +779,14 @@ class Settings(BaseSettings):
             "404. Use when a deployment ships its own password-reset request flow."
         ),
     )
+    auth_verify_email_request_endpoint_enabled: bool = Field(
+        default=True,
+        description=(
+            "If false, the built-in POST /auth/verify-email/request endpoint "
+            "returns 404. Use when a deployment sends its verification links "
+            "another way: the endpoint is public and has no rate limit."
+        ),
+    )
     auth_send_verification_email_on_register: bool = Field(
         default=False, description="If true, send verification email after registration"
     )

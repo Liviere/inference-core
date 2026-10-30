@@ -540,7 +540,9 @@ async def logout(
 
 @router.post("/verify-email/request", response_model=SuccessResponse)
 async def request_verification_email(
-    request_data: EmailVerificationRequest, db: AsyncSession = Depends(get_db)
+    request_data: EmailVerificationRequest,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> SuccessResponse:
     """
     Request email verification for user
@@ -548,10 +550,15 @@ async def request_verification_email(
     Args:
         request_data: Email verification request data
         db: Database session
+        settings: Application settings
 
     Returns:
         Success response
     """
+    if not settings.auth_verify_email_request_endpoint_enabled:
+        # Deployment sends its verification links another way.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
     auth_service = AuthService(db)
 
     # Send verification email
