@@ -384,6 +384,9 @@ models:
     # background that comes back to the same context; with it,
     # `cache_creation_tokens` below is priced as an hour's write.
     prompt_cache: 1h
+    # How many tokens of input the model takes (optional, never sent to the
+    # provider): for an application that shows it or keeps within it.
+    context_window: 200000
     # Old tool results cleared by the API, not in the history sent: the
     # history stays as it was, so the cache and the thinking blocks bound to
     # it stay valid. Every clearing still rewrites the cached prompt from the

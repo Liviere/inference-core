@@ -623,6 +623,16 @@ class ModelConfig(ModelParams):
             "gets nothing, with a warning. Off by default: nothing is sent."
         ),
     )
+    context_window: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "How many tokens of input the model takes, as its provider states "
+            "it. Never sent to the provider: for an application that shows "
+            "how much of the window a conversation fills or keeps it within "
+            "the window. Unset: the window is not known."
+        ),
+    )
     multimodal: bool = Field(
         default=False,
         description=(
