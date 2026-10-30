@@ -153,6 +153,10 @@ Task results are read with the Celery result serializer of `inference_core/celer
 | `FIREWORKS_API_KEY`         | (none)    | Fireworks key                          |
 | `MISTRAL_API_KEY`           | (none)    | Mistral key                            |
 | `TAVILY_API_KEY`            | (none)    | Tavily key for internet search tools   |
+| `INTERNET_SEARCH_PROVIDER`  | `tavily`  | Provider of `internet_search`: `tavily` or `linkup` |
+| `LINKUP_API_KEY`            | (none)    | Linkup key, when it is the provider    |
+| `LINKUP_BASE_URL`           | `https://api.linkup.so/v1` | Linkup's API address      |
+| `LINKUP_DEPTH`              | `fast`    | Linkup's `flash`, `fast` or `standard` (`deep` is not offered) |
 | `OPEN_WEATHER_API_KEY`      | (none)    | OpenWeatherMap key for weather tools   |
 | `LLM_COMPLETION_MODEL`      | (none)    | Override model for completion task     |
 | `LLM_CHAT_MODEL`            | (none)    | Override model for chat task           |
@@ -623,7 +627,11 @@ Operational note: after changing which agents should be exposed remotely, run
 
 Provider-specific note: the example weather provider requires
 `OPEN_WEATHER_API_KEY`; the bundled `default_agent_tools` provider also uses
-`TAVILY_API_KEY` for `internet_search`.
+`TAVILY_API_KEY` for `internet_search`, or `LINKUP_API_KEY` with
+`INTERNET_SEARCH_PROVIDER=linkup`. An application can also pass the provider
+per tool: `InternetSearchTool(provider="linkup")`. With Linkup the tool's
+`topic`, `country` and `include_raw_content` have no effect, its model is told
+so, and an answer names the ones a call set under `ignored`.
 
 Examples:
 

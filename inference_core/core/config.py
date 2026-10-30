@@ -591,6 +591,11 @@ class Settings(BaseSettings):
         le=10000,
     )
 
+    internet_search_provider: str = Field(
+        default="tavily",
+        description="Provider of the internet_search tool: 'tavily' or 'linkup'.",
+    )
+
     ###################################
     #      EMBEDDING SETTINGS         #
     ###################################

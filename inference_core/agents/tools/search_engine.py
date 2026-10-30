@@ -1,8 +1,12 @@
 """Synchronous internet search tool for LangChain agents.
 
-This module provides a BaseTool implementation that wraps Tavily's search API
-and exposes a sync `_run` path so it can be used in sync agent executions. The
-async `_arun` is implemented via a thread executor for parity.
+This module provides a BaseTool implementation that wraps a search provider's
+API and exposes a sync `_run` path so it can be used in sync agent executions.
+The async `_arun` is implemented via a thread executor for parity.
+
+The provider is Tavily unless the tool is given another (``provider``) or the
+setting ``INTERNET_SEARCH_PROVIDER`` names one. The tool's name and arguments
+are the same for every provider.
 """
 
 import asyncio
@@ -11,12 +15,20 @@ import os
 from typing import Any, Dict, Literal, Optional
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from tavily import TavilyClient
+
+from inference_core.agents.tools.search_linkup import linkup_search
+from inference_core.core.config import get_settings
 
 API_KEY = os.getenv("TAVILY_API_KEY")
 
 _tavily_client_instance: Optional[TavilyClient] = None
+
+TAVILY = "tavily"
+LINKUP = "linkup"
+#: The providers, with the name a person is shown.
+_PROVIDER_LABELS: Dict[str, str] = {TAVILY: "Tavily", LINKUP: "Linkup"}
 
 # Maps common ISO codes and localized/alias names to the full lowercase English
 # country name Tavily expects. Deliberately small — only the countries agents
@@ -136,6 +148,31 @@ def _normalize_country(country: Optional[str], topic: str) -> Optional[str]:
     return normalized
 
 
+def resolve_search_provider(name: Optional[str] = None) -> str:
+    """The provider ``name`` stands for, or the configured one without a name.
+
+    An unknown name raises ``ValueError``: falling back to the default would
+    send queries to a provider nobody chose.
+    """
+    chosen = (name or get_settings().internet_search_provider or TAVILY).strip().lower()
+    if chosen not in _PROVIDER_LABELS:
+        raise ValueError(
+            f"Unknown internet search provider {chosen!r}: "
+            f"use one of {', '.join(_PROVIDER_LABELS)}."
+        )
+    return chosen
+
+
+def search_provider_label(name: Optional[str] = None) -> str:
+    """The provider's name as a person is shown it."""
+    return _PROVIDER_LABELS[resolve_search_provider(name)]
+
+
+def search_provider_labels() -> tuple[str, ...]:
+    """The names of all the providers, as a person is shown them."""
+    return tuple(_PROVIDER_LABELS.values())
+
+
 def get_tavily_client() -> TavilyClient:
     global _tavily_client_instance
     if _tavily_client_instance is None:
@@ -146,7 +183,7 @@ def get_tavily_client() -> TavilyClient:
 
 
 class InternetSearchInput(BaseModel):
-    """Argument schema for the Tavily-backed internet search tool.
+    """Argument schema for the internet search tool.
 
     Defined explicitly so each parameter — especially ``country`` — carries a
     description the model can see, instead of relying on the bare ``_run``
@@ -196,8 +233,17 @@ class InternetSearchInput(BaseModel):
     )
 
 
+_LINKUP_DESCRIPTION = (
+    "Perform an internet search and return the raw response. Use when you need "
+    "up-to-date web results. `country`, `topic` and `include_raw_content` have "
+    "no effect with this search service: to reach results of one country, write "
+    "the query in its language or use `include_domains`; to read a whole page, "
+    "open it."
+)
+
+
 class InternetSearchTool(BaseTool):
-    """Sync-capable Tavily search tool for agents.
+    """Sync-capable search tool for agents.
 
     Exists to ensure sync LangGraph tool execution succeeds when tools are
     invoked via sync pathways. It also exposes an async path for parity.
@@ -213,6 +259,17 @@ class InternetSearchTool(BaseTool):
     args_schema: type[BaseModel] = InternetSearchInput
 
     max_workers: int = Field(default=1, exclude=True)
+    #: The search provider; ``None`` takes the configured one.
+    provider: Optional[str] = Field(default=None, exclude=True)
+
+    @model_validator(mode="after")
+    def _settle_provider(self) -> "InternetSearchTool":
+        self.provider = resolve_search_provider(self.provider)
+        if self.provider == LINKUP:
+            self.description = _LINKUP_DESCRIPTION
+            # Its failures are ToolExceptions, written for the model to read.
+            self.handle_tool_error = True
+        return self
 
     def _run(
         self,
@@ -227,6 +284,19 @@ class InternetSearchTool(BaseTool):
         include_domains: Optional[list[str]] = None,
         exclude_domains: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
+        if self.provider == LINKUP:
+            return linkup_search(
+                query=query,
+                max_results=max_results,
+                topic=topic,
+                include_raw_content=include_raw_content,
+                time_range=time_range,
+                start_date=start_date,
+                end_date=end_date,
+                country=country,
+                include_domains=include_domains,
+                exclude_domains=exclude_domains,
+            )
         client = get_tavily_client()
         country = _normalize_country(country, topic)
         logging.info(
@@ -325,4 +395,10 @@ def get_search_tools() -> list[BaseTool]:
     return [InternetSearchTool()]
 
 
-__all__ = ["InternetSearchTool", "get_search_tools"]
+__all__ = [
+    "InternetSearchTool",
+    "get_search_tools",
+    "resolve_search_provider",
+    "search_provider_label",
+    "search_provider_labels",
+]
