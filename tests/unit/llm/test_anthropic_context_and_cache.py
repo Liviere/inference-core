@@ -170,3 +170,13 @@ def test_another_provider_ignores_them(caplog, monkeypatch):
     assert "cache_control" not in model.model_kwargs
     assert "context_management is ignored" in caplog.text
     assert "prompt_cache is ignored" in caplog.text
+
+
+async def test_the_context_window_is_not_sent():
+    """It is for the application to read: a provider would refuse the field."""
+    config = _config(context_window=200_000)
+
+    payload, _ = await _send(config)
+
+    assert config.context_window == 200_000
+    assert "context_window" not in payload

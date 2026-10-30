@@ -279,6 +279,7 @@ class LLMModelFactory:
             "description",
             "reasoning_config",
             "multimodal",
+            "context_window",
             "thinking_block_binding",
             "provider_model_id",
             "request_options",

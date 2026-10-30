@@ -178,6 +178,10 @@ fallback middleware and before cost tracking when any model of the config
 asks for it, in the agent's middleware and each subagent's. The key is a
 hash of the thread and the model's name. See `llm_config_summary.md`.
 
+## Innermost Middleware
+
+`AgentService(innermost_middleware=[...])` (empty by default) stands inside everything else of the agent's own model calls: memory, skills, the fallback and cost tracking. Such a middleware sees each attempt's request as it goes to the model, for instance to measure it. It is not handed to subagents, which have their own calls.
+
 ## Usage Logging
 
 Agent runs log to a dedicated `agent_request_logs` table via the new
