@@ -290,6 +290,7 @@ class AgentService:
         checkpoint_config: Optional[dict[str, Any]] = None,
         context_schema: Optional[Any] = None,
         middleware: Optional[list[Any]] = None,
+        innermost_middleware: Optional[list[Any]] = None,
         enable_cost_tracking: bool = True,
         user_id: Optional[uuid.UUID] = None,
         session_id: Optional[str] = None,
@@ -401,6 +402,11 @@ class AgentService:
                 ``redacted_thinking`` blocks; text and tool calls stay. Off by
                 default: every model is sent the messages as they are. Applies
                 to the agent's fallback middleware and its subagents'.
+            innermost_middleware: Middleware of the agent's own model calls
+                placed inside everything else (memory, skills, the fallback,
+                cost tracking), so it sees each request as it goes to the
+                model. Not handed to subagents, which have their own calls.
+                Empty by default.
             memory_context_placement: Where ``MemoryMiddleware`` puts the
                 recalled memories: ``"system_prompt"`` (the default) or
                 ``"message"``, in the person's message they were recalled for
@@ -461,6 +467,7 @@ class AgentService:
 
         # Middleware setup
         self._middleware = middleware or []
+        self._innermost_middleware = list(innermost_middleware or [])
         self._enable_cost_tracking = enable_cost_tracking
         self._enable_snapshots = enable_snapshots
         self._user_id = user_id
@@ -680,6 +687,9 @@ class AgentService:
             )
             # Inject store into kwargs so create_agent passes it to the graph
             kwargs.setdefault("store", store)
+
+        # Inside everything, the skills above included.
+        middleware.extend(self._innermost_middleware)
 
         # Create the agent
         # Resolve structured-output schema from AgentConfig.  Pass via kwargs
@@ -3236,6 +3246,7 @@ class DeepAgentService(AgentService):
         #    before any interrupt-causing middleware.
         self._place_prompt_cache_routing(middleware)
         self._ensure_cost_tracking_last(middleware)
+        middleware.extend(self._innermost_middleware)
 
         # 7. Create the agent via standard create_agent
         # Resolve structured-output schema (inherited from AgentService helper).
