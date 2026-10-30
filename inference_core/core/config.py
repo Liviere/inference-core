@@ -595,6 +595,14 @@ class Settings(BaseSettings):
         default="tavily",
         description="Provider of the internet_search tool: 'tavily' or 'linkup'.",
     )
+    internet_search_log_query: bool = Field(
+        default=True,
+        description=(
+            "Whether the internet_search tool's log lines quote what the model "
+            "wrote (the query, dates, country, domains). False keeps only "
+            "lengths, counts and the parameters limited to fixed values."
+        ),
+    )
 
     ###################################
     #      EMBEDDING SETTINGS         #

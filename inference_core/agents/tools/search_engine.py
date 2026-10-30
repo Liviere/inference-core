@@ -103,6 +103,17 @@ _COUNTRY_ALIASES: Dict[str, str] = {
 }
 
 
+def _country_for_log(country: str) -> str:
+    """A country as the model wrote it, as a log line may show it.
+
+    The argument is free text, so it can hold anything the model chose to put
+    there. ``internet_search_log_query`` off leaves only its length.
+    """
+    if get_settings().internet_search_log_query:
+        return country
+    return f"<{len(country)} chars>"
+
+
 def _normalize_country(country: Optional[str], topic: str) -> Optional[str]:
     """Coerce an agent-supplied ``country`` into a value Tavily accepts.
 
@@ -121,7 +132,7 @@ def _normalize_country(country: Optional[str], topic: str) -> Optional[str]:
     if topic != "general":
         logging.warning(
             "Dropping Tavily 'country=%s': only supported with topic='general' (got topic=%s)",
-            country,
+            _country_for_log(country),
             topic,
         )
         return None
@@ -130,6 +141,7 @@ def _normalize_country(country: Optional[str], topic: str) -> Optional[str]:
 
     alias = _COUNTRY_ALIASES.get(normalized)
     if alias is not None:
+        # An entry of the table above, so this quotes nothing but a country.
         if alias != normalized:
             logging.info("Normalized Tavily country '%s' -> '%s'", country, alias)
         return alias
@@ -139,7 +151,7 @@ def _normalize_country(country: Optional[str], topic: str) -> Optional[str]:
     if normalized.replace(".", "").isalpha() and len(normalized.replace(".", "")) <= 3:
         logging.warning(
             "Dropping unrecognized Tavily country code '%s' (use a full lowercase country name)",
-            country,
+            _country_for_log(country),
         )
         return None
 
@@ -299,8 +311,13 @@ class InternetSearchTool(BaseTool):
             )
         client = get_tavily_client()
         country = _normalize_country(country, topic)
+        format_log = (
+            self._format_log
+            if get_settings().internet_search_log_query
+            else self._format_log_without_text
+        )
         logging.info(
-            self._format_log(
+            format_log(
                 query,
                 max_results,
                 topic,
@@ -386,6 +403,47 @@ class InternetSearchTool(BaseTool):
             parts.append(f"include_domains: {', '.join(include_domains)}")
         if exclude_domains:
             parts.append(f"exclude_domains: {', '.join(exclude_domains)}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _format_log_without_text(
+        query: str,
+        max_results: int,
+        topic: str,
+        include_raw_content: Optional[str],
+        time_range: Optional[str],
+        start_date: Optional[str],
+        end_date: Optional[str],
+        country: Optional[str],
+        include_domains: Optional[list[str]],
+        exclude_domains: Optional[list[str]],
+    ) -> str:
+        """The log line with nothing the model could write freely.
+
+        ``max_results`` and the values limited by ``InternetSearchInput``
+        (``topic``, ``include_raw_content``, ``time_range``) stay. The query,
+        the dates, the country and the domains are plain strings there, so only
+        their length, their presence or their number is left.
+        """
+        parts = [
+            f"Performing internet search, query length: {len(query)}",
+            f"max_results: {max_results}",
+            f"topic: {topic}",
+        ]
+        if include_raw_content:
+            parts.append(f"include_raw_content: {include_raw_content}")
+        if time_range:
+            parts.append(f"time_range: {time_range}")
+        if start_date:
+            parts.append("start_date: set")
+        if end_date:
+            parts.append("end_date: set")
+        if country:
+            parts.append("country: set")
+        if include_domains:
+            parts.append(f"include_domains: {len(include_domains)}")
+        if exclude_domains:
+            parts.append(f"exclude_domains: {len(exclude_domains)}")
         return ", ".join(parts)
 
 

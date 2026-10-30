@@ -154,6 +154,7 @@ Task results are read with the Celery result serializer of `inference_core/celer
 | `MISTRAL_API_KEY`           | (none)    | Mistral key                            |
 | `TAVILY_API_KEY`            | (none)    | Tavily key for internet search tools   |
 | `INTERNET_SEARCH_PROVIDER`  | `tavily`  | Provider of `internet_search`: `tavily` or `linkup` |
+| `INTERNET_SEARCH_LOG_QUERY` | `true`    | `false`: the tool's log lines (Tavily) quote nothing the model wrote: no query, dates, country or domains, only their length, presence or number |
 | `LINKUP_API_KEY`            | (none)    | Linkup key, when it is the provider    |
 | `LINKUP_BASE_URL`           | `https://api.linkup.so/v1` | Linkup's API address      |
 | `LINKUP_DEPTH`              | `fast`    | Linkup's `flash`, `fast` or `standard` (`deep` is not offered) |
