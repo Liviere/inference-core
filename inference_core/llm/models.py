@@ -31,6 +31,7 @@ from .config import (
     provider_model_id,
 )
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
+from .mistral_usage import ChatMistralAICachedTokens
 from .model_identity import tag_model_identity
 from .param_policy import normalize_params
 from .provider_registry import get_registered_provider
@@ -640,7 +641,14 @@ class LLMModelFactory:
             if config.base_url:
                 params["base_url"] = config.base_url
 
-            return ChatMistralAI(
+            # Reports the prompt cache's reads only where they have a price:
+            # elsewhere the reported key would mark the cost estimated.
+            model_class = (
+                ChatMistralAICachedTokens
+                if config.pricing and "cache_read_tokens" in config.pricing.extras
+                else ChatMistralAI
+            )
+            return model_class(
                 model=config.name,
                 api_key=SecretStr(config.api_key),
                 **params,

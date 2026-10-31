@@ -671,9 +671,10 @@ models:
   # Mistral AI Models (dedicated provider, langchain-mistralai)
   # Source: https://docs.mistral.ai/inference/pricing
   # Mistral caches the start of a prompt by itself and bills what it read
-  # from the cache at a tenth of the input price (cached_tokens in its
-  # usage), but langchain-mistralai does not pass that number on, so no
-  # cache price below would ever apply: every input token is priced in full.
+  # from the cache at a tenth of the input price (cached_tokens in its usage;
+  # https://docs.mistral.ai/studio/conversations/advanced/prompt-caching).
+  # An entry with extras.cache_read_tokens gets a client that reports those
+  # reads; without it, every input token is priced in full, as before.
   # NOTE: Mistral accepts `temperature` only in the 0.0-1.0 range; a higher
   # value (model- or agent-level) makes the model fail to initialize.
   # `timeout` must be a whole number of seconds.
@@ -690,6 +691,9 @@ models:
         cost_per_1m: 0.5 # $0.50 per 1M tokens
       output:
         cost_per_1m: 1.5 # $1.50 per 1M tokens
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.05 # cached input $0.05 per 1M tokens, a tenth of input
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -719,6 +723,9 @@ models:
         cost_per_1m: 0.15 # $0.15 per 1M tokens
       output:
         cost_per_1m: 0.6 # $0.60 per 1M tokens
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.015 # cached input $0.015 per 1M tokens, a tenth of input
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -750,6 +757,9 @@ models:
         cost_per_1m: 0.15 # $0.15 per 1M tokens (list price)
       output:
         cost_per_1m: 0.6 # $0.60 per 1M tokens (list price)
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.015 # cached input $0.015 per 1M tokens, a tenth of input
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -787,6 +797,9 @@ models:
         cost_per_1m: 1.36 # $1.36 per 1M tokens
       output:
         cost_per_1m: 4.18 # $4.18 per 1M tokens
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.136 # cached input $0.136 per 1M tokens, a tenth of input
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
