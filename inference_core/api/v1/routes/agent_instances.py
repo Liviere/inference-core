@@ -323,7 +323,13 @@ async def delete_agent_instance(
     user_id = UUID(current_user["id"])
     service = get_user_agent_instance_service(db, llm_config_service)
 
-    deleted = await service.delete_instance(user_id, instance_id)
+    try:
+        deleted = await service.delete_instance(user_id, instance_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

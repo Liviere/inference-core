@@ -89,6 +89,11 @@ OverridesValidator = Callable[[AsyncSession, UUID, Dict[str, Any]], Awaitable[No
 InstanceValidator = Callable[[AsyncSession, InstanceCheck], Awaitable[None]]
 InstanceDeletedHook = Callable[[UUID, UUID], Awaitable[None]]
 ExtraModelsSource = Callable[[AsyncSession, UUID], Awaitable[Collection[str]]]
+# ``updates`` is None when the instance is about to be deleted.
+InstanceWriteGuard = Callable[
+    [AsyncSession, UUID, UserAgentInstance, Optional[Dict[str, Any]]], Awaitable[None]
+]
+InstanceListFilter = Callable[[UUID], Iterable[Any]]
 
 #: What else, besides config_overrides and the base agent, may make an
 #: instance validator run again (see :func:`register_instance_validator`).
@@ -101,6 +106,8 @@ _instance_validators: List[InstanceValidator] = []
 _instance_validator_triggers: Dict[InstanceValidator, FrozenSet[str]] = {}
 _instance_deleted_hooks: List[InstanceDeletedHook] = []
 _extra_models_sources: List[ExtraModelsSource] = []
+_instance_write_guards: List[InstanceWriteGuard] = []
+_instance_list_filters: List[InstanceListFilter] = []
 
 
 def register_config_overrides_validator(validator: OverridesValidator) -> None:
@@ -156,6 +163,39 @@ def register_instance_deleted_hook(hook: InstanceDeletedHook) -> None:
     """
     if hook not in _instance_deleted_hooks:
         _instance_deleted_hooks.append(hook)
+
+
+def register_instance_write_guard(guard: InstanceWriteGuard) -> None:
+    """Check a change or a deletion of an existing instance before it happens.
+
+    ``guard(db, user_id, instance, updates)`` gets the instance and the fields
+    the caller asks to change, or None when the instance is about to be
+    deleted, and raises ``ValueError`` to refuse; the message reaches the
+    caller as it is. Unlike an instance validator it runs on every update,
+    whichever fields it names.
+    """
+    if guard not in _instance_write_guards:
+        _instance_write_guards.append(guard)
+
+
+def register_instance_list_filter(list_filter: InstanceListFilter) -> None:
+    """Leave instances out of :meth:`UserAgentInstanceService.list_instances`.
+
+    ``list_filter(user_id)`` returns SQLAlchemy criteria that the listed
+    instances must meet. Lookups by id or name are not affected.
+    """
+    if list_filter not in _instance_list_filters:
+        _instance_list_filters.append(list_filter)
+
+
+async def _run_instance_write_guards(
+    db: AsyncSession,
+    user_id: UUID,
+    instance: UserAgentInstance,
+    updates: Optional[Dict[str, Any]],
+) -> None:
+    for guard in list(_instance_write_guards):
+        await guard(db, user_id, instance, updates)
 
 
 async def _run_overrides_validators(
@@ -261,6 +301,8 @@ class UserAgentInstanceService:
         ]
         if active_only:
             filters.append(UserAgentInstance.is_active == True)  # noqa: E712
+        for list_filter in list(_instance_list_filters):
+            filters.extend(list_filter(user_id))
 
         query = (
             select(UserAgentInstance)
@@ -522,6 +564,8 @@ class UserAgentInstanceService:
         if not instance:
             return None
 
+        await _run_instance_write_guards(self.db, user_id, instance, updates)
+
         # Validate primary_model if being updated
         if "primary_model" in updates and updates["primary_model"] is not None:
             resolved = await self.llm_config_service.get_resolved_config(user_id)
@@ -674,6 +718,8 @@ class UserAgentInstanceService:
         instance = await self.get_instance(user_id, instance_id)
         if not instance:
             return False
+
+        await _run_instance_write_guards(self.db, user_id, instance, None)
 
         await self.db.delete(instance)
         await self.db.commit()

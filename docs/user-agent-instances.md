@@ -105,6 +105,12 @@ service behaves as described above.
   with `also_on={"primary_model"}` to decide.
 - `register_instance_deleted_hook(fn)`: `fn(user_id, instance_id)` runs after
   an instance is deleted.
+- `register_instance_write_guard(fn)`: `fn(db, user_id, instance, updates)` runs
+  before every update (`updates` is the fields asked for) and before a deletion
+  (`updates` is None). It raises `ValueError` to refuse; the routes answer 400.
+- `register_instance_list_filter(fn)`: `fn(user_id)` returns SQLAlchemy criteria
+  the instances of `list_instances` must meet. Lookups by id or name are not
+  affected.
 
 ## API Usage
 
