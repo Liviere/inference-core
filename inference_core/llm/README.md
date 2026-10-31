@@ -78,7 +78,7 @@ accounts/fireworks/models/kimi-k2p5:
 
 ## Mistral Provider
 
-Mistral models use `langchain-mistralai`'s `ChatMistralAI` adapter (`provider: 'mistral'`, key from `MISTRAL_API_KEY`). The native adapter handles Mistral's 9-character tool-call ids and translates `thinking` chunks into standard `reasoning` content blocks, so no local subclass is needed. The Mistral parameter policy normalizes `request_timeout` to `timeout` and drops `frequency_penalty` / `presence_penalty`.
+Mistral models use `langchain-mistralai`'s `ChatMistralAI` adapter (`provider: 'mistral'`, key from `MISTRAL_API_KEY`). The native adapter handles Mistral's 9-character tool-call ids and translates `thinking` chunks into standard `reasoning` content blocks, so no local subclass is needed for that. A model entry with a price for cached input (`extras.cache_read_tokens`) is built on `ChatMistralAICachedTokens` (`mistral_usage.py`), since the adapter drops `cached_tokens`. The Mistral parameter policy normalizes `request_timeout` to `timeout` and drops `frequency_penalty` / `presence_penalty`.
 
 Reasoning is a request payload parameter, so it is configured through `model_kwargs`:
 
