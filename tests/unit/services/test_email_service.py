@@ -353,6 +353,43 @@ class TestEmailService:
         assert sent_message["X-Custom-Header"] == "test-value"
         assert sent_message["X-Priority"] == "high"
 
+    @patch("smtplib.SMTP_SSL")
+    def test_send_email_still_returns_the_message_id(self, mock_smtp_ssl):
+        mock_smtp_ssl.return_value.__enter__.return_value = Mock()
+
+        with patch.dict("os.environ", {"TEST_PASSWORD": "secret"}):
+            message_id = EmailService(self.full_config).send_email(
+                to="to@example.com", subject="Hi", text="Hello"
+            )
+
+        assert isinstance(message_id, str)
+        assert message_id.startswith("<")
+
+    @patch("smtplib.SMTP_SSL")
+    def test_the_message_as_it_was_sent_comes_back(self, mock_smtp_ssl):
+        server = Mock()
+        mock_smtp_ssl.return_value.__enter__.return_value = server
+
+        with patch.dict("os.environ", {"TEST_PASSWORD": "secret"}):
+            message = EmailService(self.full_config).send_email_returning_message(
+                to="to@example.com", subject="Hi", text="Hello", bcc=["b@example.com"]
+            )
+
+        assert message is server.send_message.call_args.args[0]
+        assert message["Subject"] == "Hi"
+        assert message["Message-ID"]
+        assert message["Bcc"] is None
+
+    @patch("smtplib.SMTP_SSL")
+    def test_a_failed_send_returns_no_message(self, mock_smtp_ssl):
+        mock_smtp_ssl.side_effect = OSError("no route")
+
+        with patch.dict("os.environ", {"TEST_PASSWORD": "secret"}):
+            with pytest.raises(EmailSendError):
+                EmailService(self.full_config).send_email_returning_message(
+                    to="to@example.com", subject="Hi", text="Hello"
+                )
+
     def test_get_host_config_with_alias(self):
         """Test using specific host alias"""
         # Add second host
