@@ -824,6 +824,8 @@ models:
     # Routing for this model only, on top of the provider's request_options:
     # request_options:
     #   allowed_providers: ['mistral']
+    # The gateway lists it as taking images; check that of the host you pin.
+    multimodal: true
     max_tokens: 8192
     temperature: 0.7
     pricing:
@@ -837,6 +839,32 @@ models:
         # (prompt_tokens_details.cached_tokens), at about a tenth of input.
         cache_read_tokens:
           cost_per_1m: 0.0163
+      key_aliases:
+        prompt_tokens: input_tokens
+        completion_tokens: output_tokens
+      rounding:
+        decimals: 6
+      extras_policy:
+        breakdown_keys: [total_tokens, reasoning_tokens]
+
+  # A larger model through the same gateway (0.687 / 2.11 EUR on 2026-11-01).
+  cortecs-mistral-large-4-0:
+    provider: 'cortecs'
+    provider_model_id: 'mistral-large-4-0'
+    display_name: 'Mistral Large 4 (Cortecs)'
+    description: 'Mistral Large 4 through the Cortecs gateway'
+    multimodal: true
+    max_tokens: 8192
+    temperature: 0.7
+    pricing:
+      currency: USD
+      input:
+        cost_per_1m: 0.80
+      output:
+        cost_per_1m: 2.456
+      extras:
+        cache_read_tokens:
+          cost_per_1m: 0.083
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
