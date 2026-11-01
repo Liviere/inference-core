@@ -34,7 +34,7 @@ Source references:
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain.agents.middleware import (
@@ -176,6 +176,10 @@ class _MiddlewareContext:
     # Set by _persist_from_response() inside wrap_model_call
     persisted: Optional[_PersistedCall] = None
 
+    # In its place with ``persisted_per_message``: the logged calls by the id
+    # of the message each answered with.
+    persisted_by_message: Dict[str, _PersistedCall] = field(default_factory=dict)
+
 
 class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     """Middleware for tracking LLM usage and costs during agent execution.
@@ -205,10 +209,19 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             it to ``False`` on the class: the warning then names the tool,
             the exception's type and the tool call's id. The model still gets
             the text as the tool's result.
+        persisted_per_message: Whether ``after_model`` finds the call it is
+            about by the id of the model's message, instead of taking the last
+            call logged. Off by default. A consumer whose subagents run at the
+            same time on one instance sets it to ``True`` on the class: with
+            the single record, one subagent's ``after_model`` takes the other's
+            call into its state, and the other's finds none and logs its call
+            again. A call is logged in ``wrap_model_call`` either way, and an
+            ``after_model`` that finds none still logs it from the state.
     """
 
     state_schema = CostTrackingState
     log_tool_error_text: bool = True
+    persisted_per_message: bool = False
 
     def __init__(
         self,
@@ -377,7 +390,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         try:
             # ----- Fast path: data already persisted by wrap_model_call -----
-            call = self._ctx.persisted
+            call = self._take_persisted(state)
             if call is not None:
                 fragment = call.fragment or {}
                 extra_tokens = call.extra_tokens or {}
@@ -894,13 +907,23 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             details=details or None,
         )
 
-    def _apply_persist_result(self, log_id: Any, prepared: _PreparedCall) -> None:
+    def _take_persisted(self, state: CostTrackingState) -> Optional[_PersistedCall]:
+        """The logged call this ``after_model`` is about, if one was recorded."""
+        if not self.persisted_per_message:
+            return self._ctx.persisted
+        messages = state.get("messages") or []
+        message_id = getattr(messages[-1], "id", None) if messages else None
+        return self._ctx.persisted_by_message.pop(message_id, None)
+
+    def _apply_persist_result(
+        self, log_id: Any, prepared: _PreparedCall, response: ModelResponse
+    ) -> None:
         """Store persist results in middleware context after finalize.
 
         Shared epilogue for both sync and async persist paths.
         """
         if log_id and self._ctx:
-            self._ctx.persisted = _PersistedCall(
+            call = _PersistedCall(
                 log_id=str(log_id),
                 model_name=prepared.model.name,
                 provider=prepared.model.provider,
@@ -910,6 +933,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 extra_tokens=prepared.extra_tokens,
                 is_estimated=prepared.is_estimated,
             )
+            if not self.persisted_per_message:
+                self._ctx.persisted = call
+                return
+            # A message without an id would get one only in the state, where
+            # ``after_model`` looks for it.
+            message = response.result[-1]
+            if not message.id:
+                message.id = f"lc_{uuid.uuid4()}"
+            self._ctx.persisted_by_message[message.id] = call
 
     def _persist_from_response(
         self, response: ModelResponse, request: ModelRequest
@@ -945,7 +977,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 details=prepared.details,
             )
 
-            self._apply_persist_result(log_id, prepared)
+            self._apply_persist_result(log_id, prepared, response)
         except Exception as e:
             logger.warning(
                 "Failed to persist usage from wrap_model_call: %s",
@@ -985,7 +1017,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 details=prepared.details,
             )
 
-            self._apply_persist_result(log_id, prepared)
+            self._apply_persist_result(log_id, prepared, response)
         except Exception as e:
             logger.warning(
                 "Failed to persist usage from awrap_model_call: %s",

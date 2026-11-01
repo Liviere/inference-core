@@ -8,10 +8,12 @@ wrap_model_call, wrap_tool_call).
 import logging
 import time
 import uuid
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelResponse
 from langchain.messages import ToolMessage
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -30,6 +32,7 @@ from inference_core.agents.middleware.cost_tracking import (
 )
 from inference_core.llm.config import DimensionPrice, PricingConfig
 from inference_core.llm.model_identity import tag_model_identity, tag_usage_details
+from inference_core.llm.usage_logging import UsageSession
 from inference_core.services._cancel import AgentCancelled
 
 # ---------------------------------------------------------------------------
@@ -439,6 +442,114 @@ def test_a_stop_during_a_tool_ends_the_run(middleware):
             agent.invoke({"messages": [{"role": "user", "content": "Go."}]})
 
     assert len(model.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# persisted_per_message: subagents at the same time on one instance
+# ---------------------------------------------------------------------------
+
+
+class TestPersistedPerMessage:
+    @staticmethod
+    def _reply(tokens: int, message_id: Optional[str]) -> AIMessage:
+        return AIMessage(
+            content="",
+            id=message_id,
+            usage_metadata={
+                "input_tokens": tokens,
+                "output_tokens": 1,
+                "total_tokens": tokens + 1,
+            },
+        )
+
+    @pytest.fixture
+    def logged(self):
+        """The usage each row was logged with, one list entry a row."""
+        rows = []
+
+        def finalize_sync(session, **kwargs):
+            rows.append(kwargs["final_usage"]["input_tokens"])
+            return uuid.uuid4()
+
+        with patch.object(UsageSession, "finalize_sync", finalize_sync):
+            yield rows
+
+    @staticmethod
+    def _call(middleware, message: AIMessage) -> None:
+        request = MagicMock(system_message=None, messages=[])
+        middleware.wrap_model_call(
+            request, lambda _request: ModelResponse(result=[message])
+        )
+
+    def test_by_default_the_second_of_two_calls_is_logged_again(self, logged):
+        """What the option is for; the default stays as it was."""
+        middleware = CostTrackingMiddleware(pricing_config=None)
+        first, second = self._reply(10, "a"), self._reply(20, "b")
+        self._call(middleware, first)
+        self._call(middleware, second)
+
+        middleware.after_model({"messages": [first]}, MagicMock())
+        middleware.after_model({"messages": [second]}, MagicMock())
+
+        assert logged == [10, 20, 20]
+
+    def test_two_calls_at_once_are_logged_once_each(self, logged, monkeypatch):
+        monkeypatch.setattr(CostTrackingMiddleware, "persisted_per_message", True)
+        middleware = CostTrackingMiddleware(pricing_config=None)
+        first, second = self._reply(10, "a"), self._reply(20, "b")
+        self._call(middleware, first)
+        self._call(middleware, second)
+
+        one = middleware.after_model({"messages": [first]}, MagicMock())
+        other = middleware.after_model({"messages": [second]}, MagicMock())
+
+        assert logged == [10, 20]
+        # Each state gets its own call's usage.
+        assert one["accumulated_input_tokens"] == 10
+        assert other["accumulated_input_tokens"] == 20
+
+    def test_a_message_without_an_id_is_logged_once(self, logged, monkeypatch):
+        monkeypatch.setattr(CostTrackingMiddleware, "persisted_per_message", True)
+        middleware = CostTrackingMiddleware(pricing_config=None)
+        message = self._reply(10, None)
+        self._call(middleware, message)
+
+        updates = middleware.after_model({"messages": [message]}, MagicMock())
+
+        assert message.id
+        assert logged == [10]
+        assert updates["accumulated_input_tokens"] == 10
+
+    def test_two_calls_in_one_step_keep_two_rows(self, logged, monkeypatch):
+        """A retry or a fallback that calls again: each call is a row, also when
+        they answer with one id."""
+        monkeypatch.setattr(CostTrackingMiddleware, "persisted_per_message", True)
+        middleware = CostTrackingMiddleware(pricing_config=None)
+        first, second = self._reply(10, "same"), self._reply(20, "same")
+
+        def retried(request):
+            self._call(middleware, first)
+            return ModelResponse(result=[second])
+
+        middleware.wrap_model_call(MagicMock(system_message=None, messages=[]), retried)
+        middleware.after_model({"messages": [second]}, MagicMock())
+
+        assert logged == [10, 20]
+
+    def test_a_call_whose_log_was_not_written_is_logged_from_the_state(
+        self, logged, monkeypatch
+    ):
+        """A row that is not there is never charged: the fallback stays."""
+        monkeypatch.setattr(CostTrackingMiddleware, "persisted_per_message", True)
+        middleware = CostTrackingMiddleware(pricing_config=None)
+        message = self._reply(10, "a")
+
+        with patch.object(CostTrackingMiddleware, "_persist_from_response"):
+            self._call(middleware, message)
+        updates = middleware.after_model({"messages": [message]}, MagicMock())
+
+        assert logged == [10]
+        assert updates["last_request_log_id"]
 
 
 # ---------------------------------------------------------------------------
