@@ -133,6 +133,33 @@ models:
   # warning. An older inference-core passes the field on to the model and the
   # request is refused: set it only once the code that reads it runs.
 
+  # A safety model through the gateway, on one host only (amazon_ireland): a request
+  # with eu_native: true finds no endpoint, and neither does a Cortecs project that
+  # does not allow that host. It reasons first and has no way to switch that off, so
+  # a caller's max_tokens has to leave room for the reasoning as well as the answer.
+  # (0.161 / 0.626 EUR on 2026-11-01.)
+  # Source: https://api.cortecs.ai/v1/models
+  # cortecs-gpt-oss-safeguard-120b:
+  #   provider: 'cortecs'
+  #   provider_model_id: 'gpt-oss-safeguard-120b'
+  #   display_name: 'GPT OSS Safeguard 120B (Cortecs)'
+  #   description: 'Open-weight safety reasoning model through the Cortecs gateway'
+  #   max_tokens: 8192
+  #   temperature: 0
+  #   reasoning_config:
+  #     model_kwargs:
+  #       reasoning_effort: 'low'
+  #   pricing:
+  #     currency: USD
+  #     input:
+  #       cost_per_1m: 0.188
+  #     output:
+  #       cost_per_1m: 0.729
+  #
+  # Decision models on the gateway (tag Decision: clef-flash, clef, laya) take
+  # POST /v1/decisions with a state and typed questions, and answer with a
+  # probability. They refuse /chat/completions, so they are no chat model entry.
+
   # OpenAI Models
   # Source: https://developers.openai.com/api/docs/pricing
   # NOTE: GPT-6 prompts over 272K tokens are charged more (input x2, output x1.5).
