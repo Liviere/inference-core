@@ -168,3 +168,29 @@ async def test_a_subagent_compiled_with_the_option_asks_through_it():
 
     assert stopped["__interrupt__"]
     assert _Gate.asked == ["gate"]
+
+
+class _Stack:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def close(self):
+        self.calls.append("stack")
+
+
+def test_closing_connections_leaves_the_model_factory_open_and_goes_down_the_nesting():
+    """Without a config of its own a service has the process's factory, whose
+    models other runs are using."""
+    calls = []
+    nested = _service()
+    nested._nested_services = []
+    nested._exit_stack = _Stack(calls)
+    nested.model_factory = pytest.fail  # never touched
+    service = _service()
+    service._nested_services = [nested]
+    service._exit_stack = _Stack(calls)
+    service.model_factory = pytest.fail
+
+    service.close_connections()
+
+    assert calls == ["stack", "stack"]

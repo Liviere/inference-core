@@ -1192,6 +1192,16 @@ class AgentService:
             if callable(close_method):
                 close_method()
 
+    def close_connections(self) -> None:
+        """Close the database connections this service opened: its
+        checkpointer's and its memory store's. What they wrote stays.
+
+        Leaves the model factory alone, unlike :meth:`close`: without a config
+        of its own this service uses the process's factory, whose models other
+        runs are using. Safe to call again.
+        """
+        self._exit_stack.close()
+
     async def aclose(self) -> None:
         """Close resources owned by this agent run.
 
@@ -3141,6 +3151,8 @@ class DeepAgentService(AgentService):
         self._explicit_subagents = subagents or []
         self._approval_middleware = approval_middleware
         self._returned_state_keys = frozenset(returned_state_keys)
+        # Subagents with subagents of their own: each has its connections.
+        self._nested_services: list["DeepAgentService"] = []
 
         # Merge interrupt_on: YAML config base + dynamic overrides on top
         self.interrupt_on: dict[str, Any] = {}
@@ -3767,6 +3779,14 @@ class DeepAgentService(AgentService):
             add_skill_reader_tool(tools, backend=backend, sources=sources)
             spec["tools"] = tools
 
+    def close_connections(self) -> None:
+        """As :meth:`AgentService.close_connections`, with nested subagents'."""
+        try:
+            for nested in self._nested_services:
+                nested.close_connections()
+        finally:
+            super().close_connections()
+
     def _with_own_approvals(self, spec: Any) -> Any:
         """``spec`` with ``approval_middleware`` in place of its ``interrupt_on``."""
         interrupt_on = spec.get("interrupt_on") if isinstance(spec, dict) else None
@@ -3860,6 +3880,7 @@ class DeepAgentService(AgentService):
             backend=self._backend,
             _visited_agents=set(self._visited_agents),
         )
+        self._nested_services.append(nested_service)
         await nested_service.create_agent(
             system_prompt=(
                 sub_config.system_prompt
