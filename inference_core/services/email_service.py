@@ -89,6 +89,43 @@ class EmailService:
         Raises:
             EmailSendError: If email sending fails
         """
+        message = self.send_email_returning_message(
+            to=to,
+            subject=subject,
+            text=text,
+            html=html,
+            attachments=attachments,
+            host_alias=host_alias,
+            cc=cc,
+            bcc=bcc,
+            reply_to=reply_to,
+            headers=headers,
+        )
+        return message.get("Message-ID", "unknown")
+
+    def send_email_returning_message(
+        self,
+        to: Union[str, List[str]],
+        subject: str,
+        text: str,
+        html: Optional[str] = None,
+        attachments: Optional[List[Union[Path, tuple[str, bytes, str]]]] = None,
+        host_alias: Optional[str] = None,
+        cc: Optional[List[str]] = None,
+        bcc: Optional[List[str]] = None,
+        reply_to: Optional[Union[str, List[str]]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> EmailMessage:
+        """Send an email and return the message as it was sent.
+
+        Takes the same arguments as :meth:`send_email`. For a caller that
+        needs more than the Message-ID, such as one that stores a copy of the
+        message in the mailbox's sent folder (:meth:`ImapService.append_message`).
+        Bcc recipients are not in the returned message.
+
+        Raises:
+            EmailSendError: If email sending fails
+        """
         start_time = time.time()
         host_config = self.config.email.get_host_config(host_alias)
         host_alias = host_alias or self.config.email.default_host
@@ -140,7 +177,7 @@ class EmailService:
                 },
             )
 
-            return message_id
+            return message
 
         except Exception as e:
             duration = time.time() - start_time

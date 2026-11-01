@@ -1,6 +1,7 @@
 """Which client ImapConnection opens for a host configuration."""
 
 import ssl
+from datetime import datetime, timezone
 
 import pytest
 
@@ -221,3 +222,63 @@ def test_a_connection_that_did_not_sign_in_is_not_kept(monkeypatch):
 
     assert accepted.sign_ins == 1
     assert connection._connection is accepted
+
+
+class _Appending:
+    """Stands in for an open imaplib connection: records what APPEND gets."""
+
+    def __init__(self, answer=("OK", [b"done"])):
+        self.answer = answer
+        self.calls = []
+
+    def noop(self):
+        return "OK", []
+
+    def append(self, mailbox, flags, date_time, message):
+        self.calls.append((mailbox, flags, date_time, message))
+        return self.answer
+
+
+def _service_with(connection) -> imap_service.ImapService:
+    conn = _connection()
+    conn._connection = connection
+    service = imap_service.ImapService.__new__(imap_service.ImapService)
+    service._get_connection = lambda host_alias=None: conn
+    return service
+
+
+class TestAppendMessage:
+    def test_it_stores_the_message_in_the_folder(self):
+        connection = _Appending()
+        when = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+
+        stored = _service_with(connection).append_message(
+            "Sent Items", b"raw", flags=["\\Seen"], date_time=when
+        )
+
+        assert stored is True
+        mailbox, flags, date_time, message = connection.calls[0]
+        assert mailbox == '"Sent Items"'
+        assert flags == "(\\Seen)"
+        assert date_time == imap_service.imaplib.Time2Internaldate(when)
+        assert message == b"raw"
+
+    def test_without_flags_or_a_date_it_names_neither(self):
+        connection = _Appending()
+
+        _service_with(connection).append_message("Sent", b"raw")
+
+        assert connection.calls[0][1:3] == (None, None)
+
+    def test_a_folder_name_is_encoded(self):
+        connection = _Appending()
+
+        _service_with(connection).append_message("Wysłane", b"raw")
+
+        assert connection.calls[0][0] == '"Wys&AUI-ane"'
+
+    def test_a_refusal_is_an_error(self):
+        connection = _Appending(answer=("NO", [b"over quota"]))
+
+        with pytest.raises(imap_service.ImapReadError):
+            _service_with(connection).append_message("Sent", b"raw")

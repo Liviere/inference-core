@@ -1020,6 +1020,38 @@ class ImapService:
             )
         conn._current_folder = folder
 
+    def append_message(
+        self,
+        folder: str,
+        message: bytes,
+        flags: Optional[List[str]] = None,
+        date_time: Optional[datetime] = None,
+        host_alias: Optional[str] = None,
+    ) -> bool:
+        """Store a message in a folder (IMAP ``APPEND``).
+
+        Args:
+            folder: Folder to store it in; it has to exist
+            message: The message as bytes
+            flags: Flags to store it with, such as ``["\\Seen"]``
+            date_time: Its internal date (the server's current time if None)
+            host_alias: Host alias (uses default if None)
+
+        Raises:
+            ImapReadError: If the server does not store it
+        """
+        conn = self._get_connection(host_alias)
+        conn.connect()
+        typ, data = conn._connection.append(
+            _quote_mailbox(folder),
+            "(" + " ".join(flags) + ")" if flags else None,
+            imaplib.Time2Internaldate(date_time) if date_time else None,
+            message,
+        )
+        if typ != "OK":
+            raise ImapReadError(f"APPEND failed: {data}", conn.host_alias, folder)
+        return True
+
     def set_flags(
         self,
         uid: str,
