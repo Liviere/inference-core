@@ -3773,10 +3773,20 @@ class DeepAgentService(AgentService):
         if self._approval_middleware is None or not interrupt_on:
             return spec
         rest = {key: value for key, value in spec.items() if key != "interrupt_on"}
-        rest["middleware"] = [
-            *(spec.get("middleware") or []),
-            self._approval_middleware(interrupt_on),
-        ]
+        middleware = list(spec.get("middleware") or [])
+        # Ahead of cost tracking: ``after_*`` hooks run last-to-first, and an
+        # approval that stops the run before cost tracking took up the model's
+        # call would have the call logged a second time when the run resumes.
+        position = next(
+            (
+                index
+                for index, item in enumerate(middleware)
+                if isinstance(item, CostTrackingMiddleware)
+            ),
+            len(middleware),
+        )
+        middleware.insert(position, self._approval_middleware(interrupt_on))
+        rest["middleware"] = middleware
         return rest
 
     @staticmethod

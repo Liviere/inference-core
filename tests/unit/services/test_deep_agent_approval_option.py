@@ -17,7 +17,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import PrivateAttr
 
-from inference_core.agents.middleware import RETURNED_STATE_KEYS
+from inference_core.agents.middleware import RETURNED_STATE_KEYS, CostTrackingMiddleware
 from inference_core.services.agents_service import DeepAgentService
 
 
@@ -48,6 +48,22 @@ def test_the_option_takes_the_last_place_in_the_list():
     assert "interrupt_on" not in changed
     # What the caller gave is left alone.
     assert spec["middleware"] == ["m"] and "interrupt_on" in spec
+
+
+def test_cost_tracking_stays_behind_the_approvals():
+    """``after_model`` runs last-to-first: cost tracking has to take up the call
+    before an approval stops the run, or the resumed run logs it again."""
+    cost = CostTrackingMiddleware()
+    spec = {
+        "name": "a",
+        "interrupt_on": {"send": True},
+        "middleware": ["m", cost, "inner"],
+    }
+
+    changed = _service(approval_middleware=lambda rules: "gate")._with_own_approvals(spec)
+
+    assert changed["middleware"] == ["m", "gate", cost, "inner"]
+    assert spec["middleware"] == ["m", cost, "inner"]
 
 
 @pytest.mark.parametrize("spec", [{"name": "a"}, {"name": "a", "interrupt_on": {}}])
