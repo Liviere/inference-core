@@ -55,7 +55,7 @@ from .model_fallback import (
     fallback_models_from_mapping,
     normalize_fallback_model_names,
 )
-from .task_brief import BriefedSubAgentMiddleware
+from .task_brief import RETURNED_STATE_KEYS, BriefedSubAgentMiddleware
 from .tool_call_limits import (
     build_tool_call_limit_middleware,
     generate_tool_call_limits_instructions,
@@ -87,6 +87,7 @@ __all__ = [
     "normalize_fallback_model_names",
     # Subagents: a task tool that takes a label and a required brief
     "BriefedSubAgentMiddleware",
+    "RETURNED_STATE_KEYS",
     # Tool-based model switching
     "ToolBasedModelSwitchMiddleware",
     "ToolModelOverride",
