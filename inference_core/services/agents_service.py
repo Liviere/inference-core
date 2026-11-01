@@ -23,6 +23,7 @@ from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel
 
 from inference_core.agents.middleware import (
+    RETURNED_STATE_KEYS,
     BriefedSubAgentMiddleware,
     CostTrackingMiddleware,
     MemoryMiddleware,
@@ -3048,6 +3049,8 @@ class DeepAgentService(AgentService):
         memory_context_placement: str = "system_prompt",
         memory_analysis_prompt_cache: bool = True,
         innermost_middleware: Optional[list[Any]] = None,
+        approval_middleware: Optional[Callable[[dict[str, Any]], Any]] = None,
+        returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
     ):
         """Initialize the DeepAgentService.
 
@@ -3099,6 +3102,14 @@ class DeepAgentService(AgentService):
                 recalled memories (see ``AgentService``).
             memory_analysis_prompt_cache: Whether post-run memory analysis
                 keeps the prompt cache of its model (see ``AgentService``).
+            approval_middleware: Makes the middleware that asks about a
+                subagent's tool calls, from the subagent's ``interrupt_on``.
+                It takes the place deepagents gives its own
+                ``HumanInTheLoopMiddleware``, the last in the subagent's list.
+                ``None`` keeps deepagents' own.
+            returned_state_keys: The state, besides messages, a finished
+                subagent hands back to the parent (see
+                ``BriefedSubAgentMiddleware``).
         """
         super().__init__(
             agent_name,
@@ -3128,6 +3139,8 @@ class DeepAgentService(AgentService):
             innermost_middleware=innermost_middleware,
         )
         self._explicit_subagents = subagents or []
+        self._approval_middleware = approval_middleware
+        self._returned_state_keys = frozenset(returned_state_keys)
 
         # Merge interrupt_on: YAML config base + dynamic overrides on top
         self.interrupt_on: dict[str, Any] = {}
@@ -3238,8 +3251,9 @@ class DeepAgentService(AgentService):
             # title started subagents on a few words.
             sub_middleware = BriefedSubAgentMiddleware(
                 backend=self._backend,
-                subagents=subagent_specs,
+                subagents=[self._with_own_approvals(s) for s in subagent_specs],
                 announce_runs=self.stream_subgraphs,
+                returned_state_keys=self._returned_state_keys,
             )
             middleware.append(sub_middleware)
         if skills_middleware is not None:
@@ -3752,6 +3766,18 @@ class DeepAgentService(AgentService):
             tools = list(spec.get("tools") or [])
             add_skill_reader_tool(tools, backend=backend, sources=sources)
             spec["tools"] = tools
+
+    def _with_own_approvals(self, spec: Any) -> Any:
+        """``spec`` with ``approval_middleware`` in place of its ``interrupt_on``."""
+        interrupt_on = spec.get("interrupt_on") if isinstance(spec, dict) else None
+        if self._approval_middleware is None or not interrupt_on:
+            return spec
+        rest = {key: value for key, value in spec.items() if key != "interrupt_on"}
+        rest["middleware"] = [
+            *(spec.get("middleware") or []),
+            self._approval_middleware(interrupt_on),
+        ]
+        return rest
 
     @staticmethod
     def _build_declarative_subagent_spec(
