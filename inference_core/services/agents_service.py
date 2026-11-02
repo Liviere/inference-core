@@ -317,6 +317,7 @@ class AgentService:
         memory_context_placement: str = "system_prompt",
         memory_analysis_prompt_cache: bool = True,
         tool_call_limit_uncounted: Optional[Callable[[Any], bool]] = None,
+        memory_context_new_only: bool = False,
     ):
         """Initialize the AgentService.
 
@@ -420,6 +421,10 @@ class AgentService:
                 ``"message"``, in the person's message they were recalled for
                 and the same in every later request of the thread (see
                 :class:`~inference_core.agents.middleware.memory.MemoryMiddleware`).
+            memory_context_new_only: With placement ``"message"``, whether a
+                turn's memories leave out those an earlier turn of the thread
+                shows (off by default; see ``MemoryMiddleware``). The agent's
+                subagents do the same.
             memory_analysis_prompt_cache: Whether post-run memory analysis
                 keeps the prompt cache of the model it runs on (on by
                 default). ``False`` sends its calls without ``cache_control``:
@@ -503,6 +508,7 @@ class AgentService:
         self._stream_subgraphs = stream_subgraphs
         self._strip_foreign_thinking = strip_foreign_thinking
         self._memory_context_placement = memory_context_placement
+        self._memory_context_new_only = memory_context_new_only
         self._memory_analysis_prompt_cache = memory_analysis_prompt_cache
         self._tool_call_limit_uncounted = tool_call_limit_uncounted
 
@@ -825,6 +831,9 @@ class AgentService:
                         analysis_model=self._memory_analysis_model,
                         memory_context_placement=getattr(
                             self, "_memory_context_placement", "system_prompt"
+                        ),
+                        memory_context_new_only=getattr(
+                            self, "_memory_context_new_only", False
                         ),
                         analysis_prompt_cache=getattr(
                             self, "_memory_analysis_prompt_cache", True
@@ -1610,7 +1619,7 @@ class AgentService:
                 subagent's); see ``MemoryMiddleware(briefed=…)``.
 
         The middleware puts the recalled memories where this service's own
-        does (``memory_context_placement``).
+        does (``memory_context_placement``, ``memory_context_new_only``).
         """
         settings = get_settings()
         service = options.service(
@@ -1643,6 +1652,7 @@ class AgentService:
             memory_context_placement=getattr(
                 self, "_memory_context_placement", "system_prompt"
             ),
+            memory_context_new_only=getattr(self, "_memory_context_new_only", False),
             briefed=briefed,
             analysis_prompt_cache=getattr(self, "_memory_analysis_prompt_cache", True),
         )
@@ -3070,6 +3080,7 @@ class DeepAgentService(AgentService):
         memory_context_placement: str = "system_prompt",
         memory_analysis_prompt_cache: bool = True,
         innermost_middleware: Optional[list[Any]] = None,
+        memory_context_new_only: bool = False,
         tool_call_limit_uncounted: Optional[Callable[[Any], bool]] = None,
         approval_middleware: Optional[Callable[[dict[str, Any]], Any]] = None,
         returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
@@ -3122,6 +3133,8 @@ class DeepAgentService(AgentService):
                 stripped (see ``AgentService``).
             memory_context_placement: Where ``MemoryMiddleware`` puts the
                 recalled memories (see ``AgentService``).
+            memory_context_new_only: Whether a turn's memories leave out
+                those an earlier turn shows (see ``AgentService``).
             memory_analysis_prompt_cache: Whether post-run memory analysis
                 keeps the prompt cache of its model (see ``AgentService``).
             tool_call_limit_uncounted: The calls the per-tool limits do not
@@ -3159,6 +3172,7 @@ class DeepAgentService(AgentService):
             stream_subgraphs=stream_subgraphs,
             strip_foreign_thinking=strip_foreign_thinking,
             memory_context_placement=memory_context_placement,
+            memory_context_new_only=memory_context_new_only,
             memory_analysis_prompt_cache=memory_analysis_prompt_cache,
             innermost_middleware=innermost_middleware,
             tool_call_limit_uncounted=tool_call_limit_uncounted,

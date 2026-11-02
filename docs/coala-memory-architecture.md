@@ -309,6 +309,42 @@ The `MemoryMiddleware` injects CoALA-structured XML context into the system prom
   - `AgentService(memory_context_placement="message")`, or the middleware's
     own argument; a subagent's copy keeps it.
 
+### Each memory once in a thread (`memory_context_new_only`)
+
+With placement `message` every turn's text stays before its message, so a
+memory that suits the whole conversation is sent once for every turn that
+recalled it. `memory_context_new_only=True` (off by default; ignored with
+`system_prompt`) gives a turn only the memories no earlier turn still in the
+thread shows:
+
+- Which memories a turn shows is kept next to its text, in the private key
+  `memory_context_turn_entries`: `{entry_key: entry_version}` by the id of the
+  person's message. `MemoryStoreDocument.entry_key` is the entry's namespace
+  and key in the store (not its text: an entry may be shown in a wrapper of
+  the application's that differs each time); `entry_version` is when the store
+  last wrote it (`updated_at`), or a digest of its text when the store gives
+  no time. The key is written only with the option on.
+- The recall is asked with `recall_context(leave_out={entry_key:
+  entry_version})`: the same searches and limits, then the memories shown in
+  the same version are left out of the text and of `documents` (into
+  `left_out`, with `full_text` the text with them all). Nothing is recalled in
+  their place. A memory written since it was shown is another version and
+  comes back.
+- A turn with nothing new has no block. The texts of earlier turns are never
+  changed, so the conversation sent still only grows.
+- Only turns whose message is in the thread count: a memory shown only in a
+  turn a summary or a deletion took away is shown again the next time it is
+  recalled. The person's own message does not count against itself, so a turn
+  run again is shown what it recalls.
+- A summary in the same run (the recall comes before it) can take away a turn
+  this one left memories out for. The model call after it then gets this
+  turn's text with all it recalled, and the run keeps it (`after_agent`), so
+  later requests carry the same bytes. A run resumed in another process has
+  no such text: its turn keeps what it had.
+- `AgentService(memory_context_new_only=True)`, `DeepAgentService`, or the
+  middleware's own argument; a subagent's copy keeps it. The memory service
+  must take `leave_out`.
+
 ### What the search is made with (`MemoryWritePolicy.recall_query`)
 
 Recall searches by meaning with the person's last message, and the post-run

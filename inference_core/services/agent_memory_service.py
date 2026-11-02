@@ -15,6 +15,7 @@ scoped isolation (shared vs per-agent).
 Source: CoALA whitepaper – arxiv:2309.02427
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -31,6 +32,7 @@ from typing import (
     Dict,
     Iterator,
     List,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -524,6 +526,12 @@ class RecalledContext:
 
     text: str
     documents: Tuple["MemoryStoreDocument", ...] = ()
+    #: The memories recalled but left out of ``text`` and ``documents``, as
+    #: the caller asked (``recall_context(leave_out=…)``).
+    left_out: Tuple["MemoryStoreDocument", ...] = ()
+    #: When some were left out: the text with all the memories recalled, as
+    #: it would have been without ``leave_out``.
+    full_text: str = ""
 
 
 # The types put in front of a model at the start of a run. Skills and
@@ -801,6 +809,31 @@ class MemoryStoreDocument:
         if self.updated_at:
             return self.updated_at.isoformat()
         return None
+
+    @property
+    def entry_key(self) -> str:
+        """Which entry of the store this is: its namespace and key.
+
+        The same entry in another space is another item of the store, with
+        another key here.
+        """
+        return "/".join((*self.namespace, str(self.id)))
+
+    @property
+    def entry_version(self) -> str:
+        """Which version of the entry this is: when the store last wrote it.
+
+        The store sets ``updated_at`` on every write (new text, a move, new
+        metadata) and never on a read. When it gives none, a digest of what
+        the entry is shown with stands in.
+        """
+        if self.updated_at is not None:
+            return self.updated_at.isoformat()
+        saved = self.saved_at.isoformat() if self.saved_at else ""
+        shown = "\0".join(
+            (self.content or "", self.memory_type or "", self.topic or "", saved)
+        )
+        return "sha256:" + hashlib.sha256(shown.encode("utf-8")).hexdigest()[:32]
 
 
 @dataclass
@@ -1915,6 +1948,7 @@ class AgentMemoryStoreService:
         include_types: Optional[List[str]] = None,
         max_memories: int = 30,
         include_categories: Optional[List[str]] = None,
+        leave_out: Optional[Mapping[str, str]] = None,
     ) -> "RecalledContext":
         """The memories to put in front of a model, and the text that does it.
 
@@ -1929,6 +1963,13 @@ class AgentMemoryStoreService:
             include_types: Memory types to include in context.
             max_memories: Maximum total memories to retrieve for bucketing.
             include_categories: CoALA categories to include. Defaults to all.
+            leave_out: Memories the model has already been shown, as
+                ``{entry_key: entry_version}`` (see ``MemoryStoreDocument``).
+                A memory recalled in the same version is left out of the text
+                and of ``documents`` (it is in ``left_out``, and ``full_text``
+                is the text with it); the others are recalled as without it,
+                none in their place. A memory written since (another version)
+                is recalled again.
         """
         user_id = str(user_id)
         if include_categories:
@@ -1996,12 +2037,49 @@ class AgentMemoryStoreService:
 
         if not category_memories:
             return RecalledContext(text="")
+        if leave_out:
+            return self._recalled_without(category_memories, query, leave_out)
         documents = tuple(
             doc for cat in MemoryCategory for doc in category_memories.get(cat.value, [])
         )
         return RecalledContext(
             text=self._format_coala_context(category_memories, query),
             documents=documents,
+        )
+
+    def _recalled_without(
+        self,
+        category_memories: Dict[str, List[MemoryStoreDocument]],
+        query: Optional[str],
+        leave_out: Mapping[str, str],
+    ) -> "RecalledContext":
+        """The recalled memories without those the model has been shown in
+        the same version (``recall_context(leave_out=…)``)."""
+        kept: Dict[str, List[MemoryStoreDocument]] = {}
+        left_out: List[MemoryStoreDocument] = []
+        for cat in MemoryCategory:
+            for doc in category_memories.get(cat.value, []):
+                if leave_out.get(doc.entry_key) == doc.entry_version:
+                    left_out.append(doc)
+                else:
+                    kept.setdefault(cat.value, []).append(doc)
+        if not left_out:
+            documents = tuple(
+                doc for cat in MemoryCategory for doc in kept.get(cat.value, [])
+            )
+            return RecalledContext(
+                text=self._format_coala_context(category_memories, query),
+                documents=documents,
+            )
+        full_text = self._format_coala_context(category_memories, query)
+        documents = tuple(
+            doc for cat in MemoryCategory for doc in kept.get(cat.value, [])
+        )
+        return RecalledContext(
+            text=self._format_coala_context(kept, query) if kept else "",
+            documents=documents,
+            left_out=tuple(left_out),
+            full_text=full_text,
         )
 
     async def format_context_for_prompt(

@@ -25,11 +25,14 @@ def _forwarded(**kwargs):
 
 def test_the_history_options_reach_agent_service():
     captured = _forwarded(
-        strip_foreign_thinking=True, memory_context_placement="message"
+        strip_foreign_thinking=True,
+        memory_context_placement="message",
+        memory_context_new_only=True,
     )
 
     assert captured["strip_foreign_thinking"] is True
     assert captured["memory_context_placement"] == "message"
+    assert captured["memory_context_new_only"] is True
 
 
 def test_the_history_options_keep_agent_service_defaults():
@@ -37,3 +40,4 @@ def test_the_history_options_keep_agent_service_defaults():
 
     assert captured["strip_foreign_thinking"] is False
     assert captured["memory_context_placement"] == "system_prompt"
+    assert captured["memory_context_new_only"] is False

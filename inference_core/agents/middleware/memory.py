@@ -104,6 +104,11 @@ MEMORY_CONTEXT_PLACEMENTS = (MEMORY_CONTEXT_IN_SYSTEM_PROMPT, MEMORY_CONTEXT_IN_
 #: person's message they were recalled for.
 MEMORY_CONTEXT_TURNS = "memory_context_turns"
 
+#: The state key that keeps, with ``memory_context_new_only``, which memories
+#: each turn's text shows: ``{entry_key: entry_version}`` by the id of the
+#: person's message (see ``MemoryStoreDocument.entry_key``).
+MEMORY_CONTEXT_TURN_ENTRIES = "memory_context_turn_entries"
+
 #: What a model is told about the memories put in the person's message.
 MEMORY_CONTEXT_NOTE = (
     "The platform added the notes below to this message: they were saved "
@@ -163,6 +168,8 @@ class MemoryState(AgentState):
         session_analysis_latency_ms: Time taken for post-run analysis in milliseconds
         memory_context_turns: Each turn's recalled memories, with
             ``memory_context_placement="message"`` only (see the field).
+        memory_context_turn_entries: Which memories each turn's text shows,
+            with ``memory_context_new_only`` only (see the field).
     """
 
     memory_context: NotRequired[str]
@@ -179,6 +186,14 @@ class MemoryState(AgentState):
     #: encrypting one encrypts it) and never inline in the checkpoint's JSON.
     #: Private: not part of the agent's input or output.
     memory_context_turns: NotRequired[Annotated[Dict[str, str], PrivateStateAttr]]
+    #: With ``memory_context_new_only``: the memories each turn's text in
+    #: ``memory_context_turns`` shows, as ``{entry_key: entry_version}``, by
+    #: the id of the person's message. A later turn leaves them out while
+    #: that message is in the thread. A dict, stored through the serde, and
+    #: private, as ``memory_context_turns``.
+    memory_context_turn_entries: NotRequired[
+        Annotated[Dict[str, Dict[str, str]], PrivateStateAttr]
+    ]
 
 
 @dataclass
@@ -188,6 +203,15 @@ class _MemoryMiddlewareContext:
     recall_start_time: Optional[float] = None
     recalled_memories: List[Any] = field(default_factory=list)
     context_injected: bool = False
+    # With ``memory_context_new_only``: the id of this run's person's
+    # message, the text with all that was recalled for it and those
+    # memories, and the earlier turns whose memories were left out of it.
+    turn_id: Optional[str] = None
+    full_text: str = ""
+    full_entries: Dict[str, str] = field(default_factory=dict)
+    relied_on: frozenset = frozenset()
+    # The full text was put in a request: a turn it relied on was gone.
+    widened: bool = False
 
 
 class MemoryMiddleware(AgentMiddleware[MemoryState]):
@@ -228,6 +252,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         memory_context_placement: str = MEMORY_CONTEXT_IN_SYSTEM_PROMPT,
         briefed: bool = False,
         analysis_prompt_cache: bool = True,
+        memory_context_new_only: bool = False,
     ):
         """Initialize the memory middleware.
 
@@ -302,6 +327,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 analysis's prompt is different after every run, so a cache
                 written for it is never read, and a write costs more than
                 plain input (1.25x for 5 minutes, 2x for an hour).
+            memory_context_new_only: With placement ``message`` only (ignored
+                with ``system_prompt``, where no earlier turn's memories are in
+                the request). ``False`` (the default): each turn's text has
+                all the memories recalled for it. ``True``: only those no
+                earlier turn still in the thread shows in the same version
+                (``memory_context_turn_entries``), so the request carries each
+                memory once; a turn with none new has no memories in its
+                message. The texts of earlier turns are not changed. A memory
+                written since it was shown, and one shown only in a turn a
+                summary or a deletion took away, is shown again. When a
+                summary in the same run takes away a turn this one relied on,
+                this turn is given the text with all it recalled, and keeps
+                it (a run resumed in another process cannot: its turn keeps
+                its text, and what it left out comes back at the next recall).
+                The memory service must take ``recall_context(leave_out=…)``.
         """
         if memory_context_placement not in MEMORY_CONTEXT_PLACEMENTS:
             raise ValueError(
@@ -309,6 +349,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 f"not {memory_context_placement!r}"
             )
         self.memory_context_placement = memory_context_placement
+        self.memory_context_new_only = memory_context_new_only
         self.briefed = briefed
         self.memory_service = memory_service
         self.user_id = user_id
@@ -368,11 +409,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             memory_context_placement=self.memory_context_placement,
             briefed=True,
             analysis_prompt_cache=self.analysis_prompt_cache,
+            memory_context_new_only=self.memory_context_new_only,
         )
 
     @property
     def _in_message(self) -> bool:
         return self.memory_context_placement == MEMORY_CONTEXT_IN_MESSAGE
+
+    @property
+    def _new_only(self) -> bool:
+        return self._in_message and self.memory_context_new_only
 
     # -------------------------------------------------------------------------
     # Deferred user_id resolution
@@ -471,7 +517,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 user_input, "brief" if self.briefed else "recall", state
             )
             # Recall memories using asyncio.run() since hooks are synchronous
-            memory_context, metrics = self._recall_and_format(query, resolved_uid)
+            shown_in: Dict[str, frozenset] = {}
+            if self._new_only:
+                # What earlier turns still in the thread show, to leave out.
+                shown_before, shown_in = self._shown_before(state)
+                memory_context, metrics = self._recall_and_format(
+                    query, resolved_uid, leave_out=shown_before
+                )
+            else:
+                memory_context, metrics = self._recall_and_format(query, resolved_uid)
+            shown = self._remember_turn(state, metrics.get("recalled"), shown_in)
 
             if not memory_context:
                 logger.debug("No relevant memories found for user=%s", resolved_uid)
@@ -494,6 +549,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 resolved_uid,
                 metrics.get("latency_ms", 0),
             )
+            if self._new_only:
+                logger.info(
+                    "Memory context of the turn: %d shown, %d left out as shown "
+                    "in earlier turns",
+                    metrics.get("count", 0),
+                    metrics.get("left_out", 0),
+                )
 
             # NOTE: memory_context is deliberately NOT returned into graph
             # state. As a bare `str` channel it would be inlined verbatim into
@@ -513,6 +575,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                     "memory_types_recalled": metrics.get("types", []),
                     "memory_categories_recalled": metrics.get("categories", []),
                 },
+                shown=shown,
             )
 
         except Exception as e:
@@ -613,18 +676,46 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 )
                 request = injected
         if self._in_message:
-            request = self._with_turn_memories(request)
+            request = self._with_turn_memories(request, self._widened_turn(request))
         return request
 
+    def _widened_turn(self, request: ModelRequest) -> Optional[tuple[str, str]]:
+        """With ``memory_context_new_only``: this run's turn and the text with
+        all it recalled, when a turn whose memories it left out is no longer
+        in ``request`` (a summary took it away during the run)."""
+        ctx = self._ctx
+        if not self._new_only or ctx is None or not ctx.turn_id or not ctx.full_text:
+            return None
+        if not ctx.widened:
+            if not ctx.relied_on:
+                return None
+            ids = {
+                getattr(m, "id", None) for m in getattr(request, "messages", None) or []
+            }
+            if ctx.turn_id not in ids or ctx.relied_on <= ids:
+                return None
+            ctx.widened = True
+            logger.info(
+                "Memory context of the turn: an earlier turn it relied on is gone, "
+                "%d memories shown in full",
+                len(ctx.full_entries),
+            )
+        return ctx.turn_id, ctx.full_text
+
     @staticmethod
-    def _with_turn_memories(request: ModelRequest) -> ModelRequest:
+    def _with_turn_memories(
+        request: ModelRequest, widened: Optional[tuple[str, str]] = None
+    ) -> ModelRequest:
         """``request`` with each turn's recalled memories (state key
         ``memory_context_turns``) as the first block of the person's message
         they were recalled for. The same text gives the same bytes in every
         request, so the conversation sent only ever grows. The thread's
-        messages are not changed."""
+        messages are not changed. ``widened``: a turn's id and the text to
+        put there in place of the one kept."""
         state = getattr(request, "state", None) or {}
         turns = state.get(MEMORY_CONTEXT_TURNS) if isinstance(state, dict) else None
+        if widened is not None:
+            turns = {**(turns or {}), widened[0]: widened[1]}
         if not turns:
             return request
         messages = list(request.messages)
@@ -708,13 +799,18 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             return None
 
     def _with_turns_update(
-        self, state: MemoryState, memory_context: str, update: Dict[str, Any]
+        self,
+        state: MemoryState,
+        memory_context: str,
+        update: Dict[str, Any],
+        shown: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """``update`` with the turns' memories after this recall, for
         placement ``message``: this turn's under the id of the person's
         message (or none when nothing was recalled), and only the turns whose
         message is still in the thread (a summary or a deletion takes the
-        others away)."""
+        others away). With ``memory_context_new_only`` also which memories
+        each turn shows: this turn's ``shown``."""
         if not self._in_message:
             return update
         messages = state.get("messages") or []
@@ -730,7 +826,104 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 turns.pop(human_id, None)
         if turns != before:
             update = {**update, MEMORY_CONTEXT_TURNS: turns}
+        if not self._new_only:
+            return update
+        before_entries = state.get(MEMORY_CONTEXT_TURN_ENTRIES) or {}
+        entries = {
+            key: dict(value)
+            for key, value in before_entries.items()
+            if key in present and isinstance(value, dict)
+        }
+        if human_id:
+            if memory_context and shown:
+                entries[human_id] = dict(shown)
+            else:
+                entries.pop(human_id, None)
+        if entries != before_entries:
+            update = {**update, MEMORY_CONTEXT_TURN_ENTRIES: entries}
         return update
+
+    @staticmethod
+    def _shown_before(
+        state: MemoryState,
+    ) -> tuple[Dict[str, str], Dict[str, frozenset]]:
+        """What the turns before this one, still in the thread, show:
+        ``{entry_key: entry_version}``, and by which turns each was shown.
+        This turn's own message is not counted: a turn run again (the same
+        message) is shown what it was recalled now."""
+        messages = state.get("messages") or []
+        present = {getattr(m, "id", None) for m in messages} - {None}
+        human_id = getattr(_last_human_message(messages), "id", None)
+        entries = state.get(MEMORY_CONTEXT_TURN_ENTRIES) or {}
+        shown: Dict[str, str] = {}
+        shown_in: Dict[str, set] = {}
+        for message in messages:
+            turn = getattr(message, "id", None)
+            if turn is None or turn == human_id or turn not in present:
+                continue
+            value = entries.get(turn)
+            if not isinstance(value, dict):
+                continue
+            for key, version in value.items():
+                shown[key] = version
+                shown_in.setdefault(f"{key}\0{version}", set()).add(turn)
+        return shown, {k: frozenset(v) for k, v in shown_in.items()}
+
+    def _remember_turn(
+        self,
+        state: MemoryState,
+        recalled: Optional[RecalledContext],
+        shown_in: Dict[str, frozenset],
+    ) -> Optional[Dict[str, str]]:
+        """With ``memory_context_new_only``: the memories this turn's text
+        shows (``None`` when the service named none), and in the run's
+        context what was left out and on which turns that relied."""
+        if not self._new_only or recalled is None or self._ctx is None:
+            return None
+        documents = list(getattr(recalled, "documents", ()) or ())
+        left_out = list(getattr(recalled, "left_out", ()) or ())
+        human_id = getattr(_last_human_message(state.get("messages") or []), "id", None)
+        relied_on: set = set()
+        for doc in left_out:
+            relied_on |= shown_in.get(
+                f"{doc.entry_key}\0{doc.entry_version}", frozenset()
+            )
+        self._ctx.turn_id = human_id
+        self._ctx.relied_on = frozenset(relied_on)
+        self._ctx.full_text = getattr(recalled, "full_text", "") or ""
+        self._ctx.full_entries = {
+            doc.entry_key: doc.entry_version for doc in [*documents, *left_out]
+        }
+        if not documents:
+            return None
+        return {doc.entry_key: doc.entry_version for doc in documents}
+
+    def _widened_update(self, state: MemoryState) -> Optional[Dict[str, Any]]:
+        """After a run whose turn was shown the text with all it recalled
+        (``_widened_turn``): that text and those memories kept as the turn's,
+        so the requests of later runs carry the same bytes."""
+        ctx = self._ctx
+        if not self._new_only or ctx is None or not ctx.widened or not ctx.turn_id:
+            return None
+        present = {getattr(m, "id", None) for m in state.get("messages") or []}
+        if ctx.turn_id not in present:
+            return None
+        # Those of the messages the summary took away go with them.
+        turns = {
+            key: text
+            for key, text in (state.get(MEMORY_CONTEXT_TURNS) or {}).items()
+            if key in present
+        }
+        entries = {
+            key: value
+            for key, value in (state.get(MEMORY_CONTEXT_TURN_ENTRIES) or {}).items()
+            if key in present
+        }
+        turns[ctx.turn_id] = ctx.full_text
+        entries[ctx.turn_id] = dict(ctx.full_entries)
+        ctx.widened = False
+        ctx.relied_on = frozenset()
+        return {MEMORY_CONTEXT_TURNS: turns, MEMORY_CONTEXT_TURN_ENTRIES: entries}
 
     def _extract_user_input(self, state: MemoryState) -> Optional[str]:
         """Extract the latest user input from state messages.
@@ -769,6 +962,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self,
         user_input: Optional[str],
         user_id: Optional[str] = None,
+        leave_out: Optional[Dict[str, str]] = None,
     ) -> tuple[str, Dict[str, Any]]:
         """Recall memories across CoALA categories and format as structured context.
 
@@ -779,12 +973,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 recalls the latest memories of each type, with no search by
                 meaning.
             user_id: Resolved user_id (falls back to self.user_id).
+            leave_out: The memories to leave out
+                (``recall_context(leave_out=…)``); passed only when given.
 
         Returns:
             Tuple of (formatted_context, metrics_dict)
         """
         uid = user_id or self.user_id
         start_time = time.monotonic()
+        extra = {} if leave_out is None else {"leave_out": leave_out}
 
         async def _async_recall() -> RecalledContext:
             """Async function to perform CoALA multi-category recall."""
@@ -793,6 +990,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 query=user_input,
                 include_types=self.include_memory_types,
                 include_categories=self.include_categories,
+                **extra,
             )
 
         try:
@@ -858,6 +1056,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             "latency_ms": latency_ms,
             "types": types,
             "categories": categories,
+            "left_out": len(getattr(recalled, "left_out", ()) or ()),
+            "recalled": recalled,
         }
         return recalled.text, metrics
 
@@ -1481,6 +1681,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     def after_agent(
         self, state: MemoryState, runtime: Runtime
     ) -> Dict[str, Any] | None:
+        """The turn's widened memories kept (``memory_context_new_only``), and
+        the post-run analysis (``_after_run_analysis``)."""
+        return _merged(self._widened_update(state), self._after_run_analysis(state))
+
+    def _after_run_analysis(self, state: MemoryState) -> Dict[str, Any] | None:
         """Best-effort post-session analysis: persist what the agent may have missed.
 
         WHY tool-call approach: the model calls save_memory_store as a first-class
@@ -1559,7 +1764,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     async def aafter_agent(
         self, state: MemoryState, runtime: Runtime
     ) -> Dict[str, Any] | None:
-        """Async version of after_agent for Agent Server and astream contexts.
+        """Async version of after_agent for Agent Server and astream contexts."""
+        widened = self._widened_update(state)
+        return _merged(widened, await self._aafter_run_analysis(state))
+
+    async def _aafter_run_analysis(self, state: MemoryState) -> Dict[str, Any] | None:
+        """Async version of ``_after_run_analysis``.
 
         WHY separate async path: the Agent Server runs after_agent inside an existing
         asyncio event loop.  run_async_safely would spin up a new thread+loop, causing
@@ -1673,6 +1883,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 # ============================================================================
 
 
+def _merged(
+    first: Optional[Dict[str, Any]], second: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Two state updates as one; ``None`` when neither has anything."""
+    if not first:
+        return second
+    if not second:
+        return first
+    return {**first, **second}
+
+
 def _last_human_message(messages: Sequence[Any]) -> Optional[Any]:
     """The last message of the person, or ``None``."""
     for message in reversed(list(messages)):
@@ -1711,6 +1932,7 @@ def create_memory_middleware(
     session_id: Optional[str] = None,
     request_id: Optional[str] = None,
     memory_context_placement: str = MEMORY_CONTEXT_IN_SYSTEM_PROMPT,
+    memory_context_new_only: bool = False,
 ) -> MemoryMiddleware:
     """
     Factory function to create MemoryMiddleware instance (CoALA-aware).
@@ -1732,6 +1954,9 @@ def create_memory_middleware(
         request_id: Correlation ID for the memory usage log.
         memory_context_placement: ``"system_prompt"`` (default) or
             ``"message"``; see :class:`MemoryMiddleware`.
+        memory_context_new_only: With placement ``"message"``, each turn
+            shows only the memories no earlier turn shows; see
+            :class:`MemoryMiddleware`.
 
     Returns:
         Configured MemoryMiddleware instance
@@ -1749,6 +1974,7 @@ def create_memory_middleware(
         session_id=session_id,
         request_id=request_id,
         memory_context_placement=memory_context_placement,
+        memory_context_new_only=memory_context_new_only,
     )
 
 
@@ -1757,6 +1983,7 @@ __all__ = [
     "MEMORY_CONTEXT_IN_SYSTEM_PROMPT",
     "MEMORY_CONTEXT_NOTE",
     "MEMORY_CONTEXT_TURNS",
+    "MEMORY_CONTEXT_TURN_ENTRIES",
     "MemoryState",
     "MemoryMiddleware",
     "create_memory_middleware",
