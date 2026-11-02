@@ -79,11 +79,11 @@ pytest-cov = "^7.0.0"
 debugpy = "^1.8.19"
 locust = "^2.43.0"
 ipykernel = "^7.1.0"
-langgraph-cli = {extras = ["inmem"], version = "^0.4.18"}
-langgraph-api = "^0.10.0"
-langgraph-runtime-inmem = "^0.30.0"
+langgraph-cli = {extras = ["inmem"], version = "^0.4.40"}
+langgraph-api = "^0.17.0"
+langgraph-runtime-inmem = "^0.37.0"
 jsonschema-rs = "^0.44.0"
-grpcio-tools = "1.80.0"
+grpcio-tools = "1.81.1"
 sse-starlette = "^3.3.0"
 
 # Optional CPU ML PII backend (GLiNER). NOT installed in the default image —
