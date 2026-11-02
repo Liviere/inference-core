@@ -12,14 +12,21 @@ Usage::
 
     instructions = generate_tool_call_limits_instructions(agent_config.tool_call_limits)
     # Returns a system prompt block (str or None).
+
+A caller may pass ``uncounted``, a predicate on a tool's result: a per-tool
+limit then gives back the calls whose result it accepts (a call that ran out
+of time, say), so they do not use up the tool's limit. The global limit still
+counts every call. Without it, every call counts, as in LangChain.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain.agents.middleware.types import hook_config
+from langchain_core.messages import AIMessage, ToolMessage
 
 if TYPE_CHECKING:
     from inference_core.llm.config import ToolCallLimitsConfig
@@ -111,14 +118,112 @@ def generate_tool_call_limits_instructions(
     return "\n".join(parts).rstrip()
 
 
+UncountedResult = Callable[[ToolMessage], bool]
+
+
+def _last_batch_results(messages: list[Any]) -> list[ToolMessage]:
+    """The results of the tool calls of the model's message before the last.
+
+    They are the ``ToolMessage``s between the last two ``AIMessage``s: each
+    model call's ``after_model`` sees one batch of results, once.
+    """
+    seen_last_ai = False
+    results: list[ToolMessage] = []
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            if seen_last_ai:
+                break
+            seen_last_ai = True
+            continue
+        if seen_last_ai and isinstance(message, ToolMessage):
+            results.append(message)
+    return results
+
+
+class UncountingToolCallLimitMiddleware(ToolCallLimitMiddleware):
+    """A per-tool ``ToolCallLimitMiddleware`` that gives some calls back.
+
+    LangChain counts a call when the model asks for it, before it runs. This
+    one, before it counts the model's new calls, gives back the calls of the
+    previous batch whose result ``uncounted`` accepts, to both counts (never
+    below zero). It keeps nothing of its own: parallel calls of one batch
+    write no state when they end.
+    """
+
+    def __init__(self, *, uncounted: UncountedResult, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.uncounted = uncounted
+
+    @property
+    def name(self) -> str:
+        # The same name as LangChain's: one limit of a tool, whichever counts.
+        if self.tool_name:
+            return f"{ToolCallLimitMiddleware.__name__}[{self.tool_name}]"
+        return ToolCallLimitMiddleware.__name__
+
+    def _given_back(self, messages: list[Any]) -> int:
+        given_back = 0
+        for result in _last_batch_results(messages):
+            if self.tool_name is not None and result.name != self.tool_name:
+                continue
+            try:
+                if self.uncounted(result):
+                    given_back += 1
+            except Exception:
+                logger.warning(
+                    "ToolCallLimit: the uncounted check failed for tool %s",
+                    result.name,
+                    exc_info=True,
+                )
+        return given_back
+
+    @hook_config(can_jump_to=["end"])
+    def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        given_back = self._given_back(state.get("messages", []))
+        if not given_back:
+            return super().after_model(state, runtime)
+
+        count_key = self.tool_name or "__all__"
+        thread_counts = dict(state.get("thread_tool_call_count", {}))
+        run_counts = dict(state.get("run_tool_call_count", {}))
+        thread_counts[count_key] = max(
+            0, thread_counts.get(count_key, 0) - given_back
+        )
+        run_counts[count_key] = max(0, run_counts.get(count_key, 0) - given_back)
+        logger.debug(
+            "ToolCallLimit: tool=%s gave back %d call(s)", self.tool_name, given_back
+        )
+
+        update = super().after_model(
+            {
+                **state,
+                "thread_tool_call_count": thread_counts,
+                "run_tool_call_count": run_counts,
+            },
+            runtime,
+        )
+        if update is None:
+            return {
+                "thread_tool_call_count": thread_counts,
+                "run_tool_call_count": run_counts,
+            }
+        return update
+
+
 def build_tool_call_limit_middleware(
     config: "ToolCallLimitsConfig | None",
+    *,
+    uncounted: UncountedResult | None = None,
 ) -> list[ToolCallLimitMiddleware]:
     """Build ``ToolCallLimitMiddleware`` instances from a config block.
 
     Args:
         config: Parsed ``ToolCallLimitsConfig`` from the agent's YAML.
             ``None`` means no limits — returns an empty list.
+        uncounted: Optional predicate on a tool's result. When given, a
+            per-tool limit does not count the calls whose result it accepts
+            (``UncountingToolCallLimitMiddleware``); the global limit counts
+            every call either way. ``None`` (the default) counts every call.
 
     Returns:
         Ordered list of middleware: global limiter first, then per-tool.
@@ -148,13 +253,16 @@ def build_tool_call_limit_middleware(
 
     # --- Per-tool limits ---
     for entry in config.per_tool:
+        limit_params = {
+            "tool_name": entry.tool_name,
+            "run_limit": entry.run_limit,
+            "thread_limit": entry.thread_limit,
+            "exit_behavior": entry.exit_behavior,
+        }
         instances.append(
-            ToolCallLimitMiddleware(
-                tool_name=entry.tool_name,
-                run_limit=entry.run_limit,
-                thread_limit=entry.thread_limit,
-                exit_behavior=entry.exit_behavior,
-            )
+            UncountingToolCallLimitMiddleware(uncounted=uncounted, **limit_params)
+            if uncounted is not None
+            else ToolCallLimitMiddleware(**limit_params)
         )
         logger.debug(
             "ToolCallLimit: tool=%s run_limit=%s thread_limit=%s exit=%s",

@@ -316,6 +316,7 @@ class AgentService:
         strip_foreign_thinking: bool = False,
         memory_context_placement: str = "system_prompt",
         memory_analysis_prompt_cache: bool = True,
+        tool_call_limit_uncounted: Optional[Callable[[Any], bool]] = None,
     ):
         """Initialize the AgentService.
 
@@ -408,6 +409,12 @@ class AgentService:
                 cost tracking), so it sees each request as it goes to the
                 model. Not handed to subagents, which have their own calls.
                 Empty by default.
+            tool_call_limit_uncounted: A predicate on a tool's result
+                (``ToolMessage``). When given, the per-tool limits of
+                ``tool_call_limits`` do not count the calls whose result it
+                accepts (one that ran out of time, say), for the agent and
+                its subagents of the configuration; the global limit counts
+                every call. ``None`` (the default) counts every call.
             memory_context_placement: Where ``MemoryMiddleware`` puts the
                 recalled memories: ``"system_prompt"`` (the default) or
                 ``"message"``, in the person's message they were recalled for
@@ -497,6 +504,7 @@ class AgentService:
         self._strip_foreign_thinking = strip_foreign_thinking
         self._memory_context_placement = memory_context_placement
         self._memory_analysis_prompt_cache = memory_analysis_prompt_cache
+        self._tool_call_limit_uncounted = tool_call_limit_uncounted
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -1099,7 +1107,10 @@ class AgentService:
             build_tool_call_limit_middleware,
         )
 
-        limiters = build_tool_call_limit_middleware(tool_call_limits)
+        limiters = build_tool_call_limit_middleware(
+            tool_call_limits,
+            uncounted=getattr(self, "_tool_call_limit_uncounted", None),
+        )
         if limiters:
             # Insert before CostTracking (which must stay last).
             ct_index = next(
@@ -3059,6 +3070,7 @@ class DeepAgentService(AgentService):
         memory_context_placement: str = "system_prompt",
         memory_analysis_prompt_cache: bool = True,
         innermost_middleware: Optional[list[Any]] = None,
+        tool_call_limit_uncounted: Optional[Callable[[Any], bool]] = None,
         approval_middleware: Optional[Callable[[dict[str, Any]], Any]] = None,
         returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
     ):
@@ -3112,6 +3124,8 @@ class DeepAgentService(AgentService):
                 recalled memories (see ``AgentService``).
             memory_analysis_prompt_cache: Whether post-run memory analysis
                 keeps the prompt cache of its model (see ``AgentService``).
+            tool_call_limit_uncounted: The calls the per-tool limits do not
+                count (see ``AgentService``).
             approval_middleware: Makes the middleware that asks about a
                 subagent's tool calls, from the subagent's ``interrupt_on``.
                 It takes the place deepagents gives its own
@@ -3147,6 +3161,7 @@ class DeepAgentService(AgentService):
             memory_context_placement=memory_context_placement,
             memory_analysis_prompt_cache=memory_analysis_prompt_cache,
             innermost_middleware=innermost_middleware,
+            tool_call_limit_uncounted=tool_call_limit_uncounted,
         )
         self._explicit_subagents = subagents or []
         self._approval_middleware = approval_middleware
@@ -3672,7 +3687,12 @@ class DeepAgentService(AgentService):
                 build_tool_call_limit_middleware,
             )
 
-            middleware.extend(build_tool_call_limit_middleware(sub_tool_call_limits))
+            middleware.extend(
+                build_tool_call_limit_middleware(
+                    sub_tool_call_limits,
+                    uncounted=getattr(self, "_tool_call_limit_uncounted", None),
+                )
+            )
 
         _sub_gen = getattr(sub_config, "generation_params", None)
         fallback_middleware = build_model_fallback_middleware(
@@ -3879,6 +3899,9 @@ class DeepAgentService(AgentService):
             config=self.config,
             backend=self._backend,
             _visited_agents=set(self._visited_agents),
+            tool_call_limit_uncounted=getattr(
+                self, "_tool_call_limit_uncounted", None
+            ),
         )
         self._nested_services.append(nested_service)
         await nested_service.create_agent(

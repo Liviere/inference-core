@@ -970,6 +970,26 @@ agents:
     # Optional: Allowlist of tool names (if omitted, all tools from providers are allowed)
     allowed_tools: ['create_todo_task', 'search_knowledge_base']
 
+    # --- Tool-call limits (optional) ---
+    # How many tool calls the agent may make. A run limit resets with every
+    # invocation, a thread limit holds for the whole conversation. The global
+    # limit counts every call; per_tool entries add a limit of one tool.
+    # exit_behavior: 'continue' (the model gets an error for the blocked call
+    # and goes on) or 'error' (raise). A per-tool limit counts a call when the
+    # model asks for it, before it runs; an application can leave some calls
+    # uncounted (AgentService's tool_call_limit_uncounted, e.g. a call that
+    # ran out of time). The global limit counts them all the same.
+    # tool_call_limits:
+    #   global_limit:
+    #     run_limit: 40
+    #     thread_limit: 500
+    #     exit_behavior: continue
+    #   per_tool:
+    #     - tool_name: search_knowledge_base
+    #       run_limit: 8
+    #       thread_limit: 60
+    #       exit_behavior: continue
+
     # --- Memory surface configuration ---
     # Controls which memory tools the model can call, whether memory tool
     # instructions are appended to the system prompt, and whether recalled
