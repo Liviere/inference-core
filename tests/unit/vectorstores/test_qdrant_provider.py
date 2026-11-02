@@ -99,3 +99,75 @@ async def test_close_is_safe_when_clients_were_never_created():
 
     assert provider._async_client is None
     assert provider._sync_client is None
+
+
+async def _local_provider(monkeypatch):
+    """A provider on Qdrant's local mode, with a fixed two-number embedding."""
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.http import models
+
+    provider = QdrantProvider({"dimension": 2, "distance": "cosine"})
+    client = AsyncQdrantClient(":memory:")
+    await client.create_collection(
+        "docs",
+        vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE),
+    )
+    monkeypatch.setattr(provider, "_get_async_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(
+        provider, "_embed_texts", lambda texts: [[1.0, float(len(t))] for t in texts]
+    )
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_a_prebuilt_filter_is_used_as_it_is(monkeypatch):
+    """``should`` and two conditions on one key, which a dict cannot say."""
+    from qdrant_client.http import models
+
+    provider = await _local_provider(monkeypatch)
+    await provider.add_texts(
+        ["one", "two", "three"],
+        metadatas=[
+            {"owner": "a", "tags": ["x", "y"]},
+            {"owner": "a", "tags": ["y"]},
+            {"owner": "b", "tags": ["x", "y"]},
+        ],
+        collection="docs",
+    )
+    both = models.Filter(
+        must=[
+            models.FieldCondition(key="owner", match=models.MatchValue(value="a")),
+            models.FieldCondition(key="tags", match=models.MatchValue(value="x")),
+            models.FieldCondition(key="tags", match=models.MatchValue(value="y")),
+        ]
+    )
+    either = models.Filter(
+        should=[
+            models.FieldCondition(key="owner", match=models.MatchValue(value="b")),
+            models.FieldCondition(key="tags", match=models.MatchValue(value="x")),
+        ]
+    )
+
+    listed, total = await provider.list_documents("docs", filters=both)
+    found = await provider.similarity_search(
+        "one", k=10, collection="docs", filters=either
+    )
+
+    assert (total, [d.content for d in listed]) == (1, ["one"])
+    assert sorted(d.content for d in found) == ["one", "three"]
+
+
+@pytest.mark.asyncio
+async def test_a_dict_filter_is_read_as_before(monkeypatch):
+    provider = await _local_provider(monkeypatch)
+    await provider.add_texts(
+        ["one", "two"],
+        metadatas=[{"owner": "a", "n": 1}, {"owner": "a", "n": 5}],
+        collection="docs",
+    )
+
+    listed, total = await provider.list_documents(
+        "docs", filters={"owner": "a", "n": {"gte": 2}}
+    )
+
+    assert (total, [d.content for d in listed]) == (1, ["two"])

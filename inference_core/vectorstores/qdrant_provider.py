@@ -7,7 +7,7 @@ Supports both local Qdrant instances and Qdrant Cloud.
 
 import logging
 import uuid
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from langchain_core.retrievers import BaseRetriever
 from qdrant_client import AsyncQdrantClient, QdrantClient
@@ -201,7 +201,7 @@ class QdrantProvider(BaseVectorStoreProvider):
         query: str,
         k: int = 4,
         collection: Optional[str] = None,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[Union[Dict[str, Any], models.Filter]] = None,
         **kwargs,
     ) -> List[VectorStoreDocument]:
         """Search for similar documents in Qdrant"""
@@ -397,7 +397,7 @@ class QdrantProvider(BaseVectorStoreProvider):
     async def list_documents(
         self,
         collection: str,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[Union[Dict[str, Any], models.Filter]] = None,
         limit: int = 50,
         offset: int = 0,
         order_by: Optional[str] = None,
@@ -516,8 +516,14 @@ class QdrantProvider(BaseVectorStoreProvider):
     # --------------------
     # Helpers
     # --------------------
-    def _build_qdrant_filter(self, filters: Dict[str, Any]) -> Optional[models.Filter]:
+    def _build_qdrant_filter(
+        self, filters: Union[Dict[str, Any], models.Filter]
+    ) -> Optional[models.Filter]:
         """Build a Qdrant models.Filter from a (possibly nested) dict.
+
+        A ``models.Filter`` passes through as it is, for a caller that needs
+        what a dict cannot say (``should``, ``must_not``, two conditions on
+        one key). A dict is read as before.
 
         Rules:
         - Scalar values (str/int/float/bool) -> FieldCondition(key, MatchValue(value))
@@ -527,6 +533,8 @@ class QdrantProvider(BaseVectorStoreProvider):
 
         Note: Qdrant supports Nested(key=..., filter=Filter(...)) for JSON objects.
         """
+        if isinstance(filters, models.Filter):
+            return filters
         if not filters:
             return None
 
