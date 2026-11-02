@@ -1381,3 +1381,101 @@ class TestAfterModelFastPath:
 
         MockSession.assert_called_once()
         mock_instance.finalize_sync.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# state_cost_with_key_aliases: the state's cost priced as the usage log's row
+# ---------------------------------------------------------------------------
+
+
+class TestStateCostWithKeyAliases:
+    """A token kind priced only under its alias (a cache write) is priced so in
+    the state's cost too when the option is on, and as before when it is off."""
+
+    # Per million: input 2, a cache write 4, a cache read 0.2, output 10.
+    CACHED = PricingConfig(
+        input=DimensionPrice(cost_per_1m=2.0),
+        output=DimensionPrice(cost_per_1m=10.0),
+        extras={
+            "cache_read_tokens": DimensionPrice(cost_per_1m=0.2),
+            "cache_write_1h_tokens": DimensionPrice(cost_per_1m=4.0),
+        },
+        key_aliases={"cache_creation_tokens": "cache_write_1h_tokens"},
+    )
+    NO_CACHE = PricingConfig(
+        input=DimensionPrice(cost_per_1m=2.0),
+        output=DimensionPrice(cost_per_1m=10.0),
+    )
+
+    def _logged(self, pricing, input_details):
+        """Log one call; what the state got and what the row is priced from."""
+        mw = CostTrackingMiddleware(
+            pricing_config=pricing,
+            provider="anthropic",
+            model_name="the-model",
+            llm_config=_llm_config({"the-model": ("anthropic", pricing)}),
+        )
+        mw._ctx = _MiddlewareContext()
+        message = _make_ai_message(
+            input_tokens=8051, output_tokens=40, total_tokens=8091
+        )
+        message.usage_metadata["input_token_details"] = input_details
+        with patch(
+            "inference_core.agents.middleware.cost_tracking.UsageSession"
+        ) as MockSession:
+            MockSession.return_value.finalize_sync.return_value = uuid.uuid4()
+            mw._persist_from_response(
+                _make_model_response(message),
+                _make_model_request(_tagged_model("the-model", "anthropic")),
+            )
+        final_usage = MockSession.return_value.finalize_sync.call_args.kwargs[
+            "final_usage"
+        ]
+        return mw._ctx.persisted.cost_usd, _row_cost(final_usage, pricing)
+
+    def test_by_default_a_cache_write_is_priced_as_input(self):
+        state_cost, row_cost = self._logged(self.CACHED, {"cache_creation": 8047})
+
+        assert state_cost == pytest.approx(8051 * 2e-6 + 40 * 10e-6)
+        # The row prices the write: 8047 tokens × (4 − 2) USD per million more.
+        assert row_cost - state_cost == pytest.approx(8047 * 2e-6)
+
+    def test_with_the_option_a_cache_write_costs_what_the_row_says(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            CostTrackingMiddleware, "state_cost_with_key_aliases", True
+        )
+        state_cost, row_cost = self._logged(self.CACHED, {"cache_creation": 8047})
+
+        assert state_cost == pytest.approx(row_cost)
+        assert state_cost == pytest.approx(
+            4 * 2e-6 + 8047 * 4e-6 + 40 * 10e-6
+        )
+
+    @pytest.mark.parametrize("option", [False, True])
+    def test_a_cache_read_and_a_model_without_cache_are_unchanged(
+        self, monkeypatch, option
+    ):
+        monkeypatch.setattr(
+            CostTrackingMiddleware, "state_cost_with_key_aliases", option
+        )
+        read_state, read_row = self._logged(self.CACHED, {"cache_read": 8000})
+        plain_state, plain_row = self._logged(self.NO_CACHE, {})
+
+        assert read_state == pytest.approx(read_row)
+        assert read_state == pytest.approx(
+            51 * 2e-6 + 8000 * 0.2e-6 + 40 * 10e-6
+        )
+        assert plain_state == pytest.approx(plain_row)
+        assert plain_state == pytest.approx(8051 * 2e-6 + 40 * 10e-6)
+
+
+def _row_cost(final_usage, pricing):
+    """What the usage log's row costs for *final_usage*, priced as it is."""
+    from inference_core.llm.usage_logging import PricingCalculator, UsageNormalizer
+
+    normalized = UsageNormalizer.normalize_usage(final_usage, pricing.key_aliases)
+    return float(
+        PricingCalculator.compute_cost(normalized, pricing)["cost_total_usd"]
+    )

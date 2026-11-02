@@ -64,7 +64,11 @@ from inference_core.llm.model_identity import (
     get_usage_details,
     provider_name,
 )
-from inference_core.llm.usage_logging import PricingCalculator, UsageSession
+from inference_core.llm.usage_logging import (
+    PricingCalculator,
+    UsageNormalizer,
+    UsageSession,
+)
 from inference_core.services._cancel import AgentCancelled
 
 logger = logging.getLogger(__name__)
@@ -217,11 +221,21 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             call into its state, and the other's finds none and logs its call
             again. A call is logged in ``wrap_model_call`` either way, and an
             ``after_model`` that finds none still logs it from the state.
+        state_cost_with_key_aliases: Whether the cost a call leaves in the
+            state (``last_request_cost_usd``) is computed from its usage
+            normalized by the pricing's ``key_aliases``, as the usage log's
+            row is. Off by default: the state's cost is then computed from
+            the usage as the provider reported it, so a token kind priced
+            only under its alias (a cache write, for instance) is priced as
+            the dimension that contains it, and the state's cost can be lower
+            than the row's. A consumer that reads the state's cost (for
+            metrics, or charging) sets it to ``True`` on the class.
     """
 
     state_schema = CostTrackingState
     log_tool_error_text: bool = True
     persisted_per_message: bool = False
+    state_cost_with_key_aliases: bool = False
 
     def __init__(
         self,
@@ -801,13 +815,21 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             identified=False,
         )
 
-    @staticmethod
+    @classmethod
     def _cost_of(
-        fragment: Dict[str, Any], pricing_config: Optional[PricingConfig]
+        cls, fragment: Dict[str, Any], pricing_config: Optional[PricingConfig]
     ) -> float:
-        """Cost of a call in USD; ``0.0`` for a model without pricing."""
+        """Cost of a call in USD; ``0.0`` for a model without pricing.
+
+        With ``state_cost_with_key_aliases`` the usage is normalized by the
+        pricing's ``key_aliases`` first, as the usage log does.
+        """
         if not pricing_config:
             return 0.0
+        if cls.state_cost_with_key_aliases:
+            fragment = UsageNormalizer.normalize_usage(
+                fragment, pricing_config.key_aliases or {}
+            )
         cost_result = PricingCalculator.compute_cost(fragment, pricing_config)
         return float(cost_result.get("cost_total_usd") or 0.0)
 
