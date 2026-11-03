@@ -20,11 +20,12 @@ Source: CoALA whitepaper – arxiv:2309.02427
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
+    Awaitable,
     Callable,
     Dict,
     Iterator,
@@ -83,11 +84,13 @@ from inference_core.llm.model_identity import (
 from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agent_memory_service import (
     DEFAULT_CONTEXT_TYPES,
+    SAVED,
     VIA_ANALYSIS,
     MemoryCategory,
     MemoryType,
     MemoryWritePolicy,
     RecalledContext,
+    TurnWriteLog,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,109 @@ MEMORY_CONTEXT_TURNS = "memory_context_turns"
 #: each turn's text shows: ``{entry_key: entry_version}`` by the id of the
 #: person's message (see ``MemoryStoreDocument.entry_key``).
 MEMORY_CONTEXT_TURN_ENTRIES = "memory_context_turn_entries"
+
+#: The state key that keeps, by the id of the person's message of each turn,
+#: what the turn's memory services wrote (``TurnWriteLog`` entries: ids,
+#: never text), with ``PostRunAnalysisOptions.record_writes``.
+MEMORY_TURN_WRITES = "memory_turn_writes"
+
+#: The key of the stream event with a turn's writes (``{"turn", "writes"}``),
+#: sent after the post-run analysis when the turn wrote something.
+MEMORY_TURN_WRITES_EVENT = "memory_turn_writes"
+
+#: The state key that keeps the id of the last message the post-run analysis
+#: read, with ``PostRunAnalysisOptions.new_messages_only``.
+MEMORY_ANALYSIS_THROUGH = "memory_analysis_through"
+
+
+@dataclass(frozen=True)
+class PostRunAnalysisOptions:
+    """How the post-run analysis reads a conversation and what it is told.
+
+    ``PostRunAnalysisOptions()`` is the analysis as it has always been: the
+    whole thread, the same prompt, up to four rounds.
+
+    Attributes:
+        language: The language the memories are written in (a name the
+            model understands, such as ``"Polish"``), whatever language the
+            conversation is in. ``None``: the language the user spoke.
+        explicit_language_preference: A preference for a language is saved
+            only when the user asks for one; the language of a message, a
+            greeting or a phrase in another language is not one.
+        contradictions_replace: A fact that contradicts a memory, or a
+            correction of one, changes that memory (``update_memory_store``)
+            instead of standing next to it.
+        new_messages_only: The analysis reads the messages after those the
+            previous analysis read (``memory_analysis_through``), with up to
+            ``background_chars`` of the earlier ones before them as context.
+            Without a mark, the whole thread; with a mark no longer in the
+            thread (a summary took it), the messages from the person's last
+            one. Text in content blocks counts too. The search for similar
+            memories and the check for a save made in the run read the same
+            part.
+        background_chars: See ``new_messages_only``.
+        single_pass: One round of calls, and another only after the model
+            asked ``recall_memories_store`` for something (at most three).
+            A second change of one memory in one analysis is not made.
+            The model is told to put one topic in one memory.
+        record_writes: What the run's memory services wrote (saved, updated,
+            held, trashed; ids, never text) is kept in the thread's state
+            under ``memory_turn_writes`` by the id of the person's message,
+            and sent as a stream event after the analysis. The memory service
+            records them in its ``write_log`` (one is given to it when it has
+            none).
+        gate: Asked, before the analysis, with what the person wrote in the
+            part the analysis would read: ``False`` leaves the analysis out
+            (the mark of ``new_messages_only`` still moves on); ``True``,
+            ``None`` or a failure runs it. ``None`` asks nothing.
+    """
+
+    language: Optional[str] = None
+    explicit_language_preference: bool = False
+    contradictions_replace: bool = False
+    new_messages_only: bool = False
+    background_chars: int = 600
+    single_pass: bool = False
+    record_writes: bool = False
+    gate: Optional[Callable[[str], Awaitable[Optional[bool]]]] = None
+
+
+#: What the analysis is told about a preference for a language
+#: (``explicit_language_preference``).
+LANGUAGE_PREFERENCE_RULE = (
+    "Save a preference for a language only when the user explicitly asks for "
+    "one ('write to me in Czech', 'from now on in English'). The language a "
+    "message is written in, a greeting or a single phrase in another "
+    "language, and the language the assistant answered in are not a "
+    "preference.\n\n"
+)
+
+#: What the analysis is told about a fact that contradicts a memory
+#: (``contradictions_replace``).
+CONTRADICTION_RULE = (
+    "5. If the conversation contradicts an existing memory, or the user "
+    "corrects one (it is wrong, or a preference changed), call "
+    "`update_memory_store` with that memory's id and the corrected content, "
+    "written as the fact stands now. Do NOT save a new memory next to it, and "
+    "do not keep the old and the new version together in one memory. When "
+    "such a memory may exist but is not listed above, call "
+    "`recall_memories_store` for it first.\n"
+)
+
+#: What the analysis is told about one round (``single_pass``).
+SINGLE_PASS_RULE = (
+    "Put everything about one topic into one memory, and make one call per "
+    "topic: never save or change the same memory twice. Make all your calls "
+    "in one answer. Call `recall_memories_store` only to check whether a "
+    "fact is already stored, then make your calls after its answer.\n\n"
+)
+
+#: What a second change of one memory in one analysis is answered with.
+ALREADY_CHANGED_NOTE = (
+    "✗ Memory {memory_id} was already changed in this analysis. Put "
+    "everything about one memory into one call."
+)
+
 
 #: What a model is told about the memories put in the person's message.
 MEMORY_CONTEXT_NOTE = (
@@ -194,6 +300,15 @@ class MemoryState(AgentState):
     memory_context_turn_entries: NotRequired[
         Annotated[Dict[str, Dict[str, str]], PrivateStateAttr]
     ]
+    #: With ``PostRunAnalysisOptions.record_writes``: what each turn's memory
+    #: services wrote, by the id of the person's message (``TurnWriteLog``
+    #: entries, never text). Private, stored through the serde.
+    memory_turn_writes: NotRequired[
+        Annotated[Dict[str, List[Dict[str, Any]]], PrivateStateAttr]
+    ]
+    #: With ``PostRunAnalysisOptions.new_messages_only``: the id of the last
+    #: message the post-run analysis read. Private.
+    memory_analysis_through: NotRequired[Annotated[str, PrivateStateAttr]]
 
 
 @dataclass
@@ -253,6 +368,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         briefed: bool = False,
         analysis_prompt_cache: bool = True,
         memory_context_new_only: bool = False,
+        analysis_options: Optional[PostRunAnalysisOptions] = None,
     ):
         """Initialize the memory middleware.
 
@@ -342,6 +458,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 it (a run resumed in another process cannot: its turn keeps
                 its text, and what it left out comes back at the next recall).
                 The memory service must take ``recall_context(leave_out=…)``.
+            analysis_options: How the post-run analysis reads the
+                conversation and what it is told
+                (:class:`PostRunAnalysisOptions`). ``None``: as it always has.
         """
         if memory_context_placement not in MEMORY_CONTEXT_PLACEMENTS:
             raise ValueError(
@@ -365,6 +484,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         self.request_id = request_id
         self._analysis_model = analysis_model
         self.analysis_prompt_cache = analysis_prompt_cache
+        self.analysis_options = analysis_options or PostRunAnalysisOptions()
+        if (
+            self.analysis_options.record_writes
+            and getattr(memory_service, "write_log", "missing") is None
+        ):
+            memory_service.write_log = TurnWriteLog()
         # Set in wrap_model_call / awrap_model_call; used by after_agent.
         self._captured_model: Optional[Any] = None
         self.include_memory_types = include_memory_types or list(
@@ -410,6 +535,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             briefed=True,
             analysis_prompt_cache=self.analysis_prompt_cache,
             memory_context_new_only=self.memory_context_new_only,
+            # The subagent's writes go to the run's write log; the agent that
+            # handed it the work keeps them in its thread, not the subagent.
+            analysis_options=replace(self.analysis_options, record_writes=False),
         )
 
     @property
@@ -1437,6 +1565,215 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 return rendered
         return line
 
+    def _analysis_prompt(
+        self,
+        *,
+        spaces_section: str,
+        existing_memories_section: str,
+        already_saved_note: str,
+        transcript: str,
+        background: str = "",
+    ) -> str:
+        """The analysis's prompt: the template, with what the options add."""
+        options = self.analysis_options
+        template = self._TOOL_ANALYSIS_PROMPT
+        if options.explicit_language_preference:
+            template = template.replace(
+                "- User preferences (language, tone,", "- User preferences (tone,"
+            ).replace(
+                "exchanges with no personal or durable context.\n\n",
+                "exchanges with no personal or durable context.\n\n"
+                + _braces(LANGUAGE_PREFERENCE_RULE),
+            )
+        if options.contradictions_replace:
+            template = template.replace(
+                "information genuinely not yet captured.\n",
+                "information genuinely not yet captured.\n"
+                + _braces(CONTRADICTION_RULE),
+            )
+        if options.language:
+            template = template.replace(
+                "Write the `content` argument in the SAME language the user spoke.\n",
+                _braces(
+                    f"Write the `content` and `topic` arguments in "
+                    f"{options.language}, whatever language the conversation "
+                    "is in; keep names and quoted words as they are.\n"
+                ),
+            )
+        if options.single_pass:
+            template = template.replace(
+                "You may call the tools multiple times for distinct pieces of "
+                "information.\n\n",
+                _braces(SINGLE_PASS_RULE),
+            )
+        if background:
+            template = template.replace(
+                "Conversation:\n\n{transcript}",
+                "EARLIER IN THE CONVERSATION (already analysed; context only, "
+                "do not save from it):\n\n{background}\n\n"
+                "New part of the conversation (analyse this part only):\n\n"
+                "{transcript}",
+            )
+        return template.format(
+            spaces_section=spaces_section,
+            existing_memories_section=existing_memories_section,
+            already_saved_note=already_saved_note,
+            transcript=transcript,
+            background=background,
+        )
+
+    def _analysed_part(self, state: MemoryState) -> tuple[list[Any], list[Any]]:
+        """The messages the analysis reads, and those before them.
+
+        Without ``new_messages_only``: the whole thread, and none before.
+        """
+        messages = list(state.get("messages") or [])
+        if not self.analysis_options.new_messages_only:
+            return messages, []
+        start = 0
+        through = state.get(MEMORY_ANALYSIS_THROUGH)
+        if through:
+            ids = [getattr(m, "id", None) for m in messages]
+            if through in ids:
+                start = ids.index(through) + 1
+            else:
+                # A summary or a deletion took the mark away: the turn.
+                start = _last_human_index(messages)
+        return messages[start:], messages[:start]
+
+    def _transcript_lines(self, messages: Sequence[Any]) -> list[str]:
+        """The person's and the assistant's messages, as the transcript has
+        them. Text in content blocks counts with ``new_messages_only``."""
+        blocks = self.analysis_options.new_messages_only
+        lines: list[str] = []
+        for msg in messages:
+            msg_type = getattr(msg, "type", None) or getattr(msg, "role", None)
+            content = getattr(msg, "content", "") or ""
+            if blocks and isinstance(content, list):
+                content = _block_text(content)
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if msg_type in ("human", "user"):
+                lines.append(f"User: {content.strip()}")
+            elif msg_type in ("ai", "assistant"):
+                lines.append(f"Assistant: {content.strip()}")
+        return lines
+
+    def _person_text(self, state: MemoryState) -> str:
+        """What the person wrote in the part the analysis would read: the
+        gate's question."""
+        if self.analysis_options.new_messages_only:
+            part, _ = self._analysed_part(state)
+            messages = [
+                m
+                for m in part
+                if (getattr(m, "type", None) or getattr(m, "role", None))
+                in ("human", "user")
+            ]
+        else:
+            last = _last_human_message(state.get("messages") or [])
+            messages = [last] if last is not None else []
+        texts = []
+        for message in messages:
+            content = getattr(message, "content", "") or ""
+            if isinstance(content, list):
+                content = _block_text(content)
+            if isinstance(content, str) and content.strip():
+                texts.append(content.strip())
+        return "\n\n".join(texts)
+
+    async def _gate_passes(self, state: MemoryState) -> Optional[bool]:
+        """Whether the analysis runs (``True``), is left out (``False``), or
+        stops because the run did (``None``)."""
+        gate = self.analysis_options.gate
+        if gate is None:
+            return True
+        try:
+            verdict = await gate(self._person_text(state))
+        except (AgentCancelled, GraphInterrupt) as e:
+            logger.warning("Post-run analysis gate stopped: %s", type(e).__name__)
+            return None
+        except Exception as e:
+            logger.warning(
+                "Post-run analysis gate failed, the analysis runs: %s",
+                type(e).__name__,
+            )
+            return True
+        if verdict is False:
+            logger.info("Post-run analysis left out by the gate")
+            return False
+        return True
+
+    def _through_update(self, state: MemoryState) -> Optional[Dict[str, Any]]:
+        """The mark of ``new_messages_only`` moved to the last message."""
+        if not self.analysis_options.new_messages_only:
+            return None
+        messages = state.get("messages") or []
+        last_id = getattr(messages[-1], "id", None) if messages else None
+        if not last_id or last_id == state.get(MEMORY_ANALYSIS_THROUGH):
+            return None
+        return {MEMORY_ANALYSIS_THROUGH: last_id}
+
+    def _turn_writes_update(self, state: MemoryState) -> Optional[Dict[str, Any]]:
+        """What the run's memory services wrote since the last look, put in
+        the thread's state under the person's message, with
+        ``record_writes``; the turns no longer in the thread go."""
+        if not self.analysis_options.record_writes:
+            return None
+        log = getattr(self.memory_service, "write_log", None)
+        entries = log.drain() if isinstance(log, TurnWriteLog) else []
+        messages = state.get("messages") or []
+        present = {getattr(m, "id", None) for m in messages} - {None}
+        before = state.get(MEMORY_TURN_WRITES) or {}
+        turns = {
+            key: list(value)
+            for key, value in before.items()
+            if key in present and isinstance(value, list)
+        }
+        human_id = getattr(_last_human_message(messages), "id", None)
+        if entries and human_id:
+            turns[human_id] = _merged_writes(turns.get(human_id, []), entries)
+        elif entries:
+            logger.debug("Memory writes not kept: no message of the person")
+        if turns == before:
+            return None
+        return {MEMORY_TURN_WRITES: turns}
+
+    def _emit_turn_writes(self, state: MemoryState, update: Optional[Dict]) -> None:
+        """The turn's writes as a stream event, when it has any."""
+        if not self.analysis_options.record_writes:
+            return
+        turns = (update or {}).get(MEMORY_TURN_WRITES)
+        if turns is None:
+            turns = state.get(MEMORY_TURN_WRITES) or {}
+        human_id = getattr(_last_human_message(state.get("messages") or []), "id", None)
+        writes = turns.get(human_id) if human_id else None
+        if not writes:
+            return
+        try:
+            from langgraph.config import get_stream_writer
+
+            writer = get_stream_writer()
+            if writer is not None:
+                writer(
+                    {
+                        MEMORY_TURN_WRITES_EVENT: {
+                            "turn": human_id,
+                            "writes": [dict(w) for w in writes],
+                        }
+                    }
+                )
+        except Exception:
+            pass
+
+    def turn_writes_keeper(self) -> Optional["MemoryTurnWritesMiddleware"]:
+        """With ``record_writes``: the middleware that keeps the run's writes
+        in the thread before each model call (add it next to this one);
+        ``None`` without it."""
+        if not self.analysis_options.record_writes:
+            return None
+        return MemoryTurnWritesMiddleware(self)
+
     async def _analyse_via_tool_call(
         self,
         state: MemoryState,
@@ -1460,28 +1797,30 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             Number of successful save_memory_store + update_memory_store calls
             executed (0 = nothing persisted).
         """
+        options = self.analysis_options
         messages = state.get("messages", [])
-        lines: list[str] = []
-        for msg in messages:
-            msg_type = getattr(msg, "type", None) or getattr(msg, "role", None)
-            content = getattr(msg, "content", "") or ""
-            if not isinstance(content, str) or not content.strip():
-                continue
-            if msg_type in ("human", "user"):
-                lines.append(f"User: {content.strip()}")
-            elif msg_type in ("ai", "assistant"):
-                lines.append(f"Assistant: {content.strip()}")
+        new_messages, earlier = self._analysed_part(state)
+        lines = self._transcript_lines(new_messages)
 
         if not lines:
             return 0
 
         # Limit transcript to avoid blowing up context windows.
         transcript = "\n\n".join(lines)[-4000:]
+        background = ""
+        if options.new_messages_only and earlier and options.background_chars > 0:
+            background = "\n\n".join(self._transcript_lines(earlier))[
+                -options.background_chars :
+            ]
 
         # Pre-fetch semantically similar memories to give the model a head-start
         # on deduplication without requiring a recall round-trip first.
         related_text, related_ids = await self._prefetch_related_memories(user_id)
-        query = self._recall_query(transcript[:2000], "analysis", state)
+        query = self._recall_query(
+            transcript[:2000],
+            "analysis",
+            {"messages": new_messages} if options.new_messages_only else state,
+        )
         existing_text = (
             await self._prefetch_existing_memories(query, user_id, exclude=related_ids)
             if query
@@ -1511,11 +1850,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             if already_saved
             else ""
         )
-        prompt = self._TOOL_ANALYSIS_PROMPT.format(
+        prompt = self._analysis_prompt(
             spaces_section=self._spaces_section(),
             existing_memories_section=existing_memories_section,
             already_saved_note=already_saved_note,
             transcript=transcript,
+            background=background,
         )
 
         self._observe(messages)
@@ -1543,7 +1883,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         reported_model_name: Optional[str] = None
         iterations = 0
 
-        for loop_idx in range(4):  # cap prevents runaway loops
+        changed: set = set()
+        rounds = 3 if options.single_pass else 4
+        for loop_idx in range(rounds):  # cap prevents runaway loops
             if bound_model is None:
                 # The first call goes to the first model that answers it; that
                 # model makes the rest of the analysis and is the one billed.
@@ -1597,8 +1939,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                     if name == "save_memory_store":
                         result = await save_tool._arun(**args)
                         saved_count += 1
+                    elif (
+                        name == "update_memory_store"
+                        and options.single_pass
+                        and str(args.get("memory_id")) in changed
+                    ):
+                        result = ALREADY_CHANGED_NOTE.format(
+                            memory_id=args.get("memory_id")
+                        )
                     elif name == "update_memory_store":
                         result = await update_tool._arun(**args)
+                        changed.add(str(args.get("memory_id")))
                         saved_count += 1
                     elif name == "recall_memories_store":
                         result = await recall_tool._arun(**args)
@@ -1614,6 +1965,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 break
 
             messages_ctx.extend(tool_results)
+            if options.single_pass and not any(
+                _tool_call_name(tc) == "recall_memories_store" for tc in tool_calls
+            ):
+                # Nothing new for the model to read: its calls were all made.
+                break
 
         # Bill the memory-handling LLM call(s) to the triggering session, even
         # when nothing was persisted (the model still consumed tokens).
@@ -1681,9 +2037,19 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     def after_agent(
         self, state: MemoryState, runtime: Runtime
     ) -> Dict[str, Any] | None:
-        """The turn's widened memories kept (``memory_context_new_only``), and
-        the post-run analysis (``_after_run_analysis``)."""
-        return _merged(self._widened_update(state), self._after_run_analysis(state))
+        """The turn's widened memories kept (``memory_context_new_only``), the
+        post-run analysis (``_after_run_analysis``), and the turn's writes
+        (``record_writes``)."""
+        update = _merged(self._widened_update(state), self._after_run_analysis(state))
+        return self._with_turn_writes(state, update)
+
+    def _with_turn_writes(
+        self, state: MemoryState, update: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """*update* with the run's writes kept in the thread, and the event."""
+        writes = self._turn_writes_update(state)
+        self._emit_turn_writes(state, writes)
+        return _merged(update, writes)
 
     def _after_run_analysis(self, state: MemoryState) -> Dict[str, Any] | None:
         """Best-effort post-session analysis: persist what the agent may have missed.
@@ -1737,14 +2103,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         start_time = time.monotonic()
 
         try:
+            if self.analysis_options.gate is not None:
+                passes = run_async_safely(self._gate_passes(state), timeout=10.0)
+                if passes is None:
+                    return None
+                if passes is False:
+                    return self._through_update(state)
             saved_count = run_async_safely(
                 self._analyse_via_tool_call(
                     state, model, model_name, resolved_uid, already_saved
                 ),
                 timeout=15.0,
             )
+            through = self._through_update(state)
             if not saved_count:
-                return None
+                return through
 
             latency_ms = (time.monotonic() - start_time) * 1000
             logger.info(
@@ -1753,10 +2126,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 resolved_uid,
                 latency_ms,
             )
-            return {
-                "session_analysis_saved": True,
-                "session_analysis_latency_ms": latency_ms,
-            }
+            return _merged(
+                through,
+                {
+                    "session_analysis_saved": True,
+                    "session_analysis_latency_ms": latency_ms,
+                },
+            )
         except Exception as e:
             logger.warning("Post-run analysis failed (fail-open): %s", e, exc_info=True)
             return None
@@ -1766,7 +2142,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
     ) -> Dict[str, Any] | None:
         """Async version of after_agent for Agent Server and astream contexts."""
         widened = self._widened_update(state)
-        return _merged(widened, await self._aafter_run_analysis(state))
+        update = _merged(widened, await self._aafter_run_analysis(state))
+        return self._with_turn_writes(state, update)
 
     async def _aafter_run_analysis(self, state: MemoryState) -> Dict[str, Any] | None:
         """Async version of ``_after_run_analysis``.
@@ -1804,11 +2181,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         start_time = time.monotonic()
 
         try:
+            passes = await self._gate_passes(state)
+            if passes is None:
+                return None
+            if passes is False:
+                return self._through_update(state)
             saved_count = await self._analyse_via_tool_call(
                 state, model, model_name, resolved_uid, already_saved
             )
+            through = self._through_update(state)
             if not saved_count:
-                return None
+                return through
 
             latency_ms = (time.monotonic() - start_time) * 1000
             logger.info(
@@ -1817,10 +2200,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 resolved_uid,
                 latency_ms,
             )
-            return {
-                "session_analysis_saved": True,
-                "session_analysis_latency_ms": latency_ms,
-            }
+            return _merged(
+                through,
+                {
+                    "session_analysis_saved": True,
+                    "session_analysis_latency_ms": latency_ms,
+                },
+            )
         except Exception as e:
             logger.warning(
                 "Post-run analysis (async) failed (fail-open): %s", e, exc_info=True
@@ -1838,7 +2224,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         conservatively — only adding a session_summary for substantive conversations
         rather than duplicate interaction entries.
         """
-        messages = state.get("messages", [])
+        if self.analysis_options.new_messages_only:
+            messages, _ = self._analysed_part(state)
+        else:
+            messages = state.get("messages", [])
         for msg in messages:
             # Tool-result messages carry the tool name
             if getattr(msg, "name", None) == "save_memory_store":
@@ -1878,6 +2267,31 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             pass
 
 
+class MemoryTurnWritesMiddleware(AgentMiddleware[MemoryState]):
+    """Keeps what a run's memory services wrote so far in the thread's state
+    before each model call (``memory_turn_writes``), so a run stopped for an
+    approval has the writes made before the stop in its checkpoint.
+
+    A separate middleware, so that an agent without ``record_writes`` has no
+    node for it in its graph. Made by ``MemoryMiddleware.turn_writes_keeper``.
+    """
+
+    state_schema = MemoryState
+
+    def __init__(self, memory: MemoryMiddleware) -> None:
+        self.memory = memory
+
+    def before_model(
+        self, state: MemoryState, runtime: Runtime
+    ) -> Dict[str, Any] | None:
+        return self.memory._turn_writes_update(state)
+
+    async def abefore_model(
+        self, state: MemoryState, runtime: Runtime
+    ) -> Dict[str, Any] | None:
+        return self.memory._turn_writes_update(state)
+
+
 # ============================================================================
 # Factory function
 # ============================================================================
@@ -1892,6 +2306,56 @@ def _merged(
     if not second:
         return first
     return {**first, **second}
+
+
+def _braces(text: str) -> str:
+    """*text* as a part of a ``str.format`` template."""
+    return text.replace("{", "{{").replace("}", "}}")
+
+
+def _tool_call_name(call: Any) -> Optional[str]:
+    return call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
+
+
+def _block_text(content: Sequence[Any]) -> str:
+    """The text of a message's content blocks, without anything else."""
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _last_human_index(messages: Sequence[Any]) -> int:
+    """The index of the person's last message, or 0."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, HumanMessage) or getattr(message, "type", None) == "human":
+            return index
+    return 0
+
+
+def _merged_writes(
+    before: Sequence[Dict[str, Any]], entries: Sequence[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """A turn's writes with *entries* after them, one per entry: the last
+    action on it, except that an entry saved in the turn stays ``saved``
+    (with the later version) when the turn changes it again."""
+    merged: Dict[str, Dict[str, Any]] = {}
+    for entry in [*before, *entries]:
+        key = f"{'/'.join(entry.get('namespace') or [])}\0{entry.get('id')}"
+        previous = merged.pop(key, None)
+        entry = dict(entry)
+        if previous is not None and previous.get("action") == SAVED and entry.get(
+            "action"
+        ) == "updated":
+            entry["action"] = SAVED
+        merged[key] = entry
+    return list(merged.values())
 
 
 def _last_human_message(messages: Sequence[Any]) -> Optional[Any]:
@@ -1933,6 +2397,7 @@ def create_memory_middleware(
     request_id: Optional[str] = None,
     memory_context_placement: str = MEMORY_CONTEXT_IN_SYSTEM_PROMPT,
     memory_context_new_only: bool = False,
+    analysis_options: Optional[PostRunAnalysisOptions] = None,
 ) -> MemoryMiddleware:
     """
     Factory function to create MemoryMiddleware instance (CoALA-aware).
@@ -1957,6 +2422,8 @@ def create_memory_middleware(
         memory_context_new_only: With placement ``"message"``, each turn
             shows only the memories no earlier turn shows; see
             :class:`MemoryMiddleware`.
+        analysis_options: How the post-run analysis reads the conversation;
+            see :class:`PostRunAnalysisOptions`.
 
     Returns:
         Configured MemoryMiddleware instance
@@ -1975,10 +2442,19 @@ def create_memory_middleware(
         request_id=request_id,
         memory_context_placement=memory_context_placement,
         memory_context_new_only=memory_context_new_only,
+        analysis_options=analysis_options,
     )
 
 
 __all__ = [
+    "CONTRADICTION_RULE",
+    "LANGUAGE_PREFERENCE_RULE",
+    "MEMORY_ANALYSIS_THROUGH",
+    "MEMORY_TURN_WRITES",
+    "MEMORY_TURN_WRITES_EVENT",
+    "MemoryTurnWritesMiddleware",
+    "PostRunAnalysisOptions",
+    "SINGLE_PASS_RULE",
     "MEMORY_CONTEXT_IN_MESSAGE",
     "MEMORY_CONTEXT_IN_SYSTEM_PROMPT",
     "MEMORY_CONTEXT_NOTE",

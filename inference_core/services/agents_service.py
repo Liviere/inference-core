@@ -2,7 +2,7 @@ import logging
 import re
 import uuid
 from contextlib import ExitStack, contextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Callable, Dict, Literal, Optional
 
@@ -49,9 +49,11 @@ from inference_core.llm.emulation import activate_emulation_session
 from inference_core.llm.models import LLMModelFactory, get_model_factory
 from inference_core.llm.tools import get_registered_providers, load_tools_for_agent
 from inference_core.services._cancel import AgentCancelled
+from inference_core.agents.middleware.memory import PostRunAnalysisOptions
 from inference_core.services.agent_memory_service import (
     AgentMemoryStoreService,
     MemoryOptions,
+    TurnWriteLog,
 )
 from inference_core.services.agent_snapshot_service import (
     AgentRunSnapshot,
@@ -248,6 +250,16 @@ class InstanceContext:
     subagent_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+def _without_record(
+    options: Optional[PostRunAnalysisOptions],
+) -> Optional[PostRunAnalysisOptions]:
+    """*options* for a subagent's memory: its writes go to the run's write
+    log, and the agent that handed it the work keeps them in its thread."""
+    if options is None or not options.record_writes:
+        return options
+    return replace(options, record_writes=False)
+
+
 def _tool_name(tool: Any) -> Optional[str]:
     return getattr(tool, "name", None) or getattr(tool, "__name__", None)
 
@@ -318,6 +330,7 @@ class AgentService:
         memory_analysis_prompt_cache: bool = True,
         tool_call_limit_uncounted: Optional[Callable[[Any], bool]] = None,
         memory_context_new_only: bool = False,
+        memory_analysis_options: Optional[PostRunAnalysisOptions] = None,
     ):
         """Initialize the AgentService.
 
@@ -430,6 +443,13 @@ class AgentService:
                 default). ``False`` sends its calls without ``cache_control``:
                 its prompt is different after every run, so the cache is
                 written and never read (see ``MemoryMiddleware``).
+            memory_analysis_options: How the post-run memory analysis reads
+                the conversation and what it is told
+                (:class:`~inference_core.agents.middleware.memory.PostRunAnalysisOptions`).
+                ``None``: as it always has. With ``record_writes`` the memory
+                services of the agent and its subagents share one write log,
+                and a ``MemoryTurnWritesMiddleware`` keeps the writes in the
+                thread before each model call.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -503,6 +523,14 @@ class AgentService:
         self._memory_postrun_analysis = memory_postrun_analysis
         self._memory_postrun_model = memory_postrun_model
         self._memory_analysis_model = memory_analysis_model
+        self._memory_analysis_options = memory_analysis_options
+        if (
+            memory_analysis_options is not None
+            and memory_analysis_options.record_writes
+            and memory_options is not None
+            and memory_options.write_log is None
+        ):
+            memory_options = replace(memory_options, write_log=TurnWriteLog())
         self._memory_options = memory_options
         self._tool_call_token_type = tool_call_token_type
         self._stream_subgraphs = stream_subgraphs
@@ -838,6 +866,9 @@ class AgentService:
                         analysis_prompt_cache=getattr(
                             self, "_memory_analysis_prompt_cache", True
                         ),
+                        analysis_options=getattr(
+                            self, "_memory_analysis_options", None
+                        ),
                     )
                     # Insert before CostTracking (which sits at the end)
                     # so memory context enrichment runs in before_model first.
@@ -850,6 +881,9 @@ class AgentService:
                         len(middleware),
                     )
                     middleware.insert(ct_index, memory_middleware)
+                    keeper = memory_middleware.turn_writes_keeper()
+                    if keeper is not None:
+                        middleware.insert(ct_index + 1, keeper)
                     logging.debug(
                         f"Added MemoryMiddleware for agent '{self.display_name}'"
                     )
@@ -1625,6 +1659,10 @@ class AgentService:
         does (``memory_context_placement``, ``memory_context_new_only``).
         """
         settings = get_settings()
+        own = getattr(self, "_memory_options", None)
+        if options.write_log is None and own is not None and own.write_log is not None:
+            # What a subagent writes goes to the run's one write log.
+            options = replace(options, write_log=own.write_log)
         service = options.service(
             self.ensure_memory_store(),
             max_results=settings.agent_memory_max_results,
@@ -1658,6 +1696,9 @@ class AgentService:
             memory_context_new_only=getattr(self, "_memory_context_new_only", False),
             briefed=briefed,
             analysis_prompt_cache=getattr(self, "_memory_analysis_prompt_cache", True),
+            analysis_options=_without_record(
+                getattr(self, "_memory_analysis_options", None)
+            ),
         )
         return service, middleware, tools
 
@@ -3085,6 +3126,7 @@ class DeepAgentService(AgentService):
         innermost_middleware: Optional[list[Any]] = None,
         memory_context_new_only: bool = False,
         tool_call_limit_uncounted: Optional[Callable[[Any], bool]] = None,
+        memory_analysis_options: Optional[PostRunAnalysisOptions] = None,
         approval_middleware: Optional[Callable[[dict[str, Any]], Any]] = None,
         returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
     ):
@@ -3140,6 +3182,8 @@ class DeepAgentService(AgentService):
                 those an earlier turn shows (see ``AgentService``).
             memory_analysis_prompt_cache: Whether post-run memory analysis
                 keeps the prompt cache of its model (see ``AgentService``).
+            memory_analysis_options: How the post-run memory analysis reads
+                the conversation (see ``AgentService``).
             tool_call_limit_uncounted: The calls the per-tool limits do not
                 count (see ``AgentService``).
             approval_middleware: Makes the middleware that asks about a
@@ -3179,6 +3223,7 @@ class DeepAgentService(AgentService):
             memory_analysis_prompt_cache=memory_analysis_prompt_cache,
             innermost_middleware=innermost_middleware,
             tool_call_limit_uncounted=tool_call_limit_uncounted,
+            memory_analysis_options=memory_analysis_options,
         )
         self._explicit_subagents = subagents or []
         self._approval_middleware = approval_middleware
