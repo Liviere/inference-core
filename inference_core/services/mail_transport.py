@@ -15,12 +15,61 @@ TLS stays on the real name in both directions:
 * ``IMAP4_SSL._create_socket`` calls ``IMAP4._create_socket`` explicitly rather
   than through the MRO, so a mixin would be skipped — it is replaced outright
   below, keeping ``server_hostname=self.host``.
+
+A caller may also want to know which mail servers a process reached, for
+instance to keep a record of its outbound connections. A hook registered with
+:func:`register_mail_connection_hook` is told the protocol, host and port of
+each connection core's mail services open. None is registered by default.
 """
 
 import imaplib
+import logging
 import smtplib
 import socket
-from typing import Any, Optional
+from typing import Any, Callable, List, Optional
+
+logger = logging.getLogger(__name__)
+
+#: ``hook(protocol, host, port)``; ``protocol`` is ``"smtp"`` or ``"imap"``.
+MailConnectionHook = Callable[[str, str, int], None]
+
+_CONNECTION_HOOKS: List[MailConnectionHook] = []
+
+
+def register_mail_connection_hook(hook: MailConnectionHook) -> None:
+    """Call ``hook(protocol, host, port)`` before every SMTP or IMAP
+    connection opened by ``EmailService`` and ``ImapConnection``.
+
+    ``host`` is the configured host name, not the address dialled; nothing of
+    the credentials or the mail is passed. The hook runs in the caller's
+    thread and context, synchronously, just before the socket is opened, so
+    a connection that then fails is reported too. Registering the same hook
+    again is a no-op.
+    """
+    if not callable(hook):
+        raise TypeError("A mail connection hook must be callable")
+    if hook not in _CONNECTION_HOOKS:
+        _CONNECTION_HOOKS.append(hook)
+
+
+def unregister_mail_connection_hook(hook: MailConnectionHook) -> None:
+    """Forget a hook (a no-op for one never registered)."""
+    try:
+        _CONNECTION_HOOKS.remove(hook)
+    except ValueError:
+        pass
+
+
+def report_mail_connection(protocol: str, host: str, port: int) -> None:
+    """Tell every hook of a connection about to be opened.
+
+    A failing hook never fails the connection; its error is logged by type.
+    """
+    for hook in list(_CONNECTION_HOOKS):
+        try:
+            hook(protocol, host, port)
+        except Exception as exc:
+            logger.warning("Mail connection hook failed: %s", type(exc).__name__)
 
 
 class _PinnedSMTPMixin:

@@ -32,7 +32,11 @@ from inference_core.core.email_config import (
     ImapHostConfig,
     get_email_config,
 )
-from inference_core.services.mail_transport import PinnedIMAP4, PinnedIMAP4SSL
+from inference_core.services.mail_transport import (
+    PinnedIMAP4,
+    PinnedIMAP4SSL,
+    report_mail_connection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +394,7 @@ class ImapConnection:
         """Open the socket, on ``connect_address`` when one is configured."""
         cfg = self.imap_config
         address = cfg.connect_address
+        report_mail_connection("imap", cfg.host, cfg.port)
         if cfg.use_ssl:
             # IMAP4_SSL without a context uses ssl._create_stdlib_context(),
             # which checks neither the certificate nor the host name.
