@@ -352,6 +352,11 @@ models:
     display_name: 'Gemini 3.8 Flash'
     description: 'Fast Gemini model for general tasks'
     max_tokens: 8192
+    # Gemini's policy drops the request timeout unless the application turns it
+    # on (give_request_timeout, docs/configuration.md). Then this is a deadline
+    # of the whole call, a streamed answer included, so a model that writes long
+    # answers needs more than the default 60 seconds.
+    timeout: 180
     temperature: 0.7
     multimodal: true
     # Gemini models use thinking_level + include_thoughts for reasoning.

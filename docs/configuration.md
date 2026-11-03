@@ -541,6 +541,21 @@ param_policies:
         allowed: ['logit_bias']
 ```
 
+### The request timeout of a provider whose policy drops it
+
+A model's `timeout` (default 60 seconds) reaches most providers' clients as their request timeout. Gemini's built-in policy drops it, so a Gemini call that hangs waits for as long as the connection stays open. An application that wants a bound turns it on in code, before models are built:
+
+```python
+from inference_core.llm.config import ModelProvider
+from inference_core.llm.param_policy import give_request_timeout
+
+give_request_timeout(ModelProvider.GEMINI)
+```
+
+It is off by default for every provider (`REQUEST_TIMEOUT_PARAMS` lists the providers it applies to). Once on, a Gemini model gets its entry's `timeout` as the client's `timeout`. The google-genai SDK treats it as a deadline of the whole call: it sends it to the server (`X-Server-Timeout`), and on its async transport (aiohttp) it bounds the call in total, a streamed answer included. A call that times out is tried again up to the client's `max_retries` (its default is 6; an entry passes another only where `param_policies` allows `max_retries` for Gemini), with a backoff between attempts, so the longest wait is about that many timeouts. Give an entry whose answers can take long a `timeout` to match.
+
+`takes_request_timeout(provider, model_name=None)` says whether a model of the provider gets a request timeout, by what its effective policy (built in, `param_policies`, this switch) makes of one. `withdraw_request_timeout(provider)` turns the switch off again.
+
 ## Playwright MCP / Docker timeouts
 
 You can override MCP CLI timeouts via environment variables. The compose files include these variables and provide sensible defaults.

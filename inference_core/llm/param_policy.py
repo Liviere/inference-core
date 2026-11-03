@@ -216,11 +216,85 @@ DEFAULT_REGISTERED_POLICY = ProviderParamPolicy(
 )
 
 
+# Built-in providers whose policy drops the request timeout though their client
+# can take one, and the parameter their client takes it as. Gemini's client
+# (langchain-google-genai) reads ``timeout`` in seconds and hands it to the
+# google-genai SDK as a deadline of the whole call: the SDK also sends it to the
+# server (``X-Server-Timeout``), and on its async transport (aiohttp) it bounds
+# the call in total, a streamed answer included, not the wait between two parts
+# of it. The SDK tries a call that timed out again, up to the client's
+# ``max_retries``.
+REQUEST_TIMEOUT_PARAMS: Dict[ModelProvider, str] = {
+    ModelProvider.GEMINI: "timeout",
+}
+
+# The providers of REQUEST_TIMEOUT_PARAMS an application turned the timeout on
+# for (give_request_timeout). Empty by default: their timeout is dropped, as it
+# always was.
+_REQUEST_TIMEOUT_GIVEN: Set[ModelProvider] = set()
+
+
+def give_request_timeout(provider: ModelProvider) -> None:
+    """Hand *provider*'s client the request timeout its policy drops.
+
+    Off by default for every provider. Once on, a model of the provider gets
+    its entry's ``timeout`` (or a ``request_timeout`` / ``timeout`` the caller
+    passes), under the name its client takes. A provider whose policy already
+    passes the timeout needs nothing, so this does nothing for it; a provider
+    whose client takes no timeout is refused. Call it before models are built:
+    a model built earlier keeps what it was built with.
+    """
+    provider = ModelProvider(provider)
+    if provider not in REQUEST_TIMEOUT_PARAMS:
+        if takes_request_timeout(provider):
+            return
+        raise ValueError(f"{provider.value}'s client takes no request timeout")
+    _REQUEST_TIMEOUT_GIVEN.add(provider)
+    # A model's policy is resolved once and kept; resolve them again on top of
+    # the provider's new one.
+    _forget_resolved_model_policies()
+
+
+def withdraw_request_timeout(provider: ModelProvider) -> None:
+    """Undo :func:`give_request_timeout` (for tests, mostly)."""
+    _REQUEST_TIMEOUT_GIVEN.discard(ModelProvider(provider))
+    _forget_resolved_model_policies()
+
+
+def takes_request_timeout(
+    provider: ModelProvider, model_name: Optional[str] = None
+) -> bool:
+    """Whether a model of *provider* (or *model_name* of it) gets a request
+    timeout: what its effective policy makes of one, not what the provider is."""
+    try:
+        params = normalize_params(
+            ModelProvider(provider), {"request_timeout": 60}, model_name=model_name
+        )
+    except ValueError:
+        return False
+    return bool({"request_timeout", "timeout"} & params.keys())
+
+
+def _with_request_timeout(
+    provider: ModelProvider, policy: ProviderParamPolicy
+) -> ProviderParamPolicy:
+    if provider not in _REQUEST_TIMEOUT_GIVEN:
+        return policy
+    given = policy.clone()
+    name = REQUEST_TIMEOUT_PARAMS[provider]
+    given.dropped.discard("request_timeout")
+    given.dropped.discard(name)
+    given.allowed.add(name)
+    if name != "request_timeout":
+        given.renamed["request_timeout"] = name
+    return given
+
+
 def _base_policy(provider: ModelProvider) -> Optional[ProviderParamPolicy]:
     """The provider's policy: built in, or the one it was registered with."""
     policy = POLICIES.get(provider)
     if policy is not None:
-        return policy
+        return _with_request_timeout(provider, policy)
     registered = get_registered_provider(provider)
     if registered is None:
         return None
@@ -232,6 +306,19 @@ _DYNAMIC_LOADED = False
 _EFFECTIVE_MODEL_POLICIES: Dict[str, ProviderParamPolicy] = {}
 _GLOBAL_PASSTHROUGH_PREFIXES: Set[str] = set()
 STREAMING_PARAMS = set(["streaming", "callbacks"])
+
+
+def _forget_resolved_model_policies() -> None:
+    """Turn every resolved model policy back into its override, to be resolved
+    again on top of the provider's current policy."""
+    for model_name, policy in list(_EFFECTIVE_MODEL_POLICIES.items()):
+        raw = getattr(policy, "_resolved_from", None)
+        if raw is None:
+            continue
+        placeholder = ProviderParamPolicy()
+        setattr(placeholder, "_raw_override", raw[0])
+        setattr(placeholder, "_provider", raw[1])
+        _EFFECTIVE_MODEL_POLICIES[model_name] = placeholder
 
 
 def _merge_policy(
@@ -330,7 +417,13 @@ def _resolve_model_policy(
         override_provider = getattr(existing, "_provider", None) or provider
         base_policy = _base_policy(override_provider) or ProviderParamPolicy()
         effective = _merge_policy(base_policy, raw_override)
-        # Cache resolved effective policy (remove attrs)
+        # Cache resolved effective policy (remove attrs), with what it was
+        # resolved from, so it can be resolved again on a new base.
+        setattr(
+            effective,
+            "_resolved_from",
+            (raw_override, getattr(existing, "_provider", None)),
+        )
         _EFFECTIVE_MODEL_POLICIES[model_name] = effective
         return effective
     # No model-specific override: return provider effective policy
