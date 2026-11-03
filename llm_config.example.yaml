@@ -1144,6 +1144,34 @@ agents:
     subagents: ['browser_readonly_worker', 'email_reader_worker']
     reasoning_output: true
 
+  # Example: a coordinator with a few tools of its own besides delegating.
+  # The names come from tool providers the host application registers
+  # (`local_tool_providers`); `allowed_tools` keeps the rest of each
+  # provider's tools away from it. Here it reads the user's files, keeps a
+  # collection, and schedules, lists and cancels events: a reminder, or a run
+  # of itself at a set time, which the host may gate behind an approval.
+  workflow_coordinator:
+    primary: 'gpt-6-luna'
+    description: 'Coordinator for heavy workflows that keeps parent context compact'
+    allowed_tools:
+      - list_user_files
+      - search_user_files
+      - read_user_file
+      - create_artifact_collection
+      - list_artifact_collections
+      - add_artifact
+      - batch_add_artifacts
+      - batch_update_artifacts
+      - list_artifacts
+      - search_artifacts
+      - filter_artifacts
+      - schedule_event
+      - list_scheduled_events
+      - cancel_scheduled_event
+    reasoning_output: true
+    local_tool_providers: ['assistant_tools', 'user_file_tools', 'artifact_collection_tools']
+    subagents: ['email_reader_worker', 'browser_readonly_worker']
+
   internal_process_agent:
     primary: 'gpt-6-luna'
     description: 'Agent for internal processes, not exposed to users'
