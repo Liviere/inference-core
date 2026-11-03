@@ -153,6 +153,36 @@ def without_prompt_cache(model: Any) -> Any:
         return model
 
 
+def _prices_cache_reads(config: ModelConfig) -> bool:
+    """Whether the entry gives the prompt cache's reads a price."""
+    return bool(config.pricing and "cache_read_tokens" in config.pricing.extras)
+
+
+#: Settings a model entry may carry, the providers whose models take them, and
+#: whether a value is a request for it (the default is not).
+_PROVIDER_SETTINGS = (
+    ("streamed_usage", frozenset({ModelProvider.FIREWORKS.value}), True),
+)
+
+
+def _provider_value(provider: Any) -> str:
+    return str(getattr(provider, "value", provider))
+
+
+def _warn_unsupported_settings(config: ModelConfig) -> None:
+    """Warn about a setting the entry asks for that its provider's model
+    does not take; the model is built without it."""
+    for setting, providers, requested in _PROVIDER_SETTINGS:
+        if getattr(config, setting, not requested) == requested and (
+            _provider_value(config.provider) not in providers
+        ):
+            logger.warning(
+                "%s is ignored for model '%s': its provider's model does not take it",
+                setting,
+                config.name,
+            )
+
+
 class LLMModelFactory:
     """Factory for creating LLM model instances"""
 
@@ -285,6 +315,7 @@ class LLMModelFactory:
             "provider_model_id",
             "request_options",
             "prompt_cache_routing",
+            "streamed_usage",
             *_CLAUDE_ONLY_SETTINGS,
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
@@ -339,6 +370,7 @@ class LLMModelFactory:
                         setting,
                         config.name,
                     )
+        _warn_unsupported_settings(config)
 
         # A provider the application registered builds its own model.
         registered = get_registered_provider(config.provider)
@@ -601,6 +633,12 @@ class LLMModelFactory:
             logger.error("Fireworks API key (FIREWORKS_API_KEY) not provided")
             return None
         try:
+            if config.streamed_usage:
+                params = {
+                    **params,
+                    "include_stream_usage": True,
+                    "usage_cache_reads": _prices_cache_reads(config),
+                }
             return ChatFireworksReasoning(
                 model=config.name,
                 api_key=config.api_key,
@@ -645,7 +683,7 @@ class LLMModelFactory:
             # elsewhere the reported key would mark the cost estimated.
             model_class = (
                 ChatMistralAICachedTokens
-                if config.pricing and "cache_read_tokens" in config.pricing.extras
+                if _prices_cache_reads(config)
                 else ChatMistralAI
             )
             return model_class(

@@ -623,6 +623,19 @@ class ModelConfig(ModelParams):
             "gets nothing, with a warning. Off by default: nothing is sent."
         ),
     )
+    streamed_usage: bool = Field(
+        default=False,
+        description=(
+            "Fireworks only: whether a streamed response asks for and reads "
+            "the provider's usage (stream_options.include_usage), so a "
+            "streamed call is priced from the provider's count instead of an "
+            "estimate from its text. The usage then carries reasoning tokens "
+            "and, when the entry prices them (pricing.extras."
+            "cache_read_tokens), the prompt cache's reads; a response that is "
+            "not streamed reports the same. Another provider's model ignores "
+            "it, with a warning. Off by default: requests and usage as before."
+        ),
+    )
     context_window: Optional[int] = Field(
         default=None,
         ge=1,

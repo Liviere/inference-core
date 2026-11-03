@@ -42,7 +42,9 @@ from langchain_fireworks.chat_models import (
     _convert_chunk_to_message_chunk,
     _convert_dict_to_message,
     _convert_message_to_dict,
+    _usage_to_metadata,
 )
+from langchain_core.messages.ai import UsageMetadata
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -176,6 +178,25 @@ class ChatFireworksReasoning(ChatFireworks):
     Example: ``"preserved"`` to retain all previous reasoning content.
     """
 
+    include_stream_usage: bool = False
+    """Whether a streamed request asks for the provider's usage and reads it.
+
+    With it, a streamed request carries ``stream_options.include_usage`` (unless
+    the call names its own ``stream_options``), and the final chunk, which has
+    no ``choices`` and only ``usage``, becomes an ``AIMessageChunk`` with
+    ``usage_metadata``. A response that is not streamed reports its usage the
+    same way: reasoning tokens, and cache reads when :attr:`usage_cache_reads`
+    is set. Without it, usage is read as before: not at all from a stream (the
+    usage chunk is skipped and ``stream_usage`` is not honoured), and only
+    input, output and total tokens from a response that is not streamed.
+    """
+
+    usage_cache_reads: bool = False
+    """Whether the usage read under :attr:`include_stream_usage` reports the
+    prompt cache's reads (``input_token_details.cache_read``). For a model whose
+    cache reads have a price; elsewhere the reported reads are an unpriced key
+    and would mark the cost estimated."""
+
     # -- params ---------------------------------------------------------------
 
     @property
@@ -202,6 +223,17 @@ class ChatFireworksReasoning(ChatFireworks):
         message_dicts = [_convert_message_to_dict_with_reasoning(m) for m in messages]
         return message_dicts, params
 
+    # -- usage ----------------------------------------------------------------
+
+    def _provider_usage(self, usage: Mapping[str, Any]) -> UsageMetadata:
+        """The provider's ``usage`` as usage metadata, under
+        :attr:`include_stream_usage`: reasoning tokens always, cache reads only
+        with :attr:`usage_cache_reads`."""
+        usage_metadata = _usage_to_metadata(usage)
+        if not self.usage_cache_reads:
+            usage_metadata.pop("input_token_details", None)
+        return usage_metadata
+
     # -- non-streaming result -------------------------------------------------
 
     def _create_chat_result(self, response: dict | BaseModel) -> ChatResult:
@@ -212,11 +244,14 @@ class ChatFireworksReasoning(ChatFireworks):
         for res in response["choices"]:
             message = _convert_dict_to_message_with_reasoning(res["message"])
             if token_usage and isinstance(message, AIMessage):
-                message.usage_metadata = {
-                    "input_tokens": token_usage.get("prompt_tokens", 0),
-                    "output_tokens": token_usage.get("completion_tokens", 0),
-                    "total_tokens": token_usage.get("total_tokens", 0),
-                }
+                if self.include_stream_usage:
+                    message.usage_metadata = self._provider_usage(token_usage)
+                else:
+                    message.usage_metadata = {
+                        "input_tokens": token_usage.get("prompt_tokens", 0),
+                        "output_tokens": token_usage.get("completion_tokens", 0),
+                        "total_tokens": token_usage.get("total_tokens", 0),
+                    }
                 message.response_metadata["model_provider"] = "fireworks"
                 message.response_metadata["model_name"] = self.model_name
             generation_info = {"finish_reason": res.get("finish_reason")}
@@ -233,6 +268,49 @@ class ChatFireworksReasoning(ChatFireworks):
         }
         return ChatResult(generations=generations, llm_output=llm_output)
 
+    # -- streaming helpers ----------------------------------------------------
+
+    def _stream_params(
+        self, params: dict[str, Any], kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The body of a streamed request: usage asked for only under
+        :attr:`include_stream_usage`, and never over the call's own
+        ``stream_options``.
+
+        The Fireworks SDK's ``create`` takes no ``stream_options`` argument,
+        so it goes in ``extra_body``, which lands in the JSON body; a value
+        the call put there itself wins.
+        """
+        params = {**params, **kwargs, "stream": True}
+        if not self.include_stream_usage:
+            return params
+        extra_body = dict(params.pop("extra_body", None) or {})
+        stream_options = params.pop("stream_options", None)
+        if "stream_options" not in extra_body:
+            extra_body["stream_options"] = (
+                stream_options
+                if stream_options is not None
+                else {"include_usage": True}
+            )
+        params["extra_body"] = extra_body
+        return params
+
+    def _usage_chunk(self, chunk: Mapping[str, Any]) -> ChatGenerationChunk | None:
+        """The final chunk of a stream that asked for usage: no ``choices``,
+        only ``usage``. ``None`` for any other chunk without choices, or
+        without :attr:`include_stream_usage` (such a chunk was always
+        skipped)."""
+        usage = chunk.get("usage")
+        if not self.include_stream_usage or not usage:
+            return None
+        return ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="",
+                usage_metadata=self._provider_usage(usage),
+                response_metadata={"model_provider": "fireworks"},
+            )
+        )
+
     # -- sync streaming -------------------------------------------------------
 
     def _stream(
@@ -243,13 +321,21 @@ class ChatFireworksReasoning(ChatFireworks):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {**params, **kwargs, "stream": True}
+        params = self._stream_params(params, kwargs)
 
         default_chunk_class: type[BaseMessageChunk] = AIMessageChunk
         for chunk in self.client.create(messages=message_dicts, **params):
             if not isinstance(chunk, dict):
                 chunk = chunk.model_dump()
             if len(chunk["choices"]) == 0:
+                usage_chunk = self._usage_chunk(chunk)
+                if usage_chunk is None:
+                    continue
+                if run_manager:
+                    run_manager.on_llm_new_token(
+                        usage_chunk.text, chunk=usage_chunk
+                    )
+                yield usage_chunk
                 continue
             choice = chunk["choices"][0]
             message_chunk = _convert_chunk_to_message_chunk_with_reasoning(
@@ -285,13 +371,21 @@ class ChatFireworksReasoning(ChatFireworks):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {**params, **kwargs, "stream": True}
+        params = self._stream_params(params, kwargs)
 
         default_chunk_class: type[BaseMessageChunk] = AIMessageChunk
         async for chunk in self.async_client.acreate(messages=message_dicts, **params):
             if not isinstance(chunk, dict):
                 chunk = chunk.model_dump()
             if len(chunk["choices"]) == 0:
+                usage_chunk = self._usage_chunk(chunk)
+                if usage_chunk is None:
+                    continue
+                if run_manager:
+                    await run_manager.on_llm_new_token(
+                        token=usage_chunk.text, chunk=usage_chunk
+                    )
+                yield usage_chunk
                 continue
             choice = chunk["choices"][0]
             message_chunk = _convert_chunk_to_message_chunk_with_reasoning(

@@ -666,9 +666,18 @@ models:
 
   # Fireworks AI Models (dedicated provider)
   # Source: https://fireworks.ai/models (serverless)
+  # `streamed_usage: true` (Fireworks only, off by default): a streamed
+  # request asks for the provider's usage (stream_options.include_usage) and
+  # reads it from the stream's last chunk, so a streamed call (the factory
+  # streams every call) is priced from Fireworks' count, reasoning and cache
+  # reads included, instead of an estimate from its text. Cache reads are
+  # reported only when `extras.cache_read_tokens` prices them. Measured on
+  # MiniMax M3 (2026-11-03): without it a stream reports no usage; with it the
+  # second call of a 6,900-token prompt read 6,910 tokens from the cache.
   accounts/fireworks/models/kimi-k3:
     provider: 'fireworks'
     prompt_cache_routing: true
+    streamed_usage: true
     display_name: 'Kimi K3'
     description: 'Kimi K3 model, hosted on Fireworks AI'
     max_tokens: 8192

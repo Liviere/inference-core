@@ -62,7 +62,12 @@ Some providers process a request in a given region only on a regional endpoint, 
     - Calls outside an agent (a side job) and calls outside a thread get none. A model of another provider (Claude, Gemini, Cortecs) gets none, with one warning.
     - Measured on two calls of a 5,000-token prompt: xAI read 5,120 cached tokens with the key and 128 without, Fireworks 5,227 and 123. OpenAI, Mistral and DeepInfra read theirs either way; OpenAI asks for the key from GPT-5.6 on.
     - Price what the provider reports with `extras.cache_read_tokens`: LangChain names OpenAI-style `prompt_tokens_details.cached_tokens` `cache_read`. langchain-mistralai passes no cached tokens on, so a Mistral entry with `extras.cache_read_tokens` is built on `ChatMistralAICachedTokens` (`inference_core/llm/mistral_usage.py`), which adds them; an entry without that price stays a plain `ChatMistralAI`, priced as if nothing was read from the cache.
-  - An inference-core version that does not know these two fields passes them on to the model as extra parameters (see below), and the request is then refused: add them to the file only once the code that reads them runs.
+  - `streamed_usage: true` (Fireworks only, unset by default) has a streamed request ask for the provider's usage and read it.
+    - `ChatFireworksReasoning` (`inference_core/llm/chat_fireworks.py`) replaces the library's streaming to keep `reasoning_content`, and that copy neither asked for usage nor read the stream's last chunk, which has no `choices` and only `usage`. So a streamed Fireworks call, and the factory streams every call, reported no usage and was priced from its text.
+    - With the option the model gets `include_stream_usage`: the request carries `stream_options: {include_usage: true}` in `extra_body` (the Fireworks SDK's `create` takes no `stream_options`; a value the call names itself wins), and the last chunk becomes an `AIMessageChunk` with `usage_metadata`, reasoning tokens included. A response that is not streamed reports the same breakdown.
+    - Cache reads (`input_token_details.cache_read`) are reported only when the entry prices them (`extras.cache_read_tokens`, the model's `usage_cache_reads`): an unpriced key would mark the cost estimated.
+    - Without the option the model asks for and reads nothing more than before. A model of another provider ignores it, with a warning.
+  - An inference-core version that does not know these fields passes them on to the model as extra parameters (see below), and the request is then refused: add them to the file only once the code that reads them runs.
   - directly affects instance creation in `inference_core/llm/models.py`.
   - missing API key / base_url affects `is_model_available()` results.
 
