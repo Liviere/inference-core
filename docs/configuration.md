@@ -505,6 +505,8 @@ retrying blocked tools in the same response.
 | `SMTP_O365_PASSWORD`    | (none)                | Office 365 password     |
 | `SMTP_OAUTH_TOKEN`      | (none)                | OAuth2 Access Token     |
 
+**Connection hooks:** `register_mail_connection_hook(fn)` (`inference_core.services.mail_transport`) makes `EmailService` and `ImapConnection` call `fn(protocol, host, port)` just before each SMTP or IMAP connection they open (`protocol` is `"smtp"` or `"imap"`), in the caller's thread and context, so a connection that then fails is reported too. `host` is the configured host name, not the address dialled; nothing of the credentials or the mail is passed. A hook that raises is logged by its exception's class and the connection goes on. Nothing is registered by default. An application that keeps a record of the hosts it reaches writes it from a hook.
+
 ## Dynamic Configuration Overrides
 
 In addition to environment variables and YAML files, this project supports dynamic overrides stored in the database.
