@@ -431,6 +431,10 @@ models:
     description: 'Claude Opus 5.5, for complex agents and coding'
     max_tokens: 8192
     multimodal: true
+    # Anthropic takes an image inside a tool's result. Unset (other
+    # providers): an application may move such images into a message
+    # of their own; never sent to the provider.
+    tool_result_images: true
     reasoning_config:
       thinking:
         type: "adaptive"
@@ -495,6 +499,7 @@ models:
     description: 'Claude Sonnet 5.5, fast and capable for everyday agent work'
     max_tokens: 8192
     multimodal: true
+    tool_result_images: true
     reasoning_config:
       thinking:
         type: "adaptive"
@@ -556,6 +561,7 @@ models:
     description: 'Fastest and cheapest Claude model'
     max_tokens: 8192
     multimodal: true
+    tool_result_images: true
     reasoning_config:
       thinking:
         type: "adaptive"

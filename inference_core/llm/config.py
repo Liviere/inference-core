@@ -690,6 +690,18 @@ class ModelConfig(ModelParams):
             "``capabilities`` list (vision/audio/pdf/...)."
         ),
     )
+    tool_result_images: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether the provider takes an image inside a tool's result (a "
+            "message of the 'tool' role). Anthropic does; some providers "
+            "take images only in a user's message and refuse the request "
+            "otherwise (Mistral's API, for one). Never sent to "
+            "the provider and not read by this library: for an application "
+            "that moves the images of a tool's result into a message of its "
+            "own for a model that does not take them there. Unset: not stated."
+        ),
+    )
 
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 

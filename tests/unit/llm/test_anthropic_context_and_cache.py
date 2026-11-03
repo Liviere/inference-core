@@ -180,3 +180,14 @@ async def test_the_context_window_is_not_sent():
 
     assert config.context_window == 200_000
     assert "context_window" not in payload
+
+
+async def test_whether_tool_results_take_images_is_not_sent():
+    """It is for the application to read, unset unless an entry states it."""
+    assert _config().tool_result_images is None
+    config = _config(tool_result_images=True)
+
+    payload, _ = await _send(config)
+
+    assert config.tool_result_images is True
+    assert "tool_result_images" not in payload

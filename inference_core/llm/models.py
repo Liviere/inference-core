@@ -335,6 +335,7 @@ class LLMModelFactory:
             "description",
             "reasoning_config",
             "multimodal",
+            "tool_result_images",
             "context_window",
             "thinking_block_binding",
             "provider_model_id",
