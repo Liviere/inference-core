@@ -653,6 +653,23 @@ class ModelConfig(ModelParams):
             "nothing is sent."
         ),
     )
+    enforces_max_tokens: bool = Field(
+        default=True,
+        description=(
+            "Whether the provider stops a response at max_tokens. False for "
+            "one that does not (a gateway that ignores the limit): the "
+            "response is then streamed and read only up to the call's "
+            "max_tokens (or max_completion_tokens), counted on what arrives, "
+            "reasoning and tool call arguments included; the stream is "
+            "closed there and the response ends with finish_reason 'length' "
+            "and a usage of the tokens received, marked as an estimate "
+            "(response_metadata.usage_estimated). A call made without "
+            "streaming is streamed for this. Models built on the OpenAI "
+            "client (openai, cortecs, deepinfra, custom_openai_compatible) "
+            "only; another provider's ignores it, with a warning. True by "
+            "default: responses are read as the provider sends them."
+        ),
+    )
     context_window: Optional[int] = Field(
         default=None,
         ge=1,

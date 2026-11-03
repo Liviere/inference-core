@@ -34,6 +34,7 @@ from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
 from .mistral_usage import ChatMistralAICachedTokens
 from .model_identity import tag_model_identity
 from .openai_cache import ChatOpenAICacheBreakpoints, without_cache_breakpoints
+from .output_length_guard import guarded
 from .param_policy import normalize_params
 from .provider_registry import get_registered_provider
 
@@ -162,16 +163,34 @@ def _prices_cache_reads(config: ModelConfig) -> bool:
     return bool(config.pricing and "cache_read_tokens" in config.pricing.extras)
 
 
+#: Providers whose models are built on ``ChatOpenAI`` (the output length guard).
+_OPENAI_CLIENT_PROVIDERS = frozenset(
+    p.value
+    for p in (
+        ModelProvider.OPENAI,
+        ModelProvider.CORTECS,
+        ModelProvider.DEEPINFRA,
+        ModelProvider.CUSTOM_OPENAI_COMPATIBLE,
+    )
+)
+
 #: Settings a model entry may carry, the providers whose models take them, and
 #: whether a value is a request for it (the default is not).
 _PROVIDER_SETTINGS = (
     ("streamed_usage", frozenset({ModelProvider.FIREWORKS.value}), True),
     ("prompt_cache_breakpoints", frozenset({ModelProvider.OPENAI.value}), True),
+    ("enforces_max_tokens", _OPENAI_CLIENT_PROVIDERS, False),
 )
 
 
 def _provider_value(provider: Any) -> str:
     return str(getattr(provider, "value", provider))
+
+
+def _model_class(config: ModelConfig, base: type) -> type:
+    """*base*, or *base* reading its stream only up to the output limit when
+    the entry says the provider does not stop there (``enforces_max_tokens``)."""
+    return base if config.enforces_max_tokens else guarded(base)
 
 
 def _warn_unsupported_settings(config: ModelConfig) -> None:
@@ -323,6 +342,7 @@ class LLMModelFactory:
             "prompt_cache_routing",
             "streamed_usage",
             "prompt_cache_breakpoints",
+            "enforces_max_tokens",
             *_CLAUDE_ONLY_SETTINGS,
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
@@ -461,11 +481,14 @@ class LLMModelFactory:
             # runtime LLMConfig.with_overrides value); unset keeps the SDK default.
             if config.base_url:
                 params = {**params, "base_url": config.base_url}
-            if config.prompt_cache_breakpoints:
-                return ChatOpenAICacheBreakpoints(
-                    model=config.name, api_key=api_key, **params
-                )
-            return ChatOpenAI(model=config.name, api_key=api_key, **params)
+            base = (
+                ChatOpenAICacheBreakpoints
+                if config.prompt_cache_breakpoints
+                else ChatOpenAI
+            )
+            return _model_class(config, base)(
+                model=config.name, api_key=api_key, **params
+            )
         except Exception as e:
             logger.error(f"Failed to create OpenAI model: {str(e)}")
             return None
@@ -477,7 +500,7 @@ class LLMModelFactory:
         try:
             api_key_str = config.api_key or "not-needed"
             api_key = SecretStr(api_key_str)
-            return ChatOpenAI(
+            return _model_class(config, ChatOpenAI)(
                 model=config.name,
                 base_url=config.base_url,
                 api_key=api_key,
@@ -519,7 +542,7 @@ class LLMModelFactory:
                 extra_body.update(params.pop("extra_body", None) or {})
                 params["extra_body"] = extra_body
             params.setdefault("stream_usage", True)
-            return ChatOpenAI(
+            return _model_class(config, ChatOpenAI)(
                 model=provider_model_id(config),
                 base_url=config.base_url,
                 api_key=SecretStr(config.api_key),
@@ -621,7 +644,7 @@ class LLMModelFactory:
             logger.error("DeepInfra API token (DEEPINFRA_API_TOKEN) not provided")
             return None
         try:
-            return ChatDeepInfraReasoning(
+            return _model_class(config, ChatDeepInfraReasoning)(
                 model=config.name,
                 api_key=SecretStr(config.api_key),
                 base_url=config.base_url or DEEPINFRA_OPENAI_BASE_URL,

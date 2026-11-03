@@ -64,6 +64,7 @@ from inference_core.llm.model_identity import (
     get_usage_details,
     provider_name,
 )
+from inference_core.llm.output_length_guard import usage_is_estimated
 from inference_core.llm.usage_logging import (
     PricingCalculator,
     UsageNormalizer,
@@ -453,7 +454,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             # Determine usage fragment: prefer real metadata, fall back to estimation
             if usage_metadata and isinstance(usage_metadata, dict):
                 fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
-                is_estimated = False
+                # A response cut at its output limit counts what it received.
+                is_estimated = usage_is_estimated(last_message)
             else:
                 # Fallback: estimate tokens from message content when the provider
                 # doesn't return usage in streaming responses (e.g. DeepInfra Nemotron)
@@ -855,7 +857,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         if usage_metadata and isinstance(usage_metadata, dict):
             fragment, extra_tokens = self._extract_usage_fragment(usage_metadata)
-            is_estimated = False
+            # A response cut at its output limit counts what it received.
+            is_estimated = usage_is_estimated(ai_message)
         else:
             # Build full message list for estimation (request input + response output)
             all_messages: list = []

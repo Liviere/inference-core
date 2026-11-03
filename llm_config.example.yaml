@@ -143,6 +143,20 @@ models:
   # replaced by a summary, with the option and without it. Leave it off unless
   # a measurement on another model shows reads it adds.
   #
+  # `enforces_max_tokens: false` (unset means true) says the provider does not
+  # stop a response at max_tokens. The model (openai, cortecs, deepinfra,
+  # custom_openai_compatible) then reads the stream only up to the call's
+  # limit, reasoning and tool call arguments counted, closes it there and ends
+  # the response with finish_reason "length" and a usage of what it received,
+  # marked estimated. A call made without streaming is streamed for this.
+  # Measured on Cortecs (2026-11-03, three runs each): Mistral Small with a
+  # limit of 60 gave 1,988-2,227 tokens in 13-31 s without it and 60-62 tokens
+  # in about 1 s with it; Mistral Large 4 with 400 gave 4,191-6,066 tokens in
+  # 38-65 s without it and 401-402 in about 4 s with it. The count is tiktoken's
+  # cl100k_base, within 5% of what Cortecs counted for Mistral's models. A
+  # model that reasons first may spend the whole limit on reasoning and give
+  # an empty answer, as on a provider that applies the limit.
+  #
   # From GPT-5.6 every prompt cache write is billed at 1.25x input, the
   # automatic cache's included: a first call writes nearly its whole prompt.
   # Price `cache_creation_tokens` on those entries (see gpt-6.1-sol), or the
@@ -879,6 +893,9 @@ models:
     provider_model_id: 'mistral-small-2603'
     display_name: 'Mistral Small (Cortecs)'
     description: 'Mistral Small through the Cortecs gateway'
+    # The gateway does not stop a response at max_tokens: read it only up to
+    # the limit (see enforces_max_tokens above).
+    enforces_max_tokens: false
     # Routing for this model only, on top of the provider's request_options:
     # request_options:
     #   allowed_providers: ['mistral']
@@ -911,6 +928,7 @@ models:
     provider_model_id: 'mistral-large-4-0'
     display_name: 'Mistral Large 4 (Cortecs)'
     description: 'Mistral Large 4 through the Cortecs gateway'
+    enforces_max_tokens: false
     multimodal: true
     max_tokens: 8192
     temperature: 0.7
