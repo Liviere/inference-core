@@ -636,6 +636,23 @@ class ModelConfig(ModelParams):
             "it, with a warning. Off by default: requests and usage as before."
         ),
     )
+    prompt_cache_breakpoints: bool = Field(
+        default=False,
+        description=(
+            "OpenAI only, GPT-5.6 and later (earlier models refuse the "
+            "request): every request marks the end of its system prompt as "
+            "an explicit prompt cache breakpoint (prompt_cache_breakpoint) "
+            "and sends prompt_cache_options {mode: implicit, ttl: 30m}. Tool "
+            "definitions come before the system prompt in the cached prefix, "
+            "so another conversation with the same instructions and tools "
+            "reads them from the cache; the implicit breakpoint at the end "
+            "of the prompt stays. A cache write costs 1.25x input. Set on the "
+            "model, so a fallback of another provider never gets it; a model "
+            "built with prompt_cache=False goes without it. Another "
+            "provider's model ignores it, with a warning. Off by default: "
+            "nothing is sent."
+        ),
+    )
     context_window: Optional[int] = Field(
         default=None,
         ge=1,

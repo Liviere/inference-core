@@ -33,6 +33,7 @@ from .config import (
 from .emulation import create_emulated_chat_model, is_llm_emulation_enabled
 from .mistral_usage import ChatMistralAICachedTokens
 from .model_identity import tag_model_identity
+from .openai_cache import ChatOpenAICacheBreakpoints, without_cache_breakpoints
 from .param_policy import normalize_params
 from .provider_registry import get_registered_provider
 
@@ -132,8 +133,11 @@ def without_prompt_cache(model: Any) -> Any:
     nothing is returned as it is.
 
     A side job whose prompt is different every time (an analysis of the run,
-    a summary) only pays for cache writes that are never read.
+    a summary) only pays for cache writes that are never read. An OpenAI
+    model's breakpoint at the end of the system prompt
+    (``prompt_cache_breakpoints``) goes too.
     """
+    model = without_cache_breakpoints(model)
     model_kwargs = getattr(model, "model_kwargs", None)
     if not isinstance(model_kwargs, dict) or "cache_control" not in model_kwargs:
         return model
@@ -162,6 +166,7 @@ def _prices_cache_reads(config: ModelConfig) -> bool:
 #: whether a value is a request for it (the default is not).
 _PROVIDER_SETTINGS = (
     ("streamed_usage", frozenset({ModelProvider.FIREWORKS.value}), True),
+    ("prompt_cache_breakpoints", frozenset({ModelProvider.OPENAI.value}), True),
 )
 
 
@@ -199,9 +204,9 @@ class LLMModelFactory:
             model_name: Name of the model to create
             **kwargs: Additional parameters to override model config.
                 ``prompt_cache`` overrides the entry's for this model:
-                ``False`` builds it without the prompt cache, ``"5m"`` or
-                ``"1h"`` with that lifetime. Left out (or ``None``), the
-                entry decides.
+                ``False`` builds it without the prompt cache (and without
+                ``prompt_cache_breakpoints``), ``"5m"`` or ``"1h"`` with
+                that lifetime. Left out (or ``None``), the entry decides.
 
         Returns:
             BaseChatModel instance or None if model cannot be created
@@ -224,9 +229,10 @@ class LLMModelFactory:
 
         model_config = self.config.get_model_config(model_name)
         if model_config is not None and override_cache:
-            model_config = model_config.model_copy(
-                update={"prompt_cache": prompt_cache or None}
-            )
+            update: Dict[str, Any] = {"prompt_cache": prompt_cache or None}
+            if prompt_cache is False:
+                update["prompt_cache_breakpoints"] = False
+            model_config = model_config.model_copy(update=update)
         if not model_config:
             if is_llm_emulation_enabled():
                 logger.info(
@@ -316,6 +322,7 @@ class LLMModelFactory:
             "request_options",
             "prompt_cache_routing",
             "streamed_usage",
+            "prompt_cache_breakpoints",
             *_CLAUDE_ONLY_SETTINGS,
         }
         # Dump config to dict, which now includes extra fields (nested dicts etc.)
@@ -454,6 +461,10 @@ class LLMModelFactory:
             # runtime LLMConfig.with_overrides value); unset keeps the SDK default.
             if config.base_url:
                 params = {**params, "base_url": config.base_url}
+            if config.prompt_cache_breakpoints:
+                return ChatOpenAICacheBreakpoints(
+                    model=config.name, api_key=api_key, **params
+                )
             return ChatOpenAI(model=config.name, api_key=api_key, **params)
         except Exception as e:
             logger.error(f"Failed to create OpenAI model: {str(e)}")

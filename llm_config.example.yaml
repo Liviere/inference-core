@@ -132,6 +132,21 @@ models:
   # GPT-5.6 on). Another provider's model with it gets nothing, with a
   # warning. An older inference-core passes the field on to the model and the
   # request is refused: set it only once the code that reads it runs.
+  #
+  # `prompt_cache_breakpoints: true` (OpenAI from GPT-5.6 only, off by default;
+  # earlier models refuse it) marks the end of the system prompt as an
+  # explicit cache breakpoint and sends prompt_cache_options {mode: implicit,
+  # ttl: 30m}. Measured on GPT-6 Luna (2026-11-03, a 5,200-token system prompt
+  # with six tools, one routing key, three runs each): it changed nothing. The
+  # automatic cache already read the shared prefix (about 5,170 tokens) in a
+  # new conversation, in the next turn and after a 24,500-token history was
+  # replaced by a summary, with the option and without it. Leave it off unless
+  # a measurement on another model shows reads it adds.
+  #
+  # From GPT-5.6 every prompt cache write is billed at 1.25x input, the
+  # automatic cache's included: a first call writes nearly its whole prompt.
+  # Price `cache_creation_tokens` on those entries (see gpt-6.1-sol), or the
+  # writes are counted at the input price and the cost marked estimated.
 
   # A safety model through the gateway, on one host only (amazon_ireland): a request
   # with eu_native: true finds no endpoint, and neither does a Cortecs project that
@@ -190,6 +205,11 @@ models:
       extras:
         cache_read_tokens:
           cost_per_1m: 0.1 # cached input $0.10 per 1M
+        # From GPT-5.6 a cache write (30 minutes) costs 1.25x input; the usage
+        # names it cache_write_tokens (LangChain: cache_creation). Unpriced, it
+        # would be counted at the input price and the cost marked estimated.
+        cache_creation_tokens:
+          cost_per_1m: 2.5 # cache write $2.50 per 1M
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
@@ -221,6 +241,8 @@ models:
       extras:
         cache_read_tokens:
           cost_per_1m: 0.01 # cached input $0.01 per 1M
+        cache_creation_tokens:
+          cost_per_1m: 0.125 # cache write (1.25x input) $0.125 per 1M
       key_aliases:
         prompt_tokens: input_tokens
         completion_tokens: output_tokens
