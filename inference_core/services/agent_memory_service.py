@@ -48,6 +48,85 @@ MEMORIES_STORE_NAME = os.getenv("MEMORIES_STORE_NAME", "memories")
 INDEXED_FIELDS = ["content", "topic"]
 
 
+def drop_vectors_without_text(
+    store: Any,
+    namespace: Sequence[str],
+    key: str,
+    value: Dict[str, Any],
+    fields: Sequence[str] = INDEXED_FIELDS,
+) -> int:
+    """Delete the vectors of the indexed fields *value* has no text in.
+
+    ``store.put`` embeds the fields that give text and writes their vectors
+    over the old ones, but leaves the vector of a field that no longer gives
+    any (cleared to ``None``, or gone from the value): a search still finds
+    the item by what that field used to say. Called after such a put, this
+    deletes those vectors (``field`` and, for a field that was a list,
+    ``field.N``). The fields that give text keep theirs.
+
+    Supports LangGraph's ``PostgresStore``, ``SqliteStore`` and
+    ``InMemoryStore``; any other store is left as it is. Returns the number
+    of vectors deleted; a failure is logged (without the item's text) and
+    leaves the vectors as they were.
+    """
+    from langgraph.store.base.embed import get_text_at_path, tokenize_path
+
+    empty = [
+        name for name in fields if not get_text_at_path(value, tokenize_path(name))
+    ]
+    if not empty:
+        return 0
+    try:
+        return _drop_field_vectors(store, tuple(namespace), key, empty)
+    except Exception as exc:  # noqa: BLE001 - the put stands either way
+        logger.warning(
+            "Could not delete the vectors of fields without text: %s",
+            type(exc).__name__,
+        )
+        return 0
+
+
+def _drop_field_vectors(
+    store: Any, namespace: Tuple[str, ...], key: str, names: Sequence[str]
+) -> int:
+    from langgraph.store.memory import InMemoryStore
+    from langgraph.store.postgres import PostgresStore
+    from langgraph.store.sqlite import SqliteStore
+
+    prefix = ".".join(namespace)
+    patterns = [f"{name}.%" for name in names]
+    if isinstance(store, PostgresStore):
+        with store._cursor() as cur:
+            cur.execute(
+                "DELETE FROM store_vectors WHERE prefix = %s AND key = %s "
+                "AND (field_name = ANY(%s) OR field_name LIKE ANY(%s))",
+                (prefix, key, list(names), patterns),
+            )
+            return cur.rowcount or 0
+    if isinstance(store, SqliteStore):
+        matches = " OR ".join(["field_name = ?"] * len(names) + ["field_name LIKE ?"] * len(patterns))
+        with store._cursor() as cur:
+            cur.execute(
+                f"DELETE FROM store_vectors WHERE prefix = ? AND key = ? AND ({matches})",
+                (prefix, key, *names, *patterns),
+            )
+            return cur.rowcount or 0
+    if isinstance(store, InMemoryStore):
+        vectors = store._vectors.get(namespace, {}).get(key)
+        if not vectors:
+            return 0
+        gone = [
+            path
+            for path in vectors
+            if path in names or any(path.startswith(f"{name}.") for name in names)
+        ]
+        for path in gone:
+            del vectors[path]
+        return len(gone)
+    logger.debug("No way to delete field vectors of %s", type(store).__name__)
+    return 0
+
+
 # =============================================================================
 # CoALA Memory Categories
 # =============================================================================
@@ -495,6 +574,7 @@ class MemoryOptions:
     entry_renderer: Optional[Callable[["MemoryStoreDocument", str], str]] = None
     repeat_threshold: Optional[float] = None
     supersede_held_changes: bool = False
+    drop_cleared_field_vectors: bool = False
     related_origin: Dict[str, Any] = field(default_factory=dict)
     origin_kept_out: Tuple[str, ...] = ()
     labels_kept_out: Tuple[str, ...] = ()
@@ -514,6 +594,7 @@ class MemoryOptions:
             entry_renderer=self.entry_renderer,
             repeat_threshold=self.repeat_threshold,
             supersede_held_changes=self.supersede_held_changes,
+            drop_cleared_field_vectors=self.drop_cleared_field_vectors,
             related_origin=self.related_origin,
             origin_kept_out=self.origin_kept_out,
             labels_kept_out=self.labels_kept_out,
@@ -883,6 +964,7 @@ class AgentMemoryStoreService:
         ] = None,
         repeat_threshold: Optional[float] = None,
         supersede_held_changes: bool = False,
+        drop_cleared_field_vectors: bool = False,
         related_origin: Optional[Dict[str, Any]] = None,
         origin_kept_out: Sequence[str] = (),
         labels_kept_out: Sequence[str] = (),
@@ -912,6 +994,11 @@ class AgentMemoryStoreService:
             supersede_held_changes: A held change to a memory takes the place
                 of the changes to it already held, so that one at most waits
                 per memory. ``False`` keeps them all.
+            drop_cleared_field_vectors: A change to a memory that leaves an
+                indexed field without text (a topic cleared, say) deletes
+                that field's vector too (:func:`drop_vectors_without_text`),
+                so a search no longer finds the memory by what the field
+                said. ``False`` leaves the vector, as the store does.
             related_origin: What the memories of runs like this one record in
                 their origin (for instance the job that starts them). The
                 analysis after the run is shown those first, with their ids
@@ -955,6 +1042,7 @@ class AgentMemoryStoreService:
         self.entry_renderer = entry_renderer
         self.repeat_threshold = repeat_threshold
         self.supersede_held_changes = supersede_held_changes
+        self.drop_cleared_field_vectors = drop_cleared_field_vectors
         self.related_origin = dict(related_origin or {})
         self.origin_kept_out = tuple(origin_kept_out)
         self.labels_kept_out = tuple(
@@ -1567,14 +1655,12 @@ class AgentMemoryStoreService:
                 replaces=memory_id,
             )
             return MemoryWriteOutcome(HELD, memory_id, found.space, decision.reason)
-        self.store.put(
-            namespace,
-            memory_id,
-            self._stored_value(memory_data),
-            index=INDEXED_FIELDS,
-        )
+        stored = self._stored_value(memory_data)
+        self.store.put(namespace, memory_id, stored, index=INDEXED_FIELDS)
         if namespace != found.namespace:
             self.store.delete(found.namespace, memory_id)
+        elif self.drop_cleared_field_vectors:
+            drop_vectors_without_text(self.store, namespace, memory_id, stored)
         return MemoryWriteOutcome(UPDATED, memory_id, found.space)
 
     def _unchanged(self, old_value: Dict[str, Any], content: str) -> bool:
@@ -2720,8 +2806,15 @@ def edit_user_memory_entry(
     key: str,
     content: str,
     topic: Optional[str] = None,
+    *,
+    drop_cleared_vectors: bool = False,
 ) -> bool:
-    """Change the text of a memory where it lies; when it was saved stays."""
+    """Change the text of a memory where it lies; when it was saved stays.
+
+    An empty *topic* clears it. With *drop_cleared_vectors* the cleared
+    topic's vector goes too (:func:`drop_vectors_without_text`); without it
+    the store keeps it, and a search still finds the memory by that topic.
+    """
     ns = tuple(namespace)
     if not _owned(ns, user_id):
         logger.warning("Refusing to edit memory outside user's namespace: %s", ns)
@@ -2740,6 +2833,8 @@ def edit_user_memory_entry(
             else None
         )
     store.put(ns, key, value, index=INDEXED_FIELDS)
+    if drop_cleared_vectors:
+        drop_vectors_without_text(store, ns, key, value)
     return True
 
 
@@ -2887,10 +2982,20 @@ def edit_user_long_term_memory_entry(
     key: str,
     content: str,
     topic: Optional[str] = None,
+    *,
+    drop_cleared_vectors: bool = False,
 ) -> bool:
     """Open the configured store, with its index, and change one memory's text."""
     with open_memory_store(with_index=True) as store:
-        return edit_user_memory_entry(store, user_id, namespace, key, content, topic)
+        return edit_user_memory_entry(
+            store,
+            user_id,
+            namespace,
+            key,
+            content,
+            topic,
+            drop_cleared_vectors=drop_cleared_vectors,
+        )
 
 
 def delete_user_long_term_memory_entry(

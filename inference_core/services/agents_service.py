@@ -1531,6 +1531,9 @@ class AgentService:
                         supersede_held_changes=(
                             options.supersede_held_changes if options else False
                         ),
+                        drop_cleared_field_vectors=(
+                            options.drop_cleared_field_vectors if options else False
+                        ),
                         related_origin=options.related_origin if options else None,
                         **({"hold_path": options.hold_path} if options else {}),
                     )

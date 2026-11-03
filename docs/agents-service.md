@@ -491,6 +491,16 @@ A held change to a memory waits next to the changes to it already held. With
 `MemoryOptions(supersede_held_changes=True)` it takes their place, so that one
 change at most waits per memory; held new memories are left as they are.
 
+The store embeds the indexed fields (`content`, `topic`) that give text and
+writes their vectors over the old ones, but keeps the vector of a field that
+no longer gives any: a memory whose topic was cleared is still found by that
+topic. With `MemoryOptions(drop_cleared_field_vectors=True)` a change to a
+memory deletes those vectors after its put, and so does
+`edit_user_memory_entry(..., drop_cleared_vectors=True)`. Both call
+`drop_vectors_without_text(store, namespace, key, value)`, which works on
+LangGraph's `PostgresStore`, `SqliteStore` and `InMemoryStore` and leaves any
+other store as it is. Without the option the store's behaviour is kept.
+
 What the service records about a run in `origin` (a job's id, say) need not be
 written into a memory's text as well, and an analysis that copies it there
 anyway can be stopped. With `MemoryOptions(origin_kept_out=(...))`, a memory
