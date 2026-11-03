@@ -92,6 +92,16 @@ Explicit environment variables or dotenv entries still win, so you can opt back 
 
 `SECRET_KEY` should be at least 32 bytes long for HS256. PyJWT emits `InsecureKeyLengthWarning` for shorter keys, including the default value.
 
+### The user's database session
+
+`get_current_user` reads the user on the request's `get_db` session, which keeps its connection checked out until the request ends. An endpoint that waits on something else (a worker's result, a slow upstream) holds that connection for as long as it waits. `get_current_user_in_own_session` (`inference_core.core.dependecies`) reads the user the same way on a session of its own and closes it before the endpoint runs. It is not used unless the application overrides `get_current_user` with it:
+
+```python
+app.dependency_overrides[get_current_user] = get_current_user_in_own_session
+```
+
+The override also covers `get_current_active_user` and `get_current_superuser`.
+
 ## Redis / Celery
 
 | Variable                        | Default                  | Description                                                                |

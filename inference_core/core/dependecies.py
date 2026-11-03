@@ -71,19 +71,18 @@ async def get_current_user(
     Raises:
         HTTPException: If user not found
     """
-    # Fetch user from database and map to a simple dict for downstream use
-    import uuid
-
-    from sqlalchemy import select
-
-    user_uuid = uuid.UUID(token_data.user_id)
+    user_uuid = _uuid.UUID(token_data.user_id)
     result = await db.execute(select(User).where(User.id == user_uuid))
     user: User | None = result.scalar_one_or_none()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
+    return _user_dict(user)
 
+
+def _user_dict(user: User) -> dict:
+    """The authenticated user as the dependencies hand it on."""
     return {
         "id": str(user.id),
         "username": user.username,
@@ -96,6 +95,47 @@ async def get_current_user(
         "created_at": user.created_at,
         "updated_at": user.updated_at,
     }
+
+
+async def get_current_user_in_own_session(
+    token_data: TokenData = Depends(get_current_user_token),
+) -> dict:
+    """``get_current_user`` on a database session of its own, closed before
+    the endpoint runs.
+
+    ``get_current_user`` reads the user on the request's ``get_db`` session,
+    which keeps its connection checked out (in an open transaction) until the
+    request ends. An endpoint that then waits on something else, such as a
+    worker's result, holds that connection for as long as it waits. This
+    dependency reads the user the same way, returns the same dict, and gives
+    the connection back to the pool before it returns.
+
+    Not used by default. An application opts in by overriding
+    ``get_current_user``::
+
+        app.dependency_overrides[get_current_user] = get_current_user_in_own_session
+
+    which also covers ``get_current_active_user`` and
+    ``get_current_superuser``. A request whose endpoint uses the database
+    then checks out a connection once more, for the endpoint's own session.
+
+    A user who is not there is answered 404, as by ``get_current_user``,
+    raised after the session is closed.
+    """
+    from inference_core.database.sql import connection
+
+    user_uuid = _uuid.UUID(token_data.user_id)
+    found: Optional[dict] = None
+    async with connection.get_async_session() as db:
+        result = await db.execute(select(User).where(User.id == user_uuid))
+        user: User | None = result.scalar_one_or_none()
+        if user is not None:
+            found = _user_dict(user)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    return found
 
 
 # Optional auth (public mode support) ------------------------------------

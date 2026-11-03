@@ -269,6 +269,130 @@ class TestGetCurrentUser:
             await get_current_user(token_data, mock_db)
 
 
+class TestGetCurrentUserInOwnSession:
+    """``get_current_user`` on a session of its own, closed before it returns."""
+
+    USER_ID = "123e4567-e89b-12d3-a456-426614174000"
+
+    def _user(self):
+        user = MagicMock()
+        user.id = uuid.UUID(self.USER_ID)
+        user.username = "testuser"
+        user.email = "test@example.com"
+        user.first_name = "Test"
+        user.last_name = "User"
+        user.is_active = True
+        user.is_superuser = False
+        user.is_verified = True
+        user.created_at = "2023-01-01T00:00:00"
+        user.updated_at = "2023-01-01T00:00:00"
+        return user
+
+    def _sessions(self, found, events):
+        from contextlib import asynccontextmanager
+
+        session = AsyncMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = found
+        session.execute.return_value = result
+
+        @asynccontextmanager
+        async def get_async_session():
+            events.append("open")
+            try:
+                yield session
+            except Exception:
+                events.append("raised inside")
+                raise
+            finally:
+                events.append("closed")
+
+        return session, get_async_session
+
+    @pytest.mark.asyncio
+    async def test_the_same_user_as_get_current_user(self):
+        from inference_core.core.dependecies import (
+            get_current_user,
+            get_current_user_in_own_session,
+        )
+        from inference_core.database.sql import connection
+
+        token = TokenData(user_id=self.USER_ID)
+        events = []
+        session, sessions = self._sessions(self._user(), events)
+        with patch.object(connection, "get_async_session", sessions):
+            own = await get_current_user_in_own_session(token)
+
+        assert own == await get_current_user(token, session)
+        assert events == ["open", "closed"]
+
+    @pytest.mark.asyncio
+    async def test_the_session_is_closed_before_it_returns(self):
+        from inference_core.core.dependecies import get_current_user_in_own_session
+        from inference_core.database.sql import connection
+
+        events = []
+        _session, sessions = self._sessions(self._user(), events)
+        with patch.object(connection, "get_async_session", sessions):
+            await get_current_user_in_own_session(TokenData(user_id=self.USER_ID))
+            assert events[-1] == "closed"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_user_is_404_raised_after_the_session(self):
+        from inference_core.core.dependecies import get_current_user_in_own_session
+        from inference_core.database.sql import connection
+
+        events = []
+        _session, sessions = self._sessions(None, events)
+        with patch.object(connection, "get_async_session", sessions):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_current_user_in_own_session(TokenData(user_id=self.USER_ID))
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "User not found"
+        # Raised outside: get_async_session logs what is raised inside as an error.
+        assert events == ["open", "closed"]
+
+    @pytest.mark.asyncio
+    async def test_it_overrides_get_current_user_for_the_active_user(self):
+        """An app that overrides get_current_user gets it through
+        get_current_active_user, and the request's get_db is never used."""
+        from fastapi import Depends, FastAPI
+        from fastapi.testclient import TestClient
+
+        from inference_core.core.dependecies import (
+            get_current_active_user,
+            get_current_user,
+            get_current_user_in_own_session,
+            get_db,
+        )
+        from inference_core.core.security import get_current_user_token
+        from inference_core.database.sql import connection
+
+        app = FastAPI()
+
+        @app.get("/me")
+        async def me(user: dict = Depends(get_current_active_user)):
+            return {"id": user["id"]}
+
+        def no_request_session():
+            raise AssertionError("the request's session was asked for")
+
+        app.dependency_overrides[get_current_user] = get_current_user_in_own_session
+        app.dependency_overrides[get_db] = no_request_session
+        app.dependency_overrides[get_current_user_token] = lambda: TokenData(
+            user_id=self.USER_ID
+        )
+        events = []
+        _session, sessions = self._sessions(self._user(), events)
+        with patch.object(connection, "get_async_session", sessions):
+            response = TestClient(app).get("/me")
+
+        assert response.status_code == 200
+        assert response.json() == {"id": self.USER_ID}
+        assert events == ["open", "closed"]
+
+
 class TestGetDbDependency:
     """Test get_db dependency"""
 
