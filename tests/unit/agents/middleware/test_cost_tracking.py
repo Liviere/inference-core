@@ -403,6 +403,53 @@ class TestToolErrorLog:
         ]
 
 
+class TestToolErrorResult:
+    """What the result a tool's error is turned into says."""
+
+    def test_by_default_it_is_the_text_with_the_default_status(self, middleware):
+        handler = MagicMock(side_effect=RuntimeError("Account 4711 not found"))
+
+        result = middleware.wrap_tool_call(_tool_request(), handler)
+
+        assert result.content == "Error: Account 4711 not found"
+        assert result.status == "success"
+
+    async def test_with_the_options_it_is_an_error_naming_only_the_type(
+        self, middleware, monkeypatch
+    ):
+        monkeypatch.setattr(CostTrackingMiddleware, "tool_error_status", True)
+        monkeypatch.setattr(CostTrackingMiddleware, "tool_error_result_text", False)
+
+        async def handler(request):
+            raise RuntimeError("Account 4711 not found")
+
+        results = [
+            middleware.wrap_tool_call(
+                _tool_request(), MagicMock(side_effect=ValueError("Account 4711"))
+            ),
+            await middleware.awrap_tool_call(
+                _tool_request(call_id="tool-call-2"), handler
+            ),
+        ]
+
+        said = (
+            "Error: the tool call failed ({}), so its action was not done. Say "
+            "so in your reply instead of guessing what happened."
+        )
+        assert [(r.status, r.content, r.tool_call_id) for r in results] == [
+            ("error", said.format("ValueError"), "tool-call-1"),
+            ("error", said.format("RuntimeError"), "tool-call-2"),
+        ]
+
+    def test_the_status_alone_keeps_the_text(self, middleware, monkeypatch):
+        monkeypatch.setattr(CostTrackingMiddleware, "tool_error_status", True)
+        handler = MagicMock(side_effect=RuntimeError("boom"))
+
+        result = middleware.wrap_tool_call(_tool_request(), handler)
+
+        assert (result.status, result.content) == ("error", "Error: boom")
+
+
 class _CallingModel(BaseChatModel):
     """Calls ``slow_tool`` first, then answers; counts its calls."""
 

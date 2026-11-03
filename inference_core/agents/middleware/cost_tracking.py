@@ -229,6 +229,19 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             it to ``False`` on the class: the warning then names the tool,
             the exception's type and the tool call's id. The model still gets
             the text as the tool's result.
+        tool_error_status: Whether the result a tool's error is turned into
+            says so: ``ToolMessage(status="error")``. Off by default: the
+            result then carries the default status, ``success``, and reads as
+            a call that ran. A consumer that tells failed calls from those
+            that ran by the status (in its timeline, its guards) sets it to
+            ``True`` on the class.
+        tool_error_result_text: Whether that result carries the exception's
+            text (the default). A consumer whose tools' errors can quote what
+            they read (a page, a document, a provider's error that repeats a
+            request) sets it to ``False`` on the class: the result then names
+            only the exception's type and says the action was not done, and
+            nothing of the text reaches the model, the stream or a stored
+            result.
         persisted_per_message: Whether ``after_model`` finds the call it is
             about by the id of the model's message, instead of taking the last
             call logged. Off by default. A consumer whose subagents run at the
@@ -258,6 +271,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
     state_schema = CostTrackingState
     log_tool_error_text: bool = True
+    tool_error_status: bool = False
+    tool_error_result_text: bool = True
     persisted_per_message: bool = False
     state_cost_with_key_aliases: bool = False
     log_failed_model_calls: bool = False
@@ -719,7 +734,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
             )
             self._log_tool_error("", tool_name, e, tool_call_id)
-            return ToolMessage(content=f"Error: {str(e)}", tool_call_id=tool_call_id)
+            return self._tool_error_result(e, tool_call_id)
         # Tool timing is not persisted; no context tracking needed here.
 
     async def awrap_tool_call(
@@ -759,11 +774,28 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
             )
             self._log_tool_error("async, ", tool_name, e, tool_call_id)
-            return ToolMessage(content=f"Error: {str(e)}", tool_call_id=tool_call_id)
+            return self._tool_error_result(e, tool_call_id)
 
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+
+    def _tool_error_result(self, error: Exception, tool_call_id: str) -> ToolMessage:
+        """The result a tool's error is turned into, as the class options say."""
+        content = (
+            f"Error: {error}"
+            if self.tool_error_result_text
+            else (
+                f"Error: the tool call failed ({type(error).__name__}), so its "
+                "action was not done. Say so in your reply instead of guessing "
+                "what happened."
+            )
+        )
+        if self.tool_error_status:
+            return ToolMessage(
+                content=content, tool_call_id=tool_call_id, status="error"
+            )
+        return ToolMessage(content=content, tool_call_id=tool_call_id)
 
     def _log_tool_error(
         self, mode: str, tool_name: str, error: Exception, tool_call_id: str
