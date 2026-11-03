@@ -75,6 +75,21 @@ from inference_core.services._cancel import AgentCancelled
 logger = logging.getLogger(__name__)
 
 
+def _status_code_of(error: BaseException) -> Optional[int]:
+    """The HTTP status an exception of a provider's client carries, if any.
+
+    Read from ``status_code`` (OpenAI's and Anthropic's clients) or from the
+    ``response`` it holds (``httpx.HTTPStatusError``).
+    """
+    for value in (
+        getattr(error, "status_code", None),
+        getattr(getattr(error, "response", None), "status_code", None),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
 class CostTrackingState(AgentState):
     """Extended agent state for cost tracking middleware.
 
@@ -231,12 +246,21 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             the dimension that contains it, and the state's cost can be lower
             than the row's. A consumer that reads the state's cost (for
             metrics, or charging) sets it to ``True`` on the class.
+        log_failed_model_calls: Whether a model call that raises (an HTTP
+            error of the provider, a timeout) leaves a usage log row with
+            ``success=False``. Off by default: such a call then leaves no
+            row. The row names the exception's type and, when the exception
+            carries one, the HTTP status (``details["status_code"]``); it
+            carries no tokens, no cost and not the exception's text, which
+            can quote the request. The exception is raised on unchanged. A
+            cancelled run or a graph interrupt is not a failed call.
     """
 
     state_schema = CostTrackingState
     log_tool_error_text: bool = True
     persisted_per_message: bool = False
     state_cost_with_key_aliases: bool = False
+    log_failed_model_calls: bool = False
 
     def __init__(
         self,
@@ -592,7 +616,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         self._context().model_call_start_time = time.monotonic()
 
-        response = handler(request)
+        try:
+            response = handler(request)
+        except (GraphBubbleUp, AgentCancelled):
+            raise
+        except Exception as error:
+            if self.log_failed_model_calls:
+                self._persist_failure(request, error)
+            raise
 
         # Persist LLMRequestLog immediately — inside the same LangGraph node
         # as the model call.  This guarantees the log entry exists even when
@@ -618,7 +649,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
 
         self._context().model_call_start_time = time.monotonic()
 
-        response = await handler(request)
+        try:
+            response = await handler(request)
+        except (GraphBubbleUp, AgentCancelled):
+            raise
+        except Exception as error:
+            if self.log_failed_model_calls:
+                await self._apersist_failure(request, error)
+            raise
 
         # Use the async persist path to avoid spawning a new event loop via
         # finalize_sync / run_async_safely (which causes MissingGreenlet when
@@ -880,42 +918,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         if not fragment:
             return None
 
-        # The log needs a provider even for a model that could not be told:
-        # then it is this middleware's own, or a guess from the name.
-        provider = (
-            invoked.provider
-            or provider_name(self._provider)
-            or self._detect_provider(invoked.name)
-        )
         pricing_config = self._get_pricing_config(
             invoked.name, identified=invoked.identified
         )
-
-        # Resolve per-request IDs: prefer instance attrs (local),
-        # fall back to task-local context vars (Agent Server).
-        effective_user_id = self.user_id or get_user_id()
-        effective_session_id = self.session_id or get_session_id()
-        effective_request_id = self.request_id or get_request_id()
-        effective_instance_id = self.instance_id or get_instance_id()
-        effective_instance_name = self.instance_name or get_instance_name()
-
-        session = UsageSession(
-            task_type=self.task_type,
-            request_mode=self.request_mode,
-            model_name=invoked.name,
-            provider=provider,
-            reported_model_name=reported_name,
-            pricing_config=pricing_config,
-            user_id=effective_user_id,
-            session_id=effective_session_id,
-            request_id=effective_request_id,
-            logging_config=self.logging_config,
-            instance_id=effective_instance_id,
-            instance_name=effective_instance_name,
-        )
-
-        if self._ctx and self._ctx.model_call_start_time:
-            session.start_time = self._ctx.model_call_start_time
+        session = self._new_usage_session(invoked, reported_name, pricing_config)
 
         details = get_usage_details(getattr(request, "model", None))
         if is_estimated:
@@ -931,6 +937,98 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             pricing_config=pricing_config,
             details=details or None,
         )
+
+    def _new_usage_session(
+        self,
+        invoked: _InvokedModel,
+        reported_name: Optional[str],
+        pricing_config: Optional[PricingConfig],
+    ) -> UsageSession:
+        """The usage session of one model call on *invoked*, timed from the
+        start of the call."""
+        # The log needs a provider even for a model that could not be told:
+        # then it is this middleware's own, or a guess from the name.
+        provider = (
+            invoked.provider
+            or provider_name(self._provider)
+            or self._detect_provider(invoked.name)
+        )
+
+        # Resolve per-request IDs: prefer instance attrs (local),
+        # fall back to task-local context vars (Agent Server).
+        session = UsageSession(
+            task_type=self.task_type,
+            request_mode=self.request_mode,
+            model_name=invoked.name,
+            provider=provider,
+            reported_model_name=reported_name,
+            pricing_config=pricing_config,
+            user_id=self.user_id or get_user_id(),
+            session_id=self.session_id or get_session_id(),
+            request_id=self.request_id or get_request_id(),
+            logging_config=self.logging_config,
+            instance_id=self.instance_id or get_instance_id(),
+            instance_name=self.instance_name or get_instance_name(),
+        )
+
+        if self._ctx and self._ctx.model_call_start_time:
+            session.start_time = self._ctx.model_call_start_time
+        return session
+
+    def _prepare_failure(
+        self, request: ModelRequest, error: Exception
+    ) -> tuple[UsageSession, Exception, Dict[str, Any]]:
+        """The session, the error as the row tells it and the details of a
+        failed call (``log_failed_model_calls``).
+
+        No pricing: nothing was used that the provider counted, so the row
+        has no cost. The row's error is an exception of the same class name
+        without text, since the provider's text can quote the request.
+        """
+        invoked = self._resolve_invoked_model(request, None)
+        session = self._new_usage_session(invoked, None, None)
+        details = get_usage_details(getattr(request, "model", None))
+        status = _status_code_of(error)
+        if status is not None:
+            details["status_code"] = status
+        textless = type(type(error).__name__, (Exception,), {})()
+        return session, textless, details
+
+    def _persist_failure(self, request: ModelRequest, error: Exception) -> None:
+        """Log a model call that raised; never raises itself."""
+        try:
+            session, textless, details = self._prepare_failure(request, error)
+            session.finalize_sync(
+                success=False,
+                error=textless,
+                streamed=False,
+                partial=False,
+                details=details or None,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to log a failed model call (%s): %s",
+                type(error).__name__,
+                type(e).__name__,
+            )
+
+    async def _apersist_failure(self, request: ModelRequest, error: Exception) -> None:
+        """Async variant of :meth:`_persist_failure`."""
+        try:
+            session, textless, details = self._prepare_failure(request, error)
+            await session.finalize(
+                success=False,
+                error=textless,
+                streamed=False,
+                partial=False,
+                details=details or None,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to log a failed model call (%s): %s",
+                type(error).__name__,
+                type(e).__name__,
+            )
 
     def _take_persisted(self, state: CostTrackingState) -> Optional[_PersistedCall]:
         """The logged call this ``after_model`` is about, if one was recorded."""

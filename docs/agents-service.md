@@ -212,6 +212,16 @@ its own model, or for a call whose model could not be told. A run resumed after
 an interrupt continues on a fresh middleware instance, past `before_agent`; its
 calls are logged in the model node all the same.
 
+A call that raises (an HTTP error of the provider, a timeout) leaves no row by
+default. With `CostTrackingMiddleware.log_failed_model_calls = True` (a class
+attribute, off by default) it leaves one with `success=False`: the configured
+model and provider, `error_type` the exception's class, the HTTP status in
+`details["status_code"]` when the exception carries one, no tokens and no cost.
+The exception's text is not kept, since a provider's error can quote the
+request; the exception is raised on unchanged. A cancelled run and a graph
+interrupt are not failed calls. Each attempt of a fallback chain passes the
+middleware, so every model that failed leaves its row.
+
 Whoever builds a model may write details on it that every usage log of a call
 on it should carry: `tag_usage_details(model, {...})` in
 `inference_core/llm/model_identity.py`, next to the model's identity. The

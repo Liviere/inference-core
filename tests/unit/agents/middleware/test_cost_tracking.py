@@ -1479,3 +1479,178 @@ def _row_cost(final_usage, pricing):
     return float(
         PricingCalculator.compute_cost(normalized, pricing)["cost_total_usd"]
     )
+
+
+# ---------------------------------------------------------------------------
+# log_failed_model_calls
+# ---------------------------------------------------------------------------
+
+
+def _provider_refusal(status: int = 422):
+    """What a provider's client raises for a refused request: the text quotes
+    the request."""
+    import httpx
+
+    request = httpx.Request("POST", "https://api.example.test/v1/chat/completions")
+    response = httpx.Response(
+        status, request=request, text='{"detail": "the user wrote: secret words"}'
+    )
+    return httpx.HTTPStatusError(
+        "Client error '422 Unprocessable Entity': the user wrote: secret words",
+        request=request,
+        response=response,
+    )
+
+
+class TestFailedModelCalls:
+    """A model call that raises leaves a row only when the option is on."""
+
+    @pytest.fixture
+    def rows(self):
+        """The session and the arguments of each row finalized."""
+        logged = []
+
+        def finalize_sync(session, **kwargs):
+            logged.append((session, kwargs))
+            return uuid.uuid4()
+
+        async def finalize(session, **kwargs):
+            logged.append((session, kwargs))
+            return uuid.uuid4()
+
+        with (
+            patch.object(UsageSession, "finalize_sync", finalize_sync),
+            patch.object(UsageSession, "finalize", finalize),
+        ):
+            yield logged
+
+    @staticmethod
+    def _failing(error):
+        def handler(_request):
+            raise error
+
+        return handler
+
+    @staticmethod
+    def _afailing(error):
+        async def handler(_request):
+            raise error
+
+        return handler
+
+    def test_by_default_a_failed_call_leaves_no_row(self, middleware, rows):
+        error = _provider_refusal()
+
+        with pytest.raises(type(error)):
+            middleware.wrap_model_call(MagicMock(), self._failing(error))
+
+        assert rows == []
+
+    def test_a_failed_call_leaves_one_row_without_text_or_cost(
+        self, middleware, rows, monkeypatch
+    ):
+        monkeypatch.setattr(CostTrackingMiddleware, "log_failed_model_calls", True)
+        error = _provider_refusal()
+
+        with pytest.raises(type(error)) as raised:
+            middleware.wrap_model_call(MagicMock(), self._failing(error))
+
+        assert raised.value is error
+        [(session, kwargs)] = rows
+        assert kwargs["success"] is False
+        assert type(kwargs["error"]).__name__ == "HTTPStatusError"
+        assert str(kwargs["error"]) == ""
+        assert kwargs.get("final_usage") is None
+        assert kwargs["details"]["status_code"] == 422
+        assert session.pricing_config is None
+        assert session.model_name == "gpt-4o"
+        assert session.provider == "openai"
+        assert session.request_id == "req-1"
+
+    async def test_async_a_failed_call_leaves_one_row(
+        self, middleware, rows, monkeypatch
+    ):
+        monkeypatch.setattr(CostTrackingMiddleware, "log_failed_model_calls", True)
+        error = TimeoutError("read timed out")
+
+        with pytest.raises(TimeoutError):
+            await middleware.awrap_model_call(MagicMock(), self._afailing(error))
+
+        [(session, kwargs)] = rows
+        assert kwargs["success"] is False
+        assert type(kwargs["error"]).__name__ == "TimeoutError"
+        assert "status_code" not in (kwargs["details"] or {})
+
+    @pytest.mark.parametrize("make_stop", _STOPS)
+    async def test_a_stop_is_not_a_failed_call(
+        self, middleware, rows, monkeypatch, make_stop
+    ):
+        monkeypatch.setattr(CostTrackingMiddleware, "log_failed_model_calls", True)
+        stop = make_stop()
+
+        with pytest.raises(type(stop)):
+            middleware.wrap_model_call(MagicMock(), self._failing(stop))
+        with pytest.raises(type(stop)):
+            await middleware.awrap_model_call(MagicMock(), self._afailing(stop))
+
+        assert rows == []
+
+    def test_a_row_that_cannot_be_written_does_not_hide_the_error(
+        self, middleware, monkeypatch
+    ):
+        monkeypatch.setattr(CostTrackingMiddleware, "log_failed_model_calls", True)
+        error = _provider_refusal()
+
+        with (
+            patch.object(UsageSession, "finalize_sync", side_effect=RuntimeError()),
+            pytest.raises(type(error)) as raised,
+        ):
+            middleware.wrap_model_call(MagicMock(), self._failing(error))
+
+        assert raised.value is error
+
+
+async def test_the_failed_row_keeps_no_text_and_no_cost(monkeypatch):
+    """What reaches the database: the class name, no message, no tokens, no
+    cost."""
+    from contextlib import asynccontextmanager
+
+    import inference_core.llm.usage_logging as usage_logging
+
+    monkeypatch.setattr(CostTrackingMiddleware, "log_failed_model_calls", True)
+    added = []
+
+    class _Session:
+        def add(self, entry):
+            added.append(entry)
+
+        async def commit(self):
+            pass
+
+        async def refresh(self, entry):
+            entry.id = uuid.uuid4()
+
+    @asynccontextmanager
+    async def _session():
+        yield _Session()
+
+    monkeypatch.setattr(usage_logging, "get_async_session", _session)
+    middleware = CostTrackingMiddleware(
+        pricing_config=None, task_type="agent", provider="mistral", model_name="m"
+    )
+    error = _provider_refusal()
+
+    async def handler(_request):
+        raise error
+
+    with pytest.raises(type(error)):
+        await middleware.awrap_model_call(MagicMock(), handler)
+
+    [row] = added
+    assert row.success is False
+    assert row.error_type == "HTTPStatusError"
+    assert not row.error_message
+    assert "secret" not in repr(row.details) + repr(row.usage_raw)
+    assert row.input_tokens is None and row.output_tokens is None
+    assert row.cost_total_usd is None
+    assert row.details["status_code"] == 422
