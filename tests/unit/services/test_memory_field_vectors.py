@@ -69,7 +69,12 @@ class TestDropVectorsWithoutText:
 
     def test_a_field_of_several_texts(self, store):
         fields = ["content", "tags[*]"]
-        store.put(NAMESPACE, "m1", {"content": "by train", "tags": ["travel", "rail"]}, index=fields)
+        store.put(
+            NAMESPACE,
+            "m1",
+            {"content": "by train", "tags": ["travel", "rail"]},
+            index=fields,
+        )
         assert _vectors(store) == {"content", "tags[*].0", "tags[*].1"}
         value = {"content": "by bus", "tags": []}
         store.put(NAMESPACE, "m1", value, index=fields)
@@ -154,7 +159,9 @@ class TestUpdateMemory:
         return namespace
 
     @pytest.mark.asyncio
-    async def test_a_change_without_a_topic_drops_its_vector_with_the_option(self, store):
+    async def test_a_change_without_a_topic_drops_its_vector_with_the_option(
+        self, store
+    ):
         service = MemoryOptions(
             spaces=(GENERAL,), drop_cleared_field_vectors=True
         ).service(store)

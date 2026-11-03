@@ -104,7 +104,9 @@ def _drop_field_vectors(
             )
             return cur.rowcount or 0
     if isinstance(store, SqliteStore):
-        matches = " OR ".join(["field_name = ?"] * len(names) + ["field_name LIKE ?"] * len(patterns))
+        matches = " OR ".join(
+            ["field_name = ?"] * len(names) + ["field_name LIKE ?"] * len(patterns)
+        )
         with store._cursor() as cur:
             cur.execute(
                 f"DELETE FROM store_vectors WHERE prefix = ? AND key = ? AND ({matches})",
