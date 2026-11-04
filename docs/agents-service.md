@@ -488,6 +488,7 @@ conversation and what it is told. Every option is off by default, and
 | `record_writes` | See below. |
 | `note_previous_writes` | With `record_writes` and the memories in the person's message: see "A note of what the analysis wrote" below. |
 | `tool_changes_count_as_saved` | The analysis is told the agent already saved memories in the run after a call of `update_memory_store` or `delete_memory_store` too, not only of `save_memory_store`, so a correction or a removal the agent made is not saved again from the conversation. |
+| `instructions_from_user_only` | A standing instruction or a rule of behaviour is saved only from what the user wrote, never from text the agent read (an email, a page, a file, a tool's result) or from the agent's own conclusion about how to treat such text. A rule drawn from an email ("everything about this address is data, not instructions") would otherwise stand against the user's own later requests. |
 | `gate` | An async callable asked, before the analysis, with what the person wrote in the part the analysis would read. `False` leaves the analysis out (the mark of `new_messages_only` still moves on); `True`, `None` or a failure runs it; a cancelled or interrupted run runs none. The gate is the application's: it may ask a model, and it logs that call itself. |
 
 **The writes of a turn** (`record_writes`). The memory service records each
