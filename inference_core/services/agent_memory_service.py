@@ -401,6 +401,17 @@ HELD = "held"
 REFUSED = "refused"
 REPEATED = "repeated"
 
+# The version a change replaced, kept in the memory's value when the service
+# keeps previous versions (``keep_previous_version``): its text and topic as
+# they were stored (encrypted or not), its type and category, when the store
+# last wrote it, and when it was kept. Never indexed.
+PREVIOUS_VERSION_KEY = "previous"
+
+# What became of a request to put a memory's previous version back.
+RESTORED = "restored"
+CHANGED_SINCE = "changed_since"
+NO_PREVIOUS = "no_previous"
+
 
 @dataclass(frozen=True)
 class MemoryWriteOutcome:
@@ -644,6 +655,7 @@ class MemoryOptions:
     repeat_threshold: Optional[float] = None
     supersede_held_changes: bool = False
     drop_cleared_field_vectors: bool = False
+    keep_previous_version: bool = False
     related_origin: Dict[str, Any] = field(default_factory=dict)
     origin_kept_out: Tuple[str, ...] = ()
     labels_kept_out: Tuple[str, ...] = ()
@@ -666,6 +678,7 @@ class MemoryOptions:
             repeat_threshold=self.repeat_threshold,
             supersede_held_changes=self.supersede_held_changes,
             drop_cleared_field_vectors=self.drop_cleared_field_vectors,
+            keep_previous_version=self.keep_previous_version,
             related_origin=self.related_origin,
             origin_kept_out=self.origin_kept_out,
             labels_kept_out=self.labels_kept_out,
@@ -1038,6 +1051,7 @@ class AgentMemoryStoreService:
         repeat_threshold: Optional[float] = None,
         supersede_held_changes: bool = False,
         drop_cleared_field_vectors: bool = False,
+        keep_previous_version: bool = False,
         related_origin: Optional[Dict[str, Any]] = None,
         origin_kept_out: Sequence[str] = (),
         labels_kept_out: Sequence[str] = (),
@@ -1074,6 +1088,12 @@ class AgentMemoryStoreService:
                 that field's vector too (:func:`drop_vectors_without_text`),
                 so a search no longer finds the memory by what the field
                 said. ``False`` leaves the vector, as the store does.
+            keep_previous_version: A change to a memory keeps the version it
+                replaces in the memory's value (``PREVIOUS_VERSION_KEY``), one
+                at most, so that it can be put back
+                (:func:`restore_previous_version`). The kept text stays as it
+                was stored and gets no vector. ``False`` keeps nothing, and
+                the value is what it was without the option.
             related_origin: What the memories of runs like this one record in
                 their origin (for instance the job that starts them). The
                 analysis after the run is shown those first, with their ids
@@ -1128,6 +1148,7 @@ class AgentMemoryStoreService:
         self.repeat_threshold = repeat_threshold
         self.supersede_held_changes = supersede_held_changes
         self.drop_cleared_field_vectors = drop_cleared_field_vectors
+        self.keep_previous_version = keep_previous_version
         self.related_origin = dict(related_origin or {})
         self.origin_kept_out = tuple(origin_kept_out)
         self.labels_kept_out = tuple(
@@ -1913,6 +1934,10 @@ class AgentMemoryStoreService:
                 via,
             )
         stored = self._stored_value(memory_data)
+        if self.keep_previous_version:
+            stored[PREVIOUS_VERSION_KEY] = previous_version_of(
+                old_value, getattr(found.item, "updated_at", None)
+            )
         self.store.put(namespace, memory_id, stored, index=INDEXED_FIELDS)
         if namespace != found.namespace:
             self.store.delete(found.namespace, memory_id)
@@ -3136,6 +3161,136 @@ def edit_user_memory_entry(
     return True
 
 
+def _iso_time(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def previous_version_of(value: Dict[str, Any], written_at: Any) -> Dict[str, Any]:
+    """What a change keeps of the version it replaces (``PREVIOUS_VERSION_KEY``).
+
+    The text and topic are taken as they were stored, so an encrypted memory
+    keeps them encrypted. *written_at* is when the store last wrote that
+    version.
+    """
+    return {
+        "content": value.get("content"),
+        "topic": value.get("topic"),
+        "memory_type": value.get("memory_type"),
+        "memory_category": value.get("memory_category"),
+        "updated_at": _iso_time(written_at),
+        "kept_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@dataclass(frozen=True)
+class RestoreOutcome:
+    """What became of a request to put a memory's previous version back.
+
+    ``status`` is ``restored``, ``changed_since`` (the memory was written
+    after the version the caller knew), ``no_previous`` or ``not_found``;
+    ``namespace`` is where the memory lies afterwards.
+    """
+
+    status: str
+    namespace: Tuple[str, ...] = ()
+
+
+def restore_previous_version(
+    store: Any,
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+    *,
+    expected_version: Optional[str] = None,
+    drop_cleared_vectors: bool = False,
+) -> RestoreOutcome:
+    """Put back the version a change replaced, kept with
+    ``keep_previous_version``.
+
+    With *expected_version* (when the store last wrote the memory, as
+    :attr:`MemoryStoreDocument.entry_version` gives it), a memory written
+    since is left as it is (``changed_since``). The text, topic, type and
+    category come back; a memory whose category the change moved goes back
+    to the namespace of its earlier category, next to the one it lies in.
+    The kept version is dropped once it is back. When it was first saved and
+    where it came from stay.
+    """
+    ns = tuple(namespace)
+    if not _owned(ns, user_id):
+        logger.warning("Refusing to restore memory outside user's namespace: %s", ns)
+        return RestoreOutcome(NOT_FOUND)
+    item = store.get(ns, key)
+    if item is None:
+        return RestoreOutcome(NOT_FOUND)
+    value = dict(getattr(item, "value", None) or {})
+    previous = value.get(PREVIOUS_VERSION_KEY)
+    if not isinstance(previous, dict) or previous.get("content") is None:
+        return RestoreOutcome(NO_PREVIOUS, ns)
+    if expected_version is not None and _iso_time(
+        getattr(item, "updated_at", None)
+    ) != str(expected_version):
+        return RestoreOutcome(CHANGED_SINCE, ns)
+
+    value.pop(PREVIOUS_VERSION_KEY, None)
+    value["content"] = previous.get("content")
+    value["topic"] = previous.get("topic")
+    if previous.get("memory_type"):
+        value["memory_type"] = previous["memory_type"]
+    target = ns
+    old_category = previous.get("memory_category")
+    if old_category and old_category != value.get("memory_category"):
+        # A space's namespace ends with the category: (user, *path, category).
+        if ns[-1] == value.get("memory_category"):
+            target = (*ns[:-1], old_category)
+        value["memory_category"] = old_category
+    store.put(target, key, value, index=INDEXED_FIELDS)
+    if target != ns:
+        store.delete(ns, key)
+    elif drop_cleared_vectors:
+        drop_vectors_without_text(store, target, key, value)
+    return RestoreOutcome(RESTORED, target)
+
+
+def drop_expired_previous_versions(
+    store: Any, *, kept_before: datetime, user_id: Optional[str] = None
+) -> int:
+    """Drop the previous versions kept before *kept_before*; the count.
+
+    Of one user's memories, or of every memory of the store without
+    *user_id*. Only the kept version goes: the memory is put again without
+    it and not embedded anew (``index=False``), which the store records as a
+    write (``updated_at``). One that a page of the walk skips because of
+    that goes at the next call.
+    """
+    prefix: Tuple[str, ...] = (str(user_id),) if user_id else ()
+    limit = kept_before.isoformat()
+    dropped = 0
+    offset = 0
+    while True:
+        batch = _store_search(store, prefix, limit=_PURGE_BATCH_SIZE, offset=offset)
+        if not batch:
+            break
+        for item in batch:
+            value = getattr(item, "value", None) or {}
+            previous = value.get(PREVIOUS_VERSION_KEY)
+            if not isinstance(previous, dict):
+                continue
+            kept_at = str(previous.get("kept_at") or "")
+            if kept_at and kept_at >= limit:
+                continue
+            kept = {k: v for k, v in value.items() if k != PREVIOUS_VERSION_KEY}
+            store.put(tuple(item.namespace), item.key, kept, index=False)
+            dropped += 1
+        if len(batch) < _PURGE_BATCH_SIZE:
+            break
+        offset += _PURGE_BATCH_SIZE
+    return dropped
+
+
 @contextmanager
 def open_memory_store(*, with_index: bool = False) -> Iterator[Any]:
     """Open the process-configured LangGraph memory store for one-off operations.
@@ -3315,8 +3470,46 @@ def delete_user_long_term_memory_entries(
         return delete_user_memory_entries(store, user_id, entries)
 
 
+def restore_user_long_term_memory_version(
+    user_id: str,
+    namespace: Sequence[str],
+    key: str,
+    *,
+    expected_version: Optional[str] = None,
+    drop_cleared_vectors: bool = False,
+) -> RestoreOutcome:
+    """Open the configured store, with its index, and put back the version a
+    change of the memory replaced (:func:`restore_previous_version`)."""
+    with open_memory_store(with_index=True) as store:
+        return restore_previous_version(
+            store,
+            user_id,
+            namespace,
+            key,
+            expected_version=expected_version,
+            drop_cleared_vectors=drop_cleared_vectors,
+        )
+
+
+def drop_expired_long_term_previous_versions(*, kept_before: datetime) -> int:
+    """Open the configured store and drop the previous versions of every
+    memory kept before *kept_before* (:func:`drop_expired_previous_versions`)."""
+    with open_memory_store() as store:
+        return drop_expired_previous_versions(store, kept_before=kept_before)
+
+
 __all__ = [
     "AgentMemoryStoreService",
+    "CHANGED_SINCE",
+    "NO_PREVIOUS",
+    "PREVIOUS_VERSION_KEY",
+    "RESTORED",
+    "RestoreOutcome",
+    "drop_expired_long_term_previous_versions",
+    "drop_expired_previous_versions",
+    "previous_version_of",
+    "restore_previous_version",
+    "restore_user_long_term_memory_version",
     "MemoryOptions",
     "ParsedNamespace",
     "count_user_long_term_memory_by_space",
