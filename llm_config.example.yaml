@@ -761,31 +761,6 @@ models:
   # NOTE: Mistral accepts `temperature` only in the 0.0-1.0 range; a higher
   # value (model- or agent-level) makes the model fail to initialize.
   # `timeout` must be a whole number of seconds.
-  mistral-large-latest:
-    provider: 'mistral'
-    prompt_cache_routing: true
-    display_name: 'Mistral Large'
-    description: 'Flagship Mistral model for complex chat and tool-using tasks'
-    max_tokens: 8192
-    temperature: 0.7
-    pricing:
-      currency: USD
-      input:
-        cost_per_1m: 0.5 # $0.50 per 1M tokens
-      output:
-        cost_per_1m: 1.5 # $1.50 per 1M tokens
-      extras:
-        cache_read_tokens:
-          cost_per_1m: 0.05 # cached input $0.05 per 1M tokens, a tenth of input
-      key_aliases:
-        prompt_tokens: input_tokens
-        completion_tokens: output_tokens
-      rounding:
-        decimals: 6
-      # Keys that only break down input or output: no price, not estimated.
-      extras_policy:
-        breakdown_keys: [total_tokens, reasoning_tokens]
-
   mistral-small-latest:
     provider: 'mistral'
     prompt_cache_routing: true
