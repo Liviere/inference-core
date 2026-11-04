@@ -142,7 +142,10 @@ class PostRunAnalysisOptions:
             greeting or a phrase in another language is not one.
         contradictions_replace: A fact that contradicts a memory, or a
             correction of one, changes that memory (``update_memory_store``)
-            instead of standing next to it.
+            instead of standing next to it. The analysis is shown the
+            memories the run's recall found for the turn too, with their ids:
+            the search for similar memories often misses what a correction
+            corrects (another language, a negation).
         new_messages_only: The analysis reads the messages after those the
             previous analysis read (``memory_analysis_through``), with up to
             ``background_chars`` of the earlier ones before them as context.
@@ -327,6 +330,9 @@ class _MemoryMiddlewareContext:
     relied_on: frozenset = frozenset()
     # The full text was put in a request: a turn it relied on was gone.
     widened: bool = False
+    # Every memory this run's recall found (shown, or left out as shown
+    # before): what the turn may contradict, for the post-run analysis.
+    turn_recalled: tuple = ()
 
 
 class MemoryMiddleware(AgentMiddleware[MemoryState]):
@@ -654,7 +660,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 )
             else:
                 memory_context, metrics = self._recall_and_format(query, resolved_uid)
-            shown = self._remember_turn(state, metrics.get("recalled"), shown_in)
+            recalled = metrics.get("recalled")
+            self._ctx.turn_recalled = (
+                *(getattr(recalled, "documents", ()) or ()),
+                *(getattr(recalled, "left_out", ()) or ()),
+            )
+            shown = self._remember_turn(state, recalled, shown_in)
 
             if not memory_context:
                 logger.debug("No relevant memories found for user=%s", resolved_uid)
@@ -1471,8 +1482,43 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             lines.append(f"Without `space`, a memory goes to {default}.")
         return "\n".join(lines) + "\n\n"
 
-    async def _prefetch_existing_memories(
+    def _turn_recalled_lines(self, exclude: Sequence[str] = ()) -> tuple[str, list]:
+        """With ``contradictions_replace``: the memories this run's recall
+        found, which the turn may contradict, as lines with their ids. The
+        search for similar memories may not find them: a correction is
+        often unlike what it corrects (another language, a negation)."""
+        if not self.analysis_options.contradictions_replace or self._ctx is None:
+            return "", []
+        shown = set(exclude)
+        memories = []
+        for mem in self._ctx.turn_recalled:
+            mem_id = getattr(mem, "id", None)
+            if mem_id is None or mem_id in shown:
+                continue
+            shown.add(mem_id)
+            memories.append(mem)
+        memories = memories[:12]
+        if not memories:
+            return "", []
+        lines = [self._prefetched_line(idx, mem) for idx, mem in enumerate(memories, 1)]
+        return "\n".join(lines), [getattr(mem, "id", "") for mem in memories]
+
+    async def _prefetch_existing(
         self, transcript: str, user_id: str, exclude: Sequence[str] = ()
+    ) -> tuple[str, list]:
+        """``_prefetch_existing_memories``, and the ids it lists."""
+        ids: list = []
+        text = await self._prefetch_existing_memories(
+            transcript, user_id, exclude=exclude, listed=ids
+        )
+        return text, ids
+
+    async def _prefetch_existing_memories(
+        self,
+        transcript: str,
+        user_id: str,
+        exclude: Sequence[str] = (),
+        listed: Optional[list] = None,
     ) -> str:
         """Retrieve memories semantically similar to the conversation transcript.
 
@@ -1508,6 +1554,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
 
         if not memories:
             return ""
+        if listed is not None:
+            listed.extend(getattr(m, "id", "") for m in memories)
 
         lines: list[str] = [f"Found {len(memories)} potentially related memories:"]
         lines.extend(
@@ -1821,10 +1869,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             "analysis",
             {"messages": new_messages} if options.new_messages_only else state,
         )
-        existing_text = (
-            await self._prefetch_existing_memories(query, user_id, exclude=related_ids)
+        existing_text, existing_ids = (
+            await self._prefetch_existing(query, user_id, exclude=related_ids)
             if query
-            else ""
+            else ("", [])
         )
         existing_memories_section = ""
         if related_text:
@@ -1836,6 +1884,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 "one. When the conversation is about the same thing, change the "
                 "one that covers it with `update_memory_store` and its id instead "
                 "of saving a new memory about it.\n\n"
+            )
+        recalled_text, recalled_ids = self._turn_recalled_lines(
+            exclude=[*related_ids, *existing_ids]
+        )
+        if recalled_text:
+            existing_memories_section += (
+                "MEMORIES THE ASSISTANT WAS SHOWN IN THIS TURN\n"
+                "=============================================\n"
+                f"{recalled_text}\n"
+                "If the conversation contradicts or corrects one of them, "
+                "change that one with `update_memory_store` and its id.\n\n"
             )
         if existing_text:
             existing_memories_section += (

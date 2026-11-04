@@ -642,3 +642,46 @@ def test_the_sync_hook_asks_the_gate_too():
 
     assert model.sent == []
     assert update == {MEMORY_ANALYSIS_THROUGH: "m1"}
+
+
+# --------------------------------------------------------------------------- #
+# What the turn may contradict
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_contradiction_is_shown_the_memories_the_turn_recalled():
+    service = _service()
+    czech = await service.write_memory(
+        USER,
+        "Uživatel preferuje komunikaci v češtině.",
+        memory_type="preferences",
+        space="general",
+    )
+    model = _Model()
+    middleware = _middleware(service, model, contradictions_replace=True)
+    # The search for similar memories finds nothing: unlike the correction.
+    middleware._prefetch_existing_memories = AsyncMock(return_value="")
+    state = {"messages": _thread("jam żem polak, nie czech :)", "Przepraszam!")}
+
+    middleware.before_agent(state, MagicMock())
+    await _after(middleware, state)
+
+    prompt = model.prompts[0]
+    section = prompt.split("MEMORIES THE ASSISTANT WAS SHOWN IN THIS TURN")[1]
+    assert f"[id: {czech.memory_id}]" in section.split("DEDUPLICATION RULES")[0]
+
+
+async def test_without_the_rule_the_turns_memories_are_not_listed():
+    service = _service()
+    await service.write_memory(
+        USER, "Prefers Czech", memory_type="preferences", space="general"
+    )
+    model = _Model()
+    middleware = _middleware(service, model)
+    middleware._prefetch_existing_memories = AsyncMock(return_value="")
+    state = {"messages": _thread("I am Polish", "Sorry!")}
+
+    middleware.before_agent(state, MagicMock())
+    await _after(middleware, state)
+
+    assert "MEMORIES THE ASSISTANT WAS SHOWN" not in model.prompts[0]
