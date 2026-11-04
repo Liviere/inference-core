@@ -857,7 +857,13 @@ class ImapService:
             has_attachments=has_attachments,
             attachment_names=attachment_names,
             folder=folder,
-            **(thread_header_fields(msg) if self.thread_headers else {}),
+            # An instance made without ``__init__`` (a test's stand-in) asks
+            # for nothing more, as before the option.
+            **(
+                thread_header_fields(msg)
+                if getattr(self, "thread_headers", False)
+                else {}
+            ),
         )
 
     def _extract_body(self, msg: Message) -> tuple[str, Optional[str]]:
