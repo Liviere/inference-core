@@ -161,6 +161,10 @@ class EmailMessage(BaseModel):
     attachment_names: List[str] = []
     folder: str = "INBOX"
     is_read: bool = False
+    #: The ``In-Reply-To`` and ``References`` identifiers, only when the
+    #: service was made with ``thread_headers=True``; empty otherwise.
+    in_reply_to: Optional[str] = None
+    references: List[str] = []
 
 
 class SpecialFolder(str, PyEnum):
@@ -470,6 +474,37 @@ class ImapConnection:
         self.disconnect()
 
 
+#: How many identifiers of ``References`` a message keeps: the first (the
+#: thread's root) and the newest, which are the ones a reply is matched by.
+MAX_REFERENCES = 20
+
+_MESSAGE_ID_RE = re.compile(r"<[^<>\s]{1,995}>")
+
+
+def _message_ids(value: Any) -> List[str]:
+    """The ``<...>`` identifiers in a header's value, in order, unfolded."""
+    if not value:
+        return []
+    return _MESSAGE_ID_RE.findall(str(value))
+
+
+def thread_header_fields(msg: Message) -> Dict[str, Any]:
+    """``in_reply_to`` and ``references`` of a message, for :class:`EmailMessage`.
+
+    Only the identifiers are kept; whatever else a header holds is dropped.
+    ``references`` keeps the first and the newest ones, at most
+    ``MAX_REFERENCES`` in all.
+    """
+    in_reply_to = _message_ids(msg.get("In-Reply-To"))
+    references = _message_ids(msg.get("References"))
+    if len(references) > MAX_REFERENCES:
+        references = references[:1] + references[-(MAX_REFERENCES - 1) :]
+    return {
+        "in_reply_to": in_reply_to[0] if in_reply_to else None,
+        "references": references,
+    }
+
+
 class ImapService:
     """IMAP service for reading emails.
 
@@ -477,13 +512,21 @@ class ImapService:
     across multiple configured IMAP hosts.
     """
 
-    def __init__(self, config: Optional[FullEmailConfig] = None):
+    def __init__(
+        self,
+        config: Optional[FullEmailConfig] = None,
+        *,
+        thread_headers: bool = False,
+    ):
         """Initialize IMAP service.
 
         Args:
             config: Email configuration (loads from file if not provided)
+            thread_headers: Also parse ``In-Reply-To`` and ``References`` into
+                the messages it returns (off by default).
         """
         self.config = config or get_email_config()
+        self.thread_headers = thread_headers
         self._connections: Dict[str, ImapConnection] = {}
 
     def _get_connection(self, host_alias: Optional[str] = None) -> ImapConnection:
@@ -814,6 +857,13 @@ class ImapService:
             has_attachments=has_attachments,
             attachment_names=attachment_names,
             folder=folder,
+            # An instance made without ``__init__`` (a test's stand-in) asks
+            # for nothing more, as before the option.
+            **(
+                thread_header_fields(msg)
+                if getattr(self, "thread_headers", False)
+                else {}
+            ),
         )
 
     def _extract_body(self, msg: Message) -> tuple[str, Optional[str]]:
