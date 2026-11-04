@@ -461,6 +461,16 @@ without `cache_control`, whichever model they run on (one handed over, one
 resolved by name or the agent's own, through `without_prompt_cache`). The
 default (`True`) uses the model as it is.
 
+The memory tools' descriptions name every memory type in three of the tools
+(save, recall and update). `AgentService(memory_tools_short_descriptions=True)`
+(off by default; `DeepAgentService` and a subagent's `build_memory_kit` too)
+gives the agent's memory tools the short descriptions of
+`get_memory_tools(..., short_descriptions=True)` (`SHORT_DESCRIPTIONS` in
+`inference_core/agents/tools/memory_tools.py`): the types once, in the save
+tool's, with a few words each, and the other tools pointing there. About half
+the tokens of the four tools; the tools' schemas are the same. The analysis's
+own tools keep the full descriptions.
+
 Otherwise the model is instantiated through the global model factory so provider and
 parameters from `llm_config.yaml` are applied. The middleware asks the model to
 inspect semantically similar memories first and then call `save_memory_store`,

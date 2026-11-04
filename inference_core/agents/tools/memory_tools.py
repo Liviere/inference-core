@@ -146,6 +146,51 @@ def _resolve_tool_user_id(user_id: Optional[str]) -> str:
     )
 
 
+#: The short descriptions of the four tools (``get_memory_tools(...,
+#: short_descriptions=True)``). The full ones list every memory type in the
+#: save, recall and update tools' descriptions, three times in all; these
+#: list them once, in the save tool's, with a few words each, and the others
+#: point there. The tools' schemas list the types' names anyway.
+SHORT_DESCRIPTIONS: dict[str, str] = {
+    "save_memory_store": """Save something about the user to long-term memory: a preference, a fact, an instruction, an event worth remembering.
+
+Arguments:
+  - content (required): what to remember, as one self-contained statement
+  - memory_type (optional, default 'general'): one of the types below
+  - topic (optional): a subject tag for finding it later
+  - category (optional): semantic, episodic or procedural; follows from memory_type when omitted
+  - space (optional): the memory space to save to, when you have more than one; without it, your default space
+
+Memory types, by category:
+  semantic: preferences (likes, styles, how to answer), facts (stable facts about people, places, things), goals (what someone works towards), general (anything else)
+  episodic: context (the current situation, upcoming events), session_summary (a summary of a finished conversation), interaction (a notable exchange)
+  procedural: instructions (rules for how to do things), workflow (multi-step procedures), skill (learned techniques)
+""",
+    "recall_memories_store": """Search long-term memory about the user by meaning.
+
+Arguments:
+  - query (required): what to find
+  - memory_type (optional): only this type, one of those listed in save_memory_store; all types when omitted
+  - max_results (optional): how many memories to return at most
+  - category (optional): only semantic, episodic or procedural memories; all when omitted
+""",
+    "update_memory_store": """Change a memory found via recall_memories_store: correct it or add details.
+
+Arguments:
+  - memory_id (required): the id of the memory
+  - content (required): its new text, in full
+  - memory_type (optional, default 'general'): one of the types listed in save_memory_store; give the memory's type again to keep it
+  - topic (optional): a subject tag
+  - category (optional): semantic, episodic or procedural; follows from memory_type when omitted
+""",
+    "delete_memory_store": """Delete a memory that is wrong or outdated, or that the user asks you to forget.
+
+Arguments:
+  - memory_id (required): the id of the memory (from recall_memories_store)
+""",
+}
+
+
 class SaveMemoryStoreTool(BaseTool):
     """Tool for persisting user information into store-backed memory (CoALA-aware)."""
 
@@ -560,6 +605,7 @@ def get_memory_tools(
     session_id: Optional[str] = None,
     max_recall_results: int = 5,
     include_tools: Optional[List[str]] = None,
+    short_descriptions: bool = False,
 ) -> List[BaseTool]:
     """Factory for store-backed memory tools to ease agent wiring.
 
@@ -570,6 +616,10 @@ def get_memory_tools(
 
     When ``user_id`` is ``None`` (Agent Server), each tool resolves it at
     call time from the ``_runtime_context`` context var.
+
+    ``short_descriptions``: the tools get :data:`SHORT_DESCRIPTIONS`, which
+    name the memory types once, in the save tool's, instead of in three of
+    them (off by default: the full descriptions). About half the tokens.
     """
     if include_tools is not None and len(include_tools) == 0:
         logger.debug("Memory tools disabled (include_tools=[])")
@@ -580,6 +630,8 @@ def get_memory_tools(
         user_id=user_id,
         session_id=session_id,
     )
+    if short_descriptions:
+        save_tool.description = SHORT_DESCRIPTIONS["save_memory_store"]
     note = _space_note(memory_service)
     if note:
         save_tool.description = save_tool.description + note
@@ -601,6 +653,11 @@ def get_memory_tools(
             user_id=user_id,
         ),
     }
+
+    if short_descriptions:
+        for name, tool in all_tools.items():
+            if name != "save_memory_store":
+                tool.description = SHORT_DESCRIPTIONS[name]
 
     if include_tools is not None:
         selected = [all_tools[name] for name in include_tools if name in all_tools]
