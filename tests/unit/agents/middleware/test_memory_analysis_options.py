@@ -352,7 +352,9 @@ async def test_one_pass_goes_on_after_a_recall():
 
 
 async def test_one_pass_has_three_rounds_at_most():
-    model = _Model(*[_response(_call("recall_memories_store", query="q")) for _ in range(5)])
+    model = _Model(
+        *[_response(_call("recall_memories_store", query="q")) for _ in range(5)]
+    )
     middleware = _middleware(_service(), model, single_pass=True)
 
     await _after(middleware, {"messages": _thread("a", "b")})
@@ -398,9 +400,7 @@ async def test_the_writes_are_kept_under_the_persons_message_without_text():
             ),
         )
     )
-    middleware = _middleware(
-        service, model, record_writes=True, single_pass=True
-    )
+    middleware = _middleware(service, model, record_writes=True, single_pass=True)
     assert isinstance(service.write_log, TurnWriteLog)
 
     update = await _after(middleware, {"messages": _thread("I'm Tomasz, a Pole", "Hi")})
@@ -584,7 +584,9 @@ async def test_a_gate_that_says_no_leaves_the_analysis_out_and_moves_the_mark():
     middleware = _middleware(_service(), model, gate=gate, new_messages_only=True)
     messages = _thread("old", "ok", "cześć!", "Cześć!")
 
-    update = await _after(middleware, {"messages": messages, MEMORY_ANALYSIS_THROUGH: "m1"})
+    update = await _after(
+        middleware, {"messages": messages, MEMORY_ANALYSIS_THROUGH: "m1"}
+    )
 
     assert model.sent == []
     assert asked == ["cześć!"]
