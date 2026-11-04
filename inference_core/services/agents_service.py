@@ -32,6 +32,9 @@ from inference_core.agents.middleware import (
     canonicalize_fallback_overrides,
     create_tool_model_switch_middleware,
 )
+from inference_core.agents.middleware.system_prompt_breakpoint import (
+    SystemPromptBreakpointMiddleware,
+)
 from inference_core.agents.middleware.task_brief import announced_subagent_run
 from inference_core.agents.tools.memory_tools import (
     generate_memory_tools_system_instructions,
@@ -331,6 +334,7 @@ class AgentService:
         tool_call_limit_uncounted: Optional[Callable[[Any], bool]] = None,
         memory_context_new_only: bool = False,
         memory_analysis_options: Optional[PostRunAnalysisOptions] = None,
+        system_prompt_breakpoint: bool = False,
     ):
         """Initialize the AgentService.
 
@@ -450,6 +454,15 @@ class AgentService:
                 services of the agent and its subagents share one write log,
                 and a ``MemoryTurnWritesMiddleware`` keeps the writes in the
                 thread before each model call.
+            system_prompt_breakpoint: Whether each model call of the agent
+                and of its subagents marks the end of its system prompt as a
+                prompt cache breakpoint, next to the automatic one of a Claude
+                model with ``prompt_cache`` (off by default; see
+                :class:`~inference_core.agents.middleware.system_prompt_breakpoint.SystemPromptBreakpointMiddleware`).
+                A new conversation with the same tools and system prompt then
+                reads them from the cache. Worth it when the system prompt
+                does not change from turn to turn, so with
+                ``memory_context_placement="message"``.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -539,6 +552,7 @@ class AgentService:
         self._memory_context_new_only = memory_context_new_only
         self._memory_analysis_prompt_cache = memory_analysis_prompt_cache
         self._tool_call_limit_uncounted = tool_call_limit_uncounted
+        self._system_prompt_breakpoint = system_prompt_breakpoint
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -733,6 +747,7 @@ class AgentService:
 
         # Inside everything, the skills above included.
         middleware.extend(self._innermost_middleware)
+        self._add_system_prompt_breakpoint(middleware)
 
         # Create the agent
         # Resolve structured-output schema from AgentConfig.  Pass via kwargs
@@ -1196,6 +1211,19 @@ class AgentService:
             "Added ModelFallbackMiddleware for agent '%s'",
             self.display_name,
         )
+
+    def _add_system_prompt_breakpoint(self, middleware: list[Any]) -> None:
+        """Put the system prompt's cache breakpoint last, when asked for.
+
+        Last of all, inside the fallback, skills and the innermost middleware,
+        so it marks the system prompt as it is sent, on the model it is sent
+        to (``system_prompt_breakpoint``).
+        """
+        if not getattr(self, "_system_prompt_breakpoint", False):
+            return
+        if any(isinstance(m, SystemPromptBreakpointMiddleware) for m in middleware):
+            return
+        middleware.append(SystemPromptBreakpointMiddleware())
 
     def _place_prompt_cache_routing(self, middleware: list[Any]) -> None:
         """Put ``PromptCacheRoutingMiddleware`` inside the fallback, once.
@@ -3130,6 +3158,7 @@ class DeepAgentService(AgentService):
         memory_analysis_options: Optional[PostRunAnalysisOptions] = None,
         approval_middleware: Optional[Callable[[dict[str, Any]], Any]] = None,
         returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
+        system_prompt_breakpoint: bool = False,
     ):
         """Initialize the DeepAgentService.
 
@@ -3195,6 +3224,9 @@ class DeepAgentService(AgentService):
             returned_state_keys: The state, besides messages, a finished
                 subagent hands back to the parent (see
                 ``BriefedSubAgentMiddleware``).
+            system_prompt_breakpoint: A cache breakpoint at the end of the
+                system prompt of the agent and its subagents (see
+                ``AgentService``).
         """
         super().__init__(
             agent_name,
@@ -3225,6 +3257,7 @@ class DeepAgentService(AgentService):
             innermost_middleware=innermost_middleware,
             tool_call_limit_uncounted=tool_call_limit_uncounted,
             memory_analysis_options=memory_analysis_options,
+            system_prompt_breakpoint=system_prompt_breakpoint,
         )
         self._explicit_subagents = subagents or []
         self._approval_middleware = approval_middleware
@@ -3341,7 +3374,10 @@ class DeepAgentService(AgentService):
             # title started subagents on a few words.
             sub_middleware = BriefedSubAgentMiddleware(
                 backend=self._backend,
-                subagents=[self._with_own_approvals(s) for s in subagent_specs],
+                subagents=[
+                    self._with_system_prompt_breakpoint(self._with_own_approvals(s))
+                    for s in subagent_specs
+                ],
                 announce_runs=self.stream_subgraphs,
                 returned_state_keys=self._returned_state_keys,
             )
@@ -3355,6 +3391,7 @@ class DeepAgentService(AgentService):
         self._place_prompt_cache_routing(middleware)
         self._ensure_cost_tracking_last(middleware)
         middleware.extend(self._innermost_middleware)
+        self._add_system_prompt_breakpoint(middleware)
 
         # 7. Create the agent via standard create_agent
         # Resolve structured-output schema (inherited from AgentService helper).
@@ -3870,6 +3907,24 @@ class DeepAgentService(AgentService):
         finally:
             super().close_connections()
 
+    def _with_system_prompt_breakpoint(self, spec: Any) -> Any:
+        """``spec`` with the system prompt's cache breakpoint last in its
+        middleware, when the agent asks for it (``system_prompt_breakpoint``).
+
+        A declarative spec only: a compiled subagent was built with its own.
+        Last, inside the subagent's fallback, cost tracking and skills, so it
+        marks the system prompt as it is sent, on the model it is sent to.
+        """
+        if not getattr(self, "_system_prompt_breakpoint", False):
+            return spec
+        if not isinstance(spec, dict) or "runnable" in spec:
+            return spec
+        middleware = list(spec.get("middleware") or [])
+        if any(isinstance(m, SystemPromptBreakpointMiddleware) for m in middleware):
+            return spec
+        middleware.append(SystemPromptBreakpointMiddleware())
+        return {**spec, "middleware": middleware}
+
     def _with_own_approvals(self, spec: Any) -> Any:
         """``spec`` with ``approval_middleware`` in place of its ``interrupt_on``."""
         interrupt_on = spec.get("interrupt_on") if isinstance(spec, dict) else None
@@ -3965,6 +4020,7 @@ class DeepAgentService(AgentService):
             tool_call_limit_uncounted=getattr(
                 self, "_tool_call_limit_uncounted", None
             ),
+            system_prompt_breakpoint=getattr(self, "_system_prompt_breakpoint", False),
         )
         self._nested_services.append(nested_service)
         await nested_service.create_agent(
