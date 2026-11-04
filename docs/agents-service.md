@@ -241,6 +241,18 @@ builder knows and the middleware cannot: what the model is used for, on whose
 account it runs. The details are on the model object, so an object that carries
 them should not be shared with a caller they do not describe.
 
+A subagent shares its parent's cost tracking, so its calls are logged like the
+parent's. With `CostTrackingMiddleware.log_subagent = True` (a class attribute,
+off by default) each row of a subagent's call, a failed call's and one logged
+from the state included, carries `details["subagent"]`, the `subagent_type` of
+the `task` call that runs it, and `details["task_call_id"]`, that call's id. The
+parent's own rows carry neither. `BriefedSubAgentMiddleware` says which `task`
+call is running, for the time it runs
+(`inference_core/agents/middleware/subagent_task.py`): the subagent's nodes
+inherit it, two subagents at the same time each see their own, and a run resumed
+after an approval runs the call, and says so, again. A subagent started by
+deepagents' plain `SubAgentMiddleware` is not told apart.
+
 The middleware leaves the last call in graph state for middleware outside it:
 `last_request_log_id`, `last_request_cost_usd` (`0.0` for a model without
 pricing), `last_request_model_name` (the configured name),

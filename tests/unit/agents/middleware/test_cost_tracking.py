@@ -30,6 +30,10 @@ from inference_core.agents.middleware.cost_tracking import (
     _PersistedCall,
     create_cost_tracking_middleware,
 )
+from inference_core.agents.middleware.subagent_task import (
+    SubagentTask,
+    subagent_task_running,
+)
 from inference_core.llm.config import DimensionPrice, PricingConfig
 from inference_core.llm.model_identity import tag_model_identity, tag_usage_details
 from inference_core.llm.usage_logging import UsageSession
@@ -1701,3 +1705,70 @@ async def test_the_failed_row_keeps_no_text_and_no_cost(monkeypatch):
     assert row.input_tokens is None and row.output_tokens is None
     assert row.cost_total_usd is None
     assert row.details["status_code"] == 422
+
+
+# ---------------------------------------------------------------------------
+# log_subagent: every kind of row says whose call it is
+# ---------------------------------------------------------------------------
+
+
+class TestSubagentInEveryRow:
+    """The rows a call can leave besides the model node's: the one logged from
+    the state, and a failed call's. The model node's is tested on a graph
+    (``tests/unit/services/test_deep_agent_subagent_cost_log.py``)."""
+
+    TASK = SubagentTask("writer", "task-1")
+
+    @pytest.fixture
+    def details(self):
+        """The details of each row finalized."""
+        logged = []
+
+        def finalize_sync(session, **kwargs):
+            logged.append(kwargs.get("details"))
+            return uuid.uuid4()
+
+        with patch.object(UsageSession, "finalize_sync", finalize_sync):
+            yield logged
+
+    @staticmethod
+    def _logged_from_the_state(middleware) -> None:
+        message = AIMessage(
+            content="",
+            usage_metadata={"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+        )
+        middleware.after_model({"messages": [message]}, MagicMock())
+
+    def test_a_row_from_the_state(self, details, monkeypatch):
+        monkeypatch.setattr(CostTrackingMiddleware, "log_subagent", True)
+        middleware = CostTrackingMiddleware(pricing_config=None)
+
+        with subagent_task_running(self.TASK):
+            self._logged_from_the_state(middleware)
+        self._logged_from_the_state(middleware)
+
+        assert details == [{"subagent": "writer", "task_call_id": "task-1"}, None]
+
+    def test_by_default_a_row_from_the_state_says_nothing(self, details):
+        middleware = CostTrackingMiddleware(pricing_config=None)
+
+        with subagent_task_running(self.TASK):
+            self._logged_from_the_state(middleware)
+
+        assert details == [None]
+
+    def test_a_failed_calls_row(self, middleware, details, monkeypatch):
+        monkeypatch.setattr(CostTrackingMiddleware, "log_failed_model_calls", True)
+        monkeypatch.setattr(CostTrackingMiddleware, "log_subagent", True)
+        error = _provider_refusal()
+
+        def failing(_request):
+            raise error
+
+        with subagent_task_running(self.TASK), pytest.raises(type(error)):
+            middleware.wrap_model_call(MagicMock(), failing)
+
+        [row] = details
+        assert row["subagent"] == "writer"
+        assert row["task_call_id"] == "task-1"
+        assert row["status_code"] == 422

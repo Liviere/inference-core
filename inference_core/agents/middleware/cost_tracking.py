@@ -64,6 +64,7 @@ from inference_core.llm.model_identity import (
     get_usage_details,
     provider_name,
 )
+from inference_core.agents.middleware.subagent_task import running_subagent_task
 from inference_core.llm.output_length_guard import usage_is_estimated
 from inference_core.llm.usage_logging import (
     PricingCalculator,
@@ -267,6 +268,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             carries no tokens, no cost and not the exception's text, which
             can quote the request. The exception is raised on unchanged. A
             cancelled run or a graph interrupt is not a failed call.
+        log_subagent: Whether a call a subagent makes is logged with whose it
+            is: ``details["subagent"]`` (the ``subagent_type`` of the ``task``
+            call that runs it) and ``details["task_call_id"]`` (that call's
+            id). Off by default. Subagents share their parent's middleware,
+            so their calls are otherwise not told apart from the parent's. It
+            knows of a ``task`` call that ``BriefedSubAgentMiddleware`` let
+            through (see ``subagent_task``); the parent's own calls carry
+            neither key.
     """
 
     state_schema = CostTrackingState
@@ -276,6 +285,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     persisted_per_message: bool = False
     state_cost_with_key_aliases: bool = False
     log_failed_model_calls: bool = False
+    log_subagent: bool = False
 
     def __init__(
         self,
@@ -548,13 +558,16 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 if self._ctx.model_call_start_time:
                     session.start_time = self._ctx.model_call_start_time
 
+                details = self._subagent_details()
+                if is_estimated:
+                    details["estimated"] = True
                 log_id = session.finalize_sync(
                     success=True,
                     error=None,
                     final_usage=fragment,
                     streamed=False,
                     partial=False,
-                    details={"estimated": True} if is_estimated else None,
+                    details=details or None,
                 )
 
                 if log_id:
@@ -956,6 +969,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         session = self._new_usage_session(invoked, reported_name, pricing_config)
 
         details = get_usage_details(getattr(request, "model", None))
+        details.update(self._subagent_details())
         if is_estimated:
             details["estimated"] = True
 
@@ -1020,6 +1034,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         invoked = self._resolve_invoked_model(request, None)
         session = self._new_usage_session(invoked, None, None)
         details = get_usage_details(getattr(request, "model", None))
+        details.update(self._subagent_details())
         status = _status_code_of(error)
         if status is not None:
             details["status_code"] = status
@@ -1061,6 +1076,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
                 type(error).__name__,
                 type(e).__name__,
             )
+
+    def _subagent_details(self) -> Dict[str, Any]:
+        """Whose call this is, for its row (``log_subagent``); else empty."""
+        if not self.log_subagent:
+            return {}
+        task = running_subagent_task()
+        if task is None:
+            return {}
+        return {"subagent": task.subagent_type, "task_call_id": task.tool_call_id}
 
     def _take_persisted(self, state: CostTrackingState) -> Optional[_PersistedCall]:
         """The logged call this ``after_model`` is about, if one was recorded."""
