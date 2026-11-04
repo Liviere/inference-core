@@ -335,6 +335,7 @@ class AgentService:
         memory_context_new_only: bool = False,
         memory_analysis_options: Optional[PostRunAnalysisOptions] = None,
         system_prompt_breakpoint: bool = False,
+        memory_tools_short_descriptions: bool = False,
     ):
         """Initialize the AgentService.
 
@@ -463,6 +464,11 @@ class AgentService:
                 reads them from the cache. Worth it when the system prompt
                 does not change from turn to turn, so with
                 ``memory_context_placement="message"``.
+            memory_tools_short_descriptions: Whether the agent's memory tools
+                and its subagents' have the short descriptions, which name the
+                memory types once, in ``save_memory_store``'s (off by default;
+                see :func:`~inference_core.agents.tools.memory_tools.get_memory_tools`).
+                The post-run analysis keeps the full ones.
         """
         # Model and tools setup
         self.agent_name = agent_name
@@ -553,6 +559,7 @@ class AgentService:
         self._memory_analysis_prompt_cache = memory_analysis_prompt_cache
         self._tool_call_limit_uncounted = tool_call_limit_uncounted
         self._system_prompt_breakpoint = system_prompt_breakpoint
+        self._memory_tools_short_descriptions = memory_tools_short_descriptions
 
         # Memory surface configuration overrides (None = inherit from AgentConfig/global)
         self._memory_tools_override = memory_tools
@@ -1619,6 +1626,9 @@ class AgentService:
                 session_id=self._session_id,
                 max_recall_results=settings.agent_memory_max_results,
                 include_tools=resolved_tools,
+                short_descriptions=getattr(
+                    self, "_memory_tools_short_descriptions", False
+                ),
             )
             if memory_tools:
                 self.tools.extend(memory_tools)
@@ -1703,6 +1713,7 @@ class AgentService:
             session_id=self._session_id,
             max_recall_results=settings.agent_memory_max_results,
             include_tools=tool_names,
+            short_descriptions=getattr(self, "_memory_tools_short_descriptions", False),
         )
         middleware = MemoryMiddleware(
             memory_service=service,
@@ -3159,6 +3170,7 @@ class DeepAgentService(AgentService):
         approval_middleware: Optional[Callable[[dict[str, Any]], Any]] = None,
         returned_state_keys: frozenset[str] = RETURNED_STATE_KEYS,
         system_prompt_breakpoint: bool = False,
+        memory_tools_short_descriptions: bool = False,
     ):
         """Initialize the DeepAgentService.
 
@@ -3227,6 +3239,8 @@ class DeepAgentService(AgentService):
             system_prompt_breakpoint: A cache breakpoint at the end of the
                 system prompt of the agent and its subagents (see
                 ``AgentService``).
+            memory_tools_short_descriptions: The short descriptions of the
+                memory tools (see ``AgentService``).
         """
         super().__init__(
             agent_name,
@@ -3258,6 +3272,7 @@ class DeepAgentService(AgentService):
             tool_call_limit_uncounted=tool_call_limit_uncounted,
             memory_analysis_options=memory_analysis_options,
             system_prompt_breakpoint=system_prompt_breakpoint,
+            memory_tools_short_descriptions=memory_tools_short_descriptions,
         )
         self._explicit_subagents = subagents or []
         self._approval_middleware = approval_middleware
@@ -4021,6 +4036,9 @@ class DeepAgentService(AgentService):
                 self, "_tool_call_limit_uncounted", None
             ),
             system_prompt_breakpoint=getattr(self, "_system_prompt_breakpoint", False),
+            memory_tools_short_descriptions=getattr(
+                self, "_memory_tools_short_descriptions", False
+            ),
         )
         self._nested_services.append(nested_service)
         await nested_service.create_agent(

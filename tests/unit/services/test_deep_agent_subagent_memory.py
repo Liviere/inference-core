@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langgraph.store.memory import InMemoryStore
 
+from inference_core.agents.tools.memory_tools import SHORT_DESCRIPTIONS
 from inference_core.agents.middleware.memory import (
     MemoryMiddleware,
     MemoryTurnWritesMiddleware,
@@ -234,3 +235,18 @@ def test_without_options_there_is_no_write_log_and_no_keeper():
     assert not any(isinstance(m, MemoryTurnWritesMiddleware) for m in middleware)
     [memory] = [m for m in middleware if isinstance(m, MemoryMiddleware)]
     assert memory.analysis_options == PostRunAnalysisOptions()
+
+
+def test_a_memory_kit_has_the_short_descriptions_when_its_parent_does():
+    service = _deep_service(_Scripted(replies=[]))
+    service.memory_store = InMemoryStore()
+    options = MemoryOptions(spaces=(MemorySpace(key="private", path=("agent:a1",)),))
+
+    _, _, full = service.build_memory_kit(options)
+    service._memory_tools_short_descriptions = True
+    _, _, short = service.build_memory_kit(options)
+
+    [save_full] = [t for t in full if t.name == "save_memory_store"]
+    [save_short] = [t for t in short if t.name == "save_memory_store"]
+    assert save_short.description == SHORT_DESCRIPTIONS["save_memory_store"]
+    assert save_full.description != save_short.description

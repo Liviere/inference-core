@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from inference_core.agents.tools.memory_tools import (
+    SHORT_DESCRIPTIONS,
     DeleteMemoryStoreTool,
     RecallMemoryStoreTool,
     SaveMemoryStoreTool,
@@ -26,6 +27,7 @@ from inference_core.services.agent_memory_service import (
     MemorySpace,
     MemoryType,
     MemoryWriteOutcome,
+    format_memory_types_for_description,
 )
 
 # ---------------------------------------------------------------------------
@@ -654,3 +656,91 @@ class TestGenerateMemoryToolsInstructions:
         assert "- `general` (General, writable). About the user." in result
         assert "- `team` (Team, read only)." in result
         assert "Without `space`, a memory goes to `private`." in result
+
+
+# ===========================================================================
+# Short descriptions (short_descriptions=True)
+# ===========================================================================
+
+_TOOL_CLASSES = {
+    "save_memory_store": SaveMemoryStoreTool,
+    "recall_memories_store": RecallMemoryStoreTool,
+    "update_memory_store": UpdateMemoryStoreTool,
+    "delete_memory_store": DeleteMemoryStoreTool,
+}
+
+
+def _descriptions(service, **kwargs) -> dict:
+    tools = get_memory_tools(memory_service=service, user_id="user-1", **kwargs)
+    return {t.name: t.description for t in tools}
+
+
+class TestShortDescriptions:
+    """The full descriptions list every memory type in three of the tools;
+    the short ones in the save tool's alone."""
+
+    def test_by_default_the_descriptions_are_the_full_ones(self, mock_memory_service):
+        descriptions = _descriptions(mock_memory_service)
+
+        for name, cls in _TOOL_CLASSES.items():
+            assert descriptions[name] == cls.model_fields["description"].default
+        listed = format_memory_types_for_description()
+        assert sum(listed in text for text in descriptions.values()) == 3
+
+    def test_short_ones_name_each_type_once_in_the_save_tools(
+        self, mock_memory_service
+    ):
+        descriptions = _descriptions(mock_memory_service, short_descriptions=True)
+
+        assert descriptions == SHORT_DESCRIPTIONS
+        save = descriptions["save_memory_store"]
+        for memory_type in MemoryType:
+            assert f"{memory_type.value} (" in save
+            others = (
+                text for name, text in descriptions.items() if name != "save_memory_store"
+            )
+            assert not any(f"{memory_type.value} (" in text for text in others)
+        assert "listed in save_memory_store" in descriptions["recall_memories_store"]
+        assert "listed in save_memory_store" in descriptions["update_memory_store"]
+
+    def test_short_ones_describe_every_argument(self, mock_memory_service):
+        tools = get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id="user-1",
+            short_descriptions=True,
+        )
+
+        for tool in tools:
+            for argument in tool.args:
+                assert f"- {argument} (" in tool.description, (tool.name, argument)
+
+    def test_they_are_much_shorter(self, mock_memory_service):
+        full = _descriptions(mock_memory_service)
+        short = _descriptions(mock_memory_service, short_descriptions=True)
+
+        assert sum(map(len, short.values())) < sum(map(len, full.values())) / 2
+
+    def test_the_spaces_note_stays(self, mock_memory_service):
+        mock_memory_service.spaces = (
+            MemorySpace(key="private", path=("agent:a1",), description="Own work."),
+            MemorySpace(key="team", path=("space:t1",), description="The team."),
+        )
+
+        save = _descriptions(mock_memory_service, short_descriptions=True)[
+            "save_memory_store"
+        ]
+
+        assert save.startswith(SHORT_DESCRIPTIONS["save_memory_store"])
+        assert "- team: The team." in save
+
+    def test_the_class_defaults_stay_the_full_ones(self, mock_memory_service):
+        """An instance's description is its own: the analysis's tools, made
+        from the classes, keep the full text."""
+        get_memory_tools(
+            memory_service=mock_memory_service,
+            user_id="user-1",
+            short_descriptions=True,
+        )
+
+        tool = SaveMemoryStoreTool(memory_service=mock_memory_service)
+        assert format_memory_types_for_description() in tool.description
