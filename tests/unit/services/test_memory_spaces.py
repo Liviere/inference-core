@@ -434,6 +434,29 @@ async def test_the_tool_tells_the_model_it_went_to_the_trash(store):
     assert "put it back" in text
 
 
+@pytest.mark.asyncio
+async def test_documents_at_gives_the_memories_of_the_spaces_read(store):
+    writer = _service(store, GENERAL, PRIVATE, TEAM)
+    general = await writer.save_memory("u1", "a fact", "facts", space="general")
+    team = await writer.save_memory("u1", "a team fact", "facts", space="team")
+    reader = _service(store, GENERAL, PRIVATE)
+
+    docs = await reader.documents_at(
+        "u1",
+        [
+            (("u1", "space:t1", "semantic"), team),
+            (("u1", "semantic"), "gone"),
+            (("u1", "semantic"), general),
+            (("u2", "semantic"), general),
+        ],
+    )
+
+    assert [(d.id, d.content, d.space.key) for d in docs] == [
+        (general, "a fact", "general")
+    ]
+    assert docs[0].entry_key == f"u1/semantic/{general}"
+
+
 def test_space_keys_are_unique(store):
     with pytest.raises(ValueError, match="unique"):
         _service(store, GENERAL, MemorySpace(key="general", path=("x",)))

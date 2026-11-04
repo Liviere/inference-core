@@ -84,7 +84,9 @@ from inference_core.llm.model_identity import (
 from inference_core.services._cancel import AgentCancelled
 from inference_core.services.agent_memory_service import (
     DEFAULT_CONTEXT_TYPES,
+    HELD,
     SAVED,
+    UPDATED,
     VIA_ANALYSIS,
     MemoryCategory,
     MemoryType,
@@ -120,6 +122,13 @@ MEMORY_TURN_WRITES = "memory_turn_writes"
 #: The key of the stream event with a turn's writes (``{"turn", "writes"}``),
 #: sent after the post-run analysis when the turn wrote something.
 MEMORY_TURN_WRITES_EVENT = "memory_turn_writes"
+
+#: The first line of the note of what the analysis after the previous turn
+#: wrote (``PostRunAnalysisOptions.note_previous_writes``).
+PREVIOUS_WRITES_NOTE = (
+    "Saved by the platform after the previous turn of this conversation "
+    "(the user can see and change them on the Memory page):"
+)
 
 #: The state key that keeps the id of the last message the post-run analysis
 #: read, with ``PostRunAnalysisOptions.new_messages_only``.
@@ -169,6 +178,25 @@ class PostRunAnalysisOptions:
             part the analysis would read: ``False`` leaves the analysis out
             (the mark of ``new_messages_only`` still moves on); ``True``,
             ``None`` or a failure runs it. ``None`` asks nothing.
+        note_previous_writes: With ``record_writes`` and the memories in the
+            person's message (placement ``message``): the person's next
+            message starts with a note of what the analysis after the
+            previous turn saved or changed, each memory with its id and its
+            text as recalled memories are shown (``render_entry``), and how
+            many it held for approval, without their text. In the same block
+            as the turn's recalled memories and kept with them
+            (``memory_context_turns``), so the system prompt stays as it is
+            and the conversation sent only grows. Only what no earlier turn
+            still in the thread shows in the same version; a memory of a
+            space the agent does not read, or one gone since, is left out; a
+            turn after one that wrote nothing has no note. With
+            ``memory_context_new_only`` the recall leaves out what the note
+            shows. Not for a briefed agent (a subagent).
+        tool_changes_count_as_saved: The analysis is told the agent already
+            saved memories in the run (``already saved``) after a call of
+            ``update_memory_store`` or ``delete_memory_store`` too, not only
+            of ``save_memory_store``: a correction or a removal the agent made
+            is not to be saved again from the conversation.
     """
 
     language: Optional[str] = None
@@ -179,6 +207,8 @@ class PostRunAnalysisOptions:
     single_pass: bool = False
     record_writes: bool = False
     gate: Optional[Callable[[str], Awaitable[Optional[bool]]]] = None
+    note_previous_writes: bool = False
+    tool_changes_count_as_saved: bool = False
 
 
 #: What the analysis is told about a preference for a language
@@ -652,11 +682,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             )
             # Recall memories using asyncio.run() since hooks are synchronous
             shown_in: Dict[str, frozenset] = {}
+            shown_before: Dict[str, str] = {}
             if self._new_only:
                 # What earlier turns still in the thread show, to leave out.
                 shown_before, shown_in = self._shown_before(state)
+            # What the analysis after the previous turn wrote, before the
+            # recall, which then leaves it out.
+            note, noted = self._previous_writes_note(state, resolved_uid, shown_before)
+            if self._new_only:
                 memory_context, metrics = self._recall_and_format(
-                    query, resolved_uid, leave_out=shown_before
+                    query, resolved_uid, leave_out={**shown_before, **noted}
                 )
             else:
                 memory_context, metrics = self._recall_and_format(query, resolved_uid)
@@ -666,6 +701,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
                 *(getattr(recalled, "left_out", ()) or ()),
             )
             shown = self._remember_turn(state, recalled, shown_in)
+            if note:
+                memory_context = _joined(note, memory_context)
+                shown = {**(shown or {}), **noted} if self._new_only else shown
+                if self._ctx.full_text or self._ctx.turn_id:
+                    self._ctx.full_text = _joined(note, self._ctx.full_text)
+                    self._ctx.full_entries = {**self._ctx.full_entries, **noted}
 
             if not memory_context:
                 logger.debug("No relevant memories found for user=%s", resolved_uid)
@@ -1063,6 +1104,88 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
         ctx.widened = False
         ctx.relied_on = frozenset()
         return {MEMORY_CONTEXT_TURNS: turns, MEMORY_CONTEXT_TURN_ENTRIES: entries}
+
+    @property
+    def _notes_previous_writes(self) -> bool:
+        options = self.analysis_options
+        return (
+            self._in_message
+            and not self.briefed
+            and options.record_writes
+            and options.note_previous_writes
+        )
+
+    def _previous_writes_note(
+        self, state: MemoryState, user_id: str, shown_before: Dict[str, str]
+    ) -> tuple[str, Dict[str, str]]:
+        """With ``note_previous_writes``: the note of what the analysis after
+        the previous turn saved, changed and held, and the memories it shows
+        (``{entry_key: entry_version}``); ``("", {})`` when there is nothing
+        new to say. Never raises: a failure gives no note."""
+        if not self._notes_previous_writes:
+            return "", {}
+        try:
+            return self._previous_writes_note_of(state, user_id, shown_before)
+        except Exception as exc:
+            logger.warning(
+                "No note of the previous turn's memories (%s)", type(exc).__name__
+            )
+            return "", {}
+
+    def _previous_writes_note_of(
+        self, state: MemoryState, user_id: str, shown_before: Dict[str, str]
+    ) -> tuple[str, Dict[str, str]]:
+        messages = state.get("messages") or []
+        humans = [
+            getattr(m, "id", None)
+            for m in messages
+            if isinstance(m, HumanMessage) or getattr(m, "type", None) == "human"
+        ]
+        if len(humans) < 2 or not humans[-2]:
+            return "", {}
+        writes = (state.get(MEMORY_TURN_WRITES) or {}).get(humans[-2]) or []
+        written: Dict[tuple, str] = {}
+        held = 0
+        for write in writes:
+            if not isinstance(write, dict) or write.get("via") != VIA_ANALYSIS:
+                continue
+            action = write.get("action")
+            if action == HELD:
+                held += 1
+            elif action in (SAVED, UPDATED) and write.get("namespace"):
+                ref = (tuple(write["namespace"]), str(write.get("id")))
+                # A memory saved and then changed in one analysis is changed.
+                written[ref] = action if ref not in written else UPDATED
+        documents = []
+        if written:
+            found = getattr(self.memory_service, "documents_at", None)
+            if callable(found):
+                documents = run_async_safely(found(user_id, list(written)))
+        lines: list[str] = []
+        noted: Dict[str, str] = {}
+        for doc in documents:
+            if shown_before.get(doc.entry_key) == doc.entry_version:
+                continue
+            action = written.get((tuple(doc.namespace), str(doc.id)))
+            verb = "changed" if action == UPDATED else "saved"
+            type_label = f" (type: {doc.memory_type})" if doc.memory_type else ""
+            topic_label = f" [topic: {doc.topic}]" if doc.topic else ""
+            line = f"- {verb} [id: {doc.id}] {doc.content}{type_label}{topic_label}"
+            lines.append(self.memory_service.render_entry(doc, line))
+            noted[doc.entry_key] = doc.entry_version
+        if held:
+            lines.append(
+                f"- {held} more {'memory waits' if held == 1 else 'memories wait'} "
+                "for the user's approval on the Memory page; not remembered yet."
+            )
+        if not lines:
+            return "", {}
+        logger.info(
+            "Memory note of the previous turn: %d saved or changed, %d held",
+            len(noted),
+            held,
+        )
+        return "\n".join([PREVIOUS_WRITES_NOTE, *lines]), noted
 
     def _extract_user_input(self, state: MemoryState) -> Optional[str]:
         """Extract the latest user input from state messages.
@@ -2287,16 +2410,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryState]):
             messages, _ = self._analysed_part(state)
         else:
             messages = state.get("messages", [])
+        saving = (
+            _SAVING_TOOLS
+            if self.analysis_options.tool_changes_count_as_saved
+            else {"save_memory_store"}
+        )
         for msg in messages:
             # Tool-result messages carry the tool name
-            if getattr(msg, "name", None) == "save_memory_store":
+            if getattr(msg, "name", None) in saving:
                 return True
             # AI messages carry pending tool_calls before results arrive
             for tc in getattr(msg, "tool_calls", None) or []:
                 if isinstance(tc, dict):
-                    if tc.get("name") == "save_memory_store":
+                    if tc.get("name") in saving:
                         return True
-                elif getattr(tc, "name", None) == "save_memory_store":
+                elif getattr(tc, "name", None) in saving:
                     return True
         return False
 
@@ -2417,6 +2545,18 @@ def _merged_writes(
     return list(merged.values())
 
 
+#: The tools whose calls count as the agent having saved memories in the run,
+#: with ``tool_changes_count_as_saved``.
+_SAVING_TOOLS = frozenset(
+    {"save_memory_store", "update_memory_store", "delete_memory_store"}
+)
+
+
+def _joined(first: str, second: str) -> str:
+    """Two texts of a turn's memory block, the first on top."""
+    return f"{first}\n\n{second}" if first and second else first or second
+
+
 def _last_human_message(messages: Sequence[Any]) -> Optional[Any]:
     """The last message of the person, or ``None``."""
     for message in reversed(list(messages)):
@@ -2510,6 +2650,7 @@ __all__ = [
     "LANGUAGE_PREFERENCE_RULE",
     "MEMORY_ANALYSIS_THROUGH",
     "MEMORY_TURN_WRITES",
+    "PREVIOUS_WRITES_NOTE",
     "MEMORY_TURN_WRITES_EVENT",
     "MemoryTurnWritesMiddleware",
     "PostRunAnalysisOptions",

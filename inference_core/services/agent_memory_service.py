@@ -1765,6 +1765,39 @@ class AgentMemoryStoreService:
                 return LocatedMemory(space, category, namespace, item)
         return None
 
+    async def documents_at(
+        self, user_id: str, refs: Sequence[Tuple[Sequence[str], str]]
+    ) -> List[MemoryStoreDocument]:
+        """The memories at *refs* (a namespace and a key each), in that order,
+        of the spaces the agent reads; one that lies elsewhere or is gone is
+        left out.
+
+        Read in one batch. For whoever names memories by where a write put
+        them (a run's write log) and shows them to a model: the namespace is
+        checked against the agent's spaces, so a memory of a space the agent
+        does not read (any more) is never shown.
+        """
+        from langgraph.store.base import GetOp
+
+        user_id = str(user_id)
+        readable: Dict[Tuple[str, ...], MemorySpace] = {}
+        for category in MemoryCategory:
+            for space in self.readable_spaces(category):
+                readable.setdefault(space.namespace(user_id, category), space)
+        wanted = [
+            (tuple(str(part) for part in namespace), str(key))
+            for namespace, key in refs
+            if tuple(str(part) for part in namespace) in readable
+        ]
+        if not wanted:
+            return []
+        items = self.store.batch([GetOp(namespace, key) for namespace, key in wanted])
+        return [
+            self._document(item, readable[namespace], include_scores=False)
+            for (namespace, _key), item in zip(wanted, items)
+            if item is not None
+        ]
+
     async def update_memory(
         self,
         user_id: str,
