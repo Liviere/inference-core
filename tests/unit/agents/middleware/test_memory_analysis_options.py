@@ -17,6 +17,7 @@ from langgraph.store.memory import InMemoryStore
 from inference_core.agents.middleware.memory import (
     ALREADY_CHANGED_NOTE,
     CONTRADICTION_RULE,
+    INSTRUCTIONS_FROM_USER_RULE,
     LANGUAGE_PREFERENCE_RULE,
     MEMORY_ANALYSIS_THROUGH,
     MEMORY_TURN_WRITES,
@@ -172,7 +173,12 @@ def test_the_rules_are_not_in_the_prompt_without_their_options():
     )
     assert "SAME language the user spoke" in prompt
     assert "User preferences (language," in prompt
-    for rule in (LANGUAGE_PREFERENCE_RULE, CONTRADICTION_RULE, SINGLE_PASS_RULE):
+    for rule in (
+        LANGUAGE_PREFERENCE_RULE,
+        CONTRADICTION_RULE,
+        SINGLE_PASS_RULE,
+        INSTRUCTIONS_FROM_USER_RULE,
+    ):
         assert rule not in prompt
 
 
@@ -212,6 +218,22 @@ def test_a_contradiction_changes_the_memory_it_contradicts():
     prompt = _prompt(contradictions_replace=True)
     assert CONTRADICTION_RULE in prompt
     assert prompt.index("4. Only call") < prompt.index(CONTRADICTION_RULE)
+
+
+def test_a_standing_instruction_comes_only_from_the_users_words():
+    prompt = _prompt(instructions_from_user_only=True)
+    assert INSTRUCTIONS_FROM_USER_RULE in prompt
+    assert prompt.index("Explicit standing instructions") < prompt.index(
+        INSTRUCTIONS_FROM_USER_RULE
+    )
+
+
+def test_the_rule_on_instructions_goes_with_the_one_on_languages():
+    prompt = _prompt(
+        instructions_from_user_only=True, explicit_language_preference=True
+    )
+    assert INSTRUCTIONS_FROM_USER_RULE in prompt
+    assert LANGUAGE_PREFERENCE_RULE in prompt
 
 
 def test_one_pass_tells_the_model_one_topic_one_memory():
