@@ -26,6 +26,7 @@ from inference_core.services.agent_memory_service import (
     REPEATED,
     REPEATED_REASONS,
     SAVED,
+    TRASHED,
     VIA_TOOL,
     AgentMemoryStoreService,
     MemorySpaceError,
@@ -66,6 +67,11 @@ def _write_outcome_text(outcome: MemoryWriteOutcome, done: str) -> str:
         )
     if outcome.status == REPEATED:
         return f"✓ Memory {memory_id} was not changed. {outcome.reason}".rstrip()
+    if outcome.status == TRASHED:
+        return (
+            f"✓ Memory {memory_id} was moved to the trash. No assistant reads it "
+            "there; the user can put it back from the trash of the Memory page."
+        )
     return f"✓ {done} (id: {memory_id})"
 
 

@@ -576,6 +576,12 @@ class MemoryWritePolicy:
 # A held memory lies in (user_id, *HOLD_PATH, category): no space reads it.
 HOLD_PATH: Tuple[str, ...] = ("held",)
 
+#: What a memory in the trash records: where it lay (its namespace, key and
+#: space), when it was deleted, and by what (``tool`` or a person).
+TRASHED_FROM = "trashed_from"
+TRASHED_AT = "trashed_at"
+TRASHED_VIA = "trashed_via"
+
 # How many memories of one namespace, and how many held for it, a write from
 # the analysis is compared with (the newest ones), so that the check stays
 # cheap however much a user has stored.
@@ -642,6 +648,7 @@ class MemoryOptions:
     origin_kept_out: Tuple[str, ...] = ()
     labels_kept_out: Tuple[str, ...] = ()
     write_log: Optional[TurnWriteLog] = None
+    trash_path: Optional[Tuple[str, ...]] = None
 
     def service(
         self, store: Any, *, max_results: int = 5, base_namespace: Sequence[str] = ()
@@ -663,6 +670,7 @@ class MemoryOptions:
             origin_kept_out=self.origin_kept_out,
             labels_kept_out=self.labels_kept_out,
             write_log=self.write_log,
+            trash_path=self.trash_path,
         )
 
 
@@ -1034,6 +1042,7 @@ class AgentMemoryStoreService:
         origin_kept_out: Sequence[str] = (),
         labels_kept_out: Sequence[str] = (),
         write_log: Optional[TurnWriteLog] = None,
+        trash_path: Optional[Sequence[str]] = None,
     ) -> None:
         """
         Args:
@@ -1088,6 +1097,12 @@ class AgentMemoryStoreService:
                 without their text (:class:`TurnWriteLog`), for whoever
                 tells a person or a model what a run remembered. ``None``
                 records nothing.
+            trash_path: Where a memory the agent deletes goes, between the
+                user id and the category, instead of being deleted for good:
+                not indexed, so no search finds it, with where it lay
+                (``trashed_from``), so that a person can put it back. It must
+                not lie under any space's namespace. ``None`` (the default)
+                deletes for good.
         """
         self.store = store
         self.base_namespace = tuple(base_namespace)
@@ -1119,6 +1134,7 @@ class AgentMemoryStoreService:
             re.compile(pattern, re.IGNORECASE) for pattern in labels_kept_out
         )
         self.write_log = write_log
+        self.trash_path = tuple(trash_path) if trash_path else None
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def render_entry(self, document: "MemoryStoreDocument", line: str) -> str:
@@ -1185,6 +1201,14 @@ class AgentMemoryStoreService:
 
     def hold_namespace(self, user_id: str, category: "MemoryCategory | str") -> Tuple[str, ...]:
         return (str(user_id), *self.hold_path, MemoryCategory(category).value)
+
+    def trash_namespace(
+        self, user_id: str, category: "MemoryCategory | str"
+    ) -> Optional[Tuple[str, ...]]:
+        """Where a deleted memory of *category* goes; ``None`` without a trash."""
+        if not self.trash_path:
+            return None
+        return (str(user_id), *self.trash_path, MemoryCategory(category).value)
 
     def _namespace(self, user_id: str) -> tuple:
         """Build a namespaced tuple for store isolation per user (legacy)."""
@@ -1883,9 +1907,14 @@ class AgentMemoryStoreService:
         )
 
     async def remove_memory(
-        self, user_id: str, memory_id: str
+        self, user_id: str, memory_id: str, via: str = VIA_TOOL
     ) -> MemoryWriteOutcome:
-        """Delete a memory where it lies, if the agent may write there."""
+        """Delete a memory where it lies, if the agent may write there.
+
+        With ``trash_path`` it goes to the trash instead (``trashed``): the
+        same value, not indexed, with where it lay and when it was deleted, so
+        that a person can put it back.
+        """
         if not hasattr(self.store, "delete"):
             self.logger.warning("Store does not support delete; skipping")
             return MemoryWriteOutcome(NOT_FOUND, memory_id)
@@ -1894,6 +1923,31 @@ class AgentMemoryStoreService:
             return MemoryWriteOutcome(NOT_FOUND, memory_id)
         if not found.space.writable:
             return MemoryWriteOutcome(READ_ONLY, memory_id, found.space)
+        trash = self.trash_namespace(str(user_id), found.category)
+        if trash is not None:
+            value = dict(getattr(found.item, "value", None) or {})
+            value[TRASHED_FROM] = {
+                "namespace": list(found.namespace),
+                "key": memory_id,
+                "space": found.space.key,
+            }
+            value[TRASHED_AT] = datetime.now(timezone.utc).isoformat()
+            value[TRASHED_VIA] = via
+            self.store.put(trash, memory_id, value, index=False)
+            self.store.delete(found.namespace, memory_id)
+            self.note_trashed(
+                str(user_id),
+                memory_id,
+                trash,
+                found.category,
+                found.space.key,
+                found.namespace,
+                via=via,
+            )
+            self.logger.info(
+                "Moved memory id=%s to the trash for user=%s", memory_id, user_id
+            )
+            return MemoryWriteOutcome(TRASHED, memory_id, found.space)
         self.store.delete(found.namespace, memory_id)
         self.logger.info("Deleted memory id=%s for user=%s", memory_id, user_id)
         return MemoryWriteOutcome(DELETED, memory_id, found.space)
@@ -2184,7 +2238,7 @@ class AgentMemoryStoreService:
             return False
         if outcome.status == NOT_FOUND:
             self.logger.warning("Memory id=%s not found in any space", memory_id)
-        return outcome.status == DELETED
+        return outcome.status in (DELETED, TRASHED)
 
     async def delete_user_memories(
         self,
@@ -3243,6 +3297,9 @@ __all__ = [
     "HELD",
     "HOLD",
     "HOLD_PATH",
+    "TRASHED_AT",
+    "TRASHED_FROM",
+    "TRASHED_VIA",
     "MemoryWriteDecision",
     "MemoryWritePolicy",
     "MemoryWriteRefused",

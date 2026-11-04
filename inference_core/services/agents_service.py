@@ -1569,6 +1569,7 @@ class AgentService:
                             options.drop_cleared_field_vectors if options else False
                         ),
                         related_origin=options.related_origin if options else None,
+                        trash_path=options.trash_path if options else None,
                         **({"hold_path": options.hold_path} if options else {}),
                     )
             except Exception as exc:
