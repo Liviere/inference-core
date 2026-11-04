@@ -350,6 +350,21 @@ async def test_with_a_trash_a_memory_goes_there_with_where_it_lay(store):
 
 
 @pytest.mark.asyncio
+async def test_a_listed_memory_in_the_trash_says_where_it_lay(store):
+    service = _with_trash(store, GENERAL)
+    mid = await service.save_memory("u1", "a fact", "facts")
+    await service.remove_memory("u1", mid)
+
+    items, total = list_user_memories(store, "u1", space_path=TRASH, limit=None)
+
+    assert total == 1
+    assert items[0]["trashed_from"]["namespace"] == ["u1", "semantic"]
+    assert items[0]["trashed_at"]
+    kept, _ = list_user_memories(store, "u1", exclude_paths=[TRASH], limit=None)
+    assert kept == []
+
+
+@pytest.mark.asyncio
 async def test_no_agent_reads_the_trash(store):
     service = _with_trash(store, GENERAL)
     mid = await service.save_memory("u1", "python is the user's language", "facts")

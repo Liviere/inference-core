@@ -2960,6 +2960,8 @@ def _memory_item_to_dict(item: Any) -> Dict[str, Any]:
         "session_id": value.get("session_id"),
         "origin": extra.get("origin") if isinstance(extra, dict) else None,
         "held_for": value.get("held_for"),
+        "trashed_from": value.get(TRASHED_FROM),
+        "trashed_at": value.get(TRASHED_AT),
         "created_at": created_at,
         "updated_at": updated_at,
     }
