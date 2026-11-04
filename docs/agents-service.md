@@ -212,6 +212,16 @@ its own model, or for a call whose model could not be told. A run resumed after
 an interrupt continues on a fresh middleware instance, past `before_agent`; its
 calls are logged in the model node all the same.
 
+An approval has to stand ahead of cost tracking in the middleware list:
+`after_model` hooks run last-to-first, and an approval that stops the run before
+cost tracking took up the call leaves it to the resumed run, whose fresh
+instance logs it again from the state. `DeepAgentService` places a subagent's
+`approval_middleware` there. Without one, deepagents makes a
+`HumanInTheLoopMiddleware` of the subagent's `interrupt_on` and puts it last;
+`DeepAgentService.subagent_approvals_ahead_of_cost_tracking = True` (a class
+attribute, off by default) has the service make that middleware itself and place
+it ahead of cost tracking instead.
+
 A call that raises (an HTTP error of the provider, a timeout) leaves no row by
 default. With `CostTrackingMiddleware.log_failed_model_calls = True` (a class
 attribute, off by default) it leaves one with `success=False`: the configured
@@ -230,6 +240,18 @@ only: text, numbers, flags) and reads nothing into them. This is for facts the
 builder knows and the middleware cannot: what the model is used for, on whose
 account it runs. The details are on the model object, so an object that carries
 them should not be shared with a caller they do not describe.
+
+A subagent shares its parent's cost tracking, so its calls are logged like the
+parent's. With `CostTrackingMiddleware.log_subagent = True` (a class attribute,
+off by default) each row of a subagent's call, a failed call's and one logged
+from the state included, carries `details["subagent"]`, the `subagent_type` of
+the `task` call that runs it, and `details["task_call_id"]`, that call's id. The
+parent's own rows carry neither. `BriefedSubAgentMiddleware` says which `task`
+call is running, for the time it runs
+(`inference_core/agents/middleware/subagent_task.py`): the subagent's nodes
+inherit it, two subagents at the same time each see their own, and a run resumed
+after an approval runs the call, and says so, again. A subagent started by
+deepagents' plain `SubAgentMiddleware` is not told apart.
 
 The middleware leaves the last call in graph state for middleware outside it:
 `last_request_log_id`, `last_request_cost_usd` (`0.0` for a model without

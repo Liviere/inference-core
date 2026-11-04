@@ -29,6 +29,11 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from inference_core.agents.middleware.subagent_task import (
+    SubagentTask,
+    subagent_task_running,
+)
+
 logger = logging.getLogger(__name__)
 
 # The tool deepagents' SubAgentMiddleware adds, and the arguments it is given
@@ -300,6 +305,18 @@ def announced_subagent_run(data: Any) -> tuple[str, str] | None:
     return checkpoint_ns, call_id
 
 
+def _task_of(request: ToolCallRequest) -> SubagentTask | None:
+    """The subagent a ``task`` call runs (see ``subagent_task``), else ``None``."""
+    call = request.tool_call
+    if call.get("name") != TASK_TOOL_NAME:
+        return None
+    agent = (call.get("args") or {}).get(_AGENT)
+    call_id = call.get("id")
+    if not isinstance(agent, str) or not agent or not isinstance(call_id, str):
+        return None
+    return SubagentTask(subagent_type=agent, tool_call_id=call_id)
+
+
 class BriefedSubAgentMiddleware(SubAgentMiddleware):
     """``SubAgentMiddleware`` whose ``task`` takes a label and a required brief.
 
@@ -372,7 +389,9 @@ class BriefedSubAgentMiddleware(SubAgentMiddleware):
         if isinstance(settled, ToolMessage):
             return settled
         self._announce(settled)
-        return self._answer(settled, handler(settled))
+        with subagent_task_running(_task_of(settled)):
+            result = handler(settled)
+        return self._answer(settled, result)
 
     async def awrap_tool_call(
         self,
@@ -383,7 +402,9 @@ class BriefedSubAgentMiddleware(SubAgentMiddleware):
         if isinstance(settled, ToolMessage):
             return settled
         self._announce(settled)
-        return self._answer(settled, await handler(settled))
+        with subagent_task_running(_task_of(settled)):
+            result = await handler(settled)
+        return self._answer(settled, result)
 
     def _announce(self, request: ToolCallRequest) -> None:
         if not self.announce_runs or request.tool_call.get("name") != TASK_TOOL_NAME:
