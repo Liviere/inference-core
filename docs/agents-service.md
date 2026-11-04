@@ -470,6 +470,57 @@ contains several durable facts, preferences, or corrections. It is told not to
 save what the system records about the run itself: ids of events or runs, when
 a run took place or is next due, or the agent's own scheduled task.
 
+#### How the analysis reads a conversation (`PostRunAnalysisOptions`)
+
+`AgentService(memory_analysis_options=PostRunAnalysisOptions(...))`, passed on
+to `MemoryMiddleware(analysis_options=...)`, changes how the analysis reads a
+conversation and what it is told. Every option is off by default, and
+`PostRunAnalysisOptions()` is the analysis described above: the whole thread
+(its last 4000 characters), the same prompt, up to four rounds.
+
+| Option | What it does |
+| --- | --- |
+| `language` | The memories are written in that language (a name such as `"Polish"`), whatever language the conversation is in, instead of the language the user spoke. |
+| `explicit_language_preference` | A preference for a language is saved only when the user asks for one; the language of a message, a greeting or a phrase in another language is not one. |
+| `contradictions_replace` | A fact that contradicts a memory, or a correction of one, changes that memory with `update_memory_store`, not a new memory next to it. The analysis is shown, with their ids, the memories the run's recall found for the turn too: the search for similar memories often misses what a correction corrects (another language, a negation). |
+| `new_messages_only` | The analysis reads the messages after those the previous analysis read (the id of the last one is kept in the private state key `memory_analysis_through`), with up to `background_chars` (600) of the earlier ones as context it is told not to save from. Without the key, the whole thread; with a key no longer in the thread (a summary took it), the messages from the person's last one. Text in content blocks counts too. The search for similar memories and the check for a save made in the run read the same part. |
+| `single_pass` | One round of calls, and another only after the model asked `recall_memories_store` for something (three at most). A second change of one memory in one analysis is not made. |
+| `record_writes` | See below. |
+| `gate` | An async callable asked, before the analysis, with what the person wrote in the part the analysis would read. `False` leaves the analysis out (the mark of `new_messages_only` still moves on); `True`, `None` or a failure runs it; a cancelled or interrupted run runs none. The gate is the application's: it may ask a model, and it logs that call itself. |
+
+**The writes of a turn** (`record_writes`). The memory service records each
+write that wrote something in its `write_log` (`TurnWriteLog`,
+`MemoryOptions(write_log=...)`): saved, updated, held, and `trashed` (recorded
+by an application that keeps a trash namespace, through
+`AgentMemoryStoreService.note_trashed`). A repeat, a refusal, a memory not
+found or only readable, and a plain delete are not recorded. An entry holds no
+text:
+
+```python
+{"id": str,          # the store key; for "held" the key of the held entry
+ "action": "saved" | "updated" | "held" | "trashed",
+ "namespace": [...], # the store namespace it lies in now, the user id first
+ "category": str, "space": str,
+ "replaces": str | None,  # for a held change: the memory it is to replace
+ "via": "analysis" | "tool",
+ "version": str | None,   # the store's updated_at after the write (ISO 8601)
+ "trashed_from": {"namespace": [...], "key": str}}  # "trashed" only
+```
+
+`AgentService` gives the agent's memory service and those of its subagents
+(`build_memory_kit`) one log, so the writes of the agent's tools, its
+subagents' and the analysis's are recorded together. `MemoryMiddleware` keeps
+them in the private state key `memory_turn_writes`, by the id of the person's
+message of the turn, after the analysis; `MemoryTurnWritesMiddleware`, added
+next to it, does so before each model call, so a run stopped for an approval
+has the writes made before the stop in its checkpoint. One entry per memory
+and turn: the last action on it, except that a memory saved in the turn stays
+`saved`. A turn without writes has no key, and the turns no longer in the
+thread are dropped. After the analysis the turn's writes go out as a stream
+event, `{"memory_turn_writes": {"turn": <message id>, "writes": [...]}}`. A
+subagent's copy keeps nothing in its own thread. `MemoryWriteOutcome` names
+where a write lies too (`namespace`, `category`, `held_key`).
+
 An agent that runs on a schedule sees the same kind of turn every time, and the
 analysis would write nearly the same memory each time. With
 `MemoryOptions(repeat_threshold=...)` a memory the analysis saves is not

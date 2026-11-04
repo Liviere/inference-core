@@ -19,6 +19,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -403,12 +404,72 @@ REPEATED = "repeated"
 
 @dataclass(frozen=True)
 class MemoryWriteOutcome:
-    """What became of a write, an update or a delete, and where."""
+    """What became of a write, an update or a delete, and where.
+
+    ``namespace`` and ``category`` say where the entry lies after a write
+    that wrote something (saved, updated, held: the namespace of held
+    memories). ``held_key`` is the key of the held entry: for a held new
+    memory the same as ``memory_id``, for a held change its own key, while
+    ``memory_id`` stays the id of the memory it is to replace.
+    """
 
     status: str
     memory_id: Optional[str] = None
     space: Optional[MemorySpace] = None
     reason: str = ""
+    namespace: Optional[Tuple[str, ...]] = None
+    category: Optional[str] = None
+    held_key: Optional[str] = None
+
+
+# What became of a memory, as a run's write log records it: ``trashed`` is a
+# memory moved to a trash namespace by whoever keeps one.
+TRASHED = "trashed"
+#: The actions a run's write log records: only writes that wrote something.
+LOGGED_ACTIONS = (SAVED, UPDATED, HELD, TRASHED)
+
+
+class TurnWriteLog:
+    """What a run's memory services wrote, without the memories' text.
+
+    One log serves every memory service of a run (the agent's and its
+    subagents'): each records the writes that wrote something (saved,
+    updated, held, trashed) as plain dicts, and whoever reads the log takes
+    them out with :meth:`drain`. A write that wrote nothing (a repeat, a
+    refusal, a memory not found or only readable) and a plain delete are not
+    recorded. Each entry is::
+
+        {"id", "action", "namespace", "category", "space", "replaces",
+         "via", "version"}
+
+    plus ``trashed_from`` (``{"namespace", "key"}``) for ``trashed``.
+    ``namespace`` is the store namespace the entry lies in now, the user id
+    first; ``version`` the time the store last wrote it (ISO 8601), or
+    ``None`` when the store gives none. Safe to use from several threads.
+    """
+
+    def __init__(self) -> None:
+        self._entries: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+
+    def record(self, entry: Dict[str, Any]) -> None:
+        with self._lock:
+            self._entries.append(dict(entry))
+
+    def drain(self) -> List[Dict[str, Any]]:
+        """The entries recorded since the last drain, oldest first."""
+        with self._lock:
+            entries, self._entries = self._entries, []
+        return entries
+
+    def peek(self) -> List[Dict[str, Any]]:
+        """The entries recorded since the last drain, left in the log."""
+        with self._lock:
+            return [dict(entry) for entry in self._entries]
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
 
 
 class MemoryWriteRefused(ValueError):
@@ -580,6 +641,7 @@ class MemoryOptions:
     related_origin: Dict[str, Any] = field(default_factory=dict)
     origin_kept_out: Tuple[str, ...] = ()
     labels_kept_out: Tuple[str, ...] = ()
+    write_log: Optional[TurnWriteLog] = None
 
     def service(
         self, store: Any, *, max_results: int = 5, base_namespace: Sequence[str] = ()
@@ -600,6 +662,7 @@ class MemoryOptions:
             related_origin=self.related_origin,
             origin_kept_out=self.origin_kept_out,
             labels_kept_out=self.labels_kept_out,
+            write_log=self.write_log,
         )
 
 
@@ -970,6 +1033,7 @@ class AgentMemoryStoreService:
         related_origin: Optional[Dict[str, Any]] = None,
         origin_kept_out: Sequence[str] = (),
         labels_kept_out: Sequence[str] = (),
+        write_log: Optional[TurnWriteLog] = None,
     ) -> None:
         """
         Args:
@@ -1020,6 +1084,10 @@ class AgentMemoryStoreService:
                 case, of labels such a write may not hold either (a label
                 followed by its value, say), with the same outcome. Empty
                 checks nothing.
+            write_log: Where the writes that wrote something are recorded,
+                without their text (:class:`TurnWriteLog`), for whoever
+                tells a person or a model what a run remembered. ``None``
+                records nothing.
         """
         self.store = store
         self.base_namespace = tuple(base_namespace)
@@ -1050,6 +1118,7 @@ class AgentMemoryStoreService:
         self.labels_kept_out = tuple(
             re.compile(pattern, re.IGNORECASE) for pattern in labels_kept_out
         )
+        self.write_log = write_log
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def render_entry(self, document: "MemoryStoreDocument", line: str) -> str:
@@ -1355,8 +1424,21 @@ class AgentMemoryStoreService:
         )
 
         if decision.action == HOLD:
-            self._hold(user_id, resolved_category, memory_id, memory_data, target, namespace)
-            return MemoryWriteOutcome(HELD, memory_id, target, decision.reason)
+            held_at = self._hold(
+                user_id, resolved_category, memory_id, memory_data, target, namespace
+            )
+            return self._noted(
+                MemoryWriteOutcome(
+                    HELD,
+                    memory_id,
+                    target,
+                    decision.reason,
+                    namespace=held_at,
+                    category=resolved_category.value,
+                    held_key=memory_id,
+                ),
+                via,
+            )
 
         self.store.put(
             namespace,
@@ -1364,7 +1446,108 @@ class AgentMemoryStoreService:
             self._stored_value(memory_data),
             index=INDEXED_FIELDS,
         )
-        return MemoryWriteOutcome(SAVED, memory_id, target)
+        return self._noted(
+            MemoryWriteOutcome(
+                SAVED,
+                memory_id,
+                target,
+                namespace=namespace,
+                category=resolved_category.value,
+            ),
+            via,
+        )
+
+    def _noted(
+        self, outcome: MemoryWriteOutcome, via: str
+    ) -> MemoryWriteOutcome:
+        """*outcome*, recorded in the write log when there is one."""
+        if self.write_log is None or outcome.namespace is None:
+            return outcome
+        held = outcome.status == HELD
+        key = outcome.held_key if held else outcome.memory_id
+        replaces = outcome.memory_id if held and key != outcome.memory_id else None
+        self._log_entry(
+            action=outcome.status,
+            key=str(key),
+            namespace=outcome.namespace,
+            category=outcome.category,
+            space=outcome.space.key if outcome.space else None,
+            replaces=replaces,
+            via=via,
+        )
+        return outcome
+
+    def note_trashed(
+        self,
+        user_id: str,
+        key: str,
+        namespace: Sequence[str],
+        category: "MemoryCategory | str",
+        space: Optional[str],
+        trashed_from: Sequence[str],
+        trashed_key: Optional[str] = None,
+        via: str = VIA_TOOL,
+    ) -> None:
+        """Record in the write log that a memory went to a trash namespace.
+
+        For a service that keeps one: *namespace* and *key* say where the
+        memory lies now, *trashed_from* (and *trashed_key*, by default *key*)
+        where it lay. Without a write log nothing is recorded.
+        """
+        if self.write_log is None:
+            return
+        self._log_entry(
+            action=TRASHED,
+            key=str(key),
+            namespace=tuple(namespace),
+            category=MemoryCategory(category).value,
+            space=space,
+            replaces=None,
+            via=via,
+            trashed_from={
+                "namespace": list(trashed_from),
+                "key": str(trashed_key or key),
+            },
+        )
+
+    def _log_entry(
+        self,
+        *,
+        action: str,
+        key: str,
+        namespace: Sequence[str],
+        category: Optional[str],
+        space: Optional[str],
+        replaces: Optional[str],
+        via: str,
+        trashed_from: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """One entry of the write log, with the version the store gives."""
+        if self.write_log is None:
+            return
+        version: Optional[str] = None
+        try:
+            item = self.store.get(tuple(namespace), key)
+            updated = getattr(item, "updated_at", None) if item else None
+            if isinstance(updated, datetime):
+                version = updated.isoformat()
+            elif isinstance(updated, str):
+                version = updated
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.debug("Write log: no version for an entry (%s)", exc)
+        entry: Dict[str, Any] = {
+            "id": key,
+            "action": action,
+            "namespace": list(namespace),
+            "category": category,
+            "space": space,
+            "replaces": replaces,
+            "via": via,
+            "version": version,
+        }
+        if trashed_from is not None:
+            entry["trashed_from"] = trashed_from
+        self.write_log.record(entry)
 
     def _hold(
         self,
@@ -1375,8 +1558,9 @@ class AgentMemoryStoreService:
         target: MemorySpace,
         namespace: Tuple[str, ...],
         replaces: Optional[str] = None,
-    ) -> None:
-        """Put a memory where no agent reads it, with where it was meant to go.
+    ) -> Tuple[str, ...]:
+        """Put a memory where no agent reads it, with where it was meant to go;
+        the namespace it was put in.
 
         Not indexed: a held memory is never found by a search with a query.
         With ``supersede_held_changes``, a held change to a memory (*replaces*)
@@ -1390,7 +1574,9 @@ class AgentMemoryStoreService:
         }
         if replaces and self.supersede_held_changes:
             self._drop_held_changes(user_id, replaces)
-        self.store.put(self.hold_namespace(user_id, category), memory_id, value, index=False)
+        held_at = self.hold_namespace(user_id, category)
+        self.store.put(held_at, memory_id, value, index=False)
+        return held_at
 
     def _drop_held_changes(self, user_id: str, replaces: str) -> None:
         """Delete the held changes to memory *replaces*, in every category.
@@ -1647,23 +1833,44 @@ class AgentMemoryStoreService:
 
         namespace = found.space.namespace(user_id, new_category)
         if decision.action == HOLD:
-            self._hold(
+            held_key = str(uuid.uuid4())
+            held_at = self._hold(
                 user_id,
                 new_category,
-                str(uuid.uuid4()),
+                held_key,
                 memory_data,
                 found.space,
                 namespace,
                 replaces=memory_id,
             )
-            return MemoryWriteOutcome(HELD, memory_id, found.space, decision.reason)
+            return self._noted(
+                MemoryWriteOutcome(
+                    HELD,
+                    memory_id,
+                    found.space,
+                    decision.reason,
+                    namespace=held_at,
+                    category=new_category.value,
+                    held_key=held_key,
+                ),
+                via,
+            )
         stored = self._stored_value(memory_data)
         self.store.put(namespace, memory_id, stored, index=INDEXED_FIELDS)
         if namespace != found.namespace:
             self.store.delete(found.namespace, memory_id)
         elif self.drop_cleared_field_vectors:
             drop_vectors_without_text(self.store, namespace, memory_id, stored)
-        return MemoryWriteOutcome(UPDATED, memory_id, found.space)
+        return self._noted(
+            MemoryWriteOutcome(
+                UPDATED,
+                memory_id,
+                found.space,
+                namespace=namespace,
+                category=new_category.value,
+            ),
+            via,
+        )
 
     def _unchanged(self, old_value: Dict[str, Any], content: str) -> bool:
         """Whether *content* nearly repeats a stored memory's text."""
@@ -3065,6 +3272,9 @@ __all__ = [
     "READ_ONLY",
     "SAVED",
     "UPDATED",
+    "TRASHED",
+    "LOGGED_ACTIONS",
+    "TurnWriteLog",
     "spaces_for_scope",
     "MemoryType",
     "MemoryTypeDescription",
