@@ -486,6 +486,8 @@ conversation and what it is told. Every option is off by default, and
 | `new_messages_only` | The analysis reads the messages after those the previous analysis read (the id of the last one is kept in the private state key `memory_analysis_through`), with up to `background_chars` (600) of the earlier ones as context it is told not to save from. Without the key, the whole thread; with a key no longer in the thread (a summary took it), the messages from the person's last one. Text in content blocks counts too. The search for similar memories and the check for a save made in the run read the same part. |
 | `single_pass` | One round of calls, and another only after the model asked `recall_memories_store` for something (three at most). A second change of one memory in one analysis is not made. |
 | `record_writes` | See below. |
+| `note_previous_writes` | With `record_writes` and the memories in the person's message: see "A note of what the analysis wrote" below. |
+| `tool_changes_count_as_saved` | The analysis is told the agent already saved memories in the run after a call of `update_memory_store` or `delete_memory_store` too, not only of `save_memory_store`, so a correction or a removal the agent made is not saved again from the conversation. |
 | `gate` | An async callable asked, before the analysis, with what the person wrote in the part the analysis would read. `False` leaves the analysis out (the mark of `new_messages_only` still moves on); `True`, `None` or a failure runs it; a cancelled or interrupted run runs none. The gate is the application's: it may ask a model, and it logs that call itself. |
 
 **The writes of a turn** (`record_writes`). The memory service records each
@@ -520,6 +522,32 @@ thread are dropped. After the analysis the turn's writes go out as a stream
 event, `{"memory_turn_writes": {"turn": <message id>, "writes": [...]}}`. A
 subagent's copy keeps nothing in its own thread. `MemoryWriteOutcome` names
 where a write lies too (`namespace`, `category`, `held_key`).
+
+**A note of what the analysis wrote** (`note_previous_writes`). With
+`record_writes` and `memory_context_placement="message"`, the person's next
+message starts with a note, in the same `<user_memory_context>` block as the
+turn's recalled memories and kept with them in `memory_context_turns`: a line
+(`PREVIOUS_WRITES_NOTE`), then each memory the analysis after the previous turn
+saved or changed, with its id and its text as recalled memories show it (the
+service's `entry_renderer` included), and how many it held for approval,
+without their text. The memories are read by where the write put them
+(`AgentMemoryStoreService.documents_at`), only in the spaces the agent reads; one
+gone since is left out. What the agent wrote with a tool is not in it: the model
+saw its own calls. With `memory_context_new_only` a memory an earlier turn
+still in the thread shows in the same version is not noted again, and the
+recall of the turn leaves out what the note shows. A turn after one the
+analysis wrote nothing in has no note. The system prompt does not change and
+the conversation sent only grows. A briefed agent (a subagent) gets no note.
+
+**A trash** (`MemoryOptions(trash_path=...)`). A memory the agent deletes
+(`delete_memory_store`, `remove_memory`) goes to `(user, *trash_path, category)`
+instead of being deleted for good: the same value, not indexed, with
+`trashed_from` (`{"namespace", "key", "space"}`), `trashed_at` and
+`trashed_via`. The outcome is `trashed`, recorded in the write log
+(`note_trashed`), and the tool tells the model the memory can be put back. No
+search finds it and no space reads it; putting it back, and deleting it for good
+later, are the application's. Without `trash_path` (the default) a memory is
+deleted for good.
 
 An agent that runs on a schedule sees the same kind of turn every time, and the
 analysis would write nearly the same memory each time. With

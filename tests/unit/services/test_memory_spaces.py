@@ -36,11 +36,16 @@ from inference_core.services.agent_memory_service import (
     SAVE,
     SAVED,
     SHARED_SPACE_KEY,
+    TRASHED,
+    TRASHED_AT,
+    TRASHED_FROM,
+    TRASHED_VIA,
     UNCHANGED_REASON,
     UPDATED,
     VIA_ANALYSIS,
     AgentMemoryStoreService,
     MemoryCategory,
+    MemoryOptions,
     MemoryNamespaceBuilder,
     MemorySpace,
     MemorySpaceError,
@@ -294,6 +299,177 @@ async def test_a_memory_is_deleted_where_it_lies(store):
 
     assert outcome.status == DELETED
     assert store.get(("u1", "agent:a1", "procedural"), mid) is None
+
+
+# --------------------------------------------------------------------------- #
+# The trash
+# --------------------------------------------------------------------------- #
+
+TRASH = ("trash",)
+
+
+def _with_trash(store, *spaces):
+    return MemoryOptions(spaces=tuple(spaces), trash_path=TRASH).service(
+        store, base_namespace=("memories",)
+    )
+
+
+@pytest.mark.asyncio
+async def test_without_a_trash_a_memory_is_deleted_for_good(store):
+    service = _service(store, GENERAL)
+    mid = await service.save_memory("u1", "a fact", "facts")
+
+    outcome = await service.remove_memory("u1", mid)
+
+    assert outcome.status == DELETED
+    assert service.trash_namespace("u1", "semantic") is None
+    assert not store.search(("u1",), limit=100)
+
+
+@pytest.mark.asyncio
+async def test_with_a_trash_a_memory_goes_there_with_where_it_lay(store):
+    service = _with_trash(store, GENERAL, PRIVATE)
+    mid = await service.save_memory("u1", "a lesson", "skill", space="private")
+    saved = store.get(("u1", "agent:a1", "procedural"), mid).value
+
+    outcome = await service.remove_memory("u1", mid)
+
+    assert outcome.status == TRASHED
+    assert outcome.space == PRIVATE
+    assert store.get(("u1", "agent:a1", "procedural"), mid) is None
+    item = store.get(("u1", "trash", "procedural"), mid)
+    assert item.value["content"] == saved["content"]
+    assert item.value["created_at"] == saved["created_at"]
+    assert item.value[TRASHED_FROM] == {
+        "namespace": ["u1", "agent:a1", "procedural"],
+        "key": mid,
+        "space": "private",
+    }
+    assert item.value[TRASHED_VIA] == "tool"
+    assert datetime.fromisoformat(item.value[TRASHED_AT]).tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_a_listed_memory_in_the_trash_says_where_it_lay(store):
+    service = _with_trash(store, GENERAL)
+    mid = await service.save_memory("u1", "a fact", "facts")
+    await service.remove_memory("u1", mid)
+
+    items, total = list_user_memories(store, "u1", space_path=TRASH, limit=None)
+
+    assert total == 1
+    assert items[0]["trashed_from"]["namespace"] == ["u1", "semantic"]
+    assert items[0]["trashed_at"]
+    kept, _ = list_user_memories(store, "u1", exclude_paths=[TRASH], limit=None)
+    assert kept == []
+
+
+@pytest.mark.asyncio
+async def test_no_agent_reads_the_trash(store):
+    service = _with_trash(store, GENERAL)
+    mid = await service.save_memory("u1", "python is the user's language", "facts")
+    await service.remove_memory("u1", mid)
+
+    assert await service.recall_memories("u1", "python") == []
+    assert await service.find_memory("u1", mid) is None
+
+
+@pytest.mark.asyncio
+async def test_a_memory_the_agent_only_reads_does_not_go_to_the_trash(store):
+    writer = _with_trash(store, GENERAL)
+    mid = await writer.save_memory("u1", "a fact", "facts")
+    reader = _with_trash(
+        store,
+        MemorySpace(key="general", label="General", writable=False),
+    )
+
+    assert (await reader.remove_memory("u1", mid)).status == READ_ONLY
+    assert store.get(("u1", "semantic"), mid) is not None
+    assert not store.search(("u1", "trash"), limit=10)
+
+
+@pytest.mark.asyncio
+async def test_the_write_log_records_a_memory_moved_to_the_trash(store):
+    from inference_core.services.agent_memory_service import TurnWriteLog
+
+    log = TurnWriteLog()
+    service = MemoryOptions(
+        spaces=(GENERAL,), trash_path=TRASH, write_log=log
+    ).service(store, base_namespace=("memories",))
+    mid = await service.save_memory("u1", "a fact", "facts")
+    log.drain()
+
+    await service.remove_memory("u1", mid)
+
+    [entry] = log.drain()
+    assert entry["action"] == TRASHED
+    assert entry["id"] == mid
+    assert entry["namespace"] == ["u1", "trash", "semantic"]
+    assert entry["space"] == "general"
+    assert entry["via"] == "tool"
+    assert entry["trashed_from"] == {"namespace": ["u1", "semantic"], "key": mid}
+    assert entry["version"]
+
+
+@pytest.mark.asyncio
+async def test_a_memory_deleted_for_good_is_not_in_the_write_log(store):
+    from inference_core.services.agent_memory_service import TurnWriteLog
+
+    log = TurnWriteLog()
+    service = MemoryOptions(spaces=(GENERAL,), write_log=log).service(
+        store, base_namespace=("memories",)
+    )
+    mid = await service.save_memory("u1", "a fact", "facts")
+    log.drain()
+
+    assert (await service.remove_memory("u1", mid)).status == DELETED
+    assert log.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_counts_the_trash_as_deleted(store):
+    service = _with_trash(store, GENERAL)
+    mid = await service.save_memory("u1", "a fact", "facts")
+
+    assert await service.delete_memory("u1", mid) is True
+    assert store.get(("u1", "trash", "semantic"), mid) is not None
+
+
+@pytest.mark.asyncio
+async def test_the_tool_tells_the_model_it_went_to_the_trash(store):
+    from inference_core.agents.tools.memory_tools import DeleteMemoryStoreTool
+
+    service = _with_trash(store, GENERAL)
+    mid = await service.save_memory("u1", "a fact", "facts")
+    tool = DeleteMemoryStoreTool(memory_service=service, user_id="u1")
+
+    text = await tool.ainvoke({"memory_id": mid})
+
+    assert "moved to the trash" in text
+    assert "put it back" in text
+
+
+@pytest.mark.asyncio
+async def test_documents_at_gives_the_memories_of_the_spaces_read(store):
+    writer = _service(store, GENERAL, PRIVATE, TEAM)
+    general = await writer.save_memory("u1", "a fact", "facts", space="general")
+    team = await writer.save_memory("u1", "a team fact", "facts", space="team")
+    reader = _service(store, GENERAL, PRIVATE)
+
+    docs = await reader.documents_at(
+        "u1",
+        [
+            (("u1", "space:t1", "semantic"), team),
+            (("u1", "semantic"), "gone"),
+            (("u1", "semantic"), general),
+            (("u2", "semantic"), general),
+        ],
+    )
+
+    assert [(d.id, d.content, d.space.key) for d in docs] == [
+        (general, "a fact", "general")
+    ]
+    assert docs[0].entry_key == f"u1/semantic/{general}"
 
 
 def test_space_keys_are_unique(store):

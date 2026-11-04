@@ -695,6 +695,26 @@ class TestHasMemorySaveInRun:
         state = MemoryState(messages=[msg])
         assert middleware._has_memory_save_in_run(state) is False
 
+    @pytest.mark.parametrize("tool", ["update_memory_store", "delete_memory_store"])
+    def test_a_change_or_a_removal_counts_only_with_the_option(
+        self, middleware, tool
+    ):
+        """A correction the agent made is not to be saved again by the
+        analysis (``tool_changes_count_as_saved``); without the option only
+        a save counts, as before."""
+        from dataclasses import replace
+
+        msg = MagicMock()
+        msg.name = None
+        msg.tool_calls = [{"name": tool, "args": {}}]
+        state = MemoryState(messages=[msg])
+
+        assert middleware._has_memory_save_in_run(state) is False
+        middleware.analysis_options = replace(
+            middleware.analysis_options, tool_changes_count_as_saved=True
+        )
+        assert middleware._has_memory_save_in_run(state) is True
+
 
 # ---------------------------------------------------------------------------
 # Helpers for message construction
