@@ -3114,6 +3114,13 @@ def _for_subagent(middleware: Any) -> Any:
     return middleware
 
 
+def _human_in_the_loop(interrupt_on: dict[str, Any]) -> Any:
+    """The approvals deepagents makes of a subagent's ``interrupt_on``."""
+    from langchain.agents.middleware import HumanInTheLoopMiddleware
+
+    return HumanInTheLoopMiddleware(interrupt_on=interrupt_on)
+
+
 class DeepAgentService(AgentService):
     """Service for creating agents with sub-agent orchestration via SubAgentMiddleware.
 
@@ -3129,9 +3136,23 @@ class DeepAgentService(AgentService):
     * A declarative subagent's own skills (``user_skills`` on its spec): its
       own list of them in its prompt and its own reader, which sees no other
       agent's
+
+    Attributes:
+        subagent_approvals_ahead_of_cost_tracking: Whether a subagent's
+            ``interrupt_on``, with no ``approval_middleware`` given, is asked
+            through a ``HumanInTheLoopMiddleware`` placed ahead of its cost
+            tracking, as ``approval_middleware`` is. Off by default: deepagents
+            then puts its own last, ``after_model`` hooks run last-to-first,
+            and an approval stops the run before cost tracking took up the
+            model's call. A run resumed in another process (a fresh cost
+            tracking, which has not seen the call) logs that call a second
+            time, from the state. A consumer that resumes runs elsewhere sets
+            it to ``True`` on the class.
     """
 
     # Source: deepagents v0.4.4 – SubAgentMiddleware, SkillsMiddleware docs
+
+    subagent_approvals_ahead_of_cost_tracking: bool = False
 
     def __init__(
         self,
@@ -3941,9 +3962,19 @@ class DeepAgentService(AgentService):
         return {**spec, "middleware": middleware}
 
     def _with_own_approvals(self, spec: Any) -> Any:
-        """``spec`` with ``approval_middleware`` in place of its ``interrupt_on``."""
+        """``spec`` with ``approval_middleware`` in place of its ``interrupt_on``.
+
+        Without ``approval_middleware``, with
+        ``subagent_approvals_ahead_of_cost_tracking``, deepagents' own
+        ``HumanInTheLoopMiddleware`` takes that place.
+        """
         interrupt_on = spec.get("interrupt_on") if isinstance(spec, dict) else None
-        if self._approval_middleware is None or not interrupt_on:
+        if not interrupt_on:
+            return spec
+        approvals = self._approval_middleware
+        if approvals is None and self.subagent_approvals_ahead_of_cost_tracking:
+            approvals = _human_in_the_loop
+        if approvals is None:
             return spec
         rest = {key: value for key, value in spec.items() if key != "interrupt_on"}
         middleware = list(spec.get("middleware") or [])
@@ -3958,7 +3989,7 @@ class DeepAgentService(AgentService):
             ),
             len(middleware),
         )
-        middleware.insert(position, self._approval_middleware(interrupt_on))
+        middleware.insert(position, approvals(interrupt_on))
         rest["middleware"] = middleware
         return rest
 

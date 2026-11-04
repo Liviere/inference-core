@@ -212,6 +212,16 @@ its own model, or for a call whose model could not be told. A run resumed after
 an interrupt continues on a fresh middleware instance, past `before_agent`; its
 calls are logged in the model node all the same.
 
+An approval has to stand ahead of cost tracking in the middleware list:
+`after_model` hooks run last-to-first, and an approval that stops the run before
+cost tracking took up the call leaves it to the resumed run, whose fresh
+instance logs it again from the state. `DeepAgentService` places a subagent's
+`approval_middleware` there. Without one, deepagents makes a
+`HumanInTheLoopMiddleware` of the subagent's `interrupt_on` and puts it last;
+`DeepAgentService.subagent_approvals_ahead_of_cost_tracking = True` (a class
+attribute, off by default) has the service make that middleware itself and place
+it ahead of cost tracking instead.
+
 A call that raises (an HTTP error of the provider, a timeout) leaves no row by
 default. With `CostTrackingMiddleware.log_failed_model_calls = True` (a class
 attribute, off by default) it leaves one with `success=False`: the configured
