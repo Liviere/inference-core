@@ -488,6 +488,40 @@ def set_imap_poll_success_gauge(host_alias: str, ts: float) -> None:
 
 
 # ----------------------------------------------------------------------------
+# IMAP poll attempts — when a poll last tried, per host_alias.
+#
+# The success heartbeat above cannot tell an outage from a host nobody polls
+# any more: in multiprocess mode a written series cannot be taken back, so the
+# last value of a host that is no longer polled stays in its shard for good.
+# This gauge is written wherever the success gauge is (success, transient
+# failure, cooldown skip), so an outage reads as "attempt fresh, success old",
+# while a host that is no longer polled ages out of both.
+# ----------------------------------------------------------------------------
+imap_poll_last_attempt_timestamp = Gauge(
+    "imap_poll_last_attempt_timestamp",
+    "Unix timestamp of the last IMAP poll attempt, per host_alias "
+    "(success, transient failure or cooldown skip)",
+    ["host_alias"],
+    multiprocess_mode="mostrecent",
+)
+
+
+def set_imap_poll_attempt_gauge(host_alias: str, ts: float) -> None:
+    """Fail-soft setter for the IMAP poll attempt gauge.
+
+    Emit next to :func:`set_imap_poll_success_gauge`, with ``ts`` the time of
+    the attempt. Metrics must never break polling, so any error here is
+    swallowed at debug level.
+    """
+    try:
+        imap_poll_last_attempt_timestamp.labels(
+            host_alias=host_alias or "unknown"
+        ).set(float(ts))
+    except Exception:  # pragma: no cover - observability must never break polling
+        logger.debug("set_imap_poll_attempt_gauge failed", exc_info=True)
+
+
+# ----------------------------------------------------------------------------
 # Model catalog — what the providers' model listings say about the config.
 #
 # Every gauge is a pure function of the stored catalog and the LLM config, and

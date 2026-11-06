@@ -655,6 +655,126 @@ class TestPollImapGracefulSkip:
         mock_service.fetch_unseen_emails.assert_not_called()
 
 
+class TestPollImapAttemptGauge:
+    """The attempt gauge is written wherever the success gauge is: a host
+    that is polled has a fresh attempt, one that failed for good has none."""
+
+    TASKS = "inference_core.celery.tasks.email_tasks"
+
+    def _redis(self, mock_redis, in_cooldown=0):
+        fake = MagicMock()
+        fake.exists.return_value = in_cooldown
+        fake.incr.return_value = 1
+        fake.get.return_value = "1000.0"
+        mock_redis.return_value = fake
+
+    def _poll(self):
+        return poll_imap_task(
+            host_alias="primary", folder="INBOX", limit=5, skip_processed=False
+        )
+
+    @patch(f"{TASKS}.set_imap_poll_success_gauge")
+    @patch(f"{TASKS}.set_imap_poll_attempt_gauge")
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_a_success_stamps_attempt_and_success_alike(
+        self, mock_get_service, mock_redis, attempt, success
+    ):
+        self._redis(mock_redis)
+        mock_service = MagicMock()
+        mock_service.fetch_unseen_emails.return_value = []
+        mock_get_service.return_value = mock_service
+
+        assert self._poll()["status"] == "success"
+
+        attempt.assert_called_once()
+        success.assert_called_once()
+        assert attempt.call_args.args == success.call_args.args
+        assert attempt.call_args.args[0] == "primary"
+
+    @patch(f"{TASKS}.set_imap_poll_success_gauge")
+    @patch(f"{TASKS}.set_imap_poll_attempt_gauge")
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_a_transient_failure_stamps_the_attempt_and_keeps_the_success(
+        self, mock_get_service, mock_redis, attempt, success
+    ):
+        self._redis(mock_redis)
+        mock_service = MagicMock()
+        mock_service.fetch_unseen_emails.side_effect = ImapReadError(
+            "read failed",
+            "primary",
+            "INBOX",
+            ConnectionRefusedError(111, "Connection refused"),
+        )
+        mock_get_service.return_value = mock_service
+
+        assert self._poll()["status"] == "unreachable"
+
+        attempt.assert_called_once()
+        assert attempt.call_args.args[0] == "primary"
+        assert attempt.call_args.args[1] > 1000.0
+        success.assert_called_once_with("primary", 1000.0)
+
+    @patch(f"{TASKS}.set_imap_poll_success_gauge")
+    @patch(f"{TASKS}.set_imap_poll_attempt_gauge")
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_a_cooldown_skip_stamps_the_attempt_and_keeps_the_success(
+        self, mock_get_service, mock_redis, attempt, success
+    ):
+        self._redis(mock_redis, in_cooldown=1)
+        mock_get_service.return_value = MagicMock()
+
+        assert self._poll()["status"] == "cooldown"
+
+        attempt.assert_called_once()
+        assert attempt.call_args.args[1] > 1000.0
+        success.assert_called_once_with("primary", 1000.0)
+
+    @patch(f"{TASKS}.set_imap_poll_success_gauge")
+    @patch(f"{TASKS}.set_imap_poll_attempt_gauge")
+    @patch("inference_core.core.redis_client.get_sync_redis")
+    @patch("inference_core.services.imap_service.get_imap_service")
+    def test_a_non_transient_failure_stamps_neither(
+        self, mock_get_service, mock_redis, attempt, success
+    ):
+        self._redis(mock_redis)
+        mock_service = MagicMock()
+        mock_service.fetch_unseen_emails.side_effect = ImapReadError(
+            "read failed",
+            "primary",
+            "INBOX",
+            ImapConnectionError("Authentication failed: nope", "primary"),
+        )
+        mock_get_service.return_value = mock_service
+
+        with pytest.raises(ImapPollError):
+            self._poll()
+
+        attempt.assert_not_called()
+        success.assert_not_called()
+
+    def test_the_setter_writes_the_series_of_the_host(self):
+        from prometheus_client import REGISTRY
+
+        from inference_core.observability.metrics import set_imap_poll_attempt_gauge
+
+        set_imap_poll_attempt_gauge("attempt-gauge-test", 1234.5)
+        set_imap_poll_attempt_gauge("", 99.0)
+
+        value = REGISTRY.get_sample_value(
+            "imap_poll_last_attempt_timestamp", {"host_alias": "attempt-gauge-test"}
+        )
+        assert value == 1234.5
+        assert (
+            REGISTRY.get_sample_value(
+                "imap_poll_last_attempt_timestamp", {"host_alias": "unknown"}
+            )
+            == 99.0
+        )
+
+
 class TestImapCircuitBreaker:
     """Per-host Redis circuit-breaker + last-success bookkeeping."""
 

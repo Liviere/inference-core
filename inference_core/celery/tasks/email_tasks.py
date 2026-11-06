@@ -16,7 +16,10 @@ from typing import Any, Dict, List, Optional, Union
 from celery import current_task
 
 from inference_core.celery.celery_main import celery_app
-from inference_core.observability.metrics import set_imap_poll_success_gauge
+from inference_core.observability.metrics import (
+    set_imap_poll_attempt_gauge,
+    set_imap_poll_success_gauge,
+)
 from inference_core.services.email_service import EmailSendError, get_email_service
 
 logger = logging.getLogger(__name__)
@@ -633,6 +636,7 @@ def poll_imap_task(
         # re-emit the last-known success timestamp so the sustained-outage gauge
         # keeps climbing — cooldown must never mask a real long outage.
         if _imap_in_cooldown(alias):
+            set_imap_poll_attempt_gauge(alias, start_time)
             set_imap_poll_success_gauge(alias, _imap_last_success_ts(alias, start_time))
             logger.warning("IMAP poll skipped (cooldown active) host=%s", alias)
             return {"status": "cooldown", "host_alias": alias, "folder": folder}
@@ -728,6 +732,7 @@ def poll_imap_task(
         # and emit the liveness gauge at "now".
         _success_ts = time.time()
         _imap_record_success(alias, _success_ts)
+        set_imap_poll_attempt_gauge(alias, _success_ts)
         set_imap_poll_success_gauge(alias, _success_ts)
 
         return {
@@ -755,6 +760,7 @@ def poll_imap_task(
             # and RETURN a status dict — no raise, so no flower task-failed and
             # no CeleryTaskFailures page. The 60s scheduler retries next cycle.
             opened = _imap_record_failure(alias)
+            set_imap_poll_attempt_gauge(alias, start_time)
             set_imap_poll_success_gauge(alias, _imap_last_success_ts(alias, start_time))
             logger.warning(
                 "IMAP poll transient failure (graceful skip) host=%s "
