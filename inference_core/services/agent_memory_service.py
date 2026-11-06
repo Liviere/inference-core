@@ -718,7 +718,7 @@ DEFAULT_CONTEXT_TYPES = (
 _WORD = re.compile(r"\w{3,}")
 
 
-def _word_stems(text: Any) -> Tuple[str, ...]:
+def word_stems(text: Any) -> Tuple[str, ...]:
     """The words of *text* (three letters or more) cut to their beginning,
     once each: a stem matches the word in another form ("invoices",
     "invoice"; "faktury", "faktura")."""
@@ -731,10 +731,16 @@ def _word_stems(text: Any) -> Tuple[str, ...]:
     return tuple(sorted(stems))
 
 
-def _words_held(stems: Sequence[str], text: str) -> int:
+def words_held(stems: Sequence[str], text: str) -> int:
     """How many of *stems* begin a word of *text*."""
     words = _WORD.findall(text.casefold())
     return sum(1 for stem in stems if any(word.startswith(stem) for word in words))
+
+
+# The names these went by before a caller outside this module matched words
+# the same way (a search kept off the embedding provider, say).
+_word_stems = word_stems
+_words_held = words_held
 
 
 def _newest_first(doc: "MemoryStoreDocument") -> tuple:
@@ -2142,10 +2148,10 @@ class AgentMemoryStoreService:
         )
         documents = [doc for docs in found for doc in docs]
         documents.sort(key=_newest_first, reverse=True)
-        stems = _word_stems(words)
+        stems = word_stems(words)
         if stems:
             matched = {
-                id(doc): _words_held(stems, f"{doc.topic or ''} {doc.content or ''}")
+                id(doc): words_held(stems, f"{doc.topic or ''} {doc.content or ''}")
                 for doc in documents
             }
             # A stable sort keeps the newest first among equals.

@@ -210,6 +210,16 @@ def test_the_analysis_after_a_run_asks_the_policy_for_its_recall(monkeypatch):
     [("", ()), ("a an", ()), ("Invoices", ("invoic",)), ("tea", ("tea",))],
 )
 def test_word_stems(words, expected):
-    from inference_core.services.agent_memory_service import _word_stems
+    from inference_core.services.agent_memory_service import _word_stems, word_stems
 
+    assert word_stems(words) == expected
     assert _word_stems(words) == expected
+
+
+def test_words_held_counts_the_stems_that_begin_a_word():
+    from inference_core.services.agent_memory_service import word_stems, words_held
+
+    stems = word_stems("faktury za prąd")
+    assert words_held(stems, "Faktura za prąd, marzec") == 2
+    assert words_held(stems, "Faktura za gaz") == 1
+    assert words_held(stems, "nic tu nie ma") == 0
