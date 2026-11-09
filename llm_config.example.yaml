@@ -1123,7 +1123,8 @@ agents:
   # The names come from tool providers the host application registers
   # (`local_tool_providers`); `allowed_tools` keeps the rest of each
   # provider's tools away from it. Here it reads the user's files, keeps a
-  # collection, and schedules, lists and cancels events: a reminder, or a run
+  # collection, adds entries to a collection the host shares between its
+  # workspaces where the host allows it, and schedules, lists and cancels events: a reminder, or a run
   # of itself at a set time, which the host may gate behind an approval.
   workflow_coordinator:
     primary: 'gpt-6-luna'
@@ -1140,6 +1141,7 @@ agents:
       - list_artifacts
       - search_artifacts
       - filter_artifacts
+      - add_shared_artifacts
       - schedule_event
       - list_scheduled_events
       - cancel_scheduled_event
