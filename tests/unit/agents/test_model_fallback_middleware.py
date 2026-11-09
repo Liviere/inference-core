@@ -275,6 +275,64 @@ def test_async_regular_exception_still_triggers_fallback() -> None:
     assert len(calls) == 2
 
 
+class _EndsTheRun(Exception):
+    """A consumer's exception that ends a run on purpose inside the wrapper."""
+
+
+def test_an_error_that_ends_the_run_tries_no_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(
+        CancelAwareModelFallbackMiddleware, "errors_that_end_the_run", (_EndsTheRun,)
+    )
+    middleware = _build_middleware()
+    calls: list[object] = []
+
+    def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        raise _EndsTheRun()
+
+    with pytest.raises(_EndsTheRun):
+        middleware.wrap_model_call(_FakeRequest(), handler)
+
+    assert len(calls) == 1
+
+
+def test_an_error_that_ends_the_run_from_a_fallback_tries_no_other(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        CancelAwareModelFallbackMiddleware, "errors_that_end_the_run", (_EndsTheRun,)
+    )
+    middleware = _build_middleware(num_fallbacks=2)
+    calls: list[object] = []
+
+    async def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        if len(calls) == 1:
+            raise RuntimeError("provider down")
+        raise _EndsTheRun()
+
+    async def run() -> None:
+        await middleware.awrap_model_call(_FakeRequest(), handler)
+
+    with pytest.raises(_EndsTheRun):
+        asyncio.run(run())
+
+    assert len(calls) == 2
+
+
+def test_by_default_any_error_tries_the_fallback() -> None:
+    middleware = _build_middleware(num_fallbacks=1)
+    calls: list[object] = []
+
+    def handler(request: _FakeRequest) -> object:
+        calls.append(request)
+        if len(calls) == 1:
+            raise _EndsTheRun()
+        return "fallback-response"
+
+    assert middleware.wrap_model_call(_FakeRequest(), handler) == "fallback-response"
+
+
 # ---------------------------------------------------------------------------
 # A fallback that answers is the model the call is logged under
 # ---------------------------------------------------------------------------

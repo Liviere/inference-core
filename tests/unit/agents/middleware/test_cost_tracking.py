@@ -369,6 +369,55 @@ class TestToolCallStops:
         assert calls == []
 
 
+class _EndsTheRun(Exception):
+    """A consumer's exception that ends a run from inside a tool call."""
+
+
+class TestToolErrorsThatEndTheRun:
+    """``tool_errors_that_end_the_run`` names exceptions a tool call raises on
+    instead of turning into its result; none by default."""
+
+    def test_by_default_it_is_the_result(self, middleware):
+        handler = MagicMock(side_effect=_EndsTheRun())
+
+        result = middleware.wrap_tool_call(_tool_request(), handler)
+
+        assert isinstance(result, ToolMessage)
+
+    def test_sync_one_named_is_raised(self, middleware, monkeypatch):
+        monkeypatch.setattr(
+            CostTrackingMiddleware, "tool_errors_that_end_the_run", (_EndsTheRun,)
+        )
+
+        with pytest.raises(_EndsTheRun):
+            middleware.wrap_tool_call(
+                _tool_request(), MagicMock(side_effect=_EndsTheRun())
+            )
+
+    async def test_async_one_named_is_raised(self, middleware, monkeypatch):
+        monkeypatch.setattr(
+            CostTrackingMiddleware, "tool_errors_that_end_the_run", (_EndsTheRun,)
+        )
+
+        async def handler(request):
+            raise _EndsTheRun()
+
+        with pytest.raises(_EndsTheRun):
+            await middleware.awrap_tool_call(_tool_request(), handler)
+
+    async def test_another_error_is_still_the_result(self, middleware, monkeypatch):
+        monkeypatch.setattr(
+            CostTrackingMiddleware, "tool_errors_that_end_the_run", (_EndsTheRun,)
+        )
+
+        async def handler(request):
+            raise RuntimeError("boom")
+
+        result = await middleware.awrap_tool_call(_tool_request(), handler)
+
+        assert result.content == "Error: boom"
+
+
 class TestToolErrorLog:
     """What the warning for a tool's error carries."""
 

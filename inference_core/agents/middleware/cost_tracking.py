@@ -276,6 +276,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             knows of a ``task`` call that ``BriefedSubAgentMiddleware`` let
             through (see ``subagent_task``); the parent's own calls carry
             neither key.
+        tool_errors_that_end_the_run: Exceptions a tool call raises on as
+            they are instead of being turned into the call's error result.
+            Empty by default: every exception but an interrupt, a command
+            for the parent graph or a cancelled run becomes the result. A
+            consumer whose agent ends a run on purpose from inside a tool
+            call (a guard of a subagent that ``task`` runs, say) names that
+            exception's class here on the class, so the run ends as it would
+            outside the tool.
     """
 
     state_schema = CostTrackingState
@@ -286,6 +294,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     state_cost_with_key_aliases: bool = False
     log_failed_model_calls: bool = False
     log_subagent: bool = False
+    tool_errors_that_end_the_run: tuple = ()
 
     def __init__(
         self,
@@ -743,6 +752,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             raise
 
         except Exception as e:
+            if isinstance(e, self.tool_errors_that_end_the_run):
+                logger.debug(
+                    f"Tool call ended the run ({type(e).__name__}, {tool_name})"
+                )
+                raise
             tool_call_id = (
                 request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
             )
@@ -783,6 +797,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             raise
 
         except Exception as e:
+            if isinstance(e, self.tool_errors_that_end_the_run):
+                logger.debug(
+                    f"Tool call ended the run ({type(e).__name__}, {tool_name})"
+                )
+                raise
             tool_call_id = (
                 request.tool_call.get("id", "") if hasattr(request, "tool_call") else ""
             )

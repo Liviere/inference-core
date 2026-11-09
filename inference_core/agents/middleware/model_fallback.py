@@ -236,7 +236,16 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
     primary's included, is sent without Claude's thinking blocks when its
     model is not Anthropic's (:func:`strip_foreign_thinking`): this is the
     one place that knows which model a call goes to.
+
+    ``errors_that_end_the_run`` (a class attribute, empty by default) names
+    exceptions that are raised on as they are, from the primary attempt and
+    from a fallback, with no further model tried: a consumer whose middleware
+    inside this wrapper ends a run on purpose (a guard that refuses what a
+    call would read) sets it on the class. Such an exception is no model's
+    failure, and another model would meet it again.
     """
+
+    errors_that_end_the_run: tuple[type[BaseException], ...] = ()
 
     def __init__(
         self, *args: Any, strip_foreign_thinking: bool = False, **kwargs: Any
@@ -287,6 +296,8 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
+            if isinstance(e, self.errors_that_end_the_run):
+                raise
             last_exception = e
         else:
             failure = failed_answer_reason(response)
@@ -304,6 +315,8 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
             except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
+                if isinstance(e, self.errors_that_end_the_run):
+                    raise
                 last_exception = e
                 continue
             failure = failed_answer_reason(response)
@@ -325,6 +338,8 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
         except GraphInterrupt, AgentCancelled:
             raise
         except Exception as e:
+            if isinstance(e, self.errors_that_end_the_run):
+                raise
             last_exception = e
         else:
             failure = failed_answer_reason(response)
@@ -342,6 +357,8 @@ class CancelAwareModelFallbackMiddleware(ModelFallbackMiddleware):
             except GraphInterrupt, AgentCancelled:
                 raise
             except Exception as e:
+                if isinstance(e, self.errors_that_end_the_run):
+                    raise
                 last_exception = e
                 continue
             failure = failed_answer_reason(response)
