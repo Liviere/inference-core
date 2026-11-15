@@ -65,6 +65,9 @@ from inference_core.llm.model_identity import (
     provider_name,
 )
 from inference_core.agents.middleware.subagent_task import running_subagent_task
+from inference_core.agents.middleware.system_prompt_breakpoint import (
+    automatic_cache_lifetime,
+)
 from inference_core.llm.output_length_guard import usage_is_estimated
 from inference_core.llm.usage_logging import (
     PricingCalculator,
@@ -202,6 +205,44 @@ class _MiddlewareContext:
     persisted_by_message: Dict[str, _PersistedCall] = field(default_factory=dict)
 
 
+#: A cache write a response reports without its lifetime (a streamed
+#: Anthropic response names only ``cache_creation_input_tokens``).
+GENERIC_CACHE_WRITE = "cache_creation_tokens"
+
+
+def cache_write_of_lifetime(
+    fragment: Dict[str, Any],
+    extra_tokens: Dict[str, int],
+    lifetime: Optional[str],
+    pricing_config: Optional[PricingConfig],
+) -> tuple[Dict[str, Any], Dict[str, int]]:
+    """A call's usage with its generic cache write named by *lifetime*.
+
+    ``cache_creation_tokens`` becomes ``ephemeral_<lifetime>_input_tokens_tokens``,
+    the key a response that breaks its writes down gives, so the pricing's
+    alias of that key prices it. Left as it is without a lifetime, without a
+    generic write, when the response named the lifetime's key itself, or when
+    the pricing knows no such key (neither an alias nor an extra): it is then
+    priced as before.
+    """
+    count = fragment.get(GENERIC_CACHE_WRITE)
+    if not lifetime or not count or pricing_config is None:
+        return fragment, extra_tokens
+    key = f"ephemeral_{lifetime}_input_tokens_tokens"
+    if key in fragment:
+        return fragment, extra_tokens
+    if key not in (pricing_config.key_aliases or {}) and key not in (
+        pricing_config.extras or {}
+    ):
+        return fragment, extra_tokens
+    renamed = {k: v for k, v in fragment.items() if k != GENERIC_CACHE_WRITE}
+    renamed[key] = count
+    extras = {k: v for k, v in extra_tokens.items() if k != GENERIC_CACHE_WRITE}
+    if GENERIC_CACHE_WRITE in extra_tokens:
+        extras[key] = extra_tokens[GENERIC_CACHE_WRITE]
+    return renamed, extras
+
+
 class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     """Middleware for tracking LLM usage and costs during agent execution.
 
@@ -260,6 +301,21 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
             the dimension that contains it, and the state's cost can be lower
             than the row's. A consumer that reads the state's cost (for
             metrics, or charging) sets it to ``True`` on the class.
+        cache_write_by_model_lifetime: Whether a cache write the response
+            does not break down by lifetime (``cache_creation_tokens``, as a
+            streamed Anthropic response reports it) is counted as a write of
+            the lifetime the called model asks for: its automatic
+            ``cache_control`` (``prompt_cache``). The fragment's key becomes
+            ``ephemeral_<ttl>_input_tokens_tokens``, which the model's pricing
+            prices through its ``key_aliases``, in the usage log's row and in
+            the state's cost alike. Off by default: such a write is then
+            priced by the pricing's alias of ``cache_creation_tokens``,
+            whatever lifetime the request asked for. A consumer that builds a
+            model with another lifetime than its entry's (``create_model(...,
+            prompt_cache=...)`` or a config with the entry's ``prompt_cache``
+            overridden) sets it to ``True`` on the class. A model with no
+            automatic cache, a pricing without the lifetime's key and a
+            response that breaks its writes down are priced as before.
         log_failed_model_calls: Whether a model call that raises (an HTTP
             error of the provider, a timeout) leaves a usage log row with
             ``success=False``. Off by default: such a call then leaves no
@@ -292,6 +348,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
     tool_error_result_text: bool = True
     persisted_per_message: bool = False
     state_cost_with_key_aliases: bool = False
+    cache_write_by_model_lifetime: bool = False
     log_failed_model_calls: bool = False
     log_subagent: bool = False
     tool_errors_that_end_the_run: tuple = ()
@@ -985,6 +1042,13 @@ class CostTrackingMiddleware(AgentMiddleware[CostTrackingState]):
         pricing_config = self._get_pricing_config(
             invoked.name, identified=invoked.identified
         )
+        if self.cache_write_by_model_lifetime:
+            fragment, extra_tokens = cache_write_of_lifetime(
+                fragment,
+                extra_tokens,
+                automatic_cache_lifetime(getattr(request, "model", None)),
+                pricing_config,
+            )
         session = self._new_usage_session(invoked, reported_name, pricing_config)
 
         details = get_usage_details(getattr(request, "model", None))

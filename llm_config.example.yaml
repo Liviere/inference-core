@@ -421,7 +421,9 @@ models:
   # `cache_write_1h_tokens` (2x input); `cache_creation_tokens` goes to the
   # rate of the entry's `prompt_cache` lifetime, since that is the only
   # lifetime its requests ask for (inference-core warns when the file reads
-  # otherwise). A name with `cache` in it is taken out of the input tokens, so
+  # otherwise). A model built with another lifetime is priced at its own with
+  # CostTrackingMiddleware.cache_write_by_model_lifetime (off by default),
+  # through the `ephemeral_*` aliases below. A name with `cache` in it is taken out of the input tokens, so
   # a write is priced once, at its own rate. Thinking is part of output_tokens, at the output price.
   # Claude models use the 'thinking' kwarg. These models take adaptive thinking
   # only: a thinking budget, `temperature` and `top_p` are rejected by the API
